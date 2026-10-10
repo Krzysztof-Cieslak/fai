@@ -653,6 +653,9 @@ pub enum Prim {
     /// Borrow a nonescaping data slot while its source array remains live.
     /// Compiler-internal; the result is never transferred or released as owned.
     ArrayPeek,
+    /// Borrow a uniform data field while its ultimate owner remains live.
+    /// Compiler-internal; raw scalar slots and escaping results are excluded.
+    DataPeek,
     /// Reverse the first count elements and retain the suffix, consuming a list.
     /// Internal fusion of take/reverse/append/drop; preserves every element.
     ListReversePrefix,
@@ -727,6 +730,9 @@ impl Prim {
     /// agree on whether the operand is borrowed.
     #[must_use]
     pub fn borrows_operand(self, operand_ty: &Ty) -> bool {
+        if self == Prim::DataPeek {
+            return true;
+        }
         matches!(
             self,
             Prim::Eq
@@ -767,6 +773,7 @@ impl Prim {
             Prim::ArrayLength => Some("fai_array_length_borrowed"),
             Prim::ArrayGet => Some("fai_array_get_borrowed"),
             Prim::ArrayPeek => Some("fai_array_peek"),
+            Prim::DataPeek => Some("fai_data_peek"),
             Prim::ArrayTake => Some("fai_array_take"),
             Prim::StringJoin => Some("fai_string_join_borrowed"),
             Prim::ArraySplit => Some("fai_array_split_borrowed"),
@@ -835,6 +842,7 @@ impl Prim {
             Prim::ArrayLength => "fai_array_length",
             Prim::ArrayGet => "fai_array_get",
             Prim::ArrayPeek => "fai_array_peek",
+            Prim::DataPeek => "fai_data_peek",
             Prim::ListReversePrefix => "fai_list_reverse_prefix",
             Prim::ArraySet => "fai_array_set",
             Prim::ArrayUnique => "fai_array_unique",

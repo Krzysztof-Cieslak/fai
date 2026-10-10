@@ -3485,6 +3485,15 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn prim(&mut self, op: Prim, args: &[CExpr], result_ty: &Ty) -> Value {
+        if op == Prim::DataPeek
+            && let [base, index] = args
+            && let ExprKind::Lit(Lit::Int(index)) = index.kind
+            && let Ok(index) = u32::try_from(index)
+        {
+            let base = self.data_base(base);
+            let address = self.field_slot_addr(base, FieldIndex::Const(index));
+            return self.builder.ins().load(types::I64, MemFlags::trusted(), address, 0);
+        }
         // Float primitives compile to inline machine `f64` ops when their operands
         // are unboxed; a boxed operand (e.g. inside the uniform mutual-recursion
         // combined function) falls back to the out-of-line runtime float call.

@@ -623,7 +623,10 @@ reading a header. A single immediate alternative as well makes the complete tag
 a calculation on the value's immediate bit, independent of constructor order.
 An array data slot used only for tag/field inspection can be borrowed while its
 source array remains live. The bounded ownership proof keeps escaping slots and
-uncertain lifetimes owned; projected child values retain their own references.
+uncertain lifetimes owned. A statically uniform projected field can likewise be
+borrowed for structural comparisons and other borrowing reads while its ultimate
+owner remains live. Scalar conversions, escaping fields and uncertain lifetimes
+retain owned projections, including across array updates.
 Thread-pool cleanup batches consecutive cells from one slab into one ownership
 release. Generated native `main` destroys live values and checks leaks normally,
 then leaves its dead recycling-cache mappings for process teardown by the OS;

@@ -1,0 +1,18 @@
+module Main
+
+type Entry 'a = | Entry 'a
+
+let count key entries i acc =
+  if i < 0 then
+    acc
+  else
+    let Entry stored = Array.unsafeGet i entries
+    count key entries (i - 1) (if stored = key then acc + 1 else acc)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let texts = [| Entry "key", Entry "other", Entry "key" |]
+  let floats = [| Entry 1.25, Entry 2.5, Entry 1.25 |]
+  let integers = [| Entry 9223372036854775807, Entry 0, Entry 9223372036854775807 |]
+  let result = count "key" texts 2 0 + count 1.25 floats 2 0 + count 9223372036854775807 integers 2 0
+  runtime.console.writeLine (Int.toString result)

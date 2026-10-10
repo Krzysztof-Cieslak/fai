@@ -403,6 +403,21 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_uniform_field_adds_no_reference() {
+        let _guard = lock();
+        let baseline = (live_count(), live_bytes());
+        let text = make_str("borrowed");
+        let cell = data(1, &[text]);
+        let field = fai_data_peek(cell, imm_int(0));
+        assert_eq!(field, text);
+        // SAFETY: the containing cell owns the string throughout this borrow.
+        assert_eq!(unsafe { rc_load(as_obj(field)) }, 1);
+        assert_eq!(read_string(field), b"borrowed");
+        fai_drop(cell);
+        assert_eq!((live_count(), live_bytes()), baseline);
+    }
+
+    #[test]
     fn extended_parent_drains_shared_compact_children() {
         let _guard = lock();
         let baseline = (live_count(), live_bytes());

@@ -213,7 +213,9 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         }
         borrow_slots::rewrite(db, &mut body);
         borrow_slots::remove_discarded_projections(&mut body);
-        data_shapes.push(data_shapes::collect(db, &body));
+        let shapes = data_shapes::collect(db, &body);
+        borrow_slots::borrow_fields(&mut body, &shapes);
+        data_shapes.push(shapes);
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }
     LoweredDef {
