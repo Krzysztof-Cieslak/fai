@@ -3747,6 +3747,37 @@ pub extern "C" fn fai_bytes_is_utf8(b: Value) -> Value {
 /// and consumes its `args` (an array of exactly `arity` owned values).
 type CodeFn = unsafe extern "C" fn(env: *const i64, args: *const i64) -> Value;
 
+/// An immortal, capture-free intrinsic function using the ordinary closure ABI.
+#[repr(C)]
+pub struct IntrinsicClosure {
+    rc: std::sync::atomic::AtomicU64,
+    descriptor: &'static Descriptor,
+    size: u64,
+    code: CodeFn,
+    arity: u64,
+    captures: u64,
+}
+
+const _: () = assert!(std::mem::size_of::<IntrinsicClosure>() == CLOSURE_ENV_OFFSET);
+const _: () = assert!(std::mem::offset_of!(IntrinsicClosure, code) == CLOSURE_CODE_OFFSET);
+
+unsafe extern "C" fn int_sub_closure(_env: *const i64, args: *const i64) -> Value {
+    // SAFETY: exact application of this two-argument closure supplies two owned
+    // uniform Int values. The primitive consumes both, including boxed inputs.
+    unsafe { fai_int_sub(*args, *args.add(1)) }
+}
+
+/// Canonical first-class Int subtraction, with no captures or allocation.
+#[unsafe(no_mangle)]
+pub static FAI_INT_SUB_CLOSURE: IntrinsicClosure = IntrinsicClosure {
+    rc: std::sync::atomic::AtomicU64::new(IMMORTAL_RC),
+    descriptor: &FAI_CLOSURE_DESC,
+    size: CLOSURE_ENV_OFFSET as u64,
+    code: int_sub_closure,
+    arity: 2,
+    captures: 0,
+};
+
 /// Allocates a closure capturing `env_count` slots (rc = 1).
 ///
 /// # Safety
@@ -4997,6 +5028,8 @@ mod array_tests;
 mod drop_work_tests;
 #[cfg(test)]
 mod hash_tests;
+#[cfg(test)]
+mod intrinsic_closure_tests;
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]

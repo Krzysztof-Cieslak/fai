@@ -323,3 +323,16 @@ fn spread_self_tail_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn canonical_callback_shape_edits_match_clean_native_objects() {
+    let source = "module M\nlet make _ = fun a b -> a - b\n";
+    let edited = source.replace("a - b", "b - a");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("make"), false))
+                .clone()
+        },
+    );
+}

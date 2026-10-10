@@ -41,6 +41,9 @@ use fai_runtime as rt;
 use fai_types::{Con, RowEnd, Ty};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+/// Reserved callback evidence; a real native code address cannot be this value.
+const CALLBACK_INT_SUB: i64 = 1;
+
 /// Builds the exported code symbol for a definition.
 #[must_use]
 pub fn code_symbol(namer: &dyn Fn(DefId) -> String, def: DefId) -> String {
@@ -5092,6 +5095,10 @@ impl<M: Module> Translator<'_, M> {
     fn inline_arith(&mut self, op: Prim, args: &[CExpr], fop: FitsOp) -> Value {
         let a = self.expr(&args[0]);
         let b = self.expr(&args[1]);
+        self.inline_arith_values(op, a, b, fop)
+    }
+
+    fn inline_arith_values(&mut self, op: Prim, a: Value, b: Value, fop: FitsOp) -> Value {
         if self.is_raw_int(a) && self.is_raw_int(b) {
             return self.raw_arith(fop, a, b);
         }
@@ -6034,7 +6041,8 @@ impl<M: Module> Translator<'_, M> {
         self.builder.block_params(done)[0]
     }
 
-    /// Returns an immortal closure's exact uniform entry, or null for the runtime path.
+    /// Returns an immortal closure's exact uniform entry, null for the runtime
+    /// path, or the reserved value 1 for canonical two-argument Int subtraction.
     fn callback_entry(&mut self, callee: Value, arity: usize) -> Value {
         let fast = self.builder.create_block();
         let slow = self.builder.create_block();
@@ -6050,6 +6058,14 @@ impl<M: Module> Translator<'_, M> {
             callee,
             rt::CLOSURE_CODE_OFFSET as i32,
         );
+        let code = if arity == 2 {
+            let canonical = self.runtime_data_addr("FAI_INT_SUB_CLOSURE");
+            let matches = self.builder.ins().icmp(IntCC::Equal, callee, canonical);
+            let intrinsic = self.builder.ins().iconst(types::I64, CALLBACK_INT_SUB);
+            self.builder.ins().select(matches, intrinsic, code)
+        } else {
+            code
+        };
         self.builder.ins().jump(done, &[code.into()]);
         self.builder.switch_to_block(slow);
         self.builder.seal_block(slow);
@@ -6106,14 +6122,16 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn apply_cached_callback(&mut self, callee: Value, values: &[Value], code: Value) -> Value {
-        let args = self.spill(values);
         let fast = self.builder.create_block();
         let slow = self.builder.create_block();
         let done = self.builder.create_block();
         self.builder.append_block_param(done, types::I64);
-        self.builder.ins().brif(code, fast, &[], slow, &[]);
+        let direct =
+            self.builder.ins().icmp_imm(IntCC::UnsignedGreaterThan, code, CALLBACK_INT_SUB);
+        self.builder.ins().brif(direct, fast, &[], slow, &[]);
         self.builder.switch_to_block(fast);
         self.builder.seal_block(fast);
+        let args = self.spill(values);
         let env = self.builder.ins().iadd_imm(callee, rt::CLOSURE_ENV_OFFSET as i64);
         let signature = code_signature(self.module);
         let signature = self.builder.import_signature(signature);
@@ -6122,6 +6140,18 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().jump(done, &[value.into()]);
         self.builder.switch_to_block(slow);
         self.builder.seal_block(slow);
+        if let [a, b] = values {
+            let primitive = self.builder.create_block();
+            let runtime = self.builder.create_block();
+            self.builder.ins().brif(code, primitive, &[], runtime, &[]);
+            self.builder.switch_to_block(primitive);
+            self.builder.seal_block(primitive);
+            let value = self.inline_arith_values(Prim::IntSub, *a, *b, FitsOp::Sub);
+            self.builder.ins().jump(done, &[value.into()]);
+            self.builder.switch_to_block(runtime);
+            self.builder.seal_block(runtime);
+        }
+        let args = self.spill(values);
         let count = self.builder.ins().iconst(types::I64, values.len() as i64);
         let apply = self.runtime("fai_apply_n", 3, true);
         let call = self.builder.ins().call(apply, &[callee, count, args]);
@@ -6609,6 +6639,16 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn make_closure(&mut self, func: FnId, captures: &[LocalId], alloc: ClosureAlloc) -> Value {
+        let function = &self.lowered.fns[func.index()];
+        if captures.is_empty()
+            && function.params.len() == 2
+            && tagged_int_leaf(function)
+            && let ExprKind::Prim { op: Prim::IntSub, args } = &function.body.kind
+            && matches!(args[0].kind, ExprKind::Local(local) if local == function.params[0])
+            && matches!(args[1].kind, ExprKind::Local(local) if local == function.params[1])
+        {
+            return self.runtime_data_addr("FAI_INT_SUB_CLOSURE");
+        }
         match alloc {
             ClosureAlloc::Static => self.static_closure(func),
             ClosureAlloc::Stack => self.stack_closure(func, captures),

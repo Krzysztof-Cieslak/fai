@@ -99,6 +99,9 @@ type ScalarState = { value : Float }
 let spreadLoop n state = if n <= 0 then state else spreadLoop (n - 1) { value = state.value + 1.0 }
 public spreadStates : Int -> Int
 let spreadStates n = Float.toInt (spreadLoop n { value = 0.0 }).value
+let subLoop f n value = if n <= 0 then value else subLoop f (n - 1) (f value 1)
+public canonicalCallbacks : Int -> Int
+let canonicalCallbacks n = subLoop (fun a b -> a - b) n n
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -293,6 +296,16 @@ fn spread_self_loop_state_needs_no_heap_storage() {
     let mut harness = Harness::new();
     let short = harness.measure("spreadStates", 8, 8);
     let long = harness.measure("spreadStates", 1000000, 1000000);
+    assert_eq!(short, long);
+    assert_eq!(long.allocations, 0);
+    assert_eq!(long.peak_bytes, 0);
+}
+
+#[test]
+fn canonical_callback_keeps_zero_auxiliary_heap_storage() {
+    let mut harness = Harness::new();
+    let short = harness.measure("canonicalCallbacks", 8, 0);
+    let long = harness.measure("canonicalCallbacks", 4096, 0);
     assert_eq!(short, long);
     assert_eq!(long.allocations, 0);
     assert_eq!(long.peak_bytes, 0);
