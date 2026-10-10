@@ -2561,6 +2561,22 @@ fn small_total_integer_branches_emit_a_select() {
 }
 
 #[test]
+fn positive_loop_division_uses_no_signed_rounding_bias() {
+    let ir = entry_ir(
+        "module M\npublic halve : Int -> Int -> Int\nlet halve value count = if value <= 0 then count else halve (value / 2) (count + 1)\n",
+        "halve",
+    );
+    assert!(ir.contains("ushr_imm"), "{ir}");
+    assert!(!ir.contains("sshr_imm"), "a proven positive dividend needs no sign bias:\n{ir}");
+}
+
+#[test]
+fn an_unknown_signed_dividend_retains_its_rounding_bias() {
+    let ir = entry_ir("module M\npublic half : Int -> Int\nlet half value = value / 2\n", "half");
+    assert!(ir.contains("sshr_imm"), "negative odd values must still truncate toward zero:\n{ir}");
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

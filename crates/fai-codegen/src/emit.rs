@@ -5445,6 +5445,23 @@ impl<M: Module> Translator<'_, M> {
                 // A literal divisor is statically nonzero and never `-1`, so a raw
                 // dividend divides with no zero/`-1`/fit guards at all.
                 if self.is_raw_int(a) {
+                    // A mathematical nonnegative bound makes floor and signed
+                    // truncation identical. Potentially wrapping arithmetic does
+                    // not inherit this fact from its operands.
+                    if pow2
+                        && let ExprKind::Local(local) = args[0].kind
+                        && self
+                            .bounds
+                            .bound(fai_core::bounds::Term::Zero, fai_core::bounds::Term::Int(local))
+                            .is_some_and(|bound| bound <= 0)
+                    {
+                        let result = if is_div {
+                            self.builder.ins().ushr_imm(a, k)
+                        } else {
+                            self.builder.ins().band_imm(a, d - 1)
+                        };
+                        return self.mark_raw(result);
+                    }
                     return if pow2 {
                         self.raw_divrem_pow2(a, is_div, k)
                     } else {
