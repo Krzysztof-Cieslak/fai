@@ -982,6 +982,14 @@ forwards producer effects and joins its tasks when sending ends.
 
 ---
 
+The optional PostgreSQL source package takes `net`, `tls`, `clock`, `concurrency`,
+and `entropy = Crypto.systemEntropy` capabilities. Call `Postgres.withConnection`
+or `Postgres.withPool`/`withSession`; callbacks receive the shared `Sql.Session`.
+Connect/operation/acquisition deadlines and pool expiry are configurable;
+optional durations use `None` to disable them. Crypto hashing, HMAC, PBKDF2,
+constant-time comparison and SCRAM normalization are pure; obtaining OS entropy
+incurs the explicit `Crypto.Entropy` effect.
+
 SQLite is exposed by the standard `SqliteHost` capability module. An application
 can use a runtime record such as `{ console = stdConsole, sqlite = SqliteHost.native }`
 and declare `/ { SqliteHost.Sqlite }` where it accesses a database. The optional

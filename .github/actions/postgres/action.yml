@@ -1,0 +1,59 @@
+name: PostgreSQL integration
+description: Run native Fai JIT and AOT checks against a disposable PostgreSQL database
+runs:
+  using: composite
+  steps:
+    - uses: ankane/setup-postgres@b1a598d92f86cb2ed364411898d150d4eac6d5ca
+    - name: Create SCRAM test credentials
+      shell: bash
+      run: |
+        set -euo pipefail
+        admin="$(whoami)"
+        if [ "$RUNNER_OS" = Windows ]; then admin=postgres; fi
+        psql -h 127.0.0.1 -U "$admin" -d postgres -v ON_ERROR_STOP=1 -c "SET password_encryption='scram-sha-256'; CREATE ROLE fai_test LOGIN PASSWORD 'fai-ci-password';"
+        psql -h 127.0.0.1 -U "$admin" -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE fai_test OWNER fai_test;'
+        echo 'FAI_PG_URL=postgres://fai_test:fai-ci-password@127.0.0.1:5432/fai_test?sslmode=disable' >> "$GITHUB_ENV"
+    - name: Native PostgreSQL execution
+      shell: bash
+      run: |
+        set -euo pipefail
+        fai run --no-daemon -C packages postgres/examples/Integration.fai | tee "$RUNNER_TEMP/postgres-jit.log"
+        grep -Fx 'PostgreSQL checks passed' "$RUNNER_TEMP/postgres-jit.log"
+        fai build -C packages postgres/examples/Integration.fai --out "$RUNNER_TEMP/postgres-check.exe"
+        "$RUNNER_TEMP/postgres-check.exe" | tee "$RUNNER_TEMP/postgres-aot.log"
+        grep -Fx 'PostgreSQL checks passed' "$RUNNER_TEMP/postgres-aot.log"
+        fai run --no-daemon -C packages postgres/examples/WireChecks.fai | tee "$RUNNER_TEMP/postgres-wire.log"
+        grep -Fx 'PostgreSQL wire checks passed' "$RUNNER_TEMP/postgres-wire.log"
+        fai build -C packages postgres/examples/WireChecks.fai --out "$RUNNER_TEMP/postgres-wire.exe"
+        "$RUNNER_TEMP/postgres-wire.exe" | tee "$RUNNER_TEMP/postgres-wire-aot.log"
+        grep -Fx 'PostgreSQL wire checks passed' "$RUNNER_TEMP/postgres-wire-aot.log"
+    - name: Configure a verified TLS endpoint
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$RUNNER_TEMP"
+        openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 2 -subj '/CN=Fai CI root'
+        openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj '/CN=localhost'
+        cat > server.ext <<'EOF'
+        basicConstraints=critical,CA:FALSE
+        keyUsage=critical,digitalSignature,keyEncipherment
+        extendedKeyUsage=serverAuth
+        subjectAltName=DNS:localhost,IP:127.0.0.1
+        EOF
+        openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 2 -extfile server.ext
+        data="$(psql -h 127.0.0.1 -d postgres -Atc 'show data_directory')"
+        sudo install -o postgres -m 600 server.key "$data/fai-server.key"
+        sudo install -o postgres -m 644 server.crt "$data/fai-server.crt"
+        psql -h 127.0.0.1 -d postgres -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET ssl='on'" -c "ALTER SYSTEM SET ssl_cert_file='fai-server.crt'" -c "ALTER SYSTEM SET ssl_key_file='fai-server.key'" -c 'SELECT pg_reload_conf()'
+        echo "FAI_PG_ROOT=$RUNNER_TEMP/ca.crt" >> "$GITHUB_ENV"
+        echo 'FAI_PG_URL=postgres://fai_test:fai-ci-password@localhost:5432/fai_test' >> "$GITHUB_ENV"
+    - name: Native TLS and channel binding execution
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        fai run --no-daemon -C packages postgres/examples/Integration.fai | tee "$RUNNER_TEMP/postgres-tls.log"
+        grep -Fx 'PostgreSQL checks passed' "$RUNNER_TEMP/postgres-tls.log"
+        "$RUNNER_TEMP/postgres-check.exe" | tee "$RUNNER_TEMP/postgres-tls-aot.log"
+        grep -Fx 'PostgreSQL checks passed' "$RUNNER_TEMP/postgres-tls-aot.log"

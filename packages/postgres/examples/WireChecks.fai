@@ -1,0 +1,123 @@
+module WireChecks
+
+public type Runtime = Basic.Runtime
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  entropy = Crypto.systemEntropy,
+  env = stdEnv,
+  fs = stdFs,
+  net = stdNet,
+  tls = stdTls
+}
+
+let startup = PgWire.join [
+  PgWire.packet 82 (PgWire.int32 0),
+  PgWire.packet 75 (PgWire.int64 0),
+  PgWire.packet 90 (Bytes.fromString "I")
+]
+
+sendBytes : Runtime -> Connection -> Bytes -> Int -> Unit / { Net }
+let sendBytes r socket bytes offset =
+  if offset = Bytes.length bytes then
+    ()
+  else
+    let sent = r.net.send socket (Bytes.slice offset (offset + 1) bytes)
+    sendBytes r socket bytes (offset + 1)
+
+serve : Runtime -> Listener -> Int -> Unit / { Net }
+let serve r listener scenario =
+  match r.net.accept listener with
+  | Err _ -> ()
+  | Ok socket ->
+    let received = r.net.recv socket 4096
+    let bytes =
+      if scenario = 0 || scenario = 5 || scenario = 7 then
+        startup
+      else if scenario = 1 then
+        Bytes.fromList [82, 0, 0, 0, 3]
+      else if scenario = 2 then
+        PgWire.packet 90 (Bytes.fromString "I")
+      else if scenario = 3 then
+        PgWire.packet 82 (PgWire.int32 3)
+      else if scenario = 4 then
+        Bytes.fromList [82, 0, 0, 0, 8, 0]
+      else
+        PgWire.packet 82 (Bytes.concat (PgWire.int32 0) (Bytes.fromList [1]))
+    let sent = sendBytes r socket bytes 0
+    let incomplete =
+      if scenario = 5 then
+        let request = r.net.recv socket 4096
+        r.net.send socket (PgWire.packet 90 (Bytes.fromString "I"))
+      else if scenario = 7 then
+        let prepare = r.net.recv socket 4096
+        let prepared =
+          r.net.send socket (PgWire.join [
+            PgWire.packet 49 Bytes.empty,
+            PgWire.packet 116 (PgWire.int16 0),
+            PgWire.packet 110 Bytes.empty,
+            PgWire.packet 90 (Bytes.fromString "I")
+          ])
+        let execute = r.net.recv socket 4096
+        r.net.send socket (PgWire.join [
+          PgWire.packet 50 Bytes.empty,
+          PgWire.packet 90 (Bytes.fromString "I")
+        ])
+      else
+        Ok ()
+    r.net.close socket
+
+let work scenario session =
+  if scenario = 5 then
+    Result.map (fun _ -> ()) (Sql.query session (Sql.text "select 42"))
+  else if scenario = 7 then
+    Result.map (fun _ -> ()) (Sql.execute session (Sql.text "create table example(n int)"))
+  else
+    Ok ()
+
+check : Runtime -> Listener -> Int -> Nursery -> Bool / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let check r listener scenario nursery =
+  let task = r.concurrency.spawn nursery (fun _ -> serve r listener scenario)
+  let options = { PgConfig.defaults with
+    connectTimeoutMs = Some 5000,
+    host = "127.0.0.1",
+    operationTimeoutMs = Some 5000,
+    port = r.net.localPort listener,
+    tls = PgConfig.Disabled
+  }
+  let result = Postgres.withConnection r options (work scenario)
+  let stopped = r.concurrency.cancel task
+  match result with
+  | Ok _ -> scenario = 0
+  | Err (Sql.Failure error) ->
+    if scenario = 3 then
+      error.kind = Sql.Authentication
+    else
+      scenario <> 0 && error.kind = Sql.Protocol
+  | _ -> false
+
+one : Runtime -> Int -> Bool / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let one r scenario =
+  match r.net.listen 0 with
+  | Err _ -> false
+  | Ok listener -> r.concurrency.scope (check r listener scenario)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Crypto.Entropy, Net, Tls }
+let main r =
+  let fragmented = one r 0
+  let length = one r 1
+  let order = one r 2
+  let cleartext = one r 3
+  let truncated = one r 4
+  let incomplete = one r 5
+  let payload = one r 6
+  let missingCommand = one r 7
+  let emptyEntropy = Result.map Bytes.length (r.entropy.bytes 0) = Ok 0
+  let invalidEntropy =
+    Result.isErr (r.entropy.bytes (-9223372036854775808)) && Result.isErr (r.entropy.bytes 9223372036854775807)
+  r.console.writeLine (if fragmented && length && order && cleartext && truncated && incomplete && payload && missingCommand && emptyEntropy && invalidEntropy then
+    "PostgreSQL wire checks passed"
+  else
+    "PostgreSQL wire checks failed")
