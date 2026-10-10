@@ -7,6 +7,62 @@ produced, and — in depth — how the **Fai-vs-Rust runtime comparison** benche
 work. The last part answers a question the numbers invite: *why is "Rust" so much
 slower in the AOT comparison than in the JIT comparison if it is the same Rust?*
 
+## What a comparison establishes
+
+The algorithm suite is a **compiler-development microbenchmark set**. Its inputs
+are known and have guided optimizations; they are not an independent holdout or
+evidence that one language is faster on arbitrary applications. A result such as
+"40/40" describes those executable versions, inputs, build settings, machine and
+measurement scope. An equal-weight geometric mean is a summary of that selection,
+not a prediction of application performance.
+
+Record the exact sources, executable hashes, compiler versions, build commands,
+optimization/CPU flags and environment with a published comparison. The normal
+optimized configurations are:
+
+| Side | Optimization and instrumentation |
+|---|---|
+| Rust | Cargo `release`/`bench`: LLVM `opt-level=3`, debug assertions and overflow checks off by default. LTO, codegen units and target CPU follow Cargo configuration; record overrides. |
+| Fai | Both AOT and JIT use Cranelift `opt_level=speed`. AOT uses the baseline host ISA; JIT detects native CPU features. The embedded runtime is built with Cargo release optimization, with debug assertions matching the compiler's build. A release-built compiler disables its runtime counters. `fai build --release` is currently accepted but adds no optimization. |
+| OCaml | `ocamlopt` produces optimized native code. Record `ocamlopt -config` and the actual flags: compiler version, Flambda configuration and GC settings matter. Native compilation alone does not establish equivalence to a current Flambda `-O3` build. |
+
+The October 2026 development comparison used Rust 1.96.0 and OCaml 4.14.1 without
+Flambda. Adding `-O3` to that particular OCaml build produced identical workload
+object bytes; it does not answer how a newer or Flambda-enabled compiler performs.
+
+Optimization freedom must be symmetric. Reference implementations contain no
+per-element `black_box`/`Sys.opaque_identity` barriers. Whole-call input/output
+barriers in the in-process harness prevent elimination of the *measurement*;
+they still allow each compiler to simplify the workload. A closed-form sum or
+exact fixed-point shortcut is a legitimate optimization, but then that input
+measures the shortcut rather than sustained loop throughput. Sustained-throughput
+claims require additional input-dependent workloads on every side.
+
+Published results should also account for:
+
+- **Input and representation differences.** Fai's delivered examples bake their
+  size into `main`; Rust and OCaml read it from argv. Match input availability
+  before attributing a difference to code generation. Equal checksums establish
+  result agreement, not identical intermediate work or data structures. The
+  exceptions below are application comparisons, not matched kernel measurements.
+- **Startup and duration.** Delivered-binary timing includes spawn, runtime
+  initialization, output and exit. Several optimized workloads take less than a
+  millisecond and are sensitive to that overhead. Measure a process floor and use
+  longer runs or the persistent-worker/in-process suites for compute claims.
+- **Memory and lifetime.** Peak RSS includes touched code, stacks, allocator
+  retention and the GC heap. RC/Rust destruction and OCaml collection have
+  different schedules; one short process is not a steady-state memory test.
+  Fai builds one executable per workload, while each Rust/OCaml dispatcher
+  contains the whole suite, another difference in the delivered image.
+  Report absolute RSS and separate live-heap/allocation measurements. Do not
+  describe an RSS ratio as a per-value or peak-live-heap ratio.
+- **Coverage and uncertainty.** Include multiple sizes/distributions and unseen
+  application workloads before generalizing. Sorting distributions, Unicode text,
+  hash-key distributions, sharing, concurrency and I/O are not covered by one
+  fixed input per algorithm. Repeat on a quiet host; retain raw samples and report
+  close or unstable results as inconclusive rather than counting every ratio
+  below 1 as a demonstrated win.
+
 ## Two layers of performance protection
 
 Performance is guarded two different ways, for two different reasons.
@@ -334,8 +390,8 @@ the hash-container workloads are kept modest only for stable medians.
 
 **2. Different measurement scope.** `algorithms_jit` times a **pure in-process
 function call**; `algorithms_aot` **spawns a whole subprocess** (fork/exec +
-dynamic linker + runtime init + print + exit), a floor of roughly 1–2 ms
-*regardless of workload*.
+dynamic linker + runtime init + print + exit). Measure that floor on the actual
+host; it varies with the runtime image, operating system and harness.
 
 Both effects are visible in a real run. From the `main` Benchmarks run
 `27281697190` (illustrative — exact numbers drift run to run):
@@ -349,7 +405,8 @@ Both effects are visible in a real run. From the `main` Benchmarks run
 | merge_sort | 6.684 µs | 1.262 ms | ~189× |
 | pi | 70.57 µs | 2.279 ms | ~32× |
 
-The size factor explains ~11–18×; the rest is the process-spawn floor. You can see
+In that historical run, the size factor explains ~11–18×; the rest is the
+process-spawn floor. You can see
 that floor directly: in `algorithms_aot`, `map_sum` (2.0 ms), `merge_sort`
 (1.26 ms), and `pi` (2.28 ms) all bottom out near 1–2 ms even though the same
 compute in-process is 7–70 µs — for `merge_sort`, sorting 80k integers is tens of
@@ -368,22 +425,19 @@ is closest to the pure size factor.
   is compiled Fai *code* vs Rust *code*, in process"; `algorithms_aot` answers
   "how fast is a *delivered Fai binary* vs a *delivered Rust/OCaml binary*, end to
   end."
-- Even within a bench it is a **progress metric, not a fair fight**: Fai runs a
-  uniform **boxed**, **reference-counted** representation (Cranelift), while Rust
-  is unboxed and optimized by LLVM. The number to watch is whether the gap
-  **shrinks** as the backend improves.
-- **Match the data representation.** A benchmark should compare *like with like*,
-  so the ratio reflects the compiler/runtime/std rather than a fundamental
-  data-structure difference that holds in any language (a linked list pointer-chases
-  where an array is contiguous — true of Rust's own `LinkedList` vs `Vec`). So each
-  sample and its oracle use the **same** representation, matched in whichever
-  direction fits the workload — the test being whether switching would make the
-  *Fai* side faster:
+- Interpret the ratio according to its scope. Fai uses uniform values plus
+  scalar-specialized representations, reference counting and Cranelift; Rust uses
+  LLVM and its own representations. These are legitimate implementation choices,
+  but they do not isolate a single compiler phase.
+- **Identify the data representation.** For a matched kernel comparison, use the
+  same logical data structures and operations. An application comparison can use
+  idiomatic alternatives, with the differences stated explicitly. The suite mixes
+  both kinds:
   - **Contiguous** where access is index-, iterate-, or build-then-traverse-heavy
     (an `Array` is then also the better Fai structure): Fai's **`Array`** against
     Rust's `Vec`. `MapSum`/`MapSumShared` build-map-fold an `Array`; `MergeSort`
-    uses the standard `Array.sort`; `QuickSort` is a hand-written in-place array
-    quicksort; `MatrixMultiply`/`Levenshtein` use array-of-array and array-row DP;
+    uses the standard `Array.sort`; `QuickSort` also uses `Array.sort` on scrambled
+    input; `MatrixMultiply`/`Levenshtein` use array-of-array and array-row DP;
     `SpectralNorm` and `FloatMatrixMultiply` use unboxed `Array Float` (raw inline
     `f64` slots); `NBody`/`Particles` hold their bodies in an
     `Array`; `WordCount` splits and joins through `Array String`
@@ -396,18 +450,27 @@ is closest to the pure size factor.
     is cache-hostile and would unfairly slow Rust). `NQueens` (a backtracking
     stack), `Fannkuch` (permutation generation + reversal), and `ExprEval` (a
     parser building an `Expr` tree) match this way.
-  A bare `List`-vs-`Vec` mismatch is avoided — it would measure the representation
-  gap, not Fai. Two further cases are noted exceptions: **`ListSort`** keeps a
-  `Vec` oracle *on purpose* — it sorts a Fai `List` against the same `Vec` baseline
-  as `MergeSort`'s `Array`, so the gap between the two samples' ratios isolates the
-   in-Fai list-vs-array API cost. `List.sortBy` uses private merge buffers for large
-   inputs; buffer construction and conversion back to the linked result remain
-   inside the timed call. **`JsonSerialize`** (2-element ADT children
-   rendered in order) and **`GraphBFS`** (the cost is the `HashDict`/`HashSet`; the
-  `List` is only the BFS frontier) keep a `List` whose container is immaterial
-  because another structure dominates.
+  **`ListSort`** sorts a Fai/OCaml linked list against Rust's `Vec::sort`.
+  `List.sortBy` uses private merge buffers for large inputs; converting to and from
+  the linked representation remains timed. This is an application-level comparison.
+  Comparing its ratio to `MergeSort` does not isolate representation cost because
+  their input distributions and sizes differ. **`OptionTreeFind`** uses a Fai
+  binary tree, Rust `BTreeMap` and OCaml `Map`; use `tree_lookup` for matched nodes.
+  **`JsonSerialize`** has List versus Vec children, and **`GraphBFS`** has List
+  versus Vec adjacency/frontiers. Their allocation/traversal differences remain
+  part of the measurements. Hash-container implementations, hash functions,
+  seeding and initial capacities also differ between languages; these are library
+  comparisons rather than isolated structural-hash or probe-loop timings.
 
 ### Keeping the sides in lockstep
+
+`MapSum`, `MapSumShared` and `FoldPipeline` previously had per-element optimization
+barriers in Rust and OCaml, but none in Fai. Those barriers have been removed:
+closed-form evaluation, vectorization and other behavior-preserving optimizations
+are allowed on every side. Treat barrier-free measurements as a new methodology
+version, retaining the old sources, binaries and raw results separately. A faster
+baseline after this correction is not a Fai regression; the old ratios do not
+establish unrestricted compiler parity.
 
 `MapSumShared` materializes one contiguous source on every side and traverses it
 twice: once for the sum of doubled elements, then for the original sum. The
