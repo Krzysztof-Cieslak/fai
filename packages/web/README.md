@@ -19,7 +19,7 @@ packages/web/
 
 ## Using it today
 
-This library depends on the sibling `packages/json` source library. There is no
+This library depends on the sibling `packages/json` and `packages/sse` source libraries. There is no
 package manager yet, so a consuming app and both libraries must live
 under one workspace root (every `.fai` file beneath the root is compiled, and
 modules find each other by their `module` header — there are no imports). Point
@@ -39,6 +39,7 @@ to an `Outcome`:
 type Outcome 'e =
   | Continue (HttpContext 'e)   // proceed to the next handler in a chain
   | Halt (HttpContext 'e)       // finish: send the accumulated response
+  | Produce (HttpContext 'e) (Http.BodyProducer 'e) // scoped response production
   | Skip                        // decline: let an alternative (or the router) try
   | Fail String                 // error: becomes a 500
 
@@ -125,6 +126,39 @@ For custom error handling, use `readJson` directly. `JsonBodyError` distinguishe
 `UnsupportedJsonMediaType (Option String)`, `JsonBodyReadError String`, and
 `InvalidJson JsonDecode.ReadError`. `jsonBodyErrorToString` renders them while
 their structured byte locations and field/index paths remain available.
+
+### Server-sent events
+
+The shared `sse` package provides validated frames and the wire codec.
+`Web.sse frames` streams a `Stream Sse.Frame`, preserving its effects and the
+middleware's unrelated headers. It sets `Content-Type: text/event-stream`, adds
+`Cache-Control: no-cache` when none was supplied, and uses chunked framing.
+Stale Content-Length and Content-Encoding fields are removed.
+
+```fai
+let events = Stream.fromList [Sse.comment "ready", Sse.event "hello"]
+let handler = Web.sse events
+```
+
+`Web.sseWith runtime options frames` adds optional automatic idle heartbeats.
+`SseServer.defaults` disables them; `{ heartbeatIntervalMs = Some 15000 }` enables
+a configurable 15-second interval. Nonpositive enabled intervals fail validation
+before a producer starts. No producer/timer runs while merely building a handler.
+
+The managed HTTP send path writes headers before starting production. One source
+task and one timer feed a bounded, acknowledged queue; timer ticks never cancel a
+pending source read. All wire writes are serialized. A completed source, write
+failure, or cancellation stops and joins both tasks. HEAD and bodyless responses
+never start them. `Web.lastEventId context` reads the incoming Last-Event-ID header;
+the application decides how to replay its event history.
+
+`Produce` is a terminal handler outcome like `Halt`. `Web.outcomeResponse` exposes
+its response metadata for pure tests; its body is produced only during serving.
+Run the self-contained heartbeat example with:
+
+```sh
+fai run -C packages web/examples/SseExample.fai
+```
 
 ### Reading the request
 

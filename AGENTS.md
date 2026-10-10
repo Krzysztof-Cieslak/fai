@@ -939,6 +939,19 @@ decoder stops at one observation, preserving consumption order within a chunk;
 partial events are discarded at EOF. Line/event byte limits are configurable.
 Run its native contracts with `fai test -C packages sse`.
 
+`Http.ServerResponse` supports ordinary `Ready` responses and scoped `Produced`
+responses. Managed HTTP/HTTPS listeners send validated headers before starting a
+`BodyProducer`, serialize its chunk writes through a lifetime gate, and close the
+writer before completing the response. HEAD and bodyless statuses skip production.
+Producer failures and cancellation close unfinished responses.
+`Web.sse` streams shared SSE frames with middleware headers preserved.
+`Web.sseWith` uses a managed producer and the configurable
+`SseServer.Options.heartbeatIntervalMs` (disabled by default) for automatic idle
+comments. A bounded acknowledged queue keeps one producer and one timer alive
+through the send, then cancels and joins both. Timer ticks never cancel source
+reads. `Produce` is a terminal Web outcome; `Web.lastEventId` reads the resume
+header, with replay owned by the application.
+
 ## 6. Compiler pipeline
 
 ```

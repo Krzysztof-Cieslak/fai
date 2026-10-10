@@ -190,3 +190,35 @@ let main r =
     ));
     assert_eq!(output, "secure\n");
 }
+
+#[test]
+fn cancelling_a_child_body_read_does_not_block_parent_cleanup() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        head(&mut socket);
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n").unwrap();
+        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+    });
+    let output = run_source(format!(
+        r#"module Scoped
+consume : Runtime -> Http.Response {{ Concurrency, Net, Tls }} -> Bool / {{ Clock, Concurrency, Net, Tls }}
+let consume r response = Async.timeout r.concurrency r.clock 50 (fun _ -> Http.bodyText response.body) = None
+fetch : Runtime -> Http.Client -> String / {{ Clock, Concurrency, Net, Tls }}
+let fetch r client =
+  match Url.parse "http://127.0.0.1:{port}/" with
+  | Err e -> e
+  | Ok url ->
+    let request = {{ method = Http.GET, url = url, headers = Headers.empty, body = Http.emptyBody }}
+    match Http.withResponseOn r client request (consume r) with
+    | Ok true -> "ok"
+    | _ -> "failed"
+public main : Runtime -> Unit / {{ Clock, Console, Concurrency, Net, Tls }}
+let main r = r.console.writeLine (Http.withClient r (fetch r))
+"#
+    ));
+    server.join().unwrap();
+    assert_eq!(output, "ok\n");
+}

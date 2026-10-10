@@ -17,9 +17,11 @@ module Web
 /// context); `Halt` finishes and sends the accumulated response; `Skip` declines
 /// the request so a `choose` tries the next alternative (or the router falls back
 /// to its not-found handler); `Fail` reports an error, which becomes a 500.
+/// `Produce` finishes with a scoped body producer, started by the server writer.
 public type Outcome 'e =
   | Continue (HttpContext 'e)
   | Halt (HttpContext 'e)
+  | Produce (HttpContext 'e) (Http.BodyProducer 'e)
   | Skip
   | Fail String
 
@@ -272,6 +274,46 @@ let respondJsonWith status encoder value ctx =
 public jsonWith : JsonEncode.Encoder 'a -> 'a -> HttpHandler 'e
 let jsonWith encoder value ctx = respondJsonWith 200 encoder value ctx
 
+let sseHeaders headers =
+  let typed =
+    Headers.set "Content-Type" "text/event-stream" (Headers.remove "Content-Length" (Headers.remove "Content-Encoding" headers))
+  let cached =
+    if Headers.contains "Cache-Control" typed then
+      typed
+    else
+      Headers.set "Cache-Control" "no-cache" typed
+  Headers.set "Transfer-Encoding" "chunked" cached
+
+/// Stream SSE frames, preserving middleware headers and source effects.
+public sse : Stream Sse.Frame 'e -> HttpHandler 'e
+let sse frames ctx = Halt { ctx with
+  response = {
+    body = Sse.encodeStream frames,
+    headers = sseHeaders ctx.response.headers,
+    reason = "OK",
+    status = 200
+  }
+}
+
+/// Stream SSE frames with optional automatic idle heartbeats. Construction is
+/// pure; producer and timer effects run only while the response is being sent.
+public sseWith : { clock : Clock, concurrency : Concurrency | 'r } -> SseServer.Options -> Stream Sse.Frame 'e -> HttpContext { Clock, Concurrency | 'e } -> Outcome { Clock, Concurrency | 'e }
+let sseWith env options frames ctx =
+  match SseServer.validate options with
+  | Err error -> Fail error
+  | Ok _ ->
+    let response = {
+      body = Http.emptyBody,
+      headers = sseHeaders ctx.response.headers,
+      reason = "OK",
+      status = 200
+    }
+    Produce { ctx with response = response } (SseServer.produce env options frames)
+
+/// The client's resume cursor, including an explicitly empty header value.
+public lastEventId : HttpContext 'e -> Option String
+let lastEventId ctx = Headers.get "Last-Event-ID" ctx.request.headers
+
 /// Respond `200 OK` with an `text/html` body.
 public html : String -> HttpHandler 'e
 let html body ctx = finishResponse (typedResponse 200 "text/html; charset=utf-8" body) ctx
@@ -365,6 +407,7 @@ let outcomeResponse outcome =
   match outcome with
   | Continue ctx -> Some ctx.response
   | Halt ctx -> Some ctx.response
+  | Produce ctx _ -> Some ctx.response
   | Skip -> None
   | Fail message -> None
 
@@ -372,25 +415,37 @@ let outcomeResponse outcome =
 // Run an application handler over a parsed request, producing the response the
 // server sends: a `Skip` (nothing handled it) becomes a 404, and a `Fail` becomes
 // an `Err` (which the server maps to a 500).
-toHandler : HttpHandler 'e -> Http.Request 'e -> Result (Http.Response 'e) String / 'e
+toHandler : HttpHandler 'e -> Http.Request 'e -> Result (Http.ServerResponse 'e) String / 'e
 let toHandler app req =
   let ctx = { params = [], request = req, response = textResponse 404 "Not Found" }
   match app ctx with
-  | Continue done -> Ok done.response
-  | Halt done -> Ok done.response
-  | Skip -> Ok (textResponse 404 "Not Found")
+  | Continue done -> Ok (Http.Ready done.response)
+  | Halt done -> Ok (Http.Ready done.response)
+  | Produce done producer ->
+    Ok (Http.Produced {
+      headers = done.response.headers,
+      reason = done.response.reason,
+      status = done.response.status
+    } producer)
+  | Skip -> Ok (Http.Ready (textResponse 404 "Not Found"))
   | Fail message -> Err message
 
 /// Serve an application on an already-bound listener. Runs until the serving task
 /// is cancelled (graceful shutdown) or the listener errors.
 public serveListener : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> HttpHandler 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
-let serveListener env listener app = Http.serveListener env listener (toHandler app)
+let serveListener env listener app = Http.serveManagedListener env listener (toHandler app)
 
 /// Serve an application on `0.0.0.0:port` (port `0` picks a free one).
 public serve : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Int -> HttpHandler 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
-let serve env port app = Http.serve env port (toHandler app)
+let serve env port app =
+  match env.net.listen port with
+  | Err error -> Err error
+  | Ok listener -> serveListener env listener app
 
 /// Serve an application over HTTPS on `0.0.0.0:port`, presenting `cert` (a PEM
 /// certificate chain) with `key` (its PEM private key).
 public serveTls : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Int -> Bytes -> Bytes -> HttpHandler 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
-let serveTls env port cert key app = Http.serveTls env port cert key (toHandler app)
+let serveTls env port cert key app =
+  match env.net.listen port with
+  | Err error -> Err error
+  | Ok listener -> Http.serveManagedListenerTls env listener cert key (toHandler app)

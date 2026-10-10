@@ -1732,6 +1732,18 @@ located errors and stop at one observation per step. `Sse.event data`, `comment`
 metadata, and `encode`/`encodeStream` serialize it. The codec handles UTF-8/BOM and
 LF/CRLF/CR, and discards incomplete events at EOF. All byte limits are configurable.
 Run `fai test -C packages sse`.
+`Http.serveManagedListener`/`serveManagedListenerTls` accept `Http.ServerResponse`:
+`Ready response` or `Http.produced status headers producer`. A producer receives a
+scoped chunk writer and returns `Result Unit String`; headers are sent first,
+successful completion ends the chunked body, and failures close the connection.
+HEAD/bodyless statuses do not run producers. Writers cannot outlive production.
+`Web.sse frames` streams `Sse.Frame` values. `Web.sseWith runtime options frames`
+adds optional automatic idle comments, using `SseServer.Options` with configurable
+`heartbeatIntervalMs` (`None` by default, or a positive millisecond count).
+Middleware headers survive, stale body metadata is removed, and the response is
+chunked `text/event-stream`. Source/timer tasks stop and join with the response.
+`Web.lastEventId context` exposes a client's resume header; replay is application
+logic. The terminal `Web.Produce` outcome carries a scoped body producer.
 
 Including `packages/http-client/src` and `packages/json/src` supplies `HttpClient`.
 `withClient runtime (config baseUrl) callback` opens a scoped pool. Pure `get`,

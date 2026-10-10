@@ -1,5 +1,5 @@
 {
   "schemaVersion": 1,
   "name": "web",
-  "dependencies": ["json"]
+  "dependencies": ["json", "sse"]
 }

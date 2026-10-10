@@ -1,0 +1,113 @@
+module SseServer
+
+/// Automatic heartbeats are opt-in. Enabled intervals are positive milliseconds.
+public type Options = { heartbeatIntervalMs : Option Int }
+
+/// Automatic heartbeats are disabled until an interval is explicitly supplied.
+public defaults : Options
+let defaults = { heartbeatIntervalMs = None }
+
+/// Validate before constructing a response or starting tasks.
+public validate : Options -> Result Unit String
+let validate options =
+  match options.heartbeatIntervalMs with
+  | Some ms -> if ms <= 0 then Err "SSE heartbeat interval must be positive" else Ok ()
+  | None -> Ok ()
+
+writeFrames : (Bytes -> Result Unit String / { Concurrency, Net, Tls }) -> Stream Sse.Frame 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let writeFrames write frames =
+  match Stream.uncons frames with
+  | Err error -> Err error
+  | Ok None -> Ok ()
+  | Ok (Some (frame, rest)) ->
+    match write (Sse.encode frame) with
+    | Err error -> Err error
+    | Ok _ -> writeFrames write rest
+
+type Message =
+  | Data Sse.Frame
+  | Tick
+  | End
+  | Failed String
+
+pump : Concurrency -> Channel Message -> Channel Unit -> Stream Sse.Frame 'e -> Unit / { Concurrency | 'e }
+let pump c messages ack source =
+  match Stream.uncons source with
+  | Err error -> c.send messages (Failed error)
+  | Ok None -> c.send messages End
+  | Ok (Some (frame, rest)) ->
+    let sent = c.send messages (Data frame)
+    match c.recv ack with
+    | None -> ()
+    | Some _ -> pump c messages ack rest
+
+tick : Concurrency -> Clock -> Int -> Channel Message -> Channel Unit -> Unit / { Clock, Concurrency }
+let tick c clock interval messages ack =
+  let slept = clock.sleep interval
+  let sent = c.send messages Tick
+  match c.recv ack with
+  | None -> ()
+  | Some _ -> tick c clock interval messages ack
+
+// Backward clock adjustments count as due; the difference never wraps.
+let heartbeatDue interval previous now =
+  if now < previous then
+    true
+  else if previous < 0 && now > 9223372036854775807 + previous then
+    true
+  else
+    now - previous >= interval
+example: heartbeatDue 15 10 25
+example: not (heartbeatDue 15 10 24)
+example: heartbeatDue 15 100 0
+example: heartbeatDue 15 (-9223372036854775808) 9223372036854775807
+
+drain : Concurrency -> Clock -> Int -> Channel Message -> Channel Unit -> Channel Unit -> (Bytes -> Result Unit String / { Concurrency, Net, Tls }) -> Int -> Result Unit String / { Clock, Concurrency, Net, Tls }
+let drain c clock interval messages dataAck tickAck write lastWrite =
+  match c.recv messages with
+  | None -> Err "SSE response production cancelled"
+  | Some End -> Ok ()
+  | Some (Failed error) -> Err error
+  | Some (Data frame) ->
+    match write (Sse.encode frame) with
+    | Err error -> Err error
+    | Ok _ ->
+      let acknowledged = c.send dataAck ()
+      drain c clock interval messages dataAck tickAck write (clock.now ())
+  | Some Tick ->
+    let now = clock.now ()
+    let due = heartbeatDue interval lastWrite now
+    let result = if due then write (Sse.encode (Sse.comment "heartbeat")) else Ok ()
+    match result with
+    | Err error -> Err error
+    | Ok _ ->
+      let acknowledged = c.send tickAck ()
+      drain c clock interval messages dataAck tickAck write (if due then now else lastWrite)
+
+inScope : Concurrency -> Clock -> Int -> Stream Sse.Frame 'e -> (Bytes -> Result Unit String / { Concurrency, Net, Tls }) -> Nursery -> Result Unit String / { Clock, Concurrency, Net, Tls | 'e }
+let inScope c clock interval frames write nursery =
+  let messages = c.channel 1
+  let dataAck = c.channel 1
+  let tickAck = c.channel 1
+  let producer = c.spawn nursery (fun _ -> pump c messages dataAck frames)
+  let timer = c.spawn nursery (fun _ -> tick c clock interval messages tickAck)
+  let result = drain c clock interval messages dataAck tickAck write (clock.now ())
+  let stopProducer = c.cancel producer
+  let stopTimer = c.cancel timer
+  let closeMessages = c.close messages
+  let closeData = c.close dataAck
+  let closeTicks = c.close tickAck
+  result
+
+/// Produce a response with bounded backpressure. A persistent producer and timer
+/// are cancelled and joined when writing ends; heartbeat ticks never cancel a
+/// pending source read. This function belongs inside an HTTP producer scope.
+public produce : { clock : Clock, concurrency : Concurrency | 'r } -> Options -> Stream Sse.Frame 'e -> Http.BodyProducer { Clock, Concurrency | 'e }
+let produce env options frames write =
+  match validate options with
+  | Err error -> Err error
+  | Ok _ ->
+    match options.heartbeatIntervalMs with
+    | None -> writeFrames write frames
+    | Some interval ->
+      env.concurrency.scope (inScope env.concurrency env.clock interval frames write)

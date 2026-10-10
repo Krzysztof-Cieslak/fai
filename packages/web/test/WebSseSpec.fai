@@ -1,0 +1,38 @@
+module WebSseSpec
+
+let rendered =
+  match Web.mockContext Http.GET "/events" with
+  | Err error -> Err error
+  | Ok context ->
+    let handler = Web.chain [
+      Web.setHeader "X-Trace" "yes",
+      Web.addHeader "Set-Cookie" "a=1",
+      Web.addHeader "Set-Cookie" "b=2",
+      Web.setHeader "Content-Length" "999",
+      Web.sse (Stream.fromList [Sse.comment "ready", Sse.event "hello"])
+    ]
+    match Web.outcomeResponse (handler context) with
+    | None -> Err "no response"
+    | Some response ->
+      Ok (response.status, Headers.get "Content-Type" response.headers, Headers.get "Content-Length" response.headers, Headers.get "Transfer-Encoding" response.headers, Headers.get "X-Trace" response.headers, Headers.getAll "Set-Cookie" response.headers, Stream.toList (Sse.events Sse.defaults response.body))
+example: rendered = Ok (200, Some "text/event-stream", None, Some "chunked", Some "yes", [
+  "a=1",
+  "b=2"
+], Ok [{ data = "hello", eventType = "message", lastEventId = "" }])
+
+let lastId =
+  match Web.mockContext Http.GET "/events" with
+  | Err _ -> None
+  | Ok context -> Web.lastEventId { context with
+    request = { context.request with headers = Headers.fromList [("last-event-id", "42")] }
+  }
+example: lastId = Some "42"
+example: SseServer.validate SseServer.defaults = Ok ()
+example: SseServer.validate { heartbeatIntervalMs = Some 15 } = Ok ()
+example: SseServer.validate {
+  heartbeatIntervalMs = Some 0
+} = Err "SSE heartbeat interval must be positive"
+example: SseServer.validate {
+  heartbeatIntervalMs = Some (-1)
+} = Err "SSE heartbeat interval must be positive"
+example: SseServer.validate { heartbeatIntervalMs = Some 9223372036854775807 } = Ok ()

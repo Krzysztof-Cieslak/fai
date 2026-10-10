@@ -1,0 +1,55 @@
+module SseExample
+
+source : Concurrency -> Channel Sse.Frame -> Stream Sse.Frame { Concurrency }
+let source c channel = Stream.defer (fun _ -> sourceStep c channel)
+
+sourceStep : Concurrency -> Channel Sse.Frame -> Stream Sse.Frame { Concurrency } / { Concurrency }
+let sourceStep c channel =
+  match c.recv channel with
+  | None -> Stream.empty
+  | Some frame -> Stream.cons frame (source c channel)
+
+readResponse : Runtime -> Channel Sse.Frame -> Http.Response { Concurrency, Net, Tls } -> Result String String / { Concurrency, Net, Tls }
+let readResponse r messages response =
+  match Stream.uncons response.body with
+  | Err error -> Err error
+  | Ok None -> Err "missing heartbeat"
+  | Ok (Some (first, rest)) ->
+    let sent = r.concurrency.send messages (Sse.event "hello")
+    match Stream.toList (Stream.take 1 (Sse.events Sse.defaults rest)) with
+    | Ok [event] ->
+      if Bytes.toString first = Some ": heartbeat\n\n" then
+        Ok event.data
+      else
+        Err "unexpected heartbeat"
+    | _ -> Err "missing event"
+
+client : Runtime -> Listener -> Channel Sse.Frame -> Http.Client -> Result (Result String String) String / { Concurrency, Net, Tls }
+let client r listener messages pool =
+  match Url.parse ("http://127.0.0.1:" ++ Int.toString (r.net.localPort listener) ++ "/events") with
+  | Err error -> Err error
+  | Ok url ->
+    Http.withResponseOn r pool {
+      body = Http.emptyBody,
+      headers = Headers.empty,
+      method = Http.GET,
+      url = url
+    } (readResponse r messages)
+
+session : Runtime -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let session r listener nursery =
+  let messages = r.concurrency.channel 1
+  let app = Web.sseWith r { heartbeatIntervalMs = Some 10 } (source r.concurrency messages)
+  let server = r.concurrency.spawn nursery (fun _ -> Web.serveListener r listener app)
+  let result = Http.withClient r (client r listener messages)
+  let stopped = r.concurrency.cancel server
+  r.console.writeLine (if result = Ok (Ok "hello") then
+    "heartbeat and event received"
+  else
+    "SSE example failed")
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main r =
+  match r.net.listen 0 with
+  | Err error -> r.console.writeLine error
+  | Ok listener -> r.concurrency.scope (session r listener)

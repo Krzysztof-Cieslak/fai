@@ -49,6 +49,19 @@ Frames are opaque and validated. Names cannot contain CR/LF; IDs additionally
 cannot contain NUL. Data and comment line endings normalize to LF. Empty and
 trailing data lines are preserved.
 
+## Scoped server production
+
+`SseServer.produce runtime options frames` is an `Http.BodyProducer` for use with
+`Http.produced` and managed HTTP/HTTPS listeners. It runs while the response is
+actually sent. `SseServer.defaults` disables automatic heartbeats; set
+`heartbeatIntervalMs = Some milliseconds` to enable them. The interval is fully
+configurable and must be positive. Explicit `Sse.comment` frames always work.
+
+With heartbeats enabled, source and timer tasks feed a bounded queue, acknowledge
+each item, and are cancelled/joined when the writer exits. A timer tick cannot
+discard a pending source event. Recent data suppresses unnecessary heartbeats.
+`Web.sse` and `Web.sseWith` integrate this with ordinary Web routes.
+
 ## Native contracts
 
 ```sh
