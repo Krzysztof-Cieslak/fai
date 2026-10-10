@@ -1376,6 +1376,7 @@ unsafe fn free_storage(p: *mut u8, size: usize) {
 /// Aborts the process with a runtime error message (only reached on conditions a
 /// well-typed program cannot produce, e.g. applying a non-function).
 fn fai_panic(msg: &str) -> ! {
+    terminal::restore_on_fault();
     eprintln!("fai runtime error: {msg}");
     std::process::abort()
 }
@@ -4041,6 +4042,7 @@ fn is_function_value(v: Value) -> bool {
 /// the residual case (a polymorphic comparison instantiated at a function type).
 fn guard_comparable(a: Value, b: Value) {
     if is_function_value(a) || is_function_value(b) {
+        terminal::restore_on_fault();
         eprintln!("fai: equality/ordering is not defined on functions");
         std::process::exit(71);
     }
@@ -4379,6 +4381,7 @@ fn values_hash(v: Value) -> u64 {
         return mix64(hash_combine(hash_combine(seed, first), second));
     }
     if is_function_value(v) {
+        terminal::restore_on_fault();
         eprintln!("fai: hashing is not defined on functions");
         std::process::exit(71);
     }
