@@ -1,0 +1,303 @@
+module PgTypes
+
+/// Supported PostgreSQL scalar type names. Unknown types require an explicit cast.
+public name : Int -> Option String
+let name oid =
+  if oid = 16 then
+    Some "bool"
+  else if oid = 17 then
+    Some "bytea"
+  else if oid = 18 then
+    Some "char"
+  else if oid = 19 then
+    Some "name"
+  else if oid = 20 then
+    Some "int8"
+  else if oid = 21 then
+    Some "int2"
+  else if oid = 23 then
+    Some "int4"
+  else if oid = 25 then
+    Some "text"
+  else if oid = 26 then
+    Some "oid"
+  else if oid = 700 then
+    Some "float4"
+  else if oid = 701 then
+    Some "float8"
+  else if oid = 1042 then
+    Some "bpchar"
+  else if oid = 1043 then
+    Some "varchar"
+  else if oid = 1082 then
+    Some "date"
+  else if oid = 1083 then
+    Some "time"
+  else if oid = 1114 then
+    Some "timestamp"
+  else if oid = 1184 then
+    Some "timestamptz"
+  else if oid = 1700 then
+    Some "numeric"
+  else if oid = 2950 then
+    Some "uuid"
+  else if oid = 114 then Some "json" else if oid = 3802 then Some "jsonb" else None
+
+/// Binary for fixed-width values; text for exact numeric and JSON documents.
+public format : Int -> Int
+let format oid = if oid = 1700 || oid = 114 || oid = 3802 then 0 else 1
+
+let hex = "0123456789abcdef"
+
+let hexByte byte = String.substring (byte / 16) 1 hex ++ String.substring (byte % 16) 1 hex
+
+let hexFrom bytes i output =
+  if i = Bytes.length bytes then
+    String.join "" (List.reverse output)
+  else
+    hexFrom bytes (i + 1) (hexByte (Bytes.unsafeGet i bytes) :: output)
+
+/// Lowercase hexadecimal encoding.
+public toHex : Bytes -> String
+let toHex bytes = hexFrom bytes 0 []
+
+let uuid bytes =
+  let text = toHex bytes
+  SqlUuid.parse (String.take 8 text ++ "-" ++ String.substring 8 4 text ++ "-" ++ String.substring 12 4 text ++ "-" ++ String.substring 16 4 text ++ "-" ++ String.drop 20 text)
+
+let highest bits n = if bits < 2 then n else highest (Int.shiftRightLogical bits 1) (n + 1)
+
+let float32 bits =
+  let sign = Int.shiftLeft (Int.and bits 2147483648) 32
+  let exponent = Int.and (Int.shiftRightLogical bits 23) 255
+  let fraction = Int.and bits 8388607
+  let magnitude =
+    if exponent = 255 then
+      Int.or 9218868437227405312 (Int.shiftLeft fraction 29)
+    else if exponent > 0 then
+      Int.or (Int.shiftLeft (exponent + 896) 52) (Int.shiftLeft fraction 29)
+    else if fraction = 0 then
+      0
+    else
+      let top = highest fraction 0
+      Int.or (Int.shiftLeft (top + 874) 52) (Int.shiftLeft (fraction - Int.shiftLeft 1 top) (52 - top))
+  Float.fromBits (Int.or sign magnitude)
+
+let decodeDate value =
+  if value = -2147483648 then
+    Sql.NegativeInfinity
+  else if value = 2147483647 then
+    Sql.PositiveInfinity
+  else
+    Sql.Finite (LocalDate.fromEpochDay (value + 10957))
+
+let decodeInstant value =
+  if value = -9223372036854775808 then
+    Sql.NegativeInfinity
+  else if value = 9223372036854775807 then
+    Sql.PositiveInfinity
+  else
+    Sql.Finite (Instant.fromEpochDayAndNanoOfDay (Int.floorDiv value 86400000000 + 10957) (Int.floorMod value 86400000000 * 1000))
+
+let localOf instant =
+  LocalDateTime.of (LocalDate.fromEpochDay (Instant.epochDay instant)) (LocalTime.fromNanoOfDay (Instant.nanoOfDay instant))
+
+let timestamp value =
+  match decodeInstant value with
+  | Sql.Finite instant -> Sql.Finite (localOf instant)
+  | Sql.NegativeInfinity -> Sql.NegativeInfinity
+  | Sql.PositiveInfinity -> Sql.PositiveInfinity
+
+/// Decode one non-NULL scalar using its negotiated format.
+public decode : Int -> Int -> Bytes -> Result Sql.Value String
+let decode oid wireFormat bytes =
+  if name oid = None then
+    Err ("unsupported PostgreSQL type OID " ++ Int.toString oid)
+  else if wireFormat <> format oid then
+    Err "unexpected PostgreSQL value format"
+  else if oid = 16 then
+    if Bytes.length bytes = 1 && Bytes.unsafeGet 0 bytes <= 1 then
+      Ok (Sql.Boolean (Bytes.unsafeGet 0 bytes = 1))
+    else
+      Err "invalid boolean"
+  else if oid = 17 then
+    Ok (Sql.Blob bytes)
+  else if oid = 20 || oid = 21 || oid = 23 then
+    Result.map Sql.Integer (PgWire.signed (if oid = 20 then 8 else if oid = 21 then 2 else 4) bytes)
+  else if oid = 26 then
+    if Bytes.length bytes = 4 then
+      Result.map Sql.Integer (PgWire.unsigned bytes 0 4)
+    else
+      Err "invalid OID"
+  else if oid = 701 then
+    Result.map (fun bits -> Sql.Real (Float.fromBits bits)) (PgWire.signed 8 bytes)
+  else if oid = 700 then
+    if Bytes.length bytes = 4 then
+      Result.map (fun bits -> Sql.Real (float32 bits)) (PgWire.unsigned bytes 0 4)
+    else
+      Err "invalid float4"
+  else if oid = 1082 then
+    Result.map (fun value -> Sql.Date (decodeDate value)) (PgWire.signed 4 bytes)
+  else if oid = 1083 then
+    match PgWire.signed 8 bytes with
+    | Err error -> Err error
+    | Ok value ->
+      if value < 0 || value > 86400000000 then
+        Err "invalid SQL time"
+      else
+        Ok (Sql.Time (if value = 86400000000 then
+          Sql.EndOfDay
+        else
+          Sql.TimeOfDay (LocalTime.fromNanoOfDay (value * 1000))))
+  else if oid = 1114 then
+    Result.map (fun value -> Sql.Timestamp (timestamp value)) (PgWire.signed 8 bytes)
+  else if oid = 1184 then
+    Result.map (fun value -> Sql.TimestampTz (decodeInstant value)) (PgWire.signed 8 bytes)
+  else if oid = 2950 then
+    if Bytes.length bytes = 16 then Result.map Sql.Uuid (uuid bytes) else Err "invalid UUID"
+  else
+    match Bytes.toString bytes with
+    | None -> Err "invalid PostgreSQL UTF-8"
+    | Some text ->
+      if oid = 1700 then
+        Result.map Sql.Decimal (SqlDecimal.parse text)
+      else if oid = 114 || oid = 3802 then
+        match Json.parse text with
+        | Err _ -> Err "invalid JSON result"
+        | Ok _ -> Ok (Sql.Json text)
+      else
+        Ok (Sql.Text text)
+
+let floatText value =
+  let bits = Float.toBits value
+  if Int.and bits 9218868437227405312 = 9218868437227405312 then
+    if Int.and bits 4503599627370495 <> 0 then
+      "NaN"
+    else if bits < 0 then "-Infinity" else "Infinity"
+  else
+    Float.toString value
+
+let dateParts value =
+  let year = LocalDate.year value
+  let text =
+    String.padStart 4 "0" (Int.toString (if year <= 0 then
+      1 - year
+    else
+      year)) ++ "-" ++ String.padStart 2 "0" (Int.toString (LocalDate.month value)) ++ "-" ++ String.padStart 2 "0" (Int.toString (LocalDate.day value))
+  (text, if year <= 0 then " BC" else "")
+
+let dateText date =
+  let (text, era) = dateParts date
+  text ++ era
+
+let localText value zone =
+  let (date, era) = dateParts (LocalDateTime.date value)
+  date ++ " " ++ LocalTime.toString (LocalDateTime.time value) ++ zone ++ era
+
+let validDay day = day >= -2440588 && day < 2145042906
+
+let validTimestamp day nanos = day >= -2440588 && day < 106762940 && nanos % 1000 = 0
+
+let fitsFloat32 value =
+  let bits = Float.toBits value
+  let exponent = Int.and (Int.shiftRightLogical bits 52) 2047
+  let fraction = Int.and bits 4503599627370495
+  if exponent = 2047 || (exponent = 0 && fraction = 0) then
+    true
+  else if exponent >= 897 && exponent <= 1150 then
+    Int.and fraction 536870911 = 0
+  else if exponent >= 874 && exponent < 897 then
+    Int.and (Int.or fraction 4503599627370496) (Int.shiftLeft 1 (926 - exponent) - 1) = 0
+  else
+    false
+
+let encodeTemporalDate value =
+  match value with
+  | Sql.NegativeInfinity -> Ok "-infinity"
+  | Sql.PositiveInfinity -> Ok "infinity"
+  | Sql.Finite date ->
+    if validDay (LocalDate.toEpochDay date) then
+      Ok (dateText date)
+    else
+      Err "date outside PostgreSQL range"
+
+let encodeTimestamp value =
+  match value with
+  | Sql.NegativeInfinity -> Ok "-infinity"
+  | Sql.PositiveInfinity -> Ok "infinity"
+  | Sql.Finite value ->
+    if validTimestamp (LocalDate.toEpochDay (LocalDateTime.date value)) (LocalTime.nanoOfDay (LocalDateTime.time value)) then
+      Ok (localText value "")
+    else
+      Err "timestamp range or sub-microsecond precision is unsupported"
+
+let encodeInstant value =
+  match value with
+  | Sql.NegativeInfinity -> Ok "-infinity"
+  | Sql.PositiveInfinity -> Ok "infinity"
+  | Sql.Finite value ->
+    if validTimestamp (Instant.epochDay value) (Instant.nanoOfDay value) then
+      Ok (localText (localOf value) "+00")
+    else
+      Err "instant range or sub-microsecond precision is unsupported"
+
+let parameterText oid value =
+  match value with
+  | Sql.Boolean value ->
+    if oid = 16 then
+      Ok (if value then "true" else "false")
+    else
+      Err "boolean parameter type mismatch"
+  | Sql.Integer value ->
+    if oid = 20 || oid = 1700 || (oid = 21 && value >= -32768 && value <= 32767) || (oid = 23 && value >= -2147483648 && value <= 2147483647) || (oid = 26 && value >= 0 && value <= 4294967295) then
+      Ok (Int.toString value)
+    else
+      Err "integer parameter range/type mismatch"
+  | Sql.Real value ->
+    if oid = 701 || (oid = 700 && fitsFloat32 value) then
+      Ok (floatText value)
+    else
+      Err "real parameter type mismatch or inexact float4 narrowing; cast through float8 for explicit rounding"
+  | Sql.Text text ->
+    if List.member oid [18, 19, 25, 1042, 1043] && not (String.contains text "\u{0}") then
+      Ok text
+    else
+      Err "text parameter type mismatch or NUL"
+  | Sql.Blob bytes ->
+    if oid = 17 then Ok ("\\x" ++ toHex bytes) else Err "blob parameter type mismatch"
+  | Sql.Decimal value ->
+    if oid = 1700 then Ok (SqlDecimal.toString value) else Err "decimal parameter type mismatch"
+  | Sql.Uuid value ->
+    if oid = 2950 then Ok (SqlUuid.toString value) else Err "UUID parameter type mismatch"
+  | Sql.Date value ->
+    if oid = 1082 then encodeTemporalDate value else Err "date parameter type mismatch"
+  | Sql.Time value ->
+    if oid <> 1083 then
+      Err "time parameter type mismatch"
+    else
+      match value with
+      | Sql.EndOfDay -> Ok "24:00:00"
+      | Sql.TimeOfDay time ->
+        if LocalTime.nanoOfDay time % 1000 = 0 then
+          Ok (LocalTime.toString time)
+        else
+          Err "sub-microsecond time precision is unsupported"
+  | Sql.Timestamp value ->
+    if oid = 1114 then encodeTimestamp value else Err "timestamp parameter type mismatch"
+  | Sql.TimestampTz value ->
+    if oid = 1184 then encodeInstant value else Err "instant parameter type mismatch"
+  | Sql.Json text ->
+    if oid <> 114 && oid <> 3802 then
+      Err "JSON parameter type mismatch"
+    else
+      (match Json.parse text with
+      | Ok _ -> Ok text
+      | Err _ -> Err "invalid JSON parameter")
+  | Sql.Null -> Err "unexpected NULL conversion"
+
+/// Encode a checked text-format parameter. NULL uses the protocol's -1 length.
+public parameter : Int -> Sql.Value -> Result (Option Bytes) String
+let parameter oid value =
+  match value with
+  | Sql.Null -> Ok None
+  | _ -> Result.map (fun text -> Some (Bytes.fromString text)) (parameterText oid value)

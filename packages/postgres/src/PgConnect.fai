@@ -1,0 +1,291 @@
+module PgConnect
+
+public type Handle = {
+  binding : Option Bytes,
+  peerHost : String,
+  peerPort : Int,
+  socket : Connection,
+  transport : Http.Transport { Net, Tls }
+}
+
+public type Started = { buffered : Bytes, handle : Handle, key : Bytes }
+
+let network operation result = Result.mapError (Sql.error Sql.BackendFailure operation) result
+
+public close : PgConfig.Runtime -> Handle -> Unit / { Net }
+let close env handle = env.net.close handle.socket
+
+flush : PgConfig.Runtime -> Connection -> TlsSession -> Result Unit String / { Net, Tls }
+let flush env socket tls =
+  match env.tls.takeOutgoing tls with
+  | Err error -> Err error
+  | Ok bytes -> if Bytes.isEmpty bytes then Ok () else env.net.send socket bytes
+
+handshake : PgConfig.Runtime -> Connection -> TlsSession -> Result Unit String / { Net, Tls }
+let handshake env socket tls =
+  match flush env socket tls with
+  | Err error -> Err error
+  | Ok _ ->
+    if Int.and (env.tls.state tls) 1 = 0 then
+      Ok ()
+    else
+      match env.net.recv socket 16384 with
+      | Err error -> Err error
+      | Ok bytes ->
+        if Bytes.isEmpty bytes then
+          Err "EOF during TLS handshake"
+        else
+          match env.tls.feedIncoming tls bytes with
+          | Err error -> Err error
+          | Ok consumed ->
+            if consumed <> Bytes.length bytes then
+              Err "partial TLS handshake input"
+            else
+              handshake env socket tls
+
+secure : PgConfig.Runtime -> PgConfig.Options -> Connection -> Option Bytes -> Result (Http.Transport { Net, Tls } * Option Bytes) String / { Net, Tls }
+let secure env options socket roots =
+  match env.net.send socket (PgWire.join [PgWire.int32 8, PgWire.int32 80877103]) with
+  | Err error -> Err error
+  | Ok _ ->
+    match env.net.recv socket 1 with
+    | Ok bytes ->
+      if bytes <> Bytes.fromString "S" then
+        Err "PostgreSQL server refused TLS"
+      else
+        let session =
+          match roots with
+          | None -> env.tls.client options.host
+          | Some roots -> env.tls.clientWithRoots options.host roots
+        match session with
+        | Err error -> Err error
+        | Ok tls ->
+          match handshake env socket tls with
+          | Err error -> Err error
+          | Ok _ ->
+            let binding =
+              if options.channelBinding = PgConfig.DisableBinding then
+                None
+              else
+                Result.toOption (Wire.serverEndPoint env.tls tls)
+            if options.channelBinding = PgConfig.RequireBinding && binding = None then
+              Err "TLS channel binding unavailable"
+            else
+              Ok (Http.tlsTransport env socket tls, binding)
+    | Err error -> Err error
+
+public open : PgConfig.Runtime -> PgConfig.Options -> Result Handle Sql.Error / { Net, Tls }
+let open env options =
+  match env.net.connect options.host options.port with
+  | Err error -> Err (Sql.error Sql.BackendFailure "connect" error)
+  | Ok socket ->
+    let transport =
+      match options.tls with
+      | PgConfig.Disabled -> Ok (Http.plainTransport env socket, None)
+      | PgConfig.VerifyFull roots -> secure env options socket roots
+    match (transport, Wire.peer env.net socket) with
+    | (Ok (transport, binding), Ok (host, port)) -> Ok {
+      binding = binding,
+      peerHost = host,
+      peerPort = port,
+      socket = socket,
+      transport = transport
+    }
+    | (Err error, _) ->
+      let closed = env.net.close socket
+      Err (Sql.error Sql.BackendFailure "TLS/connect" error)
+    | (_, Err error) ->
+      let closed = env.net.close socket
+      Err (Sql.error Sql.BackendFailure "peer" error)
+
+exactFrom : Handle -> Bytes -> Int -> List Bytes -> Result (Bytes * Bytes) Sql.Error / { Net, Tls }
+let exactFrom handle buffered needed chunks =
+  if Bytes.length buffered >= needed then
+    Ok (PgWire.join (List.reverse (Bytes.slice 0 needed buffered :: chunks)), Bytes.slice needed (Bytes.length buffered) buffered)
+  else
+    match network "receive" (handle.transport.recv 16384) with
+    | Err error -> Err error
+    | Ok bytes ->
+      if Bytes.isEmpty bytes then
+        Err (Sql.error Sql.Protocol "receive" "unexpected PostgreSQL EOF")
+      else
+        exactFrom handle bytes (needed - Bytes.length buffered) (buffered :: chunks)
+
+public exact : Handle -> Bytes -> Int -> Result (Bytes * Bytes) Sql.Error / { Net, Tls }
+let exact handle buffered count = exactFrom handle buffered count []
+
+let withBody tag pair =
+  let (body, rest) = pair
+  ({ body = body, tag = tag }, rest)
+
+public receive : Handle -> Bytes -> Int -> Result (PgWire.Message * Bytes) Sql.Error / { Net, Tls }
+let receive handle buffered maximum =
+  match exact handle buffered 5 with
+  | Err error -> Err error
+  | Ok (header, rest) ->
+    let length = Result.withDefault 0 (PgWire.unsigned header 1 4)
+    if length < 4 || length > maximum then
+      Err (Sql.error Sql.Protocol "receive" "invalid PostgreSQL frame length")
+    else
+      Result.map (withBody (Bytes.unsafeGet 0 header)) (exact handle rest (length - 4))
+
+public send : Handle -> Bytes -> Result Unit Sql.Error / { Net, Tls }
+let send handle bytes = network "send" (handle.transport.send bytes)
+
+type Auth =
+  | Initial
+  | ClientFirst PgAuth.First
+  | ClientFinal PgAuth.Final
+  | Verified
+  | Authenticated
+
+let protocol message = Err (Sql.error Sql.Protocol "startup" message)
+
+let authError message = Err (Sql.error Sql.Authentication "authenticate" message)
+
+let mechanisms bytes offset output =
+  match PgWire.string bytes offset with
+  | Err error -> Err error
+  | Ok ("", next) ->
+    if next = Bytes.length bytes then Ok (List.reverse output) else Err "trailing SASL mechanisms"
+  | Ok (name, next) -> mechanisms bytes next (name :: output)
+
+authLoop : PgConfig.Runtime -> PgConfig.Options -> Handle -> Bytes -> Bytes -> Auth -> Result Started Sql.Error / { Crypto.Entropy, Net, Tls }
+let authLoop env options handle buffered key auth =
+  match receive handle buffered options.maxFrameBytes with
+  | Err error -> Err error
+  | Ok (message, rest) ->
+    if message.tag = 69 then
+      Err (PgWire.serverError "authenticate" message.body)
+    else if message.tag = 75 then
+      if Bytes.length message.body = 8 then
+        authLoop env options handle rest message.body auth
+      else
+        protocol "invalid cancellation key"
+    else if message.tag = 78 then
+      authLoop env options handle rest key auth
+    else if message.tag = 83 then
+      match PgWire.string message.body 0 with
+      | Err error -> protocol error
+      | Ok (name, next) ->
+        match PgWire.string message.body next with
+        | Ok (value, finish) ->
+          if finish <> Bytes.length message.body || (name = "client_encoding" && value <> "UTF8") then
+            protocol "unsupported server encoding"
+          else
+            authLoop env options handle rest key auth
+        | Err error -> protocol error
+    else if message.tag = 90 then
+      if auth = Authenticated && message.body = Bytes.fromString "I" && Bytes.length key = 8 then
+        Ok { buffered = rest, handle = handle, key = key }
+      else
+        protocol "unexpected ReadyForQuery during startup"
+    else if message.tag <> 82 || Bytes.length message.body < 4 then
+      protocol "unexpected startup message"
+    else
+      let code = Result.withDefault (-1) (PgWire.unsigned message.body 0 4)
+      let payload = Bytes.slice 4 (Bytes.length message.body) message.body
+      if code = 0 then
+        if Bytes.isEmpty payload && ((auth = Initial && options.channelBinding <> PgConfig.RequireBinding) || auth = Verified) then
+          authLoop env options handle rest key Authenticated
+        else
+          protocol "unexpected AuthenticationOk"
+      else if code = 10 && auth = Initial then
+        match mechanisms payload 0 [] with
+        | Err error -> authError error
+        | Ok offered ->
+          let plus =
+            handle.binding <> None && List.member "SCRAM-SHA-256-PLUS" offered && options.channelBinding <> PgConfig.DisableBinding
+          if (not plus && options.channelBinding = PgConfig.RequireBinding) || (not plus && not (List.member "SCRAM-SHA-256" offered)) then
+            authError "unsupported authentication mechanism"
+          else
+            match env.entropy.bytes 32 with
+            | Err error -> authError error
+            | Ok entropy ->
+              let binding =
+                if plus then Option.withDefault Bytes.empty handle.binding else Bytes.empty
+              let gs2 =
+                if plus then
+                  "p=tls-server-end-point,,"
+                else if handle.binding <> None then "y,," else "n,,"
+              let first = PgAuth.first options.user (Http.base64Encode entropy) gs2 binding
+              let bytes = Bytes.fromString first.message
+              match send handle (PgWire.packet 112 (PgWire.join [
+                PgWire.zero (if plus then "SCRAM-SHA-256-PLUS" else "SCRAM-SHA-256"),
+                PgWire.int32 (Bytes.length bytes),
+                bytes
+              ])) with
+              | Err error -> Err error
+              | Ok _ -> authLoop env options handle rest key (ClientFirst first)
+      else
+        match (code, auth, Bytes.toString payload) with
+        | (11, ClientFirst first, Some challenge) ->
+          match PgAuth.respond options.maxScramIterations options.password first challenge with
+          | Err error -> authError error
+          | Ok final ->
+            match send handle (PgWire.packet 112 (Bytes.fromString final.message)) with
+            | Err error -> Err error
+            | Ok _ -> authLoop env options handle rest key (ClientFinal final)
+        | (12, ClientFinal final, Some proof) ->
+          match PgAuth.verify final proof with
+          | Err error -> authError error
+          | Ok _ -> authLoop env options handle rest key Verified
+        | _ -> authError "unsupported or out-of-order authentication"
+
+/// Establish a v3 session. Callers supervise this whole operation with one deadline.
+public start : PgConfig.Runtime -> PgConfig.Options -> Result Started Sql.Error / { Crypto.Entropy, Net, Tls }
+let start env options =
+  match open env options with
+  | Err error -> Err error
+  | Ok handle ->
+    let body = PgWire.join [
+      PgWire.int32 196608,
+      PgWire.zero "user",
+      PgWire.zero options.user,
+      PgWire.zero "database",
+      PgWire.zero options.database,
+      PgWire.zero "client_encoding",
+      PgWire.zero "UTF8",
+      PgWire.zero "application_name",
+      PgWire.zero options.applicationName,
+      PgWire.zero "DateStyle",
+      PgWire.zero "ISO, YMD",
+      PgWire.zero "TimeZone",
+      PgWire.zero "UTC",
+      Bytes.fromList [0]
+    ]
+    let result =
+      match send handle (Bytes.concat (PgWire.int32 (Bytes.length body + 4)) body) with
+      | Err error -> Err error
+      | Ok _ -> authLoop env options handle Bytes.empty Bytes.empty Initial
+    match result with
+    | Ok value -> Ok value
+    | Err error ->
+      let closed = close env handle
+      Err error
+
+/// Send a cancellation request to the same physical backend endpoint. Its TLS
+/// hostname remains the original configured host. No SQL is replayed.
+public cancel : PgConfig.Runtime -> PgConfig.Options -> Started -> Result Unit Sql.Error / { Net, Tls }
+let cancel env options started =
+  let peerOptions = { options with host = started.handle.peerHost, port = started.handle.peerPort }
+  match env.net.connect peerOptions.host peerOptions.port with
+  | Err error -> Err (Sql.error Sql.BackendFailure "cancel" error)
+  | Ok socket ->
+    let transport =
+      match options.tls with
+      | PgConfig.Disabled -> Ok (Http.plainTransport env socket, None)
+      | PgConfig.VerifyFull roots -> secure env options socket roots
+    let result =
+      match transport with
+      | Err error -> Err (Sql.error Sql.BackendFailure "cancel" error)
+      | Ok (transport, _) ->
+        match network "cancel" (transport.send (PgWire.join [
+          PgWire.int32 16,
+          PgWire.int32 80877102,
+          started.key
+        ])) with
+        | Err error -> Err error
+        | Ok _ -> Result.map (fun _ -> ()) (network "cancel" (transport.recv 1))
+    let closed = env.net.close socket
+    result
