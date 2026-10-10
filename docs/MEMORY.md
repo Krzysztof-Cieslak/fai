@@ -890,7 +890,9 @@ Reuse & in-place update:
     has one alternative. Multiple immediate variants still decode their own tags;
     multiple boxed variants retain header reads. Missing wire evidence defaults
     to unknown and the facts participate in native fingerprints.
-    Match lowering binds one typed root tag before its decision chain. The scalar
+    Matches needing constructor-header decoding bind one typed root tag before
+    their decision chain; inexpensive word-bit tests keep short live ranges. The
+    scalar
     tag does not extend the scrutinee's ownership lifetime, and known-constructor
     reduction propagates it before visiting unreachable field projections.
     Cached shape metadata separately records a wholly boxed constructor domain;

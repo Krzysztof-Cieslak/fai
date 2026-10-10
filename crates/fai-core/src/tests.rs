@@ -93,6 +93,13 @@ fn nested_matches_keep_separate_tag_observations() {
 }
 
 #[test]
+fn list_tag_calculations_keep_their_short_live_ranges() {
+    let lowered =
+        lower("module M\nlet empty xs = match xs with | [] -> true | _ :: _ -> false\n", "empty");
+    assert_eq!(lowered.matches("(tag ").count(), 2, "{lowered}");
+}
+
+#[test]
 fn lowers_if_and_negation() {
     let src = indoc! {r#"
         module M

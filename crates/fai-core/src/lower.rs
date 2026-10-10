@@ -1123,25 +1123,48 @@ impl Lowerer<'_> {
         let sval = self.lower_expr(scrutinee);
         let sty = self.ty_of(scrutinee);
         let s = self.fresh_local();
-        let tag = self.fresh_local();
-        self.match_tags.insert(s, MatchTag { local: tag, niche: None, used: false });
+        if self.tag_needs_header(&sty) {
+            let tag = self.fresh_local();
+            self.match_tags.insert(s, MatchTag { local: tag, niche: None, used: false });
+        }
         let mut chain = CExpr::new(K::Error, ty.clone());
         for arm in arms.iter().rev() {
             let body = self.lower_expr(arm.body);
             chain = self.compile_pattern(s, &sty, arm.pat, body, chain);
         }
-        let observed = self.match_tags.remove(&s).expect("active match scrutinee");
-        if observed.used {
+        if let Some(observed) = self.match_tags.remove(&s)
+            && observed.used
+        {
             let value = CExpr::new(
                 K::DataTag { base: Box::new(CExpr::new(K::Local(s), sty)), niche: observed.niche },
                 Ty::int(),
             );
             chain = CExpr::new(
-                K::Let { local: tag, value: Box::new(value), body: Box::new(chain) },
+                K::Let { local: observed.local, value: Box::new(value), body: Box::new(chain) },
                 ty.clone(),
             );
         }
         CExpr::new(K::Let { local: s, value: Box::new(sval), body: Box::new(chain) }, ty)
+    }
+
+    fn tag_needs_header(&self, ty: &Ty) -> bool {
+        let mut head = ty;
+        while let Ty::App(next, _) = head {
+            head = next;
+        }
+        let Ty::Adt(adt) = head else { return false };
+        let Some(file) = self.db.source_file(adt.file) else { return false };
+        let decls = type_decls(self.db, file);
+        let Some(info) = decls.type_named(adt.name) else { return false };
+        // A single boxed tag, Lists and all-immediate enums are computed from
+        // the value word. Sharing those cheap calculations can lengthen live ranges.
+        info.ctors
+            .iter()
+            .filter_map(|name| decls.ctor(*name))
+            .filter(|ctor| ctor.arity > 0)
+            .take(2)
+            .count()
+            > 1
     }
 
     /// Compiles a single pattern match of `value_local` (whose **concrete** type is
