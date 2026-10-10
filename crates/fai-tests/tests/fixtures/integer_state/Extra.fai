@@ -1,0 +1,9 @@
+module Main
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let (number, point) = Pairs.record 3
+  let (expected, optional) = Pairs.optional 42
+  let (looped, values) = Pairs.loop 100000 (Array.singleton 7)
+  let ok = number = 3 && point.x + point.y = 3.0 && optional = Some expected
+  runtime.console.writeLine (if ok && looped = 7 && Array.length values = 1 then "yes" else "no")

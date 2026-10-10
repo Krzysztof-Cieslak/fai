@@ -1,4 +1,4 @@
-//! Scalar replacement of fixed-shape float aggregates (SROA).
+//! Scalar replacement of fixed-shape aggregates at native boundaries.
 //!
 //! A **fixed-shape float aggregate** (FFA) — a tuple of all-`Float`, or a closed
 //! record of all-`Float`, up to [`fai_core::ir::FFA_MAX_FIELDS`] fields (see
@@ -6,6 +6,9 @@
 //! than a heap cell, and crosses a direct call boundary in registers: an FFA
 //! parameter occupies N consecutive `f64` registers and an FFA result is returned
 //! via a Cranelift multi-result signature ([`fai_core::ir::Repr::Spread`]).
+//! A supported `(Int, uniform state)` result likewise returns two components,
+//! carrying a raw integer and one owned uniform value. Its parameters stay boxed;
+//! normal reference counting retains and releases its state component.
 //!
 //! This pass runs **after A-normal form and before reference counting**, so every
 //! value is a named local and an FFA value's identity is one local. Per function
@@ -156,7 +159,7 @@ impl Sroa<'_> {
         // A saturated spread-returning call: bind its result components.
         if let Some(n) = self.spread_call_arity(&value) {
             let locals: Vec<LocalId> = (0..n).map(|_| self.fresh()).collect();
-            self.comps.insert(local, locals.iter().map(|&l| local_f64(l)).collect());
+            self.comps.insert(local, typed_components(&locals, &value.ty));
             binds.push(Bind::Many(locals.clone(), value));
             return;
         }
@@ -288,13 +291,16 @@ impl Sroa<'_> {
         }
     }
 
-    /// The N component atoms of an FFA value, decomposing or exploding as needed
+    /// The N component atoms of an aggregate, decomposing or exploding as needed
     /// (binding into `binds`).
     fn as_components(&mut self, e: CExpr, n: usize, binds: &mut Vec<Bind>) -> Vec<CExpr> {
         // A construction: its arguments are the components.
         if let K::MakeData { args, reuse: None, .. } = &e.kind
-            && ffa_arity(&e.ty).is_some()
+            && (ffa_arity(&e.ty).is_some() || fai_core::ir::integer_state_pair(&e.ty))
         {
+            if fai_core::ir::integer_state_pair(&e.ty) {
+                return args.iter().cloned().map(|arg| self.rewrite_atom(arg, binds)).collect();
+            }
             return args.clone();
         }
         // A decomposed FFA local: its tracked components.
@@ -307,12 +313,13 @@ impl Sroa<'_> {
         // argument becomes a `Spread` of components — without this its operands stay
         // raw), then bind its result components via a `LetMany`.
         if self.spread_call_arity(&e).is_some() {
+            let ty = e.ty.clone();
             let call = self.rewrite_op(e, binds);
             let m = self.spread_call_arity(&call).unwrap_or(n);
             debug_assert_eq!(m, n);
             let locals: Vec<LocalId> = (0..n).map(|_| self.fresh()).collect();
             binds.push(Bind::Many(locals.clone(), call));
-            return locals.iter().map(|&l| local_f64(l)).collect();
+            return typed_components(&locals, &ty);
         }
         // A boxed FFA value (a boxed local/param/capture, a CAF, a generic call
         // result, a field of a larger cell): explode it with field loads. The base
@@ -320,6 +327,9 @@ impl Sroa<'_> {
         // correct, descriptor-aware path — not a fabricated tuple shape).
         let base_ty = e.ty.clone();
         let base = self.bind(e, binds);
+        let fields = fai_core::ir::aggregate_field_types(&base_ty)
+            .filter(|fields| fields.len() == n)
+            .unwrap_or_else(|| vec![float_ty(); n]);
         (0..n)
             .map(|i| {
                 let c = self.fresh();
@@ -327,29 +337,29 @@ impl Sroa<'_> {
                     K::DataField {
                         base: Box::new(CExpr::new(K::Local(base), base_ty.clone())),
                         index: FieldIndex::Const(u32::try_from(i).unwrap_or(0)),
-                        scalar: true,
+                        scalar: fields[i] == float_ty(),
                         niche: None,
                     },
-                    float_ty(),
+                    fields[i].clone(),
                 );
                 binds.push(Bind::Let(c, proj));
-                local_f64(c)
+                CExpr::new(K::Local(c), fields[i].clone())
             })
             .collect()
     }
 
-    /// Reassembles decomposed FFA local `v` into a boxed scalar-slot cell, at most
+    /// Reassembles decomposed local `v` into a correctly tagged cell, at most
     /// once per scope, returning the boxed local.
     fn materialize(&mut self, v: LocalId, binds: &mut Vec<Bind>) -> LocalId {
         if let Some(&b) = self.boxed.get(&v) {
             return b;
         }
         let components = self.comps[&v].clone();
-        let n = components.len();
-        let scalars = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+        let fields: Vec<_> = components.iter().map(|component| component.ty.clone()).collect();
+        let scalars = fai_core::ir::scalar_field_mask(fields.iter());
         let cell = CExpr::new(
             K::MakeData { tag: 0, args: components, reuse: None, scalars, niche: None },
-            ffa_tuple_ty(n),
+            fai_types::Ty::Tuple(fields),
         );
         let b = self.fresh();
         binds.push(Bind::Let(b, cell));
@@ -410,11 +420,11 @@ fn float_ty() -> Ty {
     Ty::Con(Con::Float)
 }
 
-/// A closed tuple type of `n` `Float`s — a valid FFA shape, used as the type of a
-/// reassembled cell / spread node. Code generation reads the scalar bitmap, not the
-/// labels, so the exact record vs tuple form is immaterial.
-fn ffa_tuple_ty(n: usize) -> Ty {
-    Ty::Tuple(vec![Ty::Con(Con::Float); n])
+fn typed_components(locals: &[LocalId], ty: &Ty) -> Vec<CExpr> {
+    let types = fai_core::ir::aggregate_field_types(ty)
+        .filter(|fields| fields.len() == locals.len())
+        .unwrap_or_else(|| vec![float_ty(); locals.len()]);
+    locals.iter().zip(types).map(|(&local, ty)| CExpr::new(K::Local(local), ty)).collect()
 }
 
 fn local_f64(l: LocalId) -> CExpr {

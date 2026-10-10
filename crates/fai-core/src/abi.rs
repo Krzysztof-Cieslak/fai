@@ -86,3 +86,43 @@ pub(crate) fn foreign_signature(
     }
     (parameters, result.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::Repr;
+    use fai_types::{Scheme, Ty, TyVarId};
+
+    #[test]
+    fn integer_and_array_results_use_only_supported_return_registers() {
+        let result = Ty::Tuple(vec![Ty::int(), Ty::array(Ty::int())]);
+        let abi = FnAbi::from_scheme(&Scheme::mono(Ty::arrow(Ty::int(), result)), 1, &|_| None);
+        let supported = cfg!(any(
+            target_arch = "aarch64",
+            all(target_arch = "x86_64", not(target_os = "windows"))
+        ));
+        assert_eq!(
+            abi.ret,
+            if supported {
+                Repr::Spread(vec![Repr::ScalarInt, Repr::Uniform])
+            } else {
+                Repr::Uniform
+            }
+        );
+        assert_eq!(abi.params, [Repr::ScalarInt]);
+    }
+
+    #[test]
+    fn unknown_state_representation_keeps_the_tuple_boxed() {
+        let result = Ty::Tuple(vec![Ty::int(), Ty::Var(TyVarId(0))]);
+        let abi = FnAbi::from_scheme(&Scheme::mono(Ty::arrow(Ty::int(), result)), 1, &|_| None);
+        assert_eq!(abi.ret, Repr::Uniform);
+    }
+
+    #[test]
+    fn a_float_state_keeps_the_mixed_tuple_boxed() {
+        let result = Ty::Tuple(vec![Ty::int(), Ty::Con(fai_types::Con::Float)]);
+        let abi = FnAbi::from_scheme(&Scheme::mono(Ty::arrow(Ty::int(), result)), 1, &|_| None);
+        assert_eq!(abi.ret, Repr::Uniform);
+    }
+}

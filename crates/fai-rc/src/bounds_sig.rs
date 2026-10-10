@@ -291,7 +291,7 @@ fn entry_fixpoint(
     // Phase 1: external-only propagation to a fixpoint.
     let mut facts: FxHashMap<Symbol, SigMap> = FxHashMap::default();
     for _ in 0..FIXPOINT_BOUND {
-        let next = collect_round(data, eligible, arity, &result_of, &facts, false);
+        let next = collect_round(source, data, eligible, arity, &result_of, &facts, false);
         if next == facts {
             break;
         }
@@ -300,7 +300,7 @@ fn entry_fixpoint(
 
     // Phase 2: self-inclusive narrowing with widening.
     for round in 0..FIXPOINT_BOUND {
-        let next = collect_round(data, eligible, arity, &result_of, &facts, true);
+        let next = collect_round(source, data, eligible, arity, &result_of, &facts, true);
         let updated: FxHashMap<Symbol, SigMap> = next
             .into_iter()
             .map(|(n, m)| {
@@ -325,6 +325,7 @@ fn entry_fixpoint(
 /// callee. With `include_self` false, self-calls are skipped (the external
 /// propagation phase).
 fn collect_round(
+    source: SourceId,
     data: &FxHashMap<Symbol, DefData>,
     eligible: &FxHashSet<Symbol>,
     arity: &dyn Fn(Symbol) -> usize,
@@ -353,7 +354,7 @@ fn collect_round(
                 let slot = next.entry(callee).or_insert(None);
                 meet(slot, extracted);
             };
-            walk(body, caller, seed, result_of, &mut on_call, &mut |_, _| {});
+            walk(body, DefId::new(source, caller), seed, result_of, &mut on_call, &mut |_, _| {});
         }
     }
     next.into_iter().map(|(n, m)| (n, m.unwrap_or_default())).collect()
@@ -391,7 +392,7 @@ fn extract_results(
             let m = extract_result(b, v, d, &result_of);
             meet_result(&mut acc, m);
         };
-        walk(body, *name, seed, &result_of, &mut |_, _, _| {}, &mut on_exit);
+        walk(body, DefId::new(source, *name), seed, &result_of, &mut |_, _, _| {}, &mut on_exit);
         let m = acc.unwrap_or_default();
         let guarded = widen_result(prev.get(name), m);
         if !guarded.is_empty() {
@@ -438,7 +439,9 @@ fn extract_result(
             (&owned, vec![(result_rterm(WHOLE, &d.result_ty), local_term(syn, &d.result_ty))])
         }
         // A tuple construction: read each field's atom term.
-        K::MakeData { args, .. } if matches!(d.result_ty, Ty::Tuple(_)) => {
+        K::MakeData { args, .. } | K::Spread { components: args }
+            if matches!(d.result_ty, Ty::Tuple(_)) =>
+        {
             let Ty::Tuple(elems) = &d.result_ty else { unreachable!() };
             let comps = elems
                 .iter()
@@ -526,7 +529,7 @@ fn component_term(e: &CExpr, ty: &Ty) -> Option<Term> {
 /// `on_exit` at every tail (non-`Recur`) result value.
 fn walk(
     body: &CExpr,
-    self_name: Symbol,
+    self_name: DefId,
     mut b: Bounds,
     result_of: &dyn Fn(DefId) -> ResultSig,
     on_call: &mut dyn FnMut(&Bounds, Symbol, &[CExpr]),
@@ -538,7 +541,7 @@ fn walk(
 #[allow(clippy::too_many_arguments)]
 fn walk_in(
     e: &CExpr,
-    self_name: Symbol,
+    self_name: DefId,
     tail: bool,
     b: &mut Bounds,
     result_of: &dyn Fn(DefId) -> ResultSig,
@@ -561,7 +564,9 @@ fn walk_in(
             walk_in(els, self_name, tail, &mut be, result_of, on_call, on_exit);
         }
         K::App { func, args, .. } => {
-            if let K::Global(d) = &func.kind {
+            if let K::Global(d) = &func.kind
+                && d.file == self_name.file
+            {
                 on_call(b, d.name, args);
             }
             walk_in(func, self_name, false, b, result_of, on_call, on_exit);
@@ -577,7 +582,7 @@ fn walk_in(
         // facts exactly like an external call. It is *not* a result exit (a
         // back-edge, not a return).
         K::Recur { args } => {
-            on_call(b, self_name, args);
+            on_call(b, self_name.name, args);
             for a in args {
                 walk_in(a, self_name, false, b, result_of, on_call, on_exit);
             }
@@ -599,7 +604,22 @@ fn walk_in(
                 on_exit(b, e);
             }
         }
-        K::Reset { value, body, .. } | K::LetMany { value, body, .. } => {
+        K::LetMany { locals, value, body } => {
+            walk_in(value, self_name, false, b, result_of, on_call, on_exit);
+            if let K::App { func, args, .. } = &peel(value).kind
+                && let K::Global(def) = func.kind
+            {
+                b.transfer_many(locals, &result_of(def), args);
+                if tail
+                    && def == self_name
+                    && matches!(&peel(body).kind, K::Spread { components } if components.len() == locals.len() && components.iter().zip(locals).all(|(component, local)| matches!(component.kind, K::Local(value) if value == *local)))
+                {
+                    return;
+                }
+            }
+            walk_in(body, self_name, tail, b, result_of, on_call, on_exit);
+        }
+        K::Reset { value, body, .. } => {
             walk_in(value, self_name, false, b, result_of, on_call, on_exit);
             walk_in(body, self_name, tail, b, result_of, on_call, on_exit);
         }
@@ -1000,5 +1020,50 @@ mod tests {
     fn minimum_integer_call_argument_does_not_overflow() {
         let argument = CExpr::new(K::Lit(Lit::Int(i64::MIN)), Ty::int());
         assert!(extract_call(&Bounds::new(), &[argument]).is_empty());
+    }
+
+    #[test]
+    fn an_external_split_call_with_the_same_name_is_a_real_exit() {
+        let name = Symbol::intern("choose");
+        let caller = DefId::new(SourceId::new(1), name);
+        let callee = DefId::new(SourceId::new(2), name);
+        let number = LocalId::from_index(0);
+        let state = LocalId::from_index(1);
+        let ty = Ty::Tuple(vec![Ty::int(), Ty::array(Ty::int())]);
+        let call = CExpr::new(
+            K::App {
+                func: Box::new(CExpr::new(K::Global(callee), Ty::Error)),
+                args: Vec::new(),
+                reuse: Vec::new(),
+                alloc: fai_core::ir::ClosureAlloc::Heap,
+            },
+            ty.clone(),
+        );
+        let body = CExpr::new(
+            K::LetMany {
+                locals: vec![number, state],
+                value: Box::new(call),
+                body: Box::new(CExpr::new(
+                    K::Spread {
+                        components: vec![
+                            CExpr::new(K::Local(number), Ty::int()),
+                            CExpr::new(K::Local(state), Ty::array(Ty::int())),
+                        ],
+                    },
+                    ty.clone(),
+                )),
+            },
+            ty,
+        );
+        let mut exits = 0;
+        walk(
+            &body,
+            caller,
+            Bounds::new(),
+            &|_| ResultSig::default(),
+            &mut |_, _, _| {},
+            &mut |_, _| exits += 1,
+        );
+        assert_eq!(exits, 1, "an external result must constrain the caller's result facts");
     }
 }

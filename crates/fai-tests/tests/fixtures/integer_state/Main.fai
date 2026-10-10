@@ -1,0 +1,34 @@
+module Main
+
+public number : Int -> Int
+let number value =
+  let (result, _) = Pairs.make value
+  result
+
+public state : Int -> Array Int
+let state value =
+  let (_, result) = Pairs.make value
+  result
+
+public indirect : (Int -> (Int * Array Int)) -> Int -> Int
+let indirect make value =
+  let (result, _) = make value
+  result
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let pair = Pairs.make 9223372036854775807
+  let (value, values) = Pairs.echo pair
+  let (nestedValue, nested) = Pairs.nested 41
+  let (captured, callback) = Pairs.callback 40
+  let (recorded, point) = Pairs.record 3
+  let (optionValue, optional) = Pairs.optional 9223372036854775807
+  let (looped, final) = Pairs.loop 100000 values
+  let ok = value = 9223372036854775807 && pair = (value, values) && Array.length final = 3
+  let also =
+    nestedValue = 42 && nested = (41, Array.repeat 3 41) && captured = 40 && callback 2 = 42
+  let indirectOk = indirect Pairs.make 43 = 43
+  runtime.console.writeLine (if ok && also && indirectOk && looped = 7 && recorded = 3 && point.x + point.y = 3.0 && optional = Some optionValue then
+    "yes"
+  else
+    "no")

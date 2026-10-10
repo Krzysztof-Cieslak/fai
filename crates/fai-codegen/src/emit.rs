@@ -648,9 +648,8 @@ fn build_owned_wrapper<M: Module>(
             builder.ins().call(drop_ref, &[v]);
         }
 
-        // A spread result: the entry returned N `f64` components; reassemble them
-        // into a boxed scalar-slot cell (the in-cell `f64` layout) for the uniform
-        // first-class result.
+        // Reassemble a spread result for the uniform first-class boundary. Float
+        // components occupy raw slots; an Int is tagged and uniform state moves in.
         if let Some(n) = spread_ret {
             let size = u32::try_from(n * 8).expect("array size");
             let slot = builder.create_sized_stack_slot(StackSlotData::new(
@@ -658,12 +657,28 @@ fn build_owned_wrapper<M: Module>(
                 size,
                 3,
             ));
+            let mut scalars = 0;
             for (j, &c) in results.iter().take(n).enumerate() {
-                let bits = builder.ins().bitcast(types::I64, MemFlags::new(), c);
+                let bits = match &abi.spread_return().expect("spread result")[j] {
+                    Repr::ScalarFloat => {
+                        scalars |= 1u64 << j;
+                        builder.ins().bitcast(types::I64, MemFlags::new(), c)
+                    }
+                    Repr::ScalarInt => {
+                        let mut sig = module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let id = module
+                            .declare_function("fai_box_int", Linkage::Import, &sig)
+                            .expect("integer box");
+                        let function = module.declare_func_in_func(id, builder.func);
+                        wrapper_box_or_tag_int(&mut builder, function, c)
+                    }
+                    _ => c,
+                };
                 builder.ins().stack_store(bits, slot, i32::try_from(j * 8).expect("slot offset"));
             }
             let ptr = builder.ins().stack_addr(types::I64, slot, 0);
-            let scalars = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
             let desc = wrapper_descriptor(module, &mut builder, base, scalars);
             let tag = builder.ins().iconst(types::I64, 0);
             let count = builder.ins().iconst(types::I64, n as i64);
@@ -2721,8 +2736,9 @@ impl<M: Module> Translator<'_, M> {
                 self.expr(body)
             }
             ExprKind::Spread { components } => {
-                let n = components.len();
-                let scalars = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+                let scalars = fai_core::ir::scalar_field_mask(
+                    components.iter().map(|component| &component.ty),
+                );
                 self.make_data(0, components, None, scalars, None)
             }
             ExprKind::DataTag { base, niche } => self.data_tag(base, *niche, &e.ty),
@@ -6773,13 +6789,13 @@ impl<M: Module> Translator<'_, M> {
     // Spread (fixed-shape float aggregate) calling convention.
     // -----------------------------------------------------------------------
 
-    /// Translates the body of a spread-result function, returning its N `f64`
+    /// Translates the body of a spread-result function, returning its N typed
     /// components multi-value at every tail. A tail `if` returns from each branch
     /// directly (no merge); binders are emitted with their continuation recursed.
     fn spread_return_body(&mut self, e: &CExpr, n: usize) {
         match &e.kind {
             ExprKind::Spread { components } => {
-                let vals: Vec<Value> = components.iter().map(|c| self.expr_f64(c)).collect();
+                let vals: Vec<Value> = components.iter().map(|c| self.expr_component(c)).collect();
                 self.builder.ins().return_(&vals);
             }
             ExprKind::If { cond, then, els } => {
@@ -6844,7 +6860,32 @@ impl<M: Module> Translator<'_, M> {
             // `Spread`): explode it into its scalar components and return them.
             _ => {
                 let base = self.expr(e);
-                let vals = self.explode_boxed(base, n);
+                let abi = (self.signature_of)(self.lowered.def);
+                let reprs = abi.spread_return().expect("spread result");
+                let vals: Vec<_> = reprs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, repr)| {
+                        if matches!(repr, Repr::ScalarFloat) {
+                            self.float_field_value(base, FieldIndex::Const(index as u32))
+                        } else {
+                            let address =
+                                self.field_slot_addr(base, FieldIndex::Const(index as u32));
+                            let value = self.builder.ins().load(
+                                types::I64,
+                                MemFlags::trusted(),
+                                address,
+                                0,
+                            );
+                            if matches!(repr, Repr::ScalarInt) {
+                                self.borrow_unbox_int_to_raw(value)
+                            } else {
+                                self.dup_value(value, &Ty::Error);
+                                value
+                            }
+                        }
+                    })
+                    .collect();
                 self.call_drop(base);
                 self.builder.ins().return_(&vals);
             }
@@ -6910,6 +6951,14 @@ impl<M: Module> Translator<'_, M> {
         if self.is_f64(v) { v } else { self.owning_unbox(v) }
     }
 
+    fn expr_component(&mut self, e: &CExpr) -> Value {
+        if e.ty == Ty::Con(Con::Float) {
+            return self.expr_f64(e);
+        }
+        let value = self.expr(e);
+        if e.ty == Ty::int() { self.as_raw_int(value) } else { self.ensure_boxed(value) }
+    }
+
     /// Reads the N scalar-`f64` fields of a boxed FFA cell `base` (borrowing — the
     /// caller releases `base`).
     fn explode_boxed(&mut self, base: Value, n: usize) -> Vec<Value> {
@@ -6923,9 +6972,14 @@ impl<M: Module> Translator<'_, M> {
         for (&l, v) in locals.iter().zip(results) {
             self.define_var(l, v);
         }
+        if let ExprKind::App { func, args, .. } = &value.kind
+            && let ExprKind::Global(def) = func.kind
+        {
+            self.bounds.transfer_many(locals, &(self.result_facts_of)(def), args);
+        }
     }
 
-    /// Direct-calls a saturated spread-returning callee, yielding its N `f64`
+    /// Direct-calls a saturated spread-returning callee, yielding its N typed
     /// result components.
     fn spread_call(&mut self, call: &CExpr) -> Vec<Value> {
         let ExprKind::App { func, args, .. } = &call.kind else {
@@ -6954,13 +7008,24 @@ impl<M: Module> Translator<'_, M> {
         results
     }
 
-    /// Reassembles `n` spread component `f64` values into a boxed scalar-slot cell
-    /// (the in-cell `f64` layout), used where a spread call's result crosses a
+    /// Reassembles typed spread components into a correctly tagged data cell,
+    /// used where a spread call's result crosses a
     /// uniform boundary reached without a tracked local.
     fn box_components(&mut self, comps: &[Value]) -> Value {
         let n = comps.len();
-        let scalars = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
-        let bits: Vec<Value> = comps.iter().map(|&c| self.float_field_bits(c)).collect();
+        let mut scalars = 0;
+        let bits: Vec<Value> = comps
+            .iter()
+            .enumerate()
+            .map(|(index, &component)| {
+                if self.is_f64(component) {
+                    scalars |= 1u64 << index;
+                    self.float_field_bits(component)
+                } else {
+                    self.ensure_boxed(component)
+                }
+            })
+            .collect();
         let ptr = self.spill(&bits);
         let tag_v = self.builder.ins().iconst(types::I64, 0);
         let n_v = self.builder.ins().iconst(types::I64, n as i64);
@@ -7054,7 +7119,13 @@ impl<M: Module> Translator<'_, M> {
         let id = self.module.declare_function(&name, Linkage::Import, &sig).expect("declare code");
         let fref = self.module.declare_func_in_func(id, self.builder.func);
         let call = self.builder.ins().call(fref, call_args);
-        self.builder.inst_results(call)[..n].to_vec()
+        let mut values = self.builder.inst_results(call)[..n].to_vec();
+        for (value, repr) in values.iter_mut().zip(abi.spread_return().into_iter().flatten()) {
+            if matches!(repr, Repr::ScalarInt) {
+                *value = self.mark_raw(*value);
+            }
+        }
+        values
     }
 
     fn make_closure(&mut self, func: FnId, captures: &[LocalId], alloc: ClosureAlloc) -> Value {
@@ -7846,12 +7917,15 @@ fn is_data_maybe_immediate(ty: &Ty) -> bool {
     head(ty)
 }
 
-/// Records each local's static type from `e` into `out`: the type carried by
-/// every `Local` use (so parameters and captures are covered, not just `let`
-/// bindings) plus each `let`'s value type. A local's reference-count operations
-/// read this map to specialize. `Ty::Error` is skipped, leaving the local to the
-/// runtime fallback rather than recording a useless type (e.g. a reuse `Reset`'s
-/// synthesized base carries no type).
+/// Component types survive split calls, including their uniform owned state.
+fn component_types(value: &CExpr, count: usize) -> Vec<Ty> {
+    fai_core::ir::aggregate_field_types(&value.ty)
+        .filter(|types| types.len() == count)
+        .unwrap_or_else(|| vec![Ty::Con(Con::Float); count])
+}
+
+/// Records local types for representation and reference-count specialization.
+/// Unknown marker types retain their existing conservative handling.
 pub(crate) fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
     let note = |out: &mut FxHashMap<usize, Ty>, local: LocalId, ty: &Ty| {
         if !matches!(ty, Ty::Error) {
@@ -7881,13 +7955,13 @@ pub(crate) fn collect_local_types(e: &CExpr, out: &mut FxHashMap<usize, Ty>) {
             collect_local_types(value, out);
             collect_local_types(body, out);
         }
-        // A spread's components and a letmany's bound locals are scalar `Float`s.
+        // Split-result locals retain each component's own representation.
         ExprKind::Spread { components } => {
             components.iter().for_each(|a| collect_local_types(a, out));
         }
         ExprKind::LetMany { locals, value, body } => {
-            for l in locals {
-                note(out, *l, &Ty::Con(Con::Float));
+            for (l, ty) in locals.iter().zip(component_types(value, locals.len())) {
+                note(out, *l, &ty);
             }
             collect_local_types(value, out);
             collect_local_types(body, out);
@@ -7954,15 +8028,13 @@ fn collect_float_observations(
             collect_float_observations(value, float_seen, other_seen);
             collect_float_observations(body, float_seen, other_seen);
         }
-        // A spread's components and a letmany's bound locals are scalar `Float`s, so
-        // the bound locals are observed as float even if otherwise unused (they must
-        // receive an `f64` multi-value result).
+        // Record every split-result component even when it is otherwise unused.
         ExprKind::Spread { components } => {
             components.iter().for_each(|a| collect_float_observations(a, float_seen, other_seen));
         }
         ExprKind::LetMany { locals, value, body } => {
-            for l in locals {
-                note(*l, &Ty::Con(Con::Float), float_seen, other_seen);
+            for (l, ty) in locals.iter().zip(component_types(value, locals.len())) {
+                note(*l, &ty, float_seen, other_seen);
             }
             collect_float_observations(value, float_seen, other_seen);
             collect_float_observations(body, float_seen, other_seen);
@@ -8049,12 +8121,14 @@ fn collect_int_observations(
             collect_int_observations(value, int_seen, other_seen);
             collect_int_observations(body, int_seen, other_seen);
         }
-        // A spread's components and a letmany's bound locals are `Float`, never raw
-        // `Int`; recurse (the bound locals are simply not int-observed).
+        // A split result may carry a raw Int alongside a uniform owned state.
         ExprKind::Spread { components } => {
             components.iter().for_each(|a| collect_int_observations(a, int_seen, other_seen));
         }
-        ExprKind::LetMany { value, body, .. } => {
+        ExprKind::LetMany { locals, value, body } => {
+            for (local, ty) in locals.iter().zip(component_types(value, locals.len())) {
+                note(*local, &ty, int_seen, other_seen);
+            }
             collect_int_observations(value, int_seen, other_seen);
             collect_int_observations(body, int_seen, other_seen);
         }
