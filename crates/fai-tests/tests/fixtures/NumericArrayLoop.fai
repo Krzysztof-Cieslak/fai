@@ -1,0 +1,15 @@
+module Main
+
+let bump i values =
+  if i >= Array.length values then
+    values
+  else
+    bump (i + 1) (Array.unsafeSet i (Array.unsafeGet i values + 1) values)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let original = [| 9223372036854775807, 0 |]
+  let changed = bump 0 original
+  let unique = bump 0 [| 1, 2 |]
+  let ok = Array.toList original = [9223372036854775807, 0] && Array.toList changed = [-9223372036854775808, 1] && Array.toList unique = [2, 3]
+  runtime.console.writeLine (if ok then "yes" else "no")

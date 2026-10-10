@@ -336,3 +336,17 @@ fn canonical_callback_shape_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn numeric_array_loop_eligibility_edits_match_clean_native_objects() {
+    let source =
+        "module M\nlet loop n xs = if n <= 0 then xs else loop (n - 1) (Array.unsafeSet 0 n xs)\n";
+    let edited = source.replace("Array.unsafeSet 0 n xs", "Array.push n xs");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("loop"), false))
+                .clone()
+        },
+    );
+}

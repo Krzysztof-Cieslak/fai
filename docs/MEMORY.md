@@ -832,6 +832,13 @@ Reuse & in-place update:
     `Array.init`. This retains strict single evaluation, immutable sharing,
     nonpositive-count behavior and checked allocation, including generic Float
     self-tagging. Standard-library and first-class calls benefit too.
+    Bounded loops with one scalar-element array, scalar companion parameters and
+    only same-buffer updates can select a unique-owner version at entry. The
+    in-place version omits repeated count loads; shared inputs keep the ordinary
+    copy-on-share loop. Array aliases may not escape or gain references, and
+    callbacks, other arrays, construction and growth are conservative barriers.
+    Index checks and old-element releases remain intact. The proof and code
+    duplication are bounded to small bodies.
     Ownership lowering removes a field acquire immediately paired with a discard
     while the already-evaluated parent stays live. This runs after array-slot
     borrowing, preserving any intervening parent release or operation, so unused

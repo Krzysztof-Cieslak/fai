@@ -643,6 +643,14 @@ fn canonical_callback_links_and_runs_natively() {
 }
 
 #[test]
+fn numeric_array_loop_versions_preserve_shared_values() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/NumericArrayLoop.fai")),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn const_preserves_native_effect_order() {
     let source = indoc! {r#"
         module Main

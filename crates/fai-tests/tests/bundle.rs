@@ -337,6 +337,19 @@ fn canonical_callbacks_survive_transport() {
 }
 
 #[test]
+fn numeric_array_loop_versions_survive_transport() {
+    let dir = workspace(&[("Main.fai", include_str!("fixtures/NumericArrayLoop.fai"))]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+    let bytes = serde_json::to_vec(&bundle).unwrap();
+    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    assert_eq!(jit_run_bundle(&decoded), 0);
+    assert_eq!(fai_runtime::capture_take(), "yes\n");
+}
+
+#[test]
 fn jit_run_bundle_executes_a_cross_module_program() {
     let main = indoc! {r#"
         module Main

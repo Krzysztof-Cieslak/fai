@@ -102,6 +102,9 @@ let spreadStates n = Float.toInt (spreadLoop n { value = 0.0 }).value
 let subLoop f n value = if n <= 0 then value else subLoop f (n - 1) (f value 1)
 public canonicalCallbacks : Int -> Int
 let canonicalCallbacks n = subLoop (fun a b -> a - b) n n
+let numericLoop n xs = if n <= 0 then xs else numericLoop (n - 1) (Array.unsafeSet (n % 16) n xs)
+public numericStates : Int -> Int
+let numericStates n = Array.length (numericLoop n (Array.repeat 16 0))
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -309,4 +312,9 @@ fn canonical_callback_keeps_zero_auxiliary_heap_storage() {
     assert_eq!(short, long);
     assert_eq!(long.allocations, 0);
     assert_eq!(long.peak_bytes, 0);
+}
+
+#[test]
+fn numeric_array_update_loop_keeps_constant_unique_storage() {
+    bounded_reuse("numericStates", |_| 16);
 }

@@ -464,6 +464,10 @@ The standard `Array.repeat` entry also uses a direct repeated-value loop, so
 library and first-class calls avoid a captured generator call per element.
 Nonpositive counts stay empty, values are evaluated once and shared immutably,
 and the existing checked allocation and raw Float-array rules still apply.
+A bounded, scalar-only loop updating one numeric array can test its ownership
+once and use an in-place loop version. Shared inputs keep the ordinary
+copy-on-share path; retained aliases, other arrays, callbacks and growth prevent
+this specialization. Bounds checks and full-width element behavior are preserved.
 Bounds inference includes the generated loops in its file-local caller graph,
 including their first-class function references. A callback moved into a loop
 therefore cannot disappear from a private helper's bounds-check proof.
