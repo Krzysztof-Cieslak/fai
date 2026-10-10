@@ -1733,6 +1733,11 @@ are a 30-second whole-operation deadline, 16 MiB buffering and 8 KiB error previ
 Configuration uses record updates; additional trusted roots are fixed per pool.
 `prepare`, `decodeResponse` and `decodeStream` are reusable testing entry points.
 Run `fai test -C packages http-client`; see `packages/http-client/README.md`.
+Its configuration enables up to ten redirect hops and disables retries by default.
+Set `retry = HttpClient.retryTransient` for bounded GET/HEAD status retries;
+Retry-After and all attempts share the overall deadline. Redirects replay prepared
+bytes with status-specific method rules and strip origin-scoped credentials.
+`HttpClientPolicy.decide` exposes pure policy decisions for scripted contracts.
 
 Including `packages/cli/src` supplies the pure `Args` argument parser. Build a
 typed `Args.Parser 'a` with `flag`, `count`, `option`, `requiredOption`,

@@ -91,6 +91,41 @@ metadata, and the original transport message. An `UnexpectedStatus` carries a
 bounded byte preview and a truncation flag. `errorToString` provides a readable
 summary while leaving these structured details accessible.
 
+## Redirects and retries
+
+Redirects are enabled with `maxRedirects = 10`; set `followRedirects = false` to
+receive 3xx responses directly. A 303 changes non-HEAD methods to GET, 301/302
+change POST to GET, and 307/308 preserve the method and encoded bytes. Relative
+Location values resolve against the current URL. Missing Location returns the
+response; malformed/ambiguous Location, HTTPS downgrade and hop exhaustion fail.
+
+On a cross-origin hop, all configured default-header names and the names in
+`sensitiveHeaders` are stripped. The latter defaults to Authorization, Cookie and
+Proxy-Authorization. Defaults are not re-applied during redirects. Configure
+additional sensitive names for request-specific credentials.
+
+Retries are disabled by default. Set `retry = HttpClient.retryTransient` to allow
+two additional GET/HEAD attempts on 429, 502, 503 and 504, with a 100 ms initial
+delay and 2 s maximum exponential backoff. The retry record is configurable.
+Retry-After delta-seconds and IMF-fixdate values are honored even when they exceed
+the backoff cap; the overall deadline still applies. Exhaustion returns the last
+response through the ordinary status/decoder rules. Transport errors and POSTs
+are not automatically retried.
+
+Redirects and retries have independent counts but share one deadline. A discarded
+response is released before sleeping or opening the next exchange. Encoders run
+once; replay uses immutable prepared bytes. The application receives only the
+final response, whose head records its URL and total attempt count.
+
+`HttpClientPolicy` exposes the pure decisions and Retry-After parser for scripted
+tests. Its `decide` function takes a response status/headers, counters and explicit
+wall-clock seconds, so these contracts perform no I/O or sleeps.
+
+```sh
+fai run -C packages http-client/examples/RetryRedirect.fai
+# ok attempts=3 path=/done
+```
+
 ## Native contracts
 
 ```sh

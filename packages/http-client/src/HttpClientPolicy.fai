@@ -1,0 +1,166 @@
+module HttpClientPolicy
+
+/// An opt-in response retry policy. Counts are additional attempts.
+public type RetryPolicy = {
+  initialDelayMs : Int,
+  maxDelayMs : Int,
+  maxRetries : Int,
+  statuses : List Int
+}
+
+/// No automatic retries.
+public noRetry : RetryPolicy
+let noRetry = {
+  initialDelayMs = 100,
+  maxDelayMs = 2000,
+  maxRetries = 0,
+  statuses = [429, 502, 503, 504]
+}
+
+/// Two additional GET/HEAD attempts with bounded exponential backoff.
+public retryTransient : RetryPolicy
+let retryTransient = { noRetry with maxRetries = 2 }
+
+/// Pure policy settings, independent of a transport and wall clock.
+public type Settings = {
+  followRedirects : Bool,
+  maxRedirects : Int,
+  retry : RetryPolicy,
+  sensitiveHeaders : List String
+}
+
+/// A replayable request: its body has already been encoded into immutable bytes.
+public type Request = { body : Bytes, headers : Headers, method : Http.Method, url : Url }
+
+/// The next action after receiving response headers. Consumers run only on Return.
+public type Decision =
+  | Return
+  | Follow Request
+  | RetryAfter Int
+  | InvalidRedirect String
+  | RedirectLimit Int
+
+/// Validate policy bounds before any network operation.
+public validate : Settings -> Result Unit String
+let validate settings =
+  if settings.maxRedirects < 0 then
+    Err "redirect limit must be nonnegative"
+  else if settings.retry.maxRetries < 0 then
+    Err "retry count must be nonnegative"
+  else if settings.retry.initialDelayMs < 0 || settings.retry.maxDelayMs < settings.retry.initialDelayMs then
+    Err "retry delays must be nonnegative and ordered"
+  else if not (List.all (fun status -> status >= 100 && status <= 599) settings.retry.statuses) then
+    Err "retry statuses must be HTTP status codes"
+  else
+    Ok ()
+
+let maxInt = 9223372036854775807
+
+let toMillis seconds = if seconds > maxInt / 1000 then maxInt else seconds * 1000
+
+let decimal bytes i value =
+  if i = Bytes.length bytes then
+    Some value
+  else
+    let digit = Bytes.unsafeGet i bytes - 48
+    if digit < 0 || digit > 9 then
+      None
+    else
+      decimal bytes (i + 1) (if value > (maxInt - digit) / 10 then maxInt else value * 10 + digit)
+
+let dateDelay now datetime =
+  let target =
+    Instant.toUnixTimeSeconds (OffsetDateTime.toInstant (OffsetDateTime.of datetime Offset.zero))
+  if target <= now then
+    0
+  else
+    if now < 0 && target > maxInt + now then maxInt else toMillis (target - now)
+
+/// Read Retry-After delta-seconds or an IMF-fixdate. Past dates mean no delay;
+/// malformed values return None, and unrepresentable delays saturate.
+public retryAfter : Int -> String -> Option Int
+let retryAfter now text =
+  let clean = String.trim text
+  if clean = "" then
+    None
+  else
+    match decimal (Bytes.fromString clean) 0 0 with
+    | Some seconds -> Some (toMillis seconds)
+    | None ->
+      Option.map (dateDelay now) (DateTimeFormat.parse "EEE, dd MMM yyyy HH:mm:ss 'GMT'" clean)
+
+let backoff delay maximum count =
+  if count <= 0 || delay >= maximum || delay = 0 then
+    delay
+  else
+    backoff (if delay > maximum - delay then maximum else delay * 2) maximum (count - 1)
+
+let sameOrigin a b =
+  Url.scheme a = Url.scheme b && Option.map String.toLower (Url.host a) = Option.map String.toLower (Url.host b) && Url.effectivePort a = Url.effectivePort b
+
+let isRedirect status = List.member status [301, 302, 303, 307, 308]
+
+let targetBytes bytes i =
+  if i = Bytes.length bytes then
+    true
+  else
+    Bytes.unsafeGet i bytes > 32 && Bytes.unsafeGet i bytes <> 127 && targetBytes bytes (i + 1)
+
+let validTarget url =
+  (Url.scheme url = Some "http" || Url.scheme url = Some "https") && Url.host url <> None && Url.userinfo url = None && targetBytes (Bytes.fromString (Url.requestTarget url)) 0
+
+let redirectedMethod method status =
+  if status = 303 && method <> Http.HEAD then
+    Http.GET
+  else if (status = 301 || status = 302) && method = Http.POST then Http.GET else method
+
+follow : Settings -> Request -> Int -> String -> Decision
+let follow settings request status location =
+  match Url.resolve request.url location with
+  | Err message -> InvalidRedirect message
+  | Ok url ->
+    if not (validTarget url) then
+      InvalidRedirect "redirect target must be an absolute http(s) URL without userinfo"
+    else if Url.scheme request.url = Some "https" && Url.scheme url = Some "http" then
+      InvalidRedirect "redirect would downgrade HTTPS"
+    else
+      let method = redirectedMethod request.method status
+      let rewritten = method <> request.method
+      let removed =
+        List.append [
+          "Host",
+          "Content-Length",
+          "Transfer-Encoding"
+        ] (List.append (if rewritten then
+          ["Content-Type", "Content-Encoding"]
+        else
+          []) (if sameOrigin request.url url then [] else settings.sensitiveHeaders))
+      let headers =
+        List.foldl (fun headers name -> Headers.remove name headers) request.headers removed
+      Follow {
+        body = if rewritten then Bytes.empty else request.body,
+        headers = headers,
+        method = method,
+        url = url
+      }
+
+/// Decide from headers alone. Retry counts and redirect hops are independent,
+/// and a transport failure never enters this response-based retry policy.
+public decide : Settings -> Request -> Int -> Headers -> Int -> Int -> Int -> Decision
+let decide settings request status headers retries redirects now =
+  if settings.followRedirects && isRedirect status then
+    match Headers.getAll "Location" headers with
+    | [] -> Return
+    | location :: [] ->
+      if redirects >= settings.maxRedirects then
+        RedirectLimit settings.maxRedirects
+      else
+        follow settings request status location
+    | _ -> InvalidRedirect "multiple Location headers"
+  else if retries < settings.retry.maxRetries && (request.method = Http.GET || request.method = Http.HEAD) && List.member status settings.retry.statuses then
+    let delay = backoff settings.retry.initialDelayMs settings.retry.maxDelayMs retries
+    let after =
+      Option.withDefault 0 (Option.andThen (retryAfter now) (Headers.get "Retry-After" headers))
+    RetryAfter (if after > delay then after else delay)
+  else
+    Return

@@ -1,0 +1,40 @@
+module RetryRedirect
+
+serveNext : Runtime -> Listener -> String -> Unit / { Net }
+let serveNext r listener response =
+  match r.net.accept listener with
+  | Err _ -> ()
+  | Ok connection ->
+    let request = r.net.recv connection 4096
+    let sent = r.net.send connection (Bytes.fromString response)
+    r.net.close connection
+
+serve : Runtime -> Listener -> Unit / { Net }
+let serve r listener =
+  let first =
+    serveNext r listener "HTTP/1.1 503 Busy\r\nConnection: close\r\nContent-Length: 0\r\nRetry-After: 0\r\n\r\n"
+  let second =
+    serveNext r listener "HTTP/1.1 302 Found\r\nConnection: close\r\nContent-Length: 0\r\nLocation: /done\r\n\r\n"
+  serveNext r listener "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+session : Runtime -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let session r listener nursery =
+  let server = r.concurrency.spawn nursery (fun _ -> serve r listener)
+  let base =
+    HttpClient.config ("http://127.0.0.1:" ++ Int.toString (r.net.localPort listener) ++ "/")
+  let retry = { HttpClient.retryTransient with initialDelayMs = 0, maxDelayMs = 0 }
+  let result =
+    HttpClient.withClient r { base with
+      retry = retry
+    } (fun client -> HttpClient.get "start" |> HttpClient.expectText |> HttpClient.send client)
+  let stopped = r.concurrency.cancel server
+  match result with
+  | Err error -> r.console.writeLine (HttpClient.errorToString error)
+  | Ok response ->
+    r.console.writeLine (response.body ++ " attempts=" ++ Int.toString response.head.attempts ++ " path=" ++ Url.path response.head.url)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main r =
+  match r.net.listen 0 with
+  | Err error -> r.console.writeLine error
+  | Ok listener -> r.concurrency.scope (session r listener)

@@ -908,6 +908,11 @@ source locations or field paths. One cooperative deadline covers complete body
 consumption; caller cancellation has a distinct error. Buffered bodies have a
 configurable size limit. Pure `prepare`, `decodeResponse`, and `decodeStream`
 entry points support native Fai contracts (`fai test -C packages http-client`).
+Redirects have bounded hops and method-aware body replay; cross-origin hops strip
+default and configured sensitive headers. Opt-in GET/HEAD retries use selected
+status codes, bounded backoff and Retry-After, sharing the operation's deadline.
+Discarded responses are released before another attempt, and consumers see only the
+final response. `HttpClientPolicy` exposes the pure decision function for tests.
 
 ## 6. Compiler pipeline
 
