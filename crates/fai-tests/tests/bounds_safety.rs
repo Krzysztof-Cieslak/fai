@@ -128,6 +128,11 @@ fn the_first_checked_access_keeps_its_fault() {
 }
 
 #[test]
+fn same_named_external_split_results_are_not_self_tail_exits() {
+    assert_bounds_trap("external-split-result", true);
+}
+
+#[test]
 fn bounds_worker() {
     let Ok(case) = std::env::var("FAI_BOUNDS_CASE") else { return };
     let source = match case.as_str() {
@@ -141,10 +146,17 @@ fn bounds_worker() {
         "checked-other" => CHECKED_OTHER,
         "checked-wrapped" => CHECKED_WRAPPED,
         "first-checked" => FIRST_CHECKED,
+        "external-split-result" => {
+            "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let (index, values) = A.choose false 0 [| 7 |]\n  r.console.writeLine (Int.toString (Array.unsafeGet index values))\n"
+        }
         _ => panic!("unknown bounds case"),
     };
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
+    if case == "external-split-result" {
+        db.add_source("A.fai".into(), "module A\npublic choose : Bool -> Int -> Array Int -> (Int * Array Int)\nlet choose flag index values = if flag then (index, values) else B.choose flag index values\n".into());
+        db.add_source("B.fai".into(), "module B\npublic choose : Bool -> Int -> Array Int -> (Int * Array Int)\nlet choose flag index values = (100, values)\n".into());
+    }
     let id = db.add_source("Main.fai".into(), source.into());
     let file = db.source_file(id).unwrap();
     fai_driver::set_bce_shadow(std::env::var("FAI_BOUNDS_SHADOW").as_deref() == Ok("1"));

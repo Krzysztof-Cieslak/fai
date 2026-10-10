@@ -670,8 +670,8 @@ impl Rc<'_> {
                 let rebuilt = move |components| CExpr::new(K::Spread { components }, ty.clone());
                 self.operands_rc(components, &borrows, live, rebuilt)
             }
-            // Binds a spread-returning call's result components (scalar floats, no
-            // reference count, so the bound locals need no drop). The call stays
+            // Binds a spread-returning call's result components. Unused components
+            // are dropped, including an owned uniform state result. The call stays
             // multi-result: its boxed arguments are reference-counted in place
             // (`operands_rc`'s single-temporary wrapping would collapse the N
             // results), with consumed-but-live arguments duplicated before the call
@@ -685,6 +685,9 @@ impl Rc<'_> {
                 }
                 live_after.extend(live);
                 let body2 = self.owned(*body, live);
+                let unused: Vec<_> =
+                    locals.iter().copied().filter(|local| !fvb.contains(local)).collect();
+                let body2 = dropify(unused, body2);
                 let K::App { func, args, reuse, alloc } = value.kind else {
                     // Defensive: a spread value that is not a direct call cannot be
                     // a multi-result bind; count it as an ordinary value.

@@ -570,6 +570,28 @@ impl Bounds {
         }
     }
 
+    /// Applies tuple-result facts directly to split result locals.
+    pub fn transfer_many(&mut self, locals: &[LocalId], sig: &ResultSig, args: &[CExpr]) {
+        let term = |term: RTerm| match term {
+            RTerm::Zero => Some(Term::Zero),
+            RTerm::Param(index) => args.get(index as usize).and_then(|arg| match arg.kind {
+                K::Local(local) => Some(Term::Int(local)),
+                _ => None,
+            }),
+            RTerm::LenParam(index) => args.get(index as usize).and_then(|arg| match arg.kind {
+                K::Local(local) => Some(Term::Len(local)),
+                _ => None,
+            }),
+            RTerm::ResultVal(index) => locals.get(index as usize).copied().map(Term::Int),
+            RTerm::ResultLen(index) => locals.get(index as usize).copied().map(Term::Len),
+        };
+        for &(a, b, distance) in &sig.edges {
+            if let (Some(a), Some(b)) = (term(a), term(b)) {
+                self.add_edge(a, b, distance);
+            }
+        }
+    }
+
     /// Instantiates the result facts for tuple field `k` of a recorded call result
     /// `base` onto the projected local.
     fn transfer_result_field(&mut self, local: LocalId, base: LocalId, k: u32) {

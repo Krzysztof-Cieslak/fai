@@ -716,6 +716,17 @@ fn canonical_comparator_predicates_preserve_native_wrapping() {
 }
 
 #[test]
+fn integer_state_returns_preserve_native_tuple_boundaries() {
+    assert_eq!(
+        build_and_run_files(&[
+            ("Pairs.fai", include_str!("fixtures/integer_state/Pairs.fai")),
+            ("Main.fai", include_str!("fixtures/integer_state/Main.fai")),
+        ]),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

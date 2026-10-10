@@ -95,6 +95,37 @@ pub fn ffa_arity(ty: &Ty) -> Option<usize> {
     (1..=FFA_MAX_FIELDS).contains(&count).then_some(count)
 }
 
+/// A two-register result consisting of a raw Int and an ordinary uniform state.
+/// Parameters retain their boxed tuple representation.
+#[must_use]
+pub fn integer_state_pair(ty: &Ty) -> bool {
+    fn uniform(ty: &Ty) -> bool {
+        match ty {
+            Ty::Con(Con::String | Con::Bytes | Con::Array | Con::List)
+            | Ty::Adt(_)
+            | Ty::Interface(_)
+            | Ty::Tuple(_)
+            | Ty::Record(_)
+            | Ty::Arrow(..) => true,
+            Ty::App(head, _) => uniform(head),
+            _ => false,
+        }
+    }
+    matches!(ty, Ty::Tuple(fields) if fields.len() == 2 && fields[0] == Ty::int() && uniform(&fields[1]))
+}
+
+/// Logical component types of a structural aggregate in its physical field order.
+#[must_use]
+pub fn aggregate_field_types(ty: &Ty) -> Option<Vec<Ty>> {
+    match ty {
+        Ty::Tuple(fields) => Some(fields.clone()),
+        Ty::Record(row) if row.tail == RowEnd::Closed => {
+            Some(row.fields.iter().map(|(_, ty)| ty.clone()).collect())
+        }
+        _ => None,
+    }
+}
+
 /// Identifies a [`CoreFn`] within a [`LoweredDef`] (index into its `fns`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FnId(pub u32);
@@ -177,8 +208,9 @@ pub enum Repr {
     /// A **fixed-shape float aggregate** (FFA) carried as its scalar `f64`
     /// components rather than a heap cell: a parameter occupies N consecutive
     /// `f64` registers, a result is returned as an N-value (multi-result)
-    /// signature. The inner vector is the per-component representation (currently
-    /// always [`Repr::ScalarFloat`]; nesting is future work). Register ABI only —
+    /// signature. The inner vector is the per-component representation. Parameters
+    /// contain only [`Repr::ScalarFloat`]; a supported `(Int, state)` result uses
+    /// [`Repr::ScalarInt`] and [`Repr::Uniform`] components. Register ABI only —
     /// a uniform entry (reached via `apply_n`) keeps the boxed cell, bridged by
     /// the wrapper. See [`ffa_arity`] and [`crate::sroa`].
     Spread(Vec<Repr>),
@@ -217,6 +249,15 @@ impl FnAbi {
         // exactly the definitions a saturated call reaches as a bare `Global` head.
         let register_abi = evidence == 0 && source_params > 0;
         let mut ret = scalar_repr(ty, niche);
+        if register_abi
+            && integer_state_pair(ty)
+            && cfg!(any(
+                target_arch = "aarch64",
+                all(target_arch = "x86_64", not(target_os = "windows"))
+            ))
+        {
+            ret = Repr::Spread(vec![Repr::ScalarInt, Repr::Uniform]);
+        }
         // An x86-64 entry that already takes spread aggregates can use the
         // private wide-return convention without changing which recursive
         // entries require aggregate-state handling. This remains signature-only.
