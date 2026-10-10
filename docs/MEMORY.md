@@ -824,6 +824,9 @@ Reuse & in-place update:
     uses, captured entry environments, custom builders and uncertain shapes keep
     the normal typed launch path. The synthetic entry and unit runtime are emitted
     at final native assembly, leaving per-definition objects and their ABI intact.
+    It uses the final transformed main body, preserving synthesized loops. Those
+    generated definitions are supplied by the normal loop gather rather than
+    treated as source-backed dependencies.
     Iterative destruction handles compact data with one inlined scan-and-recycle
     path: decode the shape, enqueue boxed children in their existing order, and
     return the cell to its exact pool class. Extended cells and native resources

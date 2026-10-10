@@ -693,11 +693,15 @@ pub fn build_native_with_deps(
         // A field initializer may have been inlined out of the ordinary runtime
         // builder. The projected entry references that real definition again.
         let mut seen: FxHashSet<_> = reachable.iter().copied().collect();
-        let extra: Vec<_> =
-            reachable_from_roots(db, &adapter.referenced_globals(), &FxHashSet::default())
-                .into_iter()
-                .filter(|def| seen.insert(*def))
-                .collect();
+        let generated: FxHashSet<_> = fai_core::fuse_def(db, file, launch.entry.name)
+            .loops
+            .iter()
+            .map(|function| function.lowered.def)
+            .collect();
+        let extra: Vec<_> = reachable_from_roots(db, &adapter.referenced_globals(), &generated)
+            .into_iter()
+            .filter(|def| seen.insert(*def))
+            .collect();
         diagnostics.extend(precompile_diagnostics(db, &extra));
         if diagnostics.iter().any(|d| d.severity == Severity::Error) {
             return BuildOutcome { artifact: None, diagnostics, ok: false };

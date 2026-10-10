@@ -44,7 +44,7 @@ pub(crate) fn projected_default(
             return None;
         }
     }
-    let mut main = (*fai_core::helper_inlined(db, file, launch.entry.name)).clone();
+    let mut main = fai_core::fuse_def(db, file, launch.entry.name).body.clone();
     if main.fns.len() != 1 || main.entry().params.len() != 1 {
         return None;
     }
