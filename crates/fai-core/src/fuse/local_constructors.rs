@@ -11,8 +11,13 @@ use fai_types::RowEnd;
 use rustc_hash::FxHashSet;
 
 pub(super) fn reduce(db: &dyn Db, base: Arc<LoweredDef>) -> Arc<LoweredDef> {
-    let mut cx =
-        Reducer { db, next: crate::inline::next_free_local(&base), budget: 4096, changed: false };
+    let mut cx = Reducer {
+        db,
+        next: crate::inline::next_free_local(&base),
+        budget: 4096,
+        copy_budget: 256,
+        changed: false,
+    };
     let mut output = (*base).clone();
     for function in &mut output.fns {
         function.body = cx.fold(function.body.clone());
@@ -24,13 +29,14 @@ struct Reducer<'a> {
     db: &'a dyn Db,
     next: usize,
     budget: usize,
+    copy_budget: usize,
     changed: bool,
 }
 
 #[cfg(test)]
 mod tests;
 
-fn children(e: &mut CExpr, f: &mut impl FnMut(&mut CExpr)) {
+pub(super) fn children(e: &mut CExpr, f: &mut impl FnMut(&mut CExpr)) {
     match &mut e.kind {
         K::Let { value, body, .. }
         | K::LetMany { value, body, .. }
@@ -200,22 +206,44 @@ fn project(mut body: CExpr, local: LocalId, tag: u32, fields: &[CExpr]) -> Optio
 }
 
 impl Reducer<'_> {
-    fn constructor_tree(&self, value: &CExpr, leaves: &mut usize) -> bool {
-        if *leaves >= 4 {
+    fn constructor_tree(
+        &self,
+        value: &CExpr,
+        leaves: &mut usize,
+        constructors: &mut usize,
+    ) -> bool {
+        if *leaves >= 8 {
             return false;
         }
         match &value.kind {
-            K::Let { body, .. } => self.constructor_tree(body, leaves),
+            K::Let { body, .. } => self.constructor_tree(body, leaves, constructors),
             K::If { then, els, .. } => {
-                self.constructor_tree(then, leaves) && self.constructor_tree(els, leaves)
+                self.constructor_tree(then, leaves, constructors)
+                    && self.constructor_tree(els, leaves, constructors)
             }
             K::MakeData { args, reuse: None, .. } => {
                 *leaves += 1;
+                *constructors += 1;
                 args.iter()
                     .all(|arg| resource_free(self.db, &arg.ty, &mut FxHashSet::default(), &mut 128))
             }
+            // These branches retain their forcing/call boundary. Distributing
+            // the continuation can still remove cells on constructor branches.
+            K::App { .. } | K::Error => {
+                *leaves += 1;
+                true
+            }
             _ => false,
         }
+    }
+
+    fn can_distribute(&self, value: &CExpr, body: &CExpr) -> bool {
+        let cost = crate::helper_inline::node_count(body);
+        let mut constructors = 0;
+        cost <= 64
+            && cost <= self.copy_budget
+            && self.constructor_tree(value, &mut 0, &mut constructors)
+            && constructors > 0
     }
 
     fn fresh_continuation(&mut self, local: LocalId, body: &CExpr, value: CExpr) -> CExpr {
@@ -306,10 +334,8 @@ impl Reducer<'_> {
                         return self.fold(result);
                     }
                 }
-                K::If { cond, then, els }
-                    if crate::helper_inline::node_count(body) <= 64
-                        && self.constructor_tree(value, &mut 0) =>
-                {
+                K::If { cond, then, els } if self.can_distribute(value, body) => {
+                    self.copy_budget -= crate::helper_inline::node_count(body);
                     let left = self.fresh_continuation(*local, body, (**then).clone());
                     let right = self.fresh_continuation(*local, body, (**els).clone());
                     return self.fold(CExpr::new(
@@ -317,6 +343,7 @@ impl Reducer<'_> {
                         e.ty,
                     ));
                 }
+                K::Error => return CExpr::new(K::Error, e.ty),
                 _ => {}
             },
             _ => {}

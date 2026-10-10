@@ -15,6 +15,46 @@ use fai_syntax::Symbol;
 use fai_tests::{Revision, assert_incremental_matches_clean};
 use indoc::indoc;
 
+#[test]
+fn demanded_result_helper_edits_match_clean_native_objects() {
+    let source = "module M\nlet step n = if n <= 0 then Some (n, 42) else step (n - 1)\nlet unpack n = match step n with | None -> 0 | Some (left, right) -> left + right\n";
+    let edited = source.replace("42", "43");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("unpack"), false))
+                .clone()
+        },
+    );
+}
+
+#[test]
+fn demanded_result_comment_edits_cut_off_native_recomputation() {
+    let mut db = fai_db::FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let source = "module M\nlet step n = if n <= 0 then Some (n, 42) else step (n - 1)\nlet unpack n = match step n with | None -> 0 | Some (left, right) -> left + right\n";
+    let id = db.add_source("M.fai".into(), source.into());
+    let file = db.source_file(id).unwrap();
+    let before = object_code(&db, file, Symbol::intern("unpack"), false);
+    db.add_source("M.fai".into(), format!("// new location\n{source}"));
+    let after = object_code(&db, file, Symbol::intern("unpack"), false);
+    assert!(std::sync::Arc::ptr_eq(&before, &after));
+}
+
+#[test]
+fn demanded_result_helpers_keep_the_cross_file_body_firewall() {
+    let mut db = fai_db::FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let source = "module A\npublic step : Int -> Option (Int * Int)\nlet step n = if n <= 0 then Some (n, 42) else step (n - 1)\n";
+    db.add_source("A.fai".into(), source.into());
+    let caller = db.add_source("B.fai".into(), "module B\nlet unpack n = match A.step n with | None -> 0 | Some (left, right) -> left + right\n".into());
+    let file = db.source_file(caller).unwrap();
+    let before = object_code(&db, file, Symbol::intern("unpack"), false);
+    db.add_source("A.fai".into(), source.replace("42", "43"));
+    let after = object_code(&db, file, Symbol::intern("unpack"), false);
+    assert!(std::sync::Arc::ptr_eq(&before, &after));
+}
+
 const MAIN_A: &str = indoc! {r#"
     module Main
 

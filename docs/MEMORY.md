@@ -3756,6 +3756,11 @@ Editor integration:
     constructor branches, freshening every copied binder. Generic/mismatched
     representation views, escaped cells and resource-bearing fields keep their
     ordinary allocation and ownership boundaries.
+    Immediate destructuring of an optional tuple can expose one bounded layer
+    of a small monomorphic same-file recursive helper. Inputs are resource-free
+    and the body is effect-free. Separate expansion and continuation-copy budgets
+    cap code growth; the residual recursive calls retain their shared entry.
+    Ordinary tuples and other results retain their existing reuse/bounds boundary.
     A native tail loop can maintain an affine equality bound instead of repeating
     a subtraction: `(x - fixed) = counter` compares `x` with `fixed + counter`,
     and `(fixed - x) = counter` compares with `fixed - counter`. The fixed input

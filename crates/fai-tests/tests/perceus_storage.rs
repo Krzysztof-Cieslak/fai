@@ -57,6 +57,14 @@ let sliceLoops n base total =
     sliceLoops (n - 1) base (total + String.length view)
 public asciiSliceLoop : Int -> Int
 let asciiSliceLoop n = sliceLoops n (append 64 (Int.toString 0)) 0
+resultStep : Int -> Int -> Option (Int * Int)
+let resultStep n value = if n <= 0 then Some (value, n) else resultStep (n - 1) value
+let resultLoops n total =
+  if n <= 0 then total else
+    let value = match resultStep 0 n with | None -> 0 | Some (a, b) -> a + b
+    resultLoops (n - 1) (total + value)
+public resultLoop : Int -> Int
+let resultLoop n = resultLoops n 0
 let churn n total =
   if n <= 0 then total else
     let size = if n % 3 = 0 then 8 else if n % 3 = 1 then 128 else 4096
@@ -153,6 +161,14 @@ fn repeated_full_width_string_indices_keep_storage_bounded() {
 #[test]
 fn ascii_slice_evidence_keeps_fixed_state_storage_bounded() {
     bounded("asciiSliceLoop", |n| n * 64);
+}
+
+#[test]
+fn demanded_recursive_results_keep_storage_bounded() {
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let short = observe("resultLoop", 12, 78);
+    let long = observe("resultLoop", 12_000, 72_006_000);
+    assert_eq!(short, long);
 }
 
 #[test]
