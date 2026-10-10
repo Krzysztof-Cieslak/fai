@@ -1513,7 +1513,7 @@ program output are unchanged, guarded by the full type/golden suite):
     that are read and rebuilt stay owned to preserve in-place update opportunities.
     Structural comparisons and hashes borrow type-variable operands too; borrow
     inference follows the primitive's actual consuming-or-borrowing convention.
-    Typed Int-array loads place the boxed full-width fallback out of the ordinary
+    Typed Int field and array loads place the boxed full-width fallback out of the ordinary
     immediate scan, keeping the hot loop contiguous without changing stored values.
   - **IR.** A generic loop (`Join`/`Recur`) plus, for a constructor-wrapped
     recursion, **destination passing**: a non-reference-counted "hole" token (the
