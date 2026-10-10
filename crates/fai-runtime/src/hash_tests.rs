@@ -133,12 +133,66 @@ fn data_cell_field_order_is_significant() {
     assert_eq!(live_count(), base, "leak-free");
 }
 
+#[track_caller]
+fn distributed_pairs(keys: impl IntoIterator<Item = (i64, i64)>) {
+    let _guard = lock();
+    let baseline = live_count();
+    let mut buckets = [0usize; 1024];
+    let mut hashes = std::collections::HashSet::new();
+    let mut count = 0;
+    for (x, y) in keys {
+        let pair = data(0, &[make_int(x), make_int(y)]);
+        let hash = values_hash(pair);
+        hashes.insert(hash);
+        buckets[hash as usize & 1023] += 1;
+        count += 1;
+        fai_drop(pair);
+    }
+    assert_eq!(count, 4096);
+    assert_eq!(hashes.len(), count, "structured pairs have distinct full hashes");
+    assert!(buckets.iter().filter(|count| **count > 0).count() >= 970);
+    assert!(*buckets.iter().max().unwrap() <= 24);
+    assert_eq!(live_count(), baseline);
+}
+
+#[test]
+fn grid_pair_keys_have_no_dense_bucket_clusters() {
+    distributed_pairs((-32..32).flat_map(|x| (-32..32).map(move |y| (x, y))));
+}
+
+#[test]
+fn equal_coordinate_keys_have_no_dense_bucket_clusters() {
+    distributed_pairs((-2048..2048).map(|value| (value, value)));
+}
+
+#[test]
+fn opposite_coordinate_keys_have_no_dense_bucket_clusters() {
+    distributed_pairs((-2048..2048).map(|value| (value, -value)));
+}
+
+#[test]
+fn raw_and_boxed_float_records_keep_identical_hashes() {
+    let _guard = lock();
+    let baseline = live_count();
+    let fields =
+        [0xfff8_0000_0000_1234u64 as i64, 0, 1.25f64.to_bits() as i64, (-0.0f64).to_bits() as i64];
+    let descriptor = intern_data_descriptor(15);
+    // SAFETY: all four fields are initialized raw Float slots.
+    let raw = unsafe { fai_make_data_scalar(descriptor, 0, 4, fields.as_ptr()) };
+    let boxed = data(0, &fields.map(|bits| fai_box_float(bits)));
+    assert!(values_equal(raw, boxed));
+    assert_eq!(values_hash(raw), values_hash(boxed));
+    fai_drop(raw);
+    fai_drop(boxed);
+    assert_eq!(live_count(), baseline);
+}
+
 #[test]
 fn immediate_pair_hash_keeps_its_exact_value() {
     let _guard = lock();
     let baseline = live_count();
     let pair = data(0, &[imm_int(-7), imm_int(42)]);
-    assert_eq!(values_hash(pair), 0xf4e2_db67_b6a0_1715);
+    assert_eq!(values_hash(pair), 0xe463_eab4_18b4_5b5a);
     fai_drop(pair);
     assert_eq!(live_count(), baseline);
 }
@@ -148,7 +202,7 @@ fn full_width_pair_hash_keeps_its_exact_value() {
     let _guard = lock();
     let baseline = live_count();
     let pair = data(0, &[make_int(i64::MIN), make_int(i64::MAX)]);
-    assert_eq!(values_hash(pair), 0x670b_c256_0065_38af);
+    assert_eq!(values_hash(pair), 0x809d_3de7_a19e_f370);
     fai_drop(pair);
     assert_eq!(live_count(), baseline);
 }

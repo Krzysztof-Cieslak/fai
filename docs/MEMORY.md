@@ -3406,6 +3406,12 @@ Editor integration:
     consistency, no per-key-type instance burden, and it works on tuple/ADT keys
     with no user code. Prelude-private (`Prim.*`, std-only), consumed by the
     containers; `borrows_operand` so hashing a key does not consume it.
+    Aggregate hashing uses an ordered rotate/xor/multiply fold followed by one
+    final avalanche. Numeric leaves contribute raw logical words inside that
+    fold, while standalone scalar hashes retain their existing finalizer.
+    Compact/extended headers and boxed/raw Float layouts produce identical
+    hashes for equal values. This changes aggregate hash values and may change
+    the containers' unspecified iteration order between compiler versions.
   - **Open addressing, `Array`-backed, copy-on-share — "like `Array`", not a
     persistent trie.** Each container is an opaque single-constructor wrapper of a
     live count and a power-of-two `Array` of slots (`HD Int (Array (Slot 'k 'v))`),

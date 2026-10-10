@@ -676,6 +676,10 @@ data operand when walking its fields, including mixed raw/boxed Float layouts.
 Compact tag-zero pairs of immediate fields have guarded runtime equality and
 hash fast paths. Boxed fields, raw Float slots and other shapes retain the general
 traversal; hash values stay bit-identical across both paths and header forms.
+Aggregate hashes fold fields in order with one final avalanche per aggregate;
+numeric leaves contribute their logical words within that fold. Standalone scalar
+hashing is unchanged. Hash-container iteration stays deterministic but its
+unspecified order can differ between compiler versions.
 Generic local drops test the uniform immediate tag before calling the runtime,
 so discarding an immediate value in shared generic code needs no call.
 Structural comparisons and hashes also borrow polymorphic operands. Borrow
