@@ -1,0 +1,28 @@
+module HttpProducer
+
+// A scoped producer owns the lifetime of a streaming response. Headers are sent
+// first, each write emits a chunk, and returning finishes the response.
+produce : Http.BodyProducer { }
+let produce write =
+  match write (Bytes.fromString "first\n") with
+  | Err message -> Err message
+  | Ok _ -> write (Bytes.fromString "second\n")
+
+session : Runtime -> Listener -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+let session runtime listener nursery =
+  let server =
+    runtime.concurrency.spawn nursery (fun _ ->
+      Http.serveManagedListener runtime listener (fun _ ->
+        Ok (Http.produced 200 Headers.empty produce)))
+  let result =
+    match Http.get runtime ("http://127.0.0.1:" ++ Int.toString (runtime.net.localPort listener) ++ "/") with
+    | Err message -> Err message
+    | Ok response -> Http.bodyText response.body
+  let cancelled = runtime.concurrency.cancel server
+  runtime.console.writeLine (Result.withDefault "request failed" result)
+
+public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+let main runtime =
+  match runtime.net.listen 0 with
+  | Err message -> runtime.console.writeLine message
+  | Ok listener -> runtime.concurrency.scope (session runtime listener)

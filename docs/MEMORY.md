@@ -4880,6 +4880,15 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   boundaries within chunks. EOF discards incomplete events. Validated opaque
   outbound frames prevent metadata from injecting extra fields; payload line
   endings normalize to LF. Byte limits are explicit configuration.
+  A protocol-neutral HTTP server response can own a scoped body producer. Its
+  writer is serialized and lifetime-checked, headers precede production, and
+  bodyless responses never invoke the producer. This permits structured producer
+  and timer tasks to live exactly as long as a streamed response.
+  Web's producer-backed SSE response uses a bounded, acknowledged message queue
+  and a persistent source task. Heartbeat ticks cannot cancel or lose a pending
+  event; recent writes suppress idle comments. Both tasks are cancelled and joined
+  when sending ends. All enabled heartbeat intervals are explicit milliseconds,
+  validated before production; automatic heartbeats are disabled by default.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
