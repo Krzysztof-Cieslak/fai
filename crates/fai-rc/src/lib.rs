@@ -212,6 +212,7 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
             body = trmc::flatten(body, &f.params, lowered.def, &is_pure_total, &mut next);
         }
         borrow_slots::rewrite(db, &mut body);
+        borrow_slots::remove_discarded_projections(&mut body);
         data_shapes.push(data_shapes::collect(db, &body));
         fns.push(CoreFn { params: f.params.clone(), captures: f.captures.clone(), body });
     }

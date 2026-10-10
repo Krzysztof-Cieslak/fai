@@ -265,3 +265,17 @@ fn uniform_leaf_eligibility_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn discarded_field_edits_match_clean_native_objects() {
+    let source = "module M\ntype Slot 'a 'b = | Full 'a 'b\nlet probe i xs = match Array.unsafeGet i xs with | Full k v -> (k, xs)\n";
+    let edited = source.replace("(k, xs)", "(v, xs)");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("probe");
+            ((*rc(db, file, name)).clone(), (*object_code(db, file, name, false)).clone())
+        },
+    );
+}

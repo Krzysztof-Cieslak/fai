@@ -2324,6 +2324,18 @@ fn uniform_int_leaf_combines_its_boundary_guard() {
 }
 
 #[test]
+fn discarded_generic_fields_keep_the_retained_array_alive() {
+    let source = "module M\ntype Slot 'a 'b = | Full 'a 'b\nlet probe i xs = match Array.unsafeGet i xs with | Full k v -> (k, xs)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let original = [| Full 9223372036854775807 \"retained\" |]\n  let (key, kept) = probe 0 original\n  let Full other value = Array.unsafeGet 0 kept\n  r.console.writeLine (Int.toString key ++ \" \" ++ value ++ \" \" ++ Int.toString other)\n";
+    assert_eq!(run(source), (0, "9223372036854775807 retained 9223372036854775807\n".into()));
+}
+
+#[test]
+fn discarded_generic_tuple_field_accepts_a_raw_float_slot() {
+    let source = "module M\nlet probe pair = match pair with | (first, ignored) -> (first, pair)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let (key, kept) = probe (\"value\", 1.25)\n  let (_, number) = kept\n  r.console.writeLine (key ++ \" \" ++ Float.toString number)\n";
+    assert_eq!(run(source), (0, "value 1.25\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

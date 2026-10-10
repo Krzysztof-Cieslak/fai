@@ -22,6 +22,20 @@ pub(crate) fn rewrite(db: &dyn Db, body: &mut CExpr) {
     }
 }
 
+/// Removes an acquire/release pair after borrowed-slot rewriting has fixed the
+/// owner's lifetime. An intervening parent release keeps the projection intact.
+pub(crate) fn remove_discarded_projections(e: &mut CExpr) {
+    children(e, &mut remove_discarded_projections);
+    let K::Let { local, value, body } = &e.kind else { return };
+    if matches!(&value.kind, K::DataField { base, .. } if matches!(base.kind, K::Local(_)))
+        && matches!(body.kind, K::Drop { local: dropped, .. } if dropped == *local)
+    {
+        let K::Let { body, .. } = std::mem::replace(&mut e.kind, K::Error) else { unreachable!() };
+        let K::Drop { body, .. } = body.kind else { unreachable!() };
+        *e = *body;
+    }
+}
+
 #[derive(Clone, Copy)]
 struct State {
     parent_alive: bool,
@@ -222,6 +236,34 @@ mod tests {
         let out =
             lowered("module M\nlet probe xs = (Array.unsafeGet 0 xs, Array.length xs)\n", "probe");
         assert!(!out.contains("arrayPeek"), "{out}");
+    }
+
+    #[test]
+    fn discarded_field_of_a_borrowed_slot_needs_no_owner() {
+        let out = lowered(
+            "module M\ntype Slot 'a 'b = | Full 'a 'b\nlet probe i xs = match Array.unsafeGet i xs with | Full k v -> (k, xs)\n",
+            "probe",
+        );
+        assert!(out.contains("arrayPeek") && out.contains("(field 0"), "{out}");
+        assert!(!out.contains("(field 1"), "{out}");
+    }
+
+    #[test]
+    fn used_field_of_a_borrowed_slot_keeps_its_owner() {
+        let out = lowered(
+            "module M\ntype Slot 'a 'b = | Full 'a 'b\nlet probe i xs = match Array.unsafeGet i xs with | Full k v -> (v, xs)\n",
+            "probe",
+        );
+        assert!(out.contains("(field 1"), "{out}");
+    }
+
+    #[test]
+    fn releasing_the_parent_before_the_field_keeps_release_order() {
+        let out = lowered(
+            "module M\ntype Slot 'a 'b = | Full 'a 'b\nlet probe slot = match slot with | Full k v -> Some k\n",
+            "probe",
+        );
+        assert!(out.contains("(field 1"), "{out}");
     }
 
     fn invalid_peek(body: CExpr) -> LoweredDef {
