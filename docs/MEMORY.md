@@ -3724,6 +3724,10 @@ Editor integration:
     omit signed rounding bias. A possibly wrapping expression cannot inherit its
     operand's nonnegative bound, and unknown/negative inputs retain truncation
     toward zero. The ordinary branch, loop and call-fact scope rules apply.
+    Raw Int multiplication by literal 3, 5 or 9 lowers through a shift and add,
+    exposing native scaled-add instructions. Both operands are evaluated before
+    rewriting the arithmetic; the low 64-bit result equals wrapping multiplication
+    for every input. Float and uniform multiplication retain their own paths.
     Native Float ordering against a literal uses signed bit order for a
     nonnegative constant and reversed unsigned order for a negative constant.
     This preserves totalOrder, including NaN signs/payloads and signed zeros.

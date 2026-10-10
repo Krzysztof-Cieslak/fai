@@ -1,0 +1,19 @@
+module Main
+
+public products : Int -> (Int * Int * Int * Int * Int * Int)
+let products value = (3 * value, value * 3, 5 * value, value * 5, 9 * value, value * 9)
+
+source : Console -> Int / { Console }
+let source console =
+  let _ = console.writeLine "once"
+  7
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let value = 3 * source runtime.console
+  let (a, b, c, d, e, f) = products (-9223372036854775808)
+  let expected = -9223372036854775808
+  let wrapped =
+    a = expected && b = expected && c = expected && d = expected && e = expected && f = expected
+  let floating = Float.toBits (3.0 * 0.1) = 0x3fd3333333333334
+  runtime.console.writeLine (if value = 21 && wrapped && floating then "yes" else "no")
