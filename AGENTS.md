@@ -503,6 +503,9 @@ payloads, calls, construction and escaping cursors keep ordinary ownership.
 Representation-preserving data aliases are coalesced before ownership insertion,
 after borrow signatures are fixed. The surviving local retains its type metadata;
 generic/scalar or niche conversion bindings remain explicit.
+After ownership insertion, a field projection immediately followed by discarding
+its result is removed while its parent stays live. Parent releases and intervening
+operations retain their original order.
 
 Local function shorthand (`let log message = body`) has the same latent effects
 as `let log = fun message -> body`: constructing it is pure, and calling its

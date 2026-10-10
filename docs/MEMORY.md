@@ -827,6 +827,11 @@ Reuse & in-place update:
     width. Reverse element-release order is preserved; raw Float arrays remain
     leaves and live shared arrays are never shortened. Variable-size release
     dispatch stays outside the inlined compact-data drain path.
+    Ownership lowering removes a field acquire immediately paired with a discard
+    while the already-evaluated parent stays live. This runs after array-slot
+    borrowing, preserving any intervening parent release or operation, so unused
+    fields need no duplicate/drop or scalar reboxing and resource lifetimes remain
+    unchanged.
     The same retained-root proof covers data searches with scalar or niche-scalar
     results when the reachable type contains no resources or functions. A bounded
     type walk records this conservative fact alongside data-shape metadata, keeping
