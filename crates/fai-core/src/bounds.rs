@@ -363,6 +363,17 @@ impl Bounds {
             }
             _ => {}
         }
+        if matches!(op, Prim::ArrayGet | Prim::ArrayPeek | Prim::ArraySet)
+            && let Some(K::Local(array)) = args.first().map(|arg| &arg.kind)
+            && let Some((index, offset)) = args.get(1).and_then(atom_term_off)
+        {
+            // Reaching the continuation means the checked access succeeded.
+            // These facts are added after evaluation, never before its own check.
+            self.add_edge(Term::Zero, index, offset);
+            if let Some(upper) = offset.checked_neg().and_then(|value| value.checked_sub(1)) {
+                self.add_edge(index, Term::Len(*array), upper);
+            }
+        }
         // Every array length is non-negative.
         self.set_ge(Term::Len(local), 0);
     }
@@ -790,6 +801,39 @@ mod tests {
         b.transfer_let(local(4), &prim(Prim::IntLt, vec![local_expr(1), local_expr(2)]));
         b.refine(&local_expr(4), true);
         assert!(b.index_in_bounds(a, &local_expr(1)), "i in [0,len) after both guards");
+    }
+
+    #[test]
+    fn successful_read_establishes_bounds_only_after_evaluation() {
+        let mut bounds = Bounds::new();
+        assert!(!bounds.index_in_bounds(local(0), &local_expr(1)));
+        bounds.transfer_let(local(2), &prim(Prim::ArrayGet, vec![local_expr(0), local_expr(1)]));
+        assert!(bounds.index_in_bounds(local(0), &local_expr(1)));
+    }
+
+    #[test]
+    fn successful_read_does_not_establish_bounds_for_another_array() {
+        let mut bounds = Bounds::new();
+        bounds.transfer_let(local(2), &prim(Prim::ArrayGet, vec![local_expr(0), local_expr(1)]));
+        assert!(!bounds.index_in_bounds(local(3), &local_expr(1)));
+    }
+
+    #[test]
+    fn successful_update_keeps_index_valid_for_the_same_length_result() {
+        let mut bounds = Bounds::new();
+        bounds.transfer_let(
+            local(2),
+            &prim(Prim::ArraySet, vec![local_expr(0), local_expr(1), int_lit(9)]),
+        );
+        assert!(bounds.index_in_bounds(local(2), &local_expr(1)));
+    }
+
+    #[test]
+    fn successful_access_does_not_validate_a_wrapping_offset() {
+        let mut bounds = Bounds::new();
+        bounds.transfer_let(local(2), &prim(Prim::ArrayGet, vec![local_expr(0), local_expr(1)]));
+        bounds.transfer_let(local(3), &prim(Prim::IntAdd, vec![local_expr(1), int_lit(i64::MAX)]));
+        assert!(!bounds.index_in_bounds(local(0), &local_expr(3)));
     }
 
     #[test]

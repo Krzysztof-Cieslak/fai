@@ -350,3 +350,20 @@ fn numeric_array_loop_eligibility_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn checked_access_order_edits_update_callee_facts() {
+    let source = "module M\nlet probe depth i xs = if depth <= 0 then Array.unsafeGet i xs else probe (depth - 1) i xs\npublic read : Int -> Array Int -> Int\nlet read i xs =\n  let first = Array.unsafeGet i xs\n  first + probe 0 i xs\n";
+    let edited = source.replace(
+        "let first = Array.unsafeGet i xs\n  first + probe 0 i xs",
+        "let first = probe 0 i xs\n  first + Array.unsafeGet i xs",
+    );
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("probe");
+            (fai_rc::entry_bounds(db, file, name), (*object_code(db, file, name, false)).clone())
+        },
+    );
+}

@@ -4428,7 +4428,6 @@ impl<M: Module> Translator<'_, M> {
     fn array_set_inline(&mut self, args: &[CExpr]) -> Value {
         let elem = args[2].ty.clone();
         let concrete_float = matches!(elem, Ty::Con(Con::Float));
-        let generic = elem_may_be_float(&elem);
         let base = self.expr(&args[0]);
         let raw_idx = self.array_index_raw(&args[1]);
         // A concrete float element is stored as raw `f64` bits; otherwise a uniform
@@ -4441,8 +4440,16 @@ impl<M: Module> Translator<'_, M> {
         };
 
         let len_off = i32::try_from(rt::ARRAY_LEN_OFFSET).expect("array length offset");
-        let unique = if matches!(args[0].kind, ExprKind::Local(local) if self.unique_array_locals.contains(&local))
-        {
+        let known_unique = matches!(args[0].kind, ExprKind::Local(local) if self.unique_array_locals.contains(&local));
+        let proven = self.index_proven(&args[0], &args[1]);
+        if proven && self.bce_shadow {
+            self.shadow_bounds_assert(base, raw_idx);
+        }
+        if known_unique && proven {
+            self.array_set_store_inline(base, raw_idx, value, &elem);
+            return base;
+        }
+        let unique = if known_unique {
             self.builder.ins().iconst(types::I8, 1)
         } else {
             let rc_off = i32::try_from(rt::RC_OFFSET).expect("rc offset");
@@ -4454,10 +4461,6 @@ impl<M: Module> Translator<'_, M> {
         // uniqueness alone; the slow runtime path then handles only the shared-copy
         // case (its own bounds check never fires). In shadow mode the bounds check is
         // re-asserted standalone, routing a violation to the distinct abort.
-        let proven = self.index_proven(&args[0], &args[1]);
-        if proven && self.bce_shadow {
-            self.shadow_bounds_assert(base, raw_idx);
-        }
         let fast = if proven {
             unique
         } else {
@@ -4475,21 +4478,7 @@ impl<M: Module> Translator<'_, M> {
         // Fast path: overwrite the slot in place.
         self.builder.switch_to_block(fast_b);
         self.builder.seal_block(fast_b);
-        let (addr, slot_off) = self.array_elem_addr(base, raw_idx);
-        if concrete_float {
-            // Raw `f64` store; the overwritten slot carries no reference count, so
-            // there is no old element to release.
-            self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
-        } else if generic {
-            // The static type cannot say whether the array is raw `f64`; branch on
-            // its self-tag at runtime.
-            self.array_set_store_generic(base, addr, slot_off, value, &elem, true);
-        } else {
-            // A boxed/`Int` element: store the new word, releasing the old element.
-            let old = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
-            self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
-            self.drop_value(old, &elem);
-        }
+        self.array_set_store_inline(base, raw_idx, value, &elem);
         self.builder.ins().jump(merge_b, &[base.into()]);
 
         // Slow path: the runtime copies a shared array and aborts on a bad index.
@@ -4508,6 +4497,19 @@ impl<M: Module> Translator<'_, M> {
         self.builder.switch_to_block(merge_b);
         self.builder.seal_block(merge_b);
         self.builder.block_params(merge_b)[0]
+    }
+
+    fn array_set_store_inline(&mut self, base: Value, index: Value, value: Value, elem: &Ty) {
+        let (addr, slot_off) = self.array_elem_addr(base, index);
+        if matches!(elem, Ty::Con(Con::Float)) {
+            self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+        } else if elem_may_be_float(elem) {
+            self.array_set_store_generic(base, addr, slot_off, value, elem, true);
+        } else {
+            let old = self.builder.ins().load(types::I64, MemFlags::trusted(), addr, slot_off);
+            self.builder.ins().store(MemFlags::trusted(), value, addr, slot_off);
+            self.drop_value(old, elem);
+        }
     }
 
     /// The generic (type-variable element) in-place set store: branch on the

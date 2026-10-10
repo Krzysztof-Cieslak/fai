@@ -468,6 +468,10 @@ A bounded, scalar-only loop updating one numeric array can test its ownership
 once and use an in-place loop version. Shared inputs keep the ordinary
 copy-on-share path; retained aliases, other arrays, callbacks and growth prevent
 this specialization. Bounds checks and full-width element behavior are preserved.
+After a checked array access succeeds, its index bounds can justify later
+accesses to the same array. The first check remains in place; another array or
+wrapping index arithmetic needs its own proof. A write proven both unique and
+in bounds emits the direct store without an unreachable fallback branch.
 Bounds inference includes the generated loops in its file-local caller graph,
 including their first-class function references. A callback moved into a loop
 therefore cannot disappear from a private helper's bounds-check proof.

@@ -9,6 +9,9 @@ const FUSED_CALL: &str = include_str!("fixtures/bounds/FusedCaller.fai");
 const FUSED_FUNCTION: &str = include_str!("fixtures/bounds/FusedFunction.fai");
 const SPREAD_LOOP: &str = include_str!("fixtures/bounds/SpreadLoop.fai");
 const NUMERIC_LOOP: &str = include_str!("fixtures/bounds/NumericArrayLoop.fai");
+const CHECKED_OTHER: &str = include_str!("fixtures/bounds/CheckedThenOther.fai");
+const CHECKED_WRAPPED: &str = include_str!("fixtures/bounds/CheckedThenWrapped.fai");
+const FIRST_CHECKED: &str = include_str!("fixtures/bounds/FirstCheckedInvalid.fai");
 
 #[track_caller]
 fn assert_bounds_trap(case: &str, shadow: bool) {
@@ -110,6 +113,21 @@ fn unique_numeric_array_loops_keep_update_bounds_checks() {
 }
 
 #[test]
+fn successful_access_does_not_validate_other_arrays() {
+    assert_bounds_trap("checked-other", true);
+}
+
+#[test]
+fn successful_access_does_not_validate_wrapped_indices() {
+    assert_bounds_trap("checked-wrapped", true);
+}
+
+#[test]
+fn the_first_checked_access_keeps_its_fault() {
+    assert_bounds_trap("first-checked", true);
+}
+
+#[test]
 fn bounds_worker() {
     let Ok(case) = std::env::var("FAI_BOUNDS_CASE") else { return };
     let source = match case.as_str() {
@@ -120,6 +138,9 @@ fn bounds_worker() {
         "fused-function" => FUSED_FUNCTION,
         "spread-loop" => SPREAD_LOOP,
         "numeric-loop" => NUMERIC_LOOP,
+        "checked-other" => CHECKED_OTHER,
+        "checked-wrapped" => CHECKED_WRAPPED,
+        "first-checked" => FIRST_CHECKED,
         _ => panic!("unknown bounds case"),
     };
     let mut db = FaiDatabase::new();
