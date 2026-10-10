@@ -279,3 +279,17 @@ fn discarded_field_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn unique_constructor_tag_edits_match_clean_native_objects() {
+    let source = "module M\ntype T = | Empty | Full Int\nlet kind value = match value with | Empty -> 0 | _ -> 1\n";
+    let edited = source.replace("Full Int", "Full Int | Other Bool");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)], &[("M.fai", source)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("kind");
+            ((*rc(db, file, name)).clone(), (*object_code(db, file, name, false)).clone())
+        },
+    );
+}

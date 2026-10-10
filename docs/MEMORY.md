@@ -832,6 +832,12 @@ Reuse & in-place update:
     borrowing, preserving any intervening parent release or operation, so unused
     fields need no duplicate/drop or scalar reboxing and resource lifetimes remain
     unchanged.
+    Data-shape evidence also records a unique boxed or immediate constructor tag
+    when one exists. Native matches can select the known boxed tag without a
+    header read, or derive the complete tag from the immediate bit when each side
+    has one alternative. Multiple immediate variants still decode their own tags;
+    multiple boxed variants retain header reads. Missing wire evidence defaults
+    to unknown and the facts participate in native fingerprints.
     The same retained-root proof covers data searches with scalar or niche-scalar
     results when the reachable type contains no resources or functions. A bounded
     type walk records this conservative fact alongside data-shape metadata, keeping

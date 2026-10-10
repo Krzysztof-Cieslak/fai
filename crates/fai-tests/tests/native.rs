@@ -617,6 +617,11 @@ fn generated_callers_keep_the_native_bounds_check() {
 }
 
 #[test]
+fn unique_constructor_tags_run_natively() {
+    assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
+}
+
+#[test]
 fn const_preserves_native_effect_order() {
     let source = indoc! {r#"
         module Main

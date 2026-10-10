@@ -65,15 +65,22 @@ fn union(a: DataShape, b: DataShape) -> DataShape {
         max_fields: a.max_fields.max(b.max_fields),
         scalars: a.scalars | b.scalars,
         resource_free: a.resource_free && b.resource_free,
+        boxed_tag: a.boxed_tag.filter(|tag| Some(*tag) == b.boxed_tag),
+        immediate_tag: a.immediate_tag.filter(|tag| Some(*tag) == b.immediate_tag),
     }
 }
 
 fn shape(db: &dyn Db, ty: &Ty) -> Option<DataShape> {
     match ty {
         Ty::App(head, _) => shape(db, head),
-        Ty::Con(Con::List) => {
-            Some(DataShape { max_tag: 1, max_fields: 2, scalars: 0, resource_free: false })
-        }
+        Ty::Con(Con::List) => Some(DataShape {
+            max_tag: 1,
+            max_fields: 2,
+            scalars: 0,
+            resource_free: false,
+            boxed_tag: Some(1),
+            immediate_tag: Some(0),
+        }),
         Ty::Tuple(fields) => structural_shape(fields.iter()),
         Ty::Record(row) if row.tail == RowEnd::Closed => {
             structural_shape(row.fields.iter().map(|(_, ty)| ty))
@@ -85,13 +92,23 @@ fn shape(db: &dyn Db, ty: &Ty) -> Option<DataShape> {
             if info.is_alias {
                 return None;
             }
-            let mut result =
-                DataShape { max_tag: 0, max_fields: 0, scalars: 0, resource_free: false };
+            let mut result = DataShape {
+                max_tag: 0,
+                max_fields: 0,
+                scalars: 0,
+                resource_free: false,
+                boxed_tag: None,
+                immediate_tag: None,
+            };
+            let mut boxed = Vec::new();
+            let mut immediate = Vec::new();
             for name in &info.ctors {
                 let ctor = decls.ctor(*name)?;
                 if ctor.arity == 0 {
+                    immediate.push(ctor.tag);
                     continue;
                 }
+                boxed.push(ctor.tag);
                 let scheme = fai_types::constructor_scheme(db, file, *name)?;
                 let repr = fai_core::representation::runtime_type(db, &scheme.ty);
                 let mut ty = &repr;
@@ -112,8 +129,16 @@ fn shape(db: &dyn Db, ty: &Ty) -> Option<DataShape> {
                         max_fields: u32::try_from(ctor.arity).ok()?,
                         scalars,
                         resource_free: false,
+                        boxed_tag: None,
+                        immediate_tag: None,
                     },
                 );
+            }
+            if let [tag] = boxed.as_slice() {
+                result.boxed_tag = Some(*tag);
+            }
+            if let [tag] = immediate.as_slice() {
+                result.immediate_tag = Some(*tag);
             }
             (result.max_fields > 0).then_some(result)
         }
@@ -137,6 +162,8 @@ fn structural_shape<'a>(fields: impl Iterator<Item = &'a Ty>) -> Option<DataShap
         max_fields: count,
         scalars,
         resource_free: false,
+        boxed_tag: Some(0),
+        immediate_tag: None,
     })
 }
 
@@ -221,7 +248,14 @@ mod tests {
     fn constructor_bounds_include_every_boxed_variant() {
         assert_eq!(
             nominal("module M\ntype T = | Empty | One Int | Pair Int Float\n"),
-            Some(DataShape { max_tag: 2, max_fields: 2, scalars: 2, resource_free: false })
+            Some(DataShape {
+                max_tag: 2,
+                max_fields: 2,
+                scalars: 2,
+                resource_free: false,
+                boxed_tag: None,
+                immediate_tag: Some(0)
+            })
         );
     }
 
@@ -229,7 +263,14 @@ mod tests {
     fn generic_constructor_fields_remain_uniform() {
         assert_eq!(
             nominal("module M\ntype T 'a = | C 'a 'a 'a 'a 'a 'a 'a 'a 'a\n"),
-            Some(DataShape { max_tag: 0, max_fields: 9, scalars: 0, resource_free: false })
+            Some(DataShape {
+                max_tag: 0,
+                max_fields: 9,
+                scalars: 0,
+                resource_free: false,
+                boxed_tag: Some(0),
+                immediate_tag: None
+            })
         );
     }
 
@@ -239,7 +280,14 @@ mod tests {
             nominal(
                 "module M\ntype T = | A Int | B Float Float Float Float Float Float Float Float Float\n"
             ),
-            Some(DataShape { max_tag: 1, max_fields: 9, scalars: 511, resource_free: false })
+            Some(DataShape {
+                max_tag: 1,
+                max_fields: 9,
+                scalars: 511,
+                resource_free: false,
+                boxed_tag: None,
+                immediate_tag: None
+            })
         );
     }
 
@@ -248,8 +296,41 @@ mod tests {
         let fields = vec![Ty::Var(fai_types::TyVarId(0)); 9];
         assert_eq!(
             structural_shape(fields.iter()),
-            Some(DataShape { max_tag: 0, max_fields: 9, scalars: 511, resource_free: false })
+            Some(DataShape {
+                max_tag: 0,
+                max_fields: 9,
+                scalars: 511,
+                resource_free: false,
+                boxed_tag: Some(0),
+                immediate_tag: None
+            })
         );
+    }
+
+    #[test]
+    fn unique_tags_distinguish_immediate_from_boxed_alternatives() {
+        let shape = nominal("module M\ntype T = | End | Node Int\n").unwrap();
+        assert_eq!((shape.immediate_tag, shape.boxed_tag), (Some(0), Some(1)));
+    }
+
+    #[test]
+    fn unique_tags_preserve_reversed_declaration_order() {
+        let shape = nominal("module M\ntype T = | Node Int | End\n").unwrap();
+        assert_eq!((shape.immediate_tag, shape.boxed_tag), (Some(1), Some(0)));
+    }
+
+    #[test]
+    fn multiple_immediate_alternatives_keep_only_the_boxed_tag() {
+        let shape = nominal("module M\ntype T = | First | Node Int | Last\n").unwrap();
+        assert_eq!((shape.immediate_tag, shape.boxed_tag), (None, Some(1)));
+    }
+
+    #[test]
+    fn conflicting_local_observations_lose_unique_tags() {
+        let a = nominal("module M\ntype T = | End | Node Int\n").unwrap();
+        let b = nominal("module M\ntype T = | Node Int | End\n").unwrap();
+        let joined = union(a, b);
+        assert_eq!((joined.immediate_tag, joined.boxed_tag), (None, None));
     }
 
     fn is_resource_free(source: &str) -> bool {
