@@ -458,6 +458,7 @@ initialization sections remain live.
 For a small projection-only native `main`, the launcher can bind just the used
 default-runtime fields, each once and in field order. Every default field must be
 a proven finite data/closure construction; the actual capability values are kept.
+Projection starts from the final transformed main, retaining its synthesized loops.
 Custom builders, whole-runtime uses and uncertain entry shapes use the ordinary
 typed launcher.
 

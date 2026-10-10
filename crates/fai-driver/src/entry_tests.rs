@@ -184,6 +184,20 @@ fn projected_default_binds_each_real_field_once() {
 }
 
 #[test]
+fn projected_main_keeps_its_synthesized_pipeline() {
+    let source = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Array.sum (Array.range 0 1000)))\n";
+    let (db, file) = database(source);
+    let launch = crate::entry::prepare(&db, file).unwrap();
+    let (adapter, _) = crate::entry::projected_default(&db, file, &launch).unwrap();
+    assert!(
+        adapter.referenced_globals().iter().any(|def| def.name.as_str().starts_with("fuse#")),
+        "{}",
+        fai_core::pretty_def(&adapter)
+    );
+    native(source, "499500");
+}
+
+#[test]
 fn projected_default_preserves_multiple_capability_fields() {
     let source = "module Main\npublic main : Runtime -> Unit / { Clock, Console, Env }\nlet main r =\n  let _ = r.clock.sleep 0\n  r.console.writeLine (Int.toString (List.length (r.env.args ())))\n";
     let (db, file) = database(source);
