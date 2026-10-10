@@ -1,0 +1,16 @@
+module TextCells
+
+/// Split Unicode extended grapheme clusters, retaining their original UTF-8.
+public graphemes : String -> Array String
+let graphemes text = Prim.textGraphemes text
+example: graphemes "a\u{301}界" = [| "a\u{301}", "界" |]
+example: graphemes "👩‍💻" = [| "👩‍💻" |]
+
+/// Display-cell width. true treats East Asian ambiguous characters as wide.
+/// Control characters have no printable width and must be sanitized separately.
+public width : Bool -> String -> Int
+let width ambiguousWide text = Prim.textWidth ambiguousWide text
+example: width false "界" = 2
+example: width false "a\u{301}" = 1
+example: width false "👩‍💻" = 2
+example: width false "" = 0

@@ -78,6 +78,8 @@ pub const INTRINSICS: &[&str] = &[
     "cryptoPbkdf2Sha256",
     "cryptoEqual",
     "cryptoScramPassword",
+    "textGraphemes",
+    "textWidth",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

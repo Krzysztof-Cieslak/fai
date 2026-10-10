@@ -34,6 +34,9 @@ ring.workspace = true
 subtle.workspace = true
 stringprep.workspace = true
 x509-parser.workspace = true
+crossterm.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Memory"] }

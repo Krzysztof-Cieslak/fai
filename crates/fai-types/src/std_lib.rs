@@ -167,6 +167,10 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "cryptoScramPassword" => {
             Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::Con(Con::String)))
         }
+        "textGraphemes" => {
+            Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::array(Ty::Con(Con::String))))
+        }
+        "textWidth" => Scheme::mono(Ty::arrows([Ty::bool(), Ty::Con(Con::String)], Ty::int())),
         _ => return None,
     })
 }
