@@ -1,0 +1,48 @@
+module TerminalHost
+
+/// An exclusive full-screen terminal session. Closing invalidates every alias.
+public opaque type Session =
+  | TerminalSession Int
+
+/// Key modifiers: shift=1, control=2, alt=4, super=8, hyper=16, meta=32.
+/// Printable keys carry their text; named keys use Enter, Escape, Tab, BackTab,
+/// Backspace, Delete, Insert, Left, Right, Up, Down, Home, End, PageUp, PageDown, F1….
+public type Key = { code : String, modifiers : Int, repeat : Bool }
+
+public type Mouse = { button : Int, column : Int, kind : String, modifiers : Int, row : Int }
+
+public type Event =
+  | Key Key
+  | Paste String
+  | Resize Int Int
+  | Mouse Mouse
+  | Focus Bool
+
+/// Native terminal operations. poll's timeout is explicit; zero is nonblocking.
+/// Output is raw terminal bytes; UI renderers must escape untrusted display text.
+public interface Terminal =
+  close : Session -> Result Unit String / { Terminal }
+  open : Bool -> Result Session String / { Terminal }
+  poll : Session -> Int -> Result (Option Event) String / { Terminal }
+  size : Session -> Result (Int * Int) String / { Terminal }
+  write : Session -> Bytes -> Result Unit String / { Terminal }
+
+foreign "fai_terminal_open" openRaw : Bool -> Result Session String / { Terminal }
+
+foreign "fai_terminal_close" closeRaw : Session -> Result Unit String / { Terminal }
+
+foreign "fai_terminal_poll" pollRaw : Session -> Int -> Result (Option Event) String / { Terminal }
+
+foreign "fai_terminal_write" writeRaw : Session -> Bytes -> Result Unit String / { Terminal }
+
+foreign "fai_terminal_size" sizeRaw : Session -> Result (Int * Int) String / { Terminal }
+
+/// Explicit native terminal capability; add it to an application's runtime.
+public native : Terminal
+let native = { Terminal with
+  close = closeRaw,
+  open = openRaw,
+  poll = pollRaw,
+  size = sizeRaw,
+  write = writeRaw
+}
