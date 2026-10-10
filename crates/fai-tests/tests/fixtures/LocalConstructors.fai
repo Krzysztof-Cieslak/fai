@@ -1,0 +1,38 @@
+module Main
+
+first : Console -> Int -> Int / { Console }
+let first console value =
+  let _ = console.writeLine "first"
+  value + 1
+
+second : Console -> Int -> Int / { Console }
+let second console value =
+  let _ = console.writeLine "second"
+  value + 2
+
+fields : Console -> Int -> Int / { Console }
+let fields console value =
+  let pair = (first console value, second console value)
+  let (_, second) = pair
+  second
+
+let choose yes value =
+  let built = if yes then Some (value, value + 1) else None
+  match built with
+  | Some (left, right) -> fun extra -> left + right + extra
+  | None -> fun extra -> extra
+
+public compute : Bool -> Int -> Int
+let compute yes value = choose yes value 7
+
+public floatBits : Float -> Int
+let floatBits value =
+  let pair = (value, value)
+  let (first, _) = pair
+  Float.toBits first
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let result = fields runtime.console 40
+  let ok = result = 42 && compute true 17 = 42 && compute false 0 = 7
+  runtime.console.writeLine (if ok then "yes" else "no")

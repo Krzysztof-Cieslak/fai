@@ -121,6 +121,14 @@ public pairStates : Int -> Int
 let pairStates n =
   let (_, xs) = pairStateLoop n (Array.repeat 16 0)
   Array.length xs
+let constructorLoop n total =
+  if n <= 0 then total else
+    let step = if n % 2 = 0 then Some (n, total) else None
+    match step with
+    | Some (value, previous) -> constructorLoop (n - 1) (value + previous)
+    | None -> constructorLoop (n - 1) total
+public constructors : Int -> Int
+let constructors n = constructorLoop n 0
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -348,4 +356,14 @@ fn repeated_unique_field_transfers_keep_constant_storage() {
 #[test]
 fn integer_state_pair_loops_keep_constant_storage() {
     bounded_reuse("pairStates", |_| 16);
+}
+
+#[test]
+fn local_constructor_matches_need_no_iteration_storage() {
+    let mut harness = Harness::new();
+    let short = harness.measure("constructors", 8, 20);
+    let long = harness.measure("constructors", 4096, 2048 * 2049);
+    assert_eq!(short, long);
+    assert_eq!(long.allocations, 0);
+    assert_eq!(long.peak_bytes, 0);
 }

@@ -3693,6 +3693,12 @@ Editor integration:
     Full-width operands still use exact wrapping subtraction and normal owned
     argument release. Other callbacks preserve their call and result conversion;
     a reused comparator result retains the ordinary value-producing path.
+    Bounded local constructor/match reduction removes resource-free intermediate
+    cells used only through their fields and tags. Field initializers stay strict
+    and in source order. Small continuations may move into a bounded set of known
+    constructor branches, freshening every copied binder. Generic/mismatched
+    representation views, escaped cells and resource-bearing fields keep their
+    ordinary allocation and ownership boundaries.
     Native Float ordering against a literal uses signed bit order for a
     nonnegative constant and reversed unsigned order for a negative constant.
     This preserves totalOrder, including NaN signs/payloads and signed zeros.

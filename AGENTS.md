@@ -595,6 +595,11 @@ counting. Receiver and argument evaluation order, captured environments, and
 resource lifetimes are preserved. Unknown, polymorphic, or escaping dictionaries
 retain their representation; cross-file factory bodies remain behind the normal
 signature firewall.
+Resource-free local constructor values used only through matching projections
+and tag tests can lose their temporary cells. Bounded constructor-producing
+branches may receive small duplicated continuations with fresh local binders.
+Field initializers remain strict and ordered, including unused effects and traps;
+escaping values, unknown representations and resource-bearing fields stay boxed.
 
 A runtime function value that is an immortal closure and is exactly saturated
 can use a guarded indirect call to its uniform entry, avoiding `apply_n` dispatch.
