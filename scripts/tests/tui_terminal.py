@@ -31,11 +31,18 @@ def child_terminal():
 def supervise(command):
     # Keep the session leader alive until terminal state is inspected. macOS
     # revokes the slave when its controlling session leader exits.
-    original = termios.tcgetattr(0)
+    original = terminal_configuration()
     result = subprocess.run(command, check=False)
     assert result.returncode == 0, (command, result.returncode)
-    assert termios.tcgetattr(0) == original, "terminal modes were not restored"
+    assert terminal_configuration() == original, "terminal modes were not restored"
     print("TUI terminal modes restored", flush=True)
+
+
+def terminal_configuration():
+    attributes = termios.tcgetattr(0)
+    # BSD's pending-input status changes when canonical processing resumes.
+    attributes[3] &= ~getattr(termios, "PENDIN", 0)
+    return attributes
 
 
 def read_pty(fd):
