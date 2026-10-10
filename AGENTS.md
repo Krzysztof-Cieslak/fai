@@ -582,6 +582,11 @@ Float comparisons against literal constants use equivalent signed or reversed
 unsigned bit comparisons, preserving total order for NaNs and signed zeros.
 Multiplication by the literal `2.0` uses one exact doubling addition; its operand
 is evaluated once, with the same overflow, subnormal and NaN behavior.
+An eligible pure scalar loop can skip identical remaining transitions after its
+entire changing state reaches a bitwise fixed point. The proof requires an
+invariant bound, a non-wrapping unit-step counter, and counter-independent state
+and internal control. The original terminal branch still runs at the exact final
+counter; effects, calls, and counter-dependent traps prevent the shortcut.
 
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names

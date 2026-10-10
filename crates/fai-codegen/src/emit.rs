@@ -1586,6 +1586,7 @@ struct Translator<'a, M: Module> {
 
 /// The active tail-call loop being translated.
 struct LoopCtx {
+    fixed_point: Option<crate::fixed_point::Plan>,
     /// The loop header (the `Recur` back-edge target).
     header: Block,
     /// The loop exit, taking the result as its block parameter.
@@ -7045,7 +7046,16 @@ impl<M: Module> Translator<'_, M> {
         // The header stays unsealed: its `Recur` back-edge predecessors are still
         // to be emitted while translating the body.
 
+        let fixed_point = (!self.concurrent)
+            .then(|| crate::fixed_point::plan(params, body, &self.var_tys))
+            .flatten()
+            .filter(|plan| {
+                self.is_int_local(params[plan.counter])
+                    && self.is_int_local(params[plan.bound])
+                    && plan.floats.iter().all(|i| self.is_f64_local(params[*i]))
+            });
         let prev = self.loop_ctx.replace(LoopCtx {
+            fixed_point,
             header,
             exit,
             params: params.to_vec(),
@@ -7279,11 +7289,24 @@ impl<M: Module> Translator<'_, M> {
     /// A `Recur` back-edge: evaluate the new loop-carried values (which may read the
     /// current ones), then reassign every loop local and jump to the header.
     fn recur(&mut self, args: &[CExpr]) {
-        let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
-        let (header, params) = {
+        let mut vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+        let (header, params, fixed) = {
             let ctx = self.loop_ctx.as_ref().expect("recur inside a loop");
-            (ctx.header, ctx.params.clone())
+            (ctx.header, ctx.params.clone(), ctx.fixed_point.clone())
         };
+        if let Some(fixed) = fixed {
+            let mut stable = self.builder.ins().iconst(types::I8, 1);
+            for position in fixed.floats {
+                let old = self.use_var(params[position]);
+                let old_bits = self.f64_to_i64(old);
+                let new_bits = self.f64_to_i64(vals[position]);
+                let same = self.builder.ins().icmp(IntCC::Equal, old_bits, new_bits);
+                stable = self.builder.ins().band(stable, same);
+            }
+            let bound = self.use_var(params[fixed.bound]);
+            let next = self.builder.ins().select(stable, bound, vals[fixed.counter]);
+            vals[fixed.counter] = self.mark_raw(next);
+        }
         for (param, val) in params.iter().zip(vals) {
             self.define_var(*param, val);
         }

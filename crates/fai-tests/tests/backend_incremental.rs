@@ -396,3 +396,16 @@ fn float_literal_sign_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn fixed_point_counter_dependence_edits_match_clean_native_objects() {
+    let source = "module M\nlet loop i n x = if i >= n then x else loop (i + 1) n (x * 0.5)\n";
+    let edited = source.replace("x * 0.5", "x + Int.toFloat i");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("loop"), false))
+                .clone()
+        },
+    );
+}
