@@ -232,7 +232,7 @@ fn jit_module(foreign_lookup: Option<ForeignLookup>) -> JITModule {
     // optimizations are value-preserving, so this stays correctness-neutral.
     flags.set("opt_level", "speed").expect("flag");
     // Match delivered objects' stable instruction-fetch alignment.
-    flags.set("log2_min_function_alignment", "5").expect("flag");
+    flags.set("log2_min_function_alignment", "6").expect("flag");
     let isa_builder = cranelift_native::builder().expect("host machine is supported");
     let isa = isa_builder.finish(settings::Flags::new(flags)).expect("isa");
     let mut builder = JITBuilder::with_isa(isa, default_libcall_names());

@@ -449,7 +449,7 @@ scalar and aggregate-component locals simultaneously. Post-call work, temporary
 borrow conversions and stack-backed captures keep ordinary calls. A carried Float
 record therefore needs neither a recursive frame nor an intermediate cell on the
 eligible path; broader boxed-result and nested aggregate loops remain deferred.
-Native function entries use at least 32-byte alignment in both AOT and JIT code.
+Native function entries use at least 64-byte alignment in both AOT and JIT code.
 Native executable linking removes unused code/data sections with the platform
 linker's dead-section elimination; referenced foreign symbols and native
 initialization sections remain live.
