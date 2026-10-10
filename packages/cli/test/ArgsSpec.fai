@@ -1,0 +1,164 @@
+module ArgsSpec
+
+let app parser = Args.program (Args.described "tool" "Example tool") parser
+
+let parse parser words = Args.parse (app parser) words
+
+let named name = Args.named name ""
+
+let verbose = Args.flag (Args.short 'v' (named "verbose"))
+
+let count = Args.count (Args.short 'v' (named "verbose"))
+
+let port = Args.requiredOption Args.int (Args.short 'p' (named "port"))
+
+let text = Args.requiredOption Args.string (Args.short 't' (named "text"))
+
+let file = Args.argument Args.string (Args.positional "FILE" "")
+
+let files = Args.arguments Args.string (Args.positional "FILE" "")
+
+let error parser words kind index token message =
+  parse parser words = Err {
+    command = ["tool"],
+    index = index,
+    kind = kind,
+    message = message,
+    token = token
+  }
+example: parse (Args.succeed ()) [] = Ok (Args.Parsed ())
+example: parse verbose [] = Ok (Args.Parsed false)
+example: parse verbose ["--verbose"] = Ok (Args.Parsed true)
+example: parse verbose ["-vv", "--verbose"] = Ok (Args.Parsed true)
+example: parse count ["-vvv", "--verbose"] = Ok (Args.Parsed 4)
+example: parse count [] = Ok (Args.Parsed 0)
+example: parse port ["--port", "42"] = Ok (Args.Parsed 42)
+example: parse port ["--port=42"] = Ok (Args.Parsed 42)
+example: parse port ["-p42"] = Ok (Args.Parsed 42)
+example: parse port ["-p", "-42"] = Ok (Args.Parsed (-42))
+example: parse port ["--port", "-42"] = Ok (Args.Parsed (-42))
+example: parse port ["--port=-9223372036854775808"] = Ok (Args.Parsed (-9223372036854775808))
+example: parse (Args.option Args.int (named "port")) [] = Ok (Args.Parsed None)
+example: parse (Args.option Args.int (named "port")) ["--port", "0"] = Ok (Args.Parsed (Some 0))
+example: parse (Args.optionWithDefault 8080 Args.int (named "port")) [] = Ok (Args.Parsed 8080)
+example: parse (Args.optionWithDefault 8080 Args.int (named "port")) [
+  "--port=0"
+] = Ok (Args.Parsed 0)
+example: parse (Args.options Args.string (Args.short 't' (named "tag"))) [
+  "--tag=a",
+  "-t",
+  "",
+  "--tag=é😀",
+  "-t=last"
+] = Ok (Args.Parsed ["a", "", "é😀", "=last"])
+example: parse text ["--text="] = Ok (Args.Parsed "")
+example: parse text ["--text=a=b=c"] = Ok (Args.Parsed "a=b=c")
+example: parse text ["--text", "--help"] = Ok (Args.Parsed "--help")
+example: parse text ["--text", "--"] = Ok (Args.Parsed "--")
+example: parse text ["-t--help"] = Ok (Args.Parsed "--help")
+example: parse text ["--text", "\"quoted\""] = Ok (Args.Parsed "\"quoted\"")
+example: parse (Args.map2 (fun v p -> (v, p)) verbose port) ["-vp80"] = Ok (Args.Parsed (true, 80))
+example: parse (Args.map2 (fun v p ->
+  (v, p)) verbose port) ["-p80", "-v"] = Ok (Args.Parsed (true, 80))
+example: parse file ["-"] = Ok (Args.Parsed "-")
+example: parse file [""] = Ok (Args.Parsed "")
+example: parse files ["--", "--help", "-v", "--", ""] = Ok (Args.Parsed ["--help", "-v", "--", ""])
+example: parse (Args.argument Args.int (Args.positional "N" "")) [
+  "--",
+  "-42"
+] = Ok (Args.Parsed (-42))
+example: parse (Args.map2 (fun xs v ->
+  (xs, v)) files verbose) ["first", "-v", "second"] = Ok (Args.Parsed (["first", "second"], true))
+example: parse (Args.optionalArgument Args.string (Args.positional "FILE" "")) [] = Ok (Args.Parsed None)
+example: parse (Args.optionalArgument Args.string (Args.positional "FILE" "")) [
+  "one"
+] = Ok (Args.Parsed (Some "one"))
+
+let optionalThenRest =
+  Args.map2 (fun first rest ->
+    (first, rest)) (Args.optionalArgument Args.string (Args.positional "FIRST" "")) (Args.arguments Args.string (Args.positional "REST" ""))
+example: parse optionalThenRest [] = Ok (Args.Parsed (None, []))
+example: parse optionalThenRest ["a", "b", "c"] = Ok (Args.Parsed (Some "a", ["b", "c"]))
+
+let pair =
+  Args.map2 (fun a b ->
+    (a, b)) (Args.argument Args.string (Args.positional "A" "")) (Args.argument Args.int (Args.positional "B" ""))
+example: parse pair ["first", "2"] = Ok (Args.Parsed ("first", 2))
+
+let pipeline =
+  Args.succeed (fun v p f -> {
+    file = f,
+    port = p,
+    verbose = v
+  }) |> Args.andMap verbose |> Args.andMap port |> Args.andMap file
+example: parse pipeline [
+  "file",
+  "-vp123"
+] = Ok (Args.Parsed { file = "file", port = 123, verbose = true })
+example: parse (Args.map not verbose) ["-v"] = Ok (Args.Parsed false)
+
+let positive = Args.validateWith (fun p -> if p > 0 then Ok p else Err "port must be positive") port
+example: parse positive ["--port=1"] = Ok (Args.Parsed 1)
+example: error positive ["--port=0"] Args.ValidationFailed None None "port must be positive"
+example: error verbose [
+  "--unknown"
+] Args.UnknownOption (Some 0) (Some "--unknown") "unknown option --unknown"
+example: error verbose [
+  "--verb"
+] Args.UnknownOption (Some 0) (Some "--verb") "unknown option --verb"
+example: error verbose [
+  "--Verbose"
+] Args.UnknownOption (Some 0) (Some "--Verbose") "unknown option --Verbose"
+example: error verbose [
+  "-vx"
+] Args.UnknownOption (Some 0) (Some "-vx") "unknown short option in \"-vx\""
+example: error verbose [
+  "--verbose=true"
+] Args.UnexpectedValue (Some 0) (Some "--verbose=true") "option --verbose does not take a value"
+example: error port [] Args.MissingArgument None None "missing required option --port"
+example: error port ["--port"] Args.MissingValue (Some 0) (Some "--port") "option requires a value"
+example: error port ["-p"] Args.MissingValue (Some 0) (Some "-p") "option requires a value"
+example: error port [
+  "--port",
+  "no"
+] Args.InvalidValue (Some 1) (Some "no") "invalid value \"no\" for --port: expected a decimal Int"
+example: error port [
+  "--port=no"
+] Args.InvalidValue (Some 0) (Some "--port=no") "invalid value \"no\" for --port: expected a decimal Int"
+example: error port [
+  "-p=7"
+] Args.InvalidValue (Some 0) (Some "-p=7") "invalid value \"=7\" for --port: expected a decimal Int"
+example: error port [
+  "--port=1",
+  "-p",
+  "2"
+] Args.DuplicateOption (Some 1) (Some "-p") "option --port may only occur once"
+example: error file [] Args.MissingArgument None None "missing required argument FILE"
+example: error file [
+  "one",
+  "two"
+] Args.UnexpectedArgument (Some 1) (Some "two") "unexpected argument \"two\""
+example: error files [
+  "-42"
+] Args.UnknownOption (Some 0) (Some "-42") "unknown short option in \"-42\""
+example: error pair [
+  "é😀",
+  "bad"
+] Args.InvalidValue (Some 1) (Some "bad") "invalid value \"bad\" for B: expected a decimal Int"
+forall n: parse port ["--port", Int.toString n] = Ok (Args.Parsed n)
+forall xs: parse files ("--" :: xs) = Ok (Args.Parsed xs)
+forall value: parse text ["--text", value] = Ok (Args.Parsed value)
+forall values: parse (Args.options Args.int (named "number")) (List.concatMap (fun value -> [
+  "--number",
+  Int.toString value
+]) values) = Ok (Args.Parsed values)
+example: parse text ["-té😀"] = Ok (Args.Parsed "é😀")
+example: error port [
+  "--port",
+  "--help"
+] Args.InvalidValue (Some 1) (Some "--help") "invalid value \"--help\" for --port: expected a decimal Int"
+example: parse count (List.map (fun _ -> "-v") (List.range 0 10000)) = Ok (Args.Parsed 10000)
+example: Result.map (fun result ->
+  match result with
+  | Args.Parsed xs -> List.length xs
+  | _ -> (-1)) (parse files (List.map Int.toString (List.range 0 10000))) = Ok 10000

@@ -1716,6 +1716,24 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional web framework
 
+Including `packages/cli/src` supplies the pure `Args` argument parser. Build a
+typed `Args.Parser 'a` with `flag`, `count`, `option`, `requiredOption`,
+`optionWithDefault`, `options`, `argument`, `optionalArgument`, and `arguments`;
+combine with `map`, `map2`, or `succeed constructor |> andMap declaration`.
+`named "port" "TCP port"` makes option metadata, `short 'p' info` adds an alias,
+and `positional "FILE" "Input"` makes positional metadata. Readers are `string`,
+checked decimal `int`, `bool`, `choice strings`, or `custom metavar read display`.
+`Args.program (Args.described "tool" "Summary") parser` builds a program; use
+`Args.version text info` to enable --version/-V. `Args.parse app (runtime.env.args ())`
+returns `Result (Args.Outcome 'a) Args.Error`: `Parsed value`, `Help text`, or
+`Version text`. `Args.help` and `validateDefinition` validate the same metadata.
+The error has a category, command path, zero-based argv index and original token;
+`errorToString` renders it. `validateWith` adds pure application validation.
+Long options accept `--port=80`/`--port 80`; short options accept `-p80`/`-p 80`
+and bundles such as `-vp80`. Following values are literal, including leading
+dashes. `--` ends option parsing; dash-prefixed positionals use that marker.
+Run contracts with `fai test -C packages cli`. See `packages/cli/README.md`.
+
 Including `packages/json/src` in a workspace supplies `Json` and `JsonNumber`.
 `Json.parse text` / `Json.parseBytes bytes` return `Result Json.Value Json.ParseError`;
 errors have a zero-based byte `offset`, one-based `line`/Unicode-scalar `column`,

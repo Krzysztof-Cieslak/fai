@@ -1,0 +1,801 @@
+module Args
+
+/// A stable category for a definition or command-line error.
+public type ErrorKind =
+  | InvalidDefinition
+  | UnknownOption
+  | MissingValue
+  | UnexpectedValue
+  | DuplicateOption
+  | MissingArgument
+  | UnexpectedArgument
+  | InvalidValue
+  | ValidationFailed
+
+/// `index` is zero-based in the supplied argv (which excludes the executable).
+/// `token` retains the original word, including an attached value or flag bundle.
+public type Error = {
+  command : List String,
+  index : Option Int,
+  kind : ErrorKind,
+  message : String,
+  token : Option String
+}
+
+/// Successful parsing, generated help, or the configured version text.
+public type Outcome 'a =
+  | Parsed 'a
+  | Help String
+  | Version String
+
+/// Names omit leading dashes. A short alias is one ASCII letter.
+public type OptionInfo = { help : String, long : String, short : Option Char }
+
+/// A positional argument's usage name and description.
+public type ArgumentInfo = { help : String, name : String }
+
+/// Program metadata used by diagnostics and generated help.
+public type ProgramInfo = { name : String, summary : String, version : Option String }
+
+type ValueInfo = { choices : List String, issues : List String, name : String }
+
+/// A pure value reader and its display function for typed defaults.
+public opaque type Value 'a =
+  | MkValue ValueInfo (String -> Result 'a String) ('a -> String)
+
+type Arity =
+  | Switch
+  | Counter
+  | Single
+  | Repeated
+
+type Presence =
+  | Required
+  | Optional
+  | Variadic
+
+type OptionSpec = {
+  arity : Arity,
+  fallback : Option String,
+  info : OptionInfo,
+  required : Bool,
+  value : ValueInfo
+}
+
+type PositionalSpec = { info : ArgumentInfo, presence : Presence, value : ValueInfo }
+
+type Schema =
+  | MkSchema (List OptionSpec) (List PositionalSpec)
+
+type Token = { command : List String, index : Int, source : String, text : String }
+
+type Entry = { count : Int, values : List Token }
+
+type Raw = {
+  options : HashDict (List String) Entry,
+  positionals : HashDict (List String) (Array Token),
+  selected : List String
+}
+
+/// A typed declaration. Combinators collect metadata and compose pure decoders;
+/// command-line tokenization happens once before typed values are decoded.
+public opaque type Parser 'a =
+  | MkParser Schema (Raw -> List String -> Int -> Result 'a Error)
+
+/// An application parser together with its help/version metadata.
+public opaque type Program 'a =
+  | MkProgram ProgramInfo (Parser 'a)
+
+/// Describe a long option; use `short` to add an alias.
+public named : String -> String -> OptionInfo
+let named name description = { help = description, long = name, short = None }
+
+/// Add a short alias to an option description.
+public short : Char -> OptionInfo -> OptionInfo
+let short alias info = { info with short = Some alias }
+
+/// Describe a positional argument, such as FILE or DIRECTORY.
+public positional : String -> String -> ArgumentInfo
+let positional name description = { help = description, name = name }
+
+/// Describe a program without a version flag.
+public described : String -> String -> ProgramInfo
+let described name summary = { name = name, summary = summary, version = None }
+
+/// Enable --version/-V using this exact display text.
+public version : String -> ProgramInfo -> ProgramInfo
+let version text info = { info with version = Some text }
+
+/// Associate a typed parser with program metadata. Definition validation occurs
+/// in `parse`, `help`, and `validateDefinition`, returning structured errors.
+public program : ProgramInfo -> Parser 'a -> Program 'a
+let program info parser = MkProgram info parser
+
+let valueInfo reader =
+  match reader with
+  | MkValue info _ _ -> info
+
+let display reader value =
+  match reader with
+  | MkValue _ _ show -> show value
+
+/// Run a value reader directly, independently of command-line tokenization.
+public parseValue : Value 'a -> String -> Result 'a String
+let parseValue reader text =
+  match reader with
+  | MkValue _ read _ -> read text
+
+/// Define a custom pure reader. The display function renders typed defaults.
+public custom : String -> (String -> Result 'a String) -> ('a -> String) -> Value 'a
+let custom name read show = MkValue { choices = [], issues = [], name = name } read show
+
+/// Override a reader's metavar without changing its parsing or display behavior.
+public metavar : String -> Value 'a -> Value 'a
+let metavar name reader =
+  match reader with
+  | MkValue info read show -> MkValue { info with name = name } read show
+
+let hex n = String.substring n 1 "0123456789abcdef"
+
+let runText bytes start finish =
+  Option.withDefault "" (Bytes.toString (Bytes.slice start finish bytes))
+
+let quoteFrom bytes start i output =
+  if i = Bytes.length bytes then
+    output ++ runText bytes start i ++ "\""
+  else
+    let b = Bytes.unsafeGet i bytes
+    if b = 34 || b = 92 || b < 32 then
+      let escaped =
+        if b = 34 then
+          "\\\""
+        else if b = 92 then
+          "\\\\"
+        else if b = 10 then
+          "\\n"
+        else if b = 13 then
+          "\\r"
+        else if b = 9 then "\\t" else "\\u00" ++ hex (b / 16) ++ hex (b % 16)
+      quoteFrom bytes (i + 1) (i + 1) (output ++ runText bytes start i ++ escaped)
+    else
+      quoteFrom bytes start (i + 1) output
+
+let quote text = quoteFrom (Bytes.fromString text) 0 0 "\""
+
+/// Accept a string exactly as supplied, including empty strings and whitespace.
+public string : Value String
+let string = custom "TEXT" (fun text -> Ok text) quote
+
+let intDigits bytes i limit negative acc =
+  if i = Bytes.length bytes then
+    Ok (if negative then acc else 0 - acc)
+  else
+    let digit = Bytes.unsafeGet i bytes - 48
+    if digit < 0 || digit > 9 then
+      Err "expected a decimal Int"
+    else
+      if acc < (limit + digit) / 10 then
+        Err "outside the signed 64-bit Int range"
+      else
+        intDigits bytes (i + 1) limit negative (acc * 10 - digit)
+
+let readInt text =
+  let bytes = Bytes.fromString text
+  if Bytes.length bytes = 0 then
+    Err "expected a decimal Int"
+  else
+    let first = Bytes.unsafeGet 0 bytes
+    let negative = first = 45
+    let start = if negative || first = 43 then 1 else 0
+    let limit = if negative then (-9223372036854775808) else (-9223372036854775807)
+    if start = Bytes.length bytes then
+      Err "expected a decimal Int"
+    else
+      intDigits bytes start limit negative 0
+
+/// Read a checked signed 64-bit decimal integer. Leading + or - and decimal
+/// leading zeroes are accepted; whitespace, fractions, and overflow are errors.
+public int : Value Int
+let int = custom "INT" readInt Int.toString
+
+let readBool text =
+  if text = "true" then
+    Ok true
+  else if text = "false" then Ok false else Err "expected true or false"
+
+/// Read exactly true or false. A switch without a value uses `flag` instead.
+public bool : Value Bool
+let bool = custom "BOOL" readBool (fun value -> if value then "true" else "false")
+
+let duplicates values seen =
+  match values with
+  | [] -> false
+  | value :: rest ->
+    if HashSet.member value seen then true else duplicates rest (HashSet.insert value seen)
+
+let readChoice choices text =
+  if List.member text choices then
+    Ok text
+  else
+    Err ("expected one of " ++ String.join ", " (List.map quote choices))
+
+/// Read one of the listed strings, with exact case-sensitive matching.
+public choice : List String -> Value String
+let choice choices =
+  let issues =
+    if List.isEmpty choices then
+      ["choice reader has no choices"]
+    else if duplicates choices HashSet.empty then ["choice reader has duplicate choices"] else []
+  MkValue { choices = choices, issues = issues, name = "CHOICE" } (readChoice choices) quote
+
+problem : ErrorKind -> List String -> Option Int -> Option String -> String -> Result 'a Error
+let problem kind path index token message = Err {
+  command = path,
+  index = index,
+  kind = kind,
+  message = message,
+  token = token
+}
+
+definition : List String -> String -> Result 'a Error
+let definition path message = problem InvalidDefinition path None None message
+
+atToken : ErrorKind -> Token -> String -> Result 'a Error
+let atToken kind token message =
+  problem kind token.command (Some token.index) (Some token.source) message
+
+let missing path name = problem MissingArgument path None None ("missing required " ++ name)
+
+let key path name = List.append path [name]
+
+entry : Raw -> List String -> String -> Entry
+let entry raw path name = HashDict.getOr { count = 0, values = [] } (key path name) raw.options
+
+positionalValues : Raw -> List String -> Array Token
+let positionalValues raw path = HashDict.getOr Array.empty path raw.positionals
+
+let decodeValue name reader token =
+  match parseValue reader token.text with
+  | Ok value -> Ok value
+  | Err message ->
+    atToken InvalidValue token ("invalid value " ++ quote token.text ++ " for " ++ name ++ ": " ++ message)
+
+let flagReader name raw path offset = Ok ((entry raw path name).count > 0)
+
+let countReader name raw path offset = Ok (entry raw path name).count
+
+let optionReader reader name raw path offset =
+  match (entry raw path name).values with
+  | [] -> Ok None
+  | token :: _ -> Result.map (fun value -> Some value) (decodeValue ("--" ++ name) reader token)
+
+let requiredOptionReader reader name raw path offset =
+  match (entry raw path name).values with
+  | [] -> missing path ("option --" ++ name)
+  | token :: _ -> decodeValue ("--" ++ name) reader token
+
+let defaultReader fallback reader name raw path offset =
+  match (entry raw path name).values with
+  | [] -> Ok fallback
+  | token :: _ -> decodeValue ("--" ++ name) reader token
+
+let readTokens reader name tokens output =
+  match tokens with
+  | [] -> Ok (List.reverse output)
+  | token :: rest ->
+    match decodeValue name reader token with
+    | Err e -> Err e
+    | Ok value -> readTokens reader name rest (value :: output)
+
+let repeatedReader reader name raw path offset = readTokens reader ("--" ++ name) (List.reverse (entry raw path name).values) []
+
+let optionParser arity required fallback info value read =
+  MkParser (MkSchema [
+    { arity = arity, fallback = fallback, info = info, required = required, value = value }
+  ] []) read
+
+let noValue = { choices = [], issues = [], name = "" }
+
+/// A boolean switch, false when absent. Repeated occurrences are idempotent.
+public flag : OptionInfo -> Parser Bool
+let flag info = optionParser Switch false None info noValue (flagReader info.long)
+
+/// Count a switch's occurrences, including repeated letters in a short bundle.
+public count : OptionInfo -> Parser Int
+let count info = optionParser Counter false None info noValue (countReader info.long)
+
+/// An optional single-valued option. Absence is None; malformed values fail.
+public option : Value 'a -> OptionInfo -> Parser (Option 'a)
+let option reader info =
+  optionParser Single false None info (valueInfo reader) (optionReader reader info.long)
+
+/// A required single-valued option.
+public requiredOption : Value 'a -> OptionInfo -> Parser 'a
+let requiredOption reader info =
+  optionParser Single true None info (valueInfo reader) (requiredOptionReader reader info.long)
+
+/// A single-valued option with a typed fallback, also shown in generated help.
+public optionWithDefault : 'a -> Value 'a -> OptionInfo -> Parser 'a
+let optionWithDefault fallback reader info =
+  optionParser Single false (Some (display reader fallback)) info (valueInfo reader) (defaultReader fallback reader info.long)
+
+/// Zero or more occurrences of an option, preserving command-line order.
+public options : Value 'a -> OptionInfo -> Parser (List 'a)
+let options reader info =
+  optionParser Repeated false None info (valueInfo reader) (repeatedReader reader info.long)
+
+let argumentReader reader name raw path offset =
+  match Array.get offset (positionalValues raw path) with
+  | None -> missing path ("argument " ++ name)
+  | Some token -> decodeValue name reader token
+
+let optionalArgumentReader reader name raw path offset =
+  match Array.get offset (positionalValues raw path) with
+  | None -> Ok None
+  | Some token -> Result.map (fun value -> Some value) (decodeValue name reader token)
+
+let argumentsFrom reader name values i output =
+  if i >= Array.length values then
+    Ok (List.reverse output)
+  else
+    match decodeValue name reader (Array.unsafeGet i values) with
+    | Err e -> Err e
+    | Ok value -> argumentsFrom reader name values (i + 1) (value :: output)
+
+let argumentsReader reader name raw path offset = argumentsFrom reader name (positionalValues raw path) offset []
+
+let positionalParser presence reader info decode =
+  MkParser (MkSchema [] [{ info = info, presence = presence, value = valueInfo reader }]) decode
+
+/// A required positional argument.
+public argument : Value 'a -> ArgumentInfo -> Parser 'a
+let argument reader info = positionalParser Required reader info (argumentReader reader info.name)
+
+/// An optional positional argument, consumed greedily in declaration order.
+public optionalArgument : Value 'a -> ArgumentInfo -> Parser (Option 'a)
+let optionalArgument reader info =
+  positionalParser Optional reader info (optionalArgumentReader reader info.name)
+
+/// All remaining positionals. This declaration must be the final positional.
+public arguments : Value 'a -> ArgumentInfo -> Parser (List 'a)
+let arguments reader info = positionalParser Variadic reader info (argumentsReader reader info.name)
+
+let schema parser =
+  match parser with
+  | MkParser shape _ -> shape
+
+let optionSpecs shape =
+  match shape with
+  | MkSchema options _ -> options
+
+let positionalSpecs shape =
+  match shape with
+  | MkSchema _ positionals -> positionals
+
+let decode parser raw path offset =
+  match parser with
+  | MkParser _ read -> read raw path offset
+
+let constantReader value raw path offset = Ok value
+
+/// Succeed with a value without declaring any arguments.
+public succeed : 'a -> Parser 'a
+let succeed value = MkParser (MkSchema [] []) (constantReader value)
+
+let mapped transform parser raw path offset = Result.map transform (decode parser raw path offset)
+
+/// Transform a decoded value without changing its declarations.
+public map : ('a -> 'b) -> Parser 'a -> Parser 'b
+let map transform parser = MkParser (schema parser) (mapped transform parser)
+
+let combined combine left right raw path offset =
+  match decode left raw path offset with
+  | Err e -> Err e
+  | Ok a ->
+    Result.map (combine a) (decode right raw path (offset + List.length (positionalSpecs (schema left))))
+
+/// Combine declarations and typed results in left-to-right declaration order.
+public map2 : ('a -> 'b -> 'c) -> Parser 'a -> Parser 'b -> Parser 'c
+let map2 combine left right =
+  let shape =
+    MkSchema (List.append (optionSpecs (schema left)) (optionSpecs (schema right))) (List.append (positionalSpecs (schema left)) (positionalSpecs (schema right)))
+  MkParser shape (combined combine left right)
+
+/// Apply another decoded argument to a parsed function, useful in pipelines.
+public andMap : Parser 'a -> Parser ('a -> 'b) -> Parser 'b
+let andMap argument function = map2 (fun f value -> f value) function argument
+
+let validated check parser raw path offset =
+  match decode parser raw path offset with
+  | Err e -> Err e
+  | Ok value ->
+    match check value with
+    | Ok result -> Ok result
+    | Err message -> problem ValidationFailed path None None message
+
+/// Validate or refine a complete decoded value with a pure function.
+public validateWith : ('a -> Result 'b String) -> Parser 'a -> Parser 'b
+let validateWith check parser = MkParser (schema parser) (validated check parser)
+
+let letter b = (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+
+let nameTail bytes i =
+  if i = Bytes.length bytes then
+    true
+  else
+    let b = Bytes.unsafeGet i bytes
+    (letter b || (b >= 48 && b <= 57) || b = 45) && nameTail bytes (i + 1)
+
+let validName text =
+  let bytes = Bytes.fromString text
+  Bytes.length bytes > 0 && letter (Bytes.unsafeGet 0 bytes) && nameTail bytes 1
+
+let labelBytes bytes i =
+  if i = Bytes.length bytes then
+    true
+  else
+    let b = Bytes.unsafeGet i bytes
+    b > 32 && b <> 127 && labelBytes bytes (i + 1)
+
+let unicodeWhitespace = [
+  "\u{85}",
+  "\u{A0}",
+  "\u{1680}",
+  "\u{2000}",
+  "\u{2001}",
+  "\u{2002}",
+  "\u{2003}",
+  "\u{2004}",
+  "\u{2005}",
+  "\u{2006}",
+  "\u{2007}",
+  "\u{2008}",
+  "\u{2009}",
+  "\u{200A}",
+  "\u{2028}",
+  "\u{2029}",
+  "\u{202F}",
+  "\u{205F}",
+  "\u{3000}"
+]
+
+let validLabel text =
+  text <> "" && labelBytes (Bytes.fromString text) 0 && not (List.any (String.contains text) unicodeWhitespace)
+
+valueIssue : ValueInfo -> Option String
+let valueIssue info =
+  if not (validLabel info.name) then
+    Some "value metavar must be nonempty and contain no whitespace"
+  else
+    List.head info.issues
+
+optionIssue : OptionInfo -> Bool -> Option String
+let optionIssue info versionEnabled =
+  if not (validName info.long) then
+    Some ("invalid long option name " ++ quote info.long)
+  else
+    if info.long = "help" || (versionEnabled && info.long = "version") then
+      Some ("reserved option --" ++ info.long)
+    else
+      match info.short with
+      | None -> None
+      | Some alias ->
+        if not (letter (Char.toCode alias)) then
+          Some "short option aliases must be ASCII letters"
+        else
+          if alias = 'h' || (versionEnabled && alias = 'V') then
+            Some ("reserved short option -" ++ Char.toString alias)
+          else
+            None
+
+type BoundOption = { path : List String, spec : OptionSpec }
+
+type Tables = { longs : HashDict String BoundOption, shorts : HashDict Char BoundOption }
+
+addOptions : List String -> Bool -> List OptionSpec -> Tables -> Result Tables Error
+let addOptions path versionEnabled specs tables =
+  match specs with
+  | [] -> Ok tables
+  | spec :: rest ->
+    let issue =
+      match optionIssue spec.info versionEnabled with
+      | Some message -> Some message
+      | None -> if spec.arity = Switch || spec.arity = Counter then None else valueIssue spec.value
+    match issue with
+    | Some message -> definition path message
+    | None ->
+      if HashDict.member spec.info.long tables.longs then
+        definition path ("duplicate option --" ++ spec.info.long)
+      else
+        let bound = { path = path, spec = spec }
+        let longs = HashDict.insert spec.info.long bound tables.longs
+        match spec.info.short with
+        | None -> addOptions path versionEnabled rest { tables with longs = longs }
+        | Some alias ->
+          if HashDict.member alias tables.shorts then
+            definition path ("duplicate short option -" ++ Char.toString alias)
+          else
+            addOptions path versionEnabled rest {
+              longs = longs,
+              shorts = HashDict.insert alias bound tables.shorts
+            }
+
+checkPositionals : List String -> List PositionalSpec -> HashSet String -> Bool -> Bool -> Result Unit Error
+let checkPositionals path specs seen optionalSeen variadicSeen =
+  match specs with
+  | [] -> Ok ()
+  | spec :: rest ->
+    if not (validLabel spec.info.name) then
+      definition path "argument names must be nonempty and contain no whitespace"
+    else if HashSet.member spec.info.name seen then
+      definition path ("duplicate argument " ++ spec.info.name)
+    else if variadicSeen then
+      definition path "a variadic argument must be the final positional"
+    else if optionalSeen && spec.presence = Required then
+      definition path "required positionals must precede optional positionals"
+    else
+      match valueIssue spec.value with
+      | Some message -> definition path message
+      | None ->
+        checkPositionals path rest (HashSet.insert spec.info.name seen) (optionalSeen || spec.presence = Optional) (spec.presence = Variadic)
+
+checked : ProgramInfo -> Parser 'a -> Result Tables Error
+let checked info parser =
+  let path = [info.name]
+  if info.name = "" || String.contains info.name "\n" || String.contains info.name "\r" then
+    definition path "program name must be a nonempty line"
+  else
+    match checkPositionals path (positionalSpecs (schema parser)) HashSet.empty false false with
+    | Err e -> Err e
+    | Ok _ -> addOptions path (info.version <> None) (optionSpecs (schema parser)) {
+      longs = HashDict.empty,
+      shorts = HashDict.empty
+    }
+
+/// Validate declarations without reading any command-line input.
+public validateDefinition : Program 'a -> Result Unit Error
+let validateDefinition app =
+  match app with
+  | MkProgram info parser -> Result.map (fun _ -> ()) (checked info parser)
+
+positionalUsage : PositionalSpec -> String
+let positionalUsage spec =
+  match spec.presence with
+  | Required -> spec.info.name
+  | Optional -> "[" ++ spec.info.name ++ "]"
+  | Variadic -> "[" ++ spec.info.name ++ "...]"
+
+choicesText : ValueInfo -> String
+let choicesText value =
+  if List.isEmpty value.choices then
+    ""
+  else
+    " (choices: " ++ String.join ", " (List.map quote value.choices) ++ ")"
+
+let row name description =
+  "  " ++ name ++ (if description = "" then "" else "  " ++ description) ++ "\n"
+
+let details description suffix =
+  if description = "" then String.trim suffix else description ++ suffix
+
+optionHelp : OptionSpec -> String
+let optionHelp spec =
+  let aliases =
+    match spec.info.short with
+    | None -> "--" ++ spec.info.long
+    | Some alias -> "-" ++ Char.toString alias ++ ", --" ++ spec.info.long
+  let value = if spec.arity = Switch || spec.arity = Counter then "" else " " ++ spec.value.name
+  let required = if spec.required then " (required)" else ""
+  let repeated = if spec.arity = Repeated || spec.arity = Counter then " (repeatable)" else ""
+  let fallback =
+    match spec.fallback with
+    | None -> ""
+    | Some text -> " (default: " ++ text ++ ")"
+  row (aliases ++ value) (details spec.info.help (required ++ repeated ++ choicesText spec.value ++ fallback))
+
+positionalHelp : PositionalSpec -> String
+let positionalHelp spec =
+  row (positionalUsage spec) (details spec.info.help (choicesText spec.value))
+
+requiredUsage : OptionSpec -> String
+let requiredUsage spec = "--" ++ spec.info.long ++ " " ++ spec.value.name
+
+helpText : ProgramInfo -> Schema -> String
+let helpText info shape =
+  let options = optionSpecs shape
+  let positionals = positionalSpecs shape
+  let usage =
+    String.join " " (List.append [
+      info.name,
+      "[OPTIONS]"
+    ] (List.append (List.map requiredUsage (List.filter (fun spec ->
+      spec.required) options)) (List.map positionalUsage positionals)))
+  "Usage: " ++ usage ++ "\n" ++ (if info.summary = "" then
+    ""
+  else
+    "\n" ++ info.summary ++ "\n") ++ (if List.isEmpty positionals then
+    ""
+  else
+    "\nArguments:\n" ++ String.join "" (List.map positionalHelp positionals)) ++ "\nOptions:\n" ++ String.join "" (List.map optionHelp options) ++ row "-h, --help" "Show this help" ++ (if info.version = None then
+    ""
+  else
+    row "-V, --version" "Show version")
+
+/// Generate deterministic help from a validated program declaration.
+public help : Program 'a -> Result String Error
+let help app =
+  match app with
+  | MkProgram info parser ->
+    Result.map (fun _ -> helpText info (schema parser)) (checked info parser)
+
+type ScanState =
+  | Words (List String) Int Bool
+  | Shorts Bytes Int Token (List String) Int
+
+type ScanResult =
+  | Scanned Raw
+  | RequestedHelp
+  | RequestedVersion
+
+type ScanEnv = { limit : Option Int, path : List String, tables : Tables, version : Option String }
+
+token : List String -> Int -> String -> Token
+let token path index text = { command = path, index = index, source = text, text = text }
+
+save : BoundOption -> Token -> Raw -> Result Raw Error
+let save bound occurrence raw =
+  let old = entry raw bound.path bound.spec.info.long
+  if bound.spec.arity = Single && old.count > 0 then
+    atToken DuplicateOption occurrence ("option --" ++ bound.spec.info.long ++ " may only occur once")
+  else
+    let values =
+      if bound.spec.arity = Switch || bound.spec.arity = Counter then
+        []
+      else
+        occurrence :: old.values
+    let count = if bound.spec.arity = Switch then 1 else old.count + 1
+    Ok { raw with
+      options = HashDict.insert (key bound.path bound.spec.info.long) {
+        count = count,
+        values = values
+      } raw.options
+    }
+
+takeValue : Option String -> Token -> List String -> Int -> Result (Token * List String * Int) Error
+let takeValue attached original words nextIndex =
+  match attached with
+  | Some text -> Ok ({ original with text = text }, words, nextIndex)
+  | None ->
+    match words with
+    | [] -> atToken MissingValue original "option requires a value"
+    | value :: rest -> Ok (token original.command nextIndex value, rest, nextIndex + 1)
+
+let splitLong source =
+  match String.split "=" (String.drop 2 source) with
+  | [] -> ("", None)
+  | name :: [] -> (name, None)
+  | name :: rest -> (name, Some (String.join "=" rest))
+
+saveOption : BoundOption -> Option String -> Token -> List String -> Int -> Raw -> Result (Raw * List String * Int) Error
+let saveOption bound attached original words nextIndex raw =
+  if bound.spec.arity = Single && (entry raw bound.path bound.spec.info.long).count > 0 then
+    atToken DuplicateOption original ("option --" ++ bound.spec.info.long ++ " may only occur once")
+  else if bound.spec.arity = Switch || bound.spec.arity = Counter then
+    if attached <> None then
+      atToken UnexpectedValue original ("option --" ++ bound.spec.info.long ++ " does not take a value")
+    else
+      Result.map (fun raw -> (raw, words, nextIndex)) (save bound original raw)
+  else
+    match takeValue attached original words nextIndex with
+    | Err e -> Err e
+    | Ok (value, rest, index) -> Result.map (fun raw -> (raw, rest, index)) (save bound value raw)
+
+addPositional : ScanEnv -> Token -> Raw -> Result Raw Error
+let addPositional env word raw =
+  let values = positionalValues raw env.path
+  let full =
+    match env.limit with
+    | None -> false
+    | Some count -> Array.length values >= count
+  if full then
+    atToken UnexpectedArgument word ("unexpected argument " ++ quote word.text)
+  else
+    Ok { raw with positionals = HashDict.insert env.path (Array.push word values) raw.positionals }
+
+// One self-tail loop handles words and short bundles, retaining original argv
+// indices while consuming each option value literally and exactly once.
+scan : ScanEnv -> ScanState -> Raw -> Result ScanResult Error
+let scan env state raw =
+  match state with
+  | Words words index enabled ->
+    match words with
+    | [] -> Ok (Scanned raw)
+    | word :: rest ->
+      let original = token env.path index word
+      if enabled && word = "--" then
+        scan env (Words rest (index + 1) false) raw
+      else
+        if not enabled || word = "-" || String.take 1 word <> "-" then
+          match addPositional env original raw with
+          | Err e -> Err e
+          | Ok raw -> scan env (Words rest (index + 1) enabled) raw
+        else if String.take 2 word = "--" then
+          let (name, attached) = splitLong word
+          if name = "help" || (name = "version" && env.version <> None) then
+            if attached <> None then
+              atToken UnexpectedValue original ("option --" ++ name ++ " does not take a value")
+            else
+              Ok (if name = "help" then RequestedHelp else RequestedVersion)
+          else
+            match HashDict.get name env.tables.longs with
+            | None -> atToken UnknownOption original ("unknown option --" ++ name)
+            | Some bound ->
+              match saveOption bound attached original rest (index + 1) raw with
+              | Err e -> Err e
+              | Ok (raw, words, index) -> scan env (Words words index enabled) raw
+        else
+          scan env (Shorts (Bytes.fromString word) 1 original rest (index + 1)) raw
+  | Shorts bytes i original words nextIndex ->
+    if i = Bytes.length bytes then
+      scan env (Words words nextIndex true) raw
+    else
+      let alias = Option.withDefault '\u{FFFD}' (Char.fromCode (Bytes.unsafeGet i bytes))
+      if alias = 'h' || (alias = 'V' && env.version <> None) then
+        Ok (if alias = 'h' then RequestedHelp else RequestedVersion)
+      else
+        match HashDict.get alias env.tables.shorts with
+        | None ->
+          atToken UnknownOption original ("unknown short option in " ++ quote original.source)
+        | Some bound ->
+          if bound.spec.arity = Switch || bound.spec.arity = Counter then
+            match save bound original raw with
+            | Err e -> Err e
+            | Ok raw -> scan env (Shorts bytes (i + 1) original words nextIndex) raw
+          else
+            let attached =
+              if i + 1 = Bytes.length bytes then
+                None
+              else
+                Some (runText bytes (i + 1) (Bytes.length bytes))
+            match saveOption bound attached original words nextIndex raw with
+            | Err e -> Err e
+            | Ok (raw, words, index) -> scan env (Words words index true) raw
+
+/// Parse already-tokenized arguments, excluding the executable name. Definition
+/// errors precede scanning; typed decoding follows declaration order. Help and
+/// version requests finish scanning before requiredness/value validation.
+public parse : Program 'a -> List String -> Result (Outcome 'a) Error
+let parse app words =
+  match app with
+  | MkProgram info parser ->
+    match checked info parser with
+    | Err e -> Err e
+    | Ok tables ->
+      let positionals = positionalSpecs (schema parser)
+      let limit =
+        if List.any (fun spec -> spec.presence = Variadic) positionals then
+          None
+        else
+          Some (List.length positionals)
+      let path = [info.name]
+      let raw = { options = HashDict.empty, positionals = HashDict.empty, selected = path }
+      match scan {
+        limit = limit,
+        path = path,
+        tables = tables,
+        version = info.version
+      } (Words words 0 true) raw with
+      | Err e -> Err e
+      | Ok RequestedHelp -> Ok (Help (helpText info (schema parser)))
+      | Ok RequestedVersion -> Ok (Version (Option.withDefault "" info.version))
+      | Ok (Scanned raw) -> Result.map (fun value -> Parsed value) (decode parser raw path 0)
+
+/// Render an error while retaining its structured kind, path, index, and token.
+public errorToString : Error -> String
+let errorToString error =
+  let command = if List.isEmpty error.command then "arguments" else String.join " " error.command
+  let location =
+    match error.index with
+    | None -> ""
+    | Some index -> " (argument " ++ Int.toString (index + 1) ++ ")"
+  command ++ location ++ ": " ++ error.message

@@ -1,0 +1,23 @@
+module ArgsExample
+
+let parser =
+  Args.succeed (fun verbose port files -> {
+    files = files,
+    port = port,
+    verbose = verbose
+  }) |> Args.andMap (Args.flag (Args.short 'v' (Args.named "verbose" "Verbose output"))) |> Args.andMap (Args.optionWithDefault 8080 (Args.metavar "PORT" Args.int) (Args.short 'p' (Args.named "port" "TCP port"))) |> Args.andMap (Args.arguments Args.string (Args.positional "FILES" "Input files"))
+
+let app =
+  Args.program (Args.version "serve 1.0" (Args.described "serve" "A typed argument-parsing example")) parser
+
+public main : Runtime -> Unit / { Console, Env }
+let main runtime =
+  match Args.parse app (runtime.env.args ()) with
+  | Err error -> runtime.console.writeError (Args.errorToString error ++ "\n")
+  | Ok (Args.Help text) -> runtime.console.write text
+  | Ok (Args.Version text) -> runtime.console.writeLine text
+  | Ok (Args.Parsed config) ->
+    runtime.console.writeLine ("port=" ++ Int.toString config.port ++ ", verbose=" ++ (if config.verbose then
+      "true"
+    else
+      "false") ++ ", files=" ++ String.join "," config.files)
