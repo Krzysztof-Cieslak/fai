@@ -1,0 +1,35 @@
+module TypedClient
+
+let handler request = Ok {
+  body = Http.stringBody "{\"id\":42,\"name\":\"Ada\"}",
+  headers = Headers.fromList [("Content-Type", "application/json")],
+  reason = "OK",
+  status = 200
+}
+
+let decoder =
+  JsonDecode.map2 (fun id name -> {
+    id = id,
+    name = name
+  }) (JsonDecode.field "id" JsonDecode.int) (JsonDecode.field "name" JsonDecode.string)
+
+let fetch runtime port =
+  HttpClient.withClient runtime (HttpClient.config ("http://127.0.0.1:" ++ Int.toString port ++ "/v1/")) (fun client ->
+    HttpClient.get "users/42" |> HttpClient.expectJson decoder |> HttpClient.send client)
+
+session : Runtime -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let session runtime listener nursery =
+  let server =
+    runtime.concurrency.spawn nursery (fun _ -> Http.serveListener runtime listener handler)
+  let result = fetch runtime (runtime.net.localPort listener)
+  let stopped = runtime.concurrency.cancel server
+  match result with
+  | Err error -> runtime.console.writeLine (HttpClient.errorToString error)
+  | Ok response ->
+    runtime.console.writeLine (Int.toString response.body.id ++ " " ++ response.body.name)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main runtime =
+  match runtime.net.listen 0 with
+  | Err error -> runtime.console.writeLine error
+  | Ok listener -> runtime.concurrency.scope (session runtime listener)

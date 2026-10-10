@@ -1,0 +1,103 @@
+# Typed HTTP clients for Fai
+
+`HttpClient` is an ordinary Fai source package over the standard HTTP/1.1 and
+TLS implementation. Include this package and `packages/json/src` beneath your
+workspace root. Request construction and response decoding are pure; executing a
+request takes capabilities from the application.
+
+```fai
+let user = JsonDecode.map2
+  (fun id name -> { id = id, name = name })
+  (JsonDecode.field "id" JsonDecode.int)
+  (JsonDecode.field "name" JsonDecode.string)
+
+let fetch runtime =
+  HttpClient.withClient runtime (HttpClient.config "https://api.example.com/v1/") (fun client ->
+    HttpClient.get "users/42"
+    |> HttpClient.expectJson user
+    |> HttpClient.send client)
+```
+
+`withClient` validates configuration, opens a connection-pool scope, and closes
+the pool when the callback finishes. The callback returns `Result 'a Error`.
+Keep the client inside this scope. Concurrent requests can share a client.
+
+## Requests
+
+`get`, `head`, `post`, `put`, `patch`, `delete`, and `request method target`
+construct immutable requests. Pipe them through:
+
+| Builder | Behavior |
+|---|---|
+| `header name value` | Replace request headers of this name |
+| `addHeader name value` | Append, preserving duplicate fields |
+| `removeHeader name` | Remove request and client-default fields |
+| `query name value` | Append a percent-encoded pair, preserving duplicates |
+| `bytesBody mediaType bytes` | Supply immutable binary data |
+| `textBody text` | UTF-8 text/plain body |
+| `jsonBody encoder value` | Encode JSON once, before any network activity |
+| `formBody pairs` | URL-encoded form, preserving pair order |
+
+Names of headers are case-insensitive. Request headers replace the complete
+same-name group of client defaults. Defaults apply only to the base URL's origin;
+an absolute request to another origin receives only explicitly supplied request
+headers. Host and transfer framing are generated from the prepared request.
+
+Targets use standard URL resolution. With base `https://example.com/v1/`, `users`
+addresses `/v1/users`, `/users` addresses the origin root, and an absolute URL
+selects its own origin. A trailing slash on a base path is significant. HTTP and
+HTTPS URLs are supported; URL userinfo is rejected. Use an Authorization header
+with `Http.bearer` or `Http.basicAuth` instead.
+
+`prepare config request` returns a validated `Prepared` wire description without
+I/O, including the resolved URL, headers, method and bytes. Invalid configuration,
+method/header tokens, URLs, and JSON encoding fail before a connection is opened.
+
+## Responses
+
+`send client request` returns `Result (Response 'a) Error`. A response has `body`
+and `head`; the head carries status, reason, headers, final URL and attempt count.
+
+A raw request returns bytes for every status, including 4xx and 5xx. Add an
+expectation to require a 2xx result:
+
+- `expectBytes` retains binary data.
+- `expectText` checks UTF-8 and returns a String.
+- `expectEmpty` consumes and discards the body, returning Unit.
+- `expectJson decoder` requires `application/json` or a concrete
+  `application/...+json` media type and preserves JSON syntax and schema errors.
+
+JSON media types are case-insensitive and may include parameters. An empty body
+is not JSON: use `expectEmpty` for a 204 or HEAD response. Typed decoding rejects
+duplicate object keys throughout a JSON tree, including unknown fields.
+
+`decodeResponse config request response` runs the same buffered status, size,
+media-type and decoder rules purely, making application contracts deterministic.
+
+## Configuration and failures
+
+`config baseUrl` returns a record that can be updated with ordinary record syntax.
+Defaults are a 30,000 ms overall deadline, a 16 MiB buffered-body limit, an 8 KiB
+error preview, empty default headers, and bundled TLS roots. `extraRoots` adds
+trusted PEM roots for the lifetime of that pool. `timeoutMs = None` disables the
+deadline. Timeouts must be positive when supplied; body limits may be zero.
+
+The deadline covers the network operation through complete body consumption.
+Cancellation is cooperative, and the scope joins its worker before returning.
+Deadline expiration and caller cancellation have distinct error variants.
+
+Errors preserve typed JSON encoding errors, JSON byte/field locations, response
+metadata, and the original transport message. An `UnexpectedStatus` carries a
+bounded byte preview and a truncation flag. `errorToString` provides a readable
+summary while leaving these structured details accessible.
+
+## Native contracts
+
+```sh
+fai fmt -C packages http-client
+fai check -C packages http-client
+fai test -C packages http-client
+```
+
+The package depends on `json`; its `ci.json` participates in dependency-aware
+package checks. Repeated edits reuse the cached compiler and warm daemon.

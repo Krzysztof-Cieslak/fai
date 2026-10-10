@@ -4835,5 +4835,15 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   checkin prevents retained stream closures from reading a reused connection.
   The scoped exchange performs one request without redirects or implicit replay.
 
+- **D153 Typed HTTP clients.** `packages/http-client` composes the standard HTTP
+  transport with immutable requests, scoped pools and typed response decoding.
+  Defaults are origin-scoped, request headers override case-insensitively, and
+  query pairs preserve duplicates. JSON encoding occurs once before I/O. Errors
+  preserve codec locations, response metadata and bounded status-body previews.
+  Buffered reads enforce a byte limit and concatenate chunks as a balanced tree.
+  A supervised operation distinguishes its deadline from caller cancellation;
+  both join the worker and release its response scope. Pure preparation and
+  decoding use the same rules as live requests and are tested with Fai contracts.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

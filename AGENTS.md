@@ -900,6 +900,15 @@ group, with positionals declared in children. The option terminator remains in
 effect across command selection. Help follows the active command, and `helpFor`
 renders any declared path directly; all branches are validated before scanning.
 
+The optional `packages/http-client` library exposes `HttpClient`, with immutable
+request builders, typed JSON/text/byte responses, origin-scoped default headers,
+and scoped connection pools. Encoding and validation precede I/O. Response errors
+retain status/headers and bounded byte previews, while JSON failures retain their
+source locations or field paths. One cooperative deadline covers complete body
+consumption; caller cancellation has a distinct error. Buffered bodies have a
+configurable size limit. Pure `prepare`, `decodeResponse`, and `decodeStream`
+entry points support native Fai contracts (`fai test -C packages http-client`).
+
 ## 6. Compiler pipeline
 
 ```

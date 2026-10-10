@@ -1,0 +1,77 @@
+module RequestSpec
+
+let cfg = HttpClient.config "https://api.test/v1/"
+
+let prepared req = HttpClient.prepare cfg req
+
+let url req = Result.map (fun wire -> Url.toString wire.url) (prepared req)
+
+let header name req = Result.map (fun wire -> Headers.getAll name wire.headers) (prepared req)
+
+let body req = Result.map (fun wire -> Bytes.toString wire.body) (prepared req)
+example: HttpClient.validateConfig cfg = Ok ()
+example: url (HttpClient.get "users/42") = Ok "https://api.test/v1/users/42"
+example: url (HttpClient.get "/users") = Ok "https://api.test/users"
+example: url (HttpClient.get "../users") = Ok "https://api.test/users"
+example: url (HttpClient.get "https://other.test/x") = Ok "https://other.test/x"
+example: url (HttpClient.get "") = Ok "https://api.test/v1/"
+example: url (HttpClient.get "users?q=old" |> HttpClient.query "q" "a b" |> HttpClient.query "unicode" "é😀") = Ok "https://api.test/v1/users?q=old&q=a%20b&unicode=%C3%A9%F0%9F%98%80"
+example: header "x-one" (HttpClient.get "" |> HttpClient.header "X-One" "a" |> HttpClient.header "x-one" "b") = Ok [
+  "b"
+]
+example: header "x-one" (HttpClient.get "" |> HttpClient.addHeader "X-One" "a" |> HttpClient.addHeader "x-one" "b") = Ok [
+  "a",
+  "b"
+]
+example: header "x-one" (HttpClient.get "" |> HttpClient.header "X-One" "a" |> HttpClient.removeHeader "x-one") = Ok []
+example: header "Content-Length" (HttpClient.post "" |> HttpClient.header "Content-Length" "999" |> HttpClient.textBody "hi") = Ok []
+example: body (HttpClient.post "" |> HttpClient.textBody "é😀") = Ok (Some "é😀")
+example: body (HttpClient.post "" |> HttpClient.formBody [
+  ("a b", "&="),
+  ("a b", "")
+]) = Ok (Some "a%20b=%26%3D&a%20b=")
+example: body (HttpClient.post "" |> HttpClient.jsonBody JsonEncode.int 42) = Ok (Some "42")
+example: header "content-type" (HttpClient.post "" |> HttpClient.jsonBody JsonEncode.int 42) = Ok [
+  "application/json"
+]
+example: Result.isErr (prepared (HttpClient.get "ftp://api.test/file"))
+example: Result.isErr (prepared (HttpClient.get "https://user:pass@api.test/file"))
+example: Result.isErr (prepared (HttpClient.get "/bad path"))
+example: Result.isErr (prepared (HttpClient.get "" |> HttpClient.header "bad name" "value"))
+example: Result.isErr (prepared (HttpClient.get "" |> HttpClient.header "Name" "value\r\nOther: x"))
+example: Result.isErr (prepared (HttpClient.request (Http.Custom "GET\r\n") ""))
+example: Result.isErr (HttpClient.validateConfig (HttpClient.config "/relative"))
+example: Result.isErr (HttpClient.validateConfig { cfg with timeoutMs = Some 0 })
+example: Result.isErr (HttpClient.validateConfig { cfg with maxBodyBytes = (-1) })
+example: HttpClient.validateConfig { cfg with maxBodyBytes = 0, timeoutMs = None } = Ok ()
+
+let authenticated = { cfg with
+  headers = Headers.fromList [("Authorization", "Bearer secret"), ("X-Default", "yes")]
+}
+
+let headers config req =
+  Result.map (fun wire -> Headers.toList wire.headers) (HttpClient.prepare config req)
+example: headers authenticated (HttpClient.get "users") = Ok [
+  ("Authorization", "Bearer secret"),
+  ("X-Default", "yes")
+]
+example: headers authenticated (HttpClient.get "https://other.test/") = Ok []
+example: headers authenticated (HttpClient.get "https://API.TEST:443/v1/users") = Ok [
+  ("Authorization", "Bearer secret"),
+  ("X-Default", "yes")
+]
+example: headers authenticated (HttpClient.get "users" |> HttpClient.header "authorization" "other") = Ok [
+  ("X-Default", "yes"),
+  ("authorization", "other")
+]
+example: headers authenticated (HttpClient.get "users" |> HttpClient.removeHeader "AUTHORIZATION") = Ok [
+  ("X-Default", "yes")
+]
+
+let reject value = Err { message = "not encodable", path = [JsonEncode.Field "x"] }
+example: prepared (HttpClient.post "" |> HttpClient.jsonBody reject ()) = Err (HttpClient.Encoding {
+  message = "not encodable",
+  path = [JsonEncode.Field "x"]
+})
+forall text: body (HttpClient.post "" |> HttpClient.textBody text) = Ok (Some text)
+forall value: body (HttpClient.post "" |> HttpClient.jsonBody JsonEncode.int value) = Ok (Some (Int.toString value))

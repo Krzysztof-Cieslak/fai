@@ -1,0 +1,105 @@
+module ResponseSpec
+
+let cfg = HttpClient.config "https://api.test/"
+
+let raw = HttpClient.get ""
+
+let response status headers text =
+  match Url.parse "https://api.test/" with
+  | Err message -> Err (HttpClient.InvalidRequest message)
+  | Ok url -> Ok {
+    body = Bytes.fromString text,
+    head = { attempts = 1, headers = headers, reason = "", status = status, url = url }
+  }
+
+let decode config request status headers text =
+  match response status headers text with
+  | Err error -> Err error
+  | Ok response -> HttpClient.decodeResponse config request response
+
+let value result = Result.map (fun response -> response.body) result
+
+let json = Headers.fromList [("Content-Type", "application/json")]
+
+let read = raw |> HttpClient.expectJson (JsonDecode.field "name" JsonDecode.string)
+example: value (decode cfg raw 404 Headers.empty "missing") = Ok (Bytes.fromString "missing")
+example: value (decode cfg (HttpClient.expectText raw) 200 Headers.empty "é😀") = Ok "é😀"
+example: value (decode cfg (HttpClient.expectEmpty raw) 204 Headers.empty "") = Ok ()
+example: value (decode cfg read 200 json "{\"name\":\"Ada\"}") = Ok "Ada"
+example: Result.isErr (decode cfg read 400 json "{\"name\":\"Ada\"}")
+example: Result.isErr (decode cfg read 200 Headers.empty "{\"name\":\"Ada\"}")
+example: Result.isErr (decode cfg read 200 json "{bad}")
+example: Result.isErr (decode cfg read 200 json "{\"name\":1}")
+example: Result.isErr (decode cfg read 200 json "{\"name\":\"Ada\",\"name\":\"B\"}")
+example: Result.isErr (decode cfg read 204 json "")
+example: value (decode cfg read 200 (Headers.fromList [
+  ("content-type", "Application/Problem+Json; charset=utf-8")
+]) "{\"name\":\"Ada\"}") = Ok "Ada"
+example: Result.isErr (decode cfg read 200 (Headers.fromList [
+  ("Content-Type", "application/*+json")
+]) "{\"name\":\"Ada\"}")
+example: value (decode { cfg with
+  maxBodyBytes = 2
+} (HttpClient.expectText raw) 200 Headers.empty "hi") = Ok "hi"
+example: Result.isErr (decode { cfg with
+  maxBodyBytes = 1
+} (HttpClient.expectText raw) 200 Headers.empty "hi")
+example: value (decode { cfg with maxBodyBytes = 0 } raw 200 Headers.empty "") = Ok Bytes.empty
+
+let preview =
+  match decode { cfg with
+    maxErrorBytes = 3
+  } (HttpClient.expectText raw) 503 Headers.empty "abcdef" with
+  | Err (HttpClient.UnexpectedStatus head bytes truncated) ->
+    head.status = 503 && bytes = Bytes.fromString "abc" && truncated
+  | _ -> false
+example: preview
+
+let located =
+  match decode cfg read 200 json "{\"name\":1}" with
+  | Err (HttpClient.InvalidJson head (JsonDecode.Data (JsonDecode.Failure path message))) ->
+    head.status = 200 && path = [JsonDecode.Field "name"]
+  | _ -> false
+example: located
+forall text: value (decode cfg (HttpClient.expectText raw) 200 Headers.empty text) = Ok text
+
+let streamResponse request limit chunks =
+  match response 200 json "" with
+  | Err error -> Err error
+  | Ok r -> HttpClient.decodeStream { cfg with
+    maxBodyBytes = limit
+  } request { body = Stream.fromList (List.map Bytes.fromString chunks), head = r.head }
+example: value (streamResponse (HttpClient.expectText raw) 6 ["ab", "", "cd", "ef"]) = Ok "abcdef"
+example: Result.isErr (streamResponse (HttpClient.expectText raw) 5 ["ab", "cd", "ef"])
+example: value (streamResponse read 100 ["{\"na", "me\":\"", "Ada", "\"}"]) = Ok "Ada"
+example: value (streamResponse raw 0 ["", ""]) = Ok Bytes.empty
+
+let faulted =
+  match response 200 Headers.empty "" with
+  | Err error -> false
+  | Ok r ->
+    match HttpClient.decodeStream cfg raw {
+      body = Stream.cons (Bytes.fromString "a") (Stream.failed "read failed"),
+      head = r.head
+    } with
+    | Err (HttpClient.BodyRead head message) -> message = "read failed" && head.status = 200
+    | _ -> false
+example: faulted
+
+let invalidUtf8 =
+  match response 200 Headers.empty "" with
+  | Err _ -> false
+  | Ok r ->
+    match HttpClient.decodeResponse cfg (HttpClient.expectText raw) { r with
+      body = Bytes.fromList [255]
+    } with
+    | Err (HttpClient.InvalidText head) -> head.status = 200
+    | _ -> false
+example: invalidUtf8
+example: Result.isErr (decode cfg read 200 (Headers.fromList [
+  ("Content-Type", "application/json"),
+  ("Content-Type", "text/html")
+]) "{\"name\":\"Ada\"}")
+example: Result.isErr (decode cfg read 200 (Headers.fromList [
+  ("Content-Type", "application/a/b+json")
+]) "{\"name\":\"Ada\"}")
