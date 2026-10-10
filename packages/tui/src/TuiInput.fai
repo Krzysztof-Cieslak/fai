@@ -103,8 +103,10 @@ let vertical down text caret =
     if end = TuiText.length text then caret else min (lineEnd text (end + 1)) (end + 1 + column)
   else if start = 0 then caret else min (start - 1) (lineStart text (start - 1) + column)
 
+history : Options -> TuiLayout.Hit 'msg -> Ui.InputConfig 'msg -> Bool -> TuiState.State -> Outcome 'msg
 let history options hit config previous state =
   let widget = TuiState.get hit.id state
+  let previousIndex = widget.historyIndex
   let index =
     clamp (-1) (List.length widget.history - 1) (widget.historyIndex + if previous then 1 else (-1))
   let value =
@@ -120,7 +122,10 @@ let history options hit config previous state =
     historyIndex = index,
     lastValue = value
   }
-  handled (TuiState.put hit.id widget state) [config.onChange value]
+  if index = previousIndex then
+    handled state []
+  else
+    handled (TuiState.put hit.id widget state) [config.onChange value]
 
 inputKey : Options -> TuiLayout.Hit 'msg -> Ui.InputConfig 'msg -> TerminalHost.Key -> TuiState.State -> Outcome 'msg
 let inputKey options hit config key state =
@@ -138,7 +143,7 @@ let inputKey options hit config key state =
     { outcome with actions = [Copy text], state = { outcome.state with clipboard = text } }
   else if control && lower = "v" then
     if state.clipboard = "" then handled state [] else edit hit config state.clipboard state
-  else if control && (lower = "p" || lower = "n") && config.onSubmit <> None then
+  else if control && (lower = "p" || lower = "n") && config.onSubmit <> None && not hit.props.password then
     history options hit config (lower = "p") state
   else if key.code = "Left" then
     moveCaret hit.id shifted (max 0 (widget.caret - 1)) state

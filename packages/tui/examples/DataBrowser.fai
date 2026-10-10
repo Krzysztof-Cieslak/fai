@@ -1,0 +1,190 @@
+module DataBrowser
+
+public type Runtime = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  sqlite : SqliteHost.Sqlite,
+  terminal : TerminalHost.Terminal
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  sqlite = SqliteHost.native,
+  terminal = TerminalHost.native
+}
+
+type Page = { rows : Array Ui.Item, start : Int, total : Int }
+
+type Msg =
+  | Search String
+  | Need Ui.Range
+  | Loaded Page
+  | Failed String
+  | Selected String
+  | Sort
+  | Quit
+
+type Model = {
+  descending : Bool,
+  filter : String,
+  page : Page,
+  requested : Ui.Range,
+  selected : Option String,
+  status : String
+}
+
+let tableId = Ui.id "rows"
+
+let shown value =
+  match value with
+  | SqliteHost.Integer n -> Int.toString n
+  | SqliteHost.Text text -> text
+  | SqliteHost.Null -> "NULL"
+  | _ -> "?"
+
+readRows : SqliteHost.Sqlite -> SqliteHost.Cursor -> Array Ui.Item -> Result (Array Ui.Item) String / { SqliteHost.Sqlite }
+let readRows database cursor rows =
+  match database.next cursor with
+  | Err error -> Err error.message
+  | Ok None -> Ok rows
+  | Ok (Some values) ->
+    let cells = Array.map shown values
+    let key = Option.withDefault "" (Array.get 0 cells)
+    readRows database cursor (Array.push { cells = cells, key = key } rows)
+
+query : SqliteHost.Sqlite -> SqliteHost.Session -> String -> Array SqliteHost.Value -> Result (Array Ui.Item) String / { SqliteHost.Sqlite }
+let query database session sql parameters =
+  match database.query session sql parameters with
+  | Err error -> Err error.message
+  | Ok cursor ->
+    let rows = readRows database cursor Array.empty
+    let closed = database.finish cursor
+    rows
+
+load : SqliteHost.Sqlite -> SqliteHost.Session -> String -> Bool -> Ui.Range -> Unit -> Msg / { SqliteHost.Sqlite }
+let load database session filter descending range unit =
+  let total = query database session "select count(*) from entries where name like '%' || ? || '%'" [|
+    SqliteHost.Text filter
+  |]
+  let sql =
+    "select id, name from entries where name like '%' || ? || '%' order by id " ++ (if descending then
+      "desc"
+    else
+      "asc") ++ " limit ? offset ?"
+  let rows = query database session sql [|
+    SqliteHost.Text filter,
+    SqliteHost.Integer range.count,
+    SqliteHost.Integer range.start
+  |]
+  match (total, rows) with
+  | (Err error, _) -> Failed error
+  | (_, Err error) -> Failed error
+  | (Ok count, Ok rows) ->
+    let text = (Array.unsafeGet 0 count).key
+    let total = Result.withDefault 0 (readInt text)
+    Loaded { rows = rows, start = range.start, total = total }
+
+let readInt text =
+  let field = Form.int { Form.named "count" "Count" with initial = text }
+  Result.mapError (fun _ -> "invalid row count") (Form.decode field (Form.initial field))
+
+init : TuiLayout.Context -> (Model * TuiCmd.Cmd Msg 'e)
+let init context =
+  ({
+    descending = false,
+    filter = "",
+    page = { rows = Array.empty, start = 0, total = 10000 },
+    requested = { count = 0, start = 0 },
+    selected = None,
+    status = "Loading"
+  }, TuiCmd.focus tableId)
+
+update : SqliteHost.Sqlite -> SqliteHost.Session -> Msg -> Model -> (Model * TuiCmd.Cmd Msg { SqliteHost.Sqlite })
+let update database session message model =
+  match message with
+  | Search text ->
+    let range = { model.requested with start = 0 }
+    ({ model with
+      filter = text,
+      requested = range,
+      status = "Loading"
+    }, TuiCmd.combine (TuiCmd.scrollTo tableId 0) (TuiCmd.latest "page" (load database session text model.descending range)))
+  | Need range ->
+    ({ model with
+      requested = range,
+      status = "Loading"
+    }, TuiCmd.latest "page" (load database session model.filter model.descending range))
+  | Loaded page ->
+    ({ model with page = page, status = Int.toString page.total ++ " rows" }, TuiCmd.none)
+  | Failed error -> ({ model with status = error }, TuiCmd.none)
+  | Selected key -> ({ model with selected = Some key }, TuiCmd.none)
+  | Sort ->
+    ({ model with
+      descending = not model.descending
+    }, TuiCmd.latest "page" (load database session model.filter (not model.descending) model.requested))
+  | Quit -> (model, TuiCmd.quit)
+
+view : TuiLayout.Context -> Model -> Ui.Element Msg
+let view context model =
+  let source = {
+    count = model.page.total,
+    get = fun index -> Array.get (index - model.page.start) model.page.rows
+  }
+  Ui.column [
+    Ui.padding 1,
+    Ui.gap 1,
+    Ui.width Ui.fill,
+    Ui.height Ui.fill
+  ] [
+    Ui.text [Ui.style context.theme.accent] "SQLite data browser",
+    Ui.row [
+      Ui.width Ui.fill,
+      Ui.gap 2
+    ] [
+      Ui.input (Ui.id "filter") [
+        Ui.width Ui.fill
+      ] { label = "Filter", onChange = Search, value = model.filter },
+      Ui.button (Ui.id "sort") [] {
+        label = if model.descending then "Descending" else "Ascending",
+        onPress = Sort
+      }
+    ],
+    Ui.table tableId [
+      Ui.width Ui.fill,
+      Ui.height Ui.fill,
+      Ui.border
+    ] {
+      columns = [| "ID", "Name" |],
+      onRange = Some Need,
+      onSelect = Selected,
+      selected = model.selected,
+      source = source
+    },
+    Ui.text [
+      Ui.style context.theme.muted
+    ] (model.status ++ " · arrows/page keys: browse · Tab: focus · Esc: exit")
+  ]
+
+let onEvent event =
+  match event with
+  | TerminalHost.Key key -> if key.code = "Escape" then Some Quit else None
+  | _ -> None
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, SqliteHost.Sqlite, TerminalHost.Terminal }
+let main r =
+  match r.sqlite.open ":memory:" false 5000 with
+  | Err error -> r.console.writeLine error.message
+  | Ok session ->
+    let schema =
+      r.sqlite.execute session "create table entries(id integer primary key, name text)" Array.empty
+    let data =
+      r.sqlite.execute session "with recursive n(x) as (select 1 union all select x+1 from n where x<10000) insert into entries select x, 'Entry ' || x from n" Array.empty
+    let app = { Tui.program init (update r.sqlite session) view with onEvent = onEvent }
+    let result = Tui.run r Tui.defaults app
+    let closed = r.sqlite.close session
+    match result with
+    | Ok _ -> ()
+    | Err error -> r.console.writeLine error.message

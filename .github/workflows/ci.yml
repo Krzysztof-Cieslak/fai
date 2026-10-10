@@ -142,6 +142,9 @@ jobs:
       - uses: ./.github/actions/postgres
         if: contains(fromJSON(needs.changes.outputs.packages), 'postgres')
         timeout-minutes: 10
+      - uses: ./.github/actions/tui
+        if: contains(fromJSON(needs.changes.outputs.packages), 'tui')
+        timeout-minutes: 10
       - name: Package verified compiler bundle
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
         run: python scripts/compiler.py pack --offline --no-build --output "$RUNNER_TEMP/compiler.zip"
@@ -234,6 +237,9 @@ jobs:
         run: python scripts/tests/web_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
       - uses: ./.github/actions/postgres
         if: contains(fromJSON(needs.changes.outputs.packages), 'postgres')
+        timeout-minutes: 10
+      - uses: ./.github/actions/tui
+        if: contains(fromJSON(needs.changes.outputs.packages), 'tui')
         timeout-minutes: 10
       - name: Package verified compiler bundle
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')

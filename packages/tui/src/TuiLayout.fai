@@ -137,15 +137,28 @@ let drawLines context clip rect style lines offset screen =
     | Some line -> TuiScreen.text context.ambiguousWide clip rect.x (rect.y + y) style line screen
   List.foldl draw screen (List.range (max 0 (clip.y - rect.y)) (min rect.height (clip.y + clip.height - rect.y)))
 
+border : Context -> TuiScreen.Rect -> TuiScreen.Rect -> TuiStyle.Style -> TuiScreen.Screen -> TuiScreen.Screen
 let border context clip rect style screen =
   if rect.width < 2 || rect.height < 2 then
     screen
   else
-    let horizontal = "+" ++ TuiText.repeat (rect.width - 2) "-" ++ "+"
-    let screen = TuiScreen.text false clip rect.x rect.y style horizontal screen
-    let screen = TuiScreen.text false clip rect.x (rect.y + rect.height - 1) style horizontal screen
-    List.foldl (fun screen y ->
-      TuiScreen.put false clip (rect.x + rect.width - 1) y style "|" (TuiScreen.put false clip rect.x y style "|" screen)) screen (List.range (rect.y + 1) (rect.y + rect.height - 1))
+    let x = max rect.x clip.x
+    let horizontal =
+      TuiText.repeat (max 0 (min (rect.x + rect.width) (clip.x + clip.width) - x)) "-"
+    let screen = TuiScreen.text false clip x rect.y style horizontal screen
+    let screen = TuiScreen.text false clip x (rect.y + rect.height - 1) style horizontal screen
+    let screen =
+      List.foldl (fun screen y ->
+        TuiScreen.put false clip (rect.x + rect.width - 1) y style "|" (TuiScreen.put false clip rect.x y style "|" screen)) screen (List.range (max clip.y (rect.y + 1)) (min (clip.y + clip.height) (rect.y + rect.height - 1)))
+    let corner screen point =
+      let (x, y) = point
+      TuiScreen.put false clip x y style "+" screen
+    List.foldl corner screen [
+      (rect.x, rect.y),
+      (rect.x + rect.width - 1, rect.y),
+      (rect.x, rect.y + rect.height - 1),
+      (rect.x + rect.width - 1, rect.y + rect.height - 1)
+    ]
 
 mount : Ui.Id -> TuiScreen.Rect -> TuiScreen.Rect -> Ui.Description 'msg -> Bool -> Bool -> Paint 'msg -> Paint 'msg
 let mount id rect clip node focusable enabled paint =
@@ -404,7 +417,12 @@ let draw context depth clip rect active element paint =
     let active = active && not node.props.disabled
     let body = inner rect node.props
     let bodyClip = TuiScreen.intersect clip body
-    let style = if active then node.props.style else context.theme.muted
+    let style =
+      if active then
+        (if node.props.styleSet then node.props.style else context.theme.normal)
+      else
+        context.theme.muted
+    let context = { context with theme = { context.theme with normal = style } }
     let screen = TuiScreen.fill clip style paint.screen
     let screen = if node.props.border then border context clip rect style screen else screen
     let paint = { paint with screen = screen, visited = paint.visited + 1 }
@@ -470,7 +488,8 @@ let draw context depth clip rect active element paint =
     | Ui.BrowserBody config ->
       (match node.id with
       | None -> paint
-      | Some id -> drawBrowser context id bodyClip body node.props config paint)
+      | Some id ->
+        drawBrowser context id bodyClip body { node.props with style = style } config paint)
     | Ui.RowBody children ->
       drawChildren context depth bodyClip body true node.props.gap active children paint
     | Ui.ColumnBody children ->
@@ -517,9 +536,39 @@ let reveal target ancestors state =
     let after = clamp 0 ancestor.maximum (before + delta)
     if after = before then reveal target rest state else TuiState.scrollTo ancestor.id after state
 
+checkTree : Int -> Int -> Int -> Ui.Element 'msg -> Result Int String
+let checkTree maxDepth depth remaining element =
+  if remaining < 1 || depth > maxDepth then
+    Err "UI tree exceeds configured limits"
+  else
+    match (Ui.describe element).body with
+    | Ui.RowBody children -> checkChildren maxDepth (depth + 1) (remaining - 1) children
+    | Ui.ColumnBody children -> checkChildren maxDepth (depth + 1) (remaining - 1) children
+    | Ui.ScrollBody child -> checkTree maxDepth (depth + 1) (remaining - 1) child
+    | Ui.OverlayBody background foreground ->
+      match checkTree maxDepth (depth + 1) (remaining - 1) background with
+      | Err error -> Err error
+      | Ok remaining -> checkTree maxDepth (depth + 1) remaining foreground
+    | _ -> Ok (remaining - 1)
+
+checkChildren : Int -> Int -> Int -> List (Ui.Element 'msg) -> Result Int String
+let checkChildren maxDepth depth remaining children =
+  match children with
+  | [] -> Ok remaining
+  | child :: rest ->
+    match checkTree maxDepth depth remaining child with
+    | Err error -> Err error
+    | Ok remaining -> checkChildren maxDepth depth remaining rest
+
 /// Pure layout, painting and interaction-state reconciliation.
 public render : Context -> TuiState.State -> Ui.Element 'msg -> Result (Frame 'msg) String
 let render context state element =
+  match checkTree (min 128 context.maxDepth) 0 context.maxNodes element with
+  | Err error -> Err error
+  | Ok _ -> renderChecked context state element
+
+renderChecked : Context -> TuiState.State -> Ui.Element 'msg -> Result (Frame 'msg) String
+let renderChecked context state element =
   match TuiScreen.create context.maxCells context.width context.height with
   | Err error -> Err error
   | Ok screen ->

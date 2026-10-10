@@ -1,5 +1,12 @@
 # Development workflows
 
+Terminal library contracts are ordinary Fai tests: `fai test -C packages tui`.
+Headless lifecycle checks run with `fai run -C packages
+tui/examples/RuntimeChecks.fai`; the form, SQLite browser and simulated agent
+examples require a real terminal. CI additionally runs Unix PTY fixtures for
+keyboard input, resize and restoration. `.github/actions/tui` is selected for
+TUI package changes and uses the same exact compiler-bundle cache as other packages.
+
 PostgreSQL source-package integration uses the ordinary Fai CLI against a
 disposable database. See `packages/postgres/README.md` for `FAI_PG_URL`, optional
 TLS roots, and the JIT/AOT commands. `.github/actions/postgres` provisions the CI

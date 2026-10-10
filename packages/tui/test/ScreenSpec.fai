@@ -1,5 +1,7 @@
 module ScreenSpec
 
+example: Result.isErr (TuiScreen.create 100 0 9223372036854775807)
+example: Result.isErr (TuiScreen.create 100 9223372036854775807 0)
 example: TuiText.sanitize "a\u{1b}[2J\r\nb" = "a�[2J\nb"
 example: TuiText.sanitize "a\u{85}b" = "a�b"
 example: TuiText.startForCaret false 3 3 "界界x" = 1

@@ -1,0 +1,24 @@
+name: Native TUI integration
+description: Exercise the MVU runtime and real terminal lifecycle using native Fai examples
+runs:
+  using: composite
+  steps:
+    - name: Attribute and callback compiler checks
+      shell: bash
+      run: python scripts/tests/tui_types.py
+    - name: JIT and AOT runtime checks
+      shell: bash
+      run: |
+        set -euo pipefail
+        fai run --no-daemon -C packages tui/examples/RuntimeChecks.fai | tee "$RUNNER_TEMP/tui-jit.log"
+        grep -Fx 'TUI runtime checks passed' "$RUNNER_TEMP/tui-jit.log"
+        fai build -C packages tui/examples/RuntimeChecks.fai --out "$RUNNER_TEMP/tui-runtime.exe"
+        "$RUNNER_TEMP/tui-runtime.exe" | tee "$RUNNER_TEMP/tui-aot.log"
+        grep -Fx 'TUI runtime checks passed' "$RUNNER_TEMP/tui-aot.log"
+        for example in FormDemo AgentDemo DataBrowser; do
+          fai build -C packages "tui/examples/$example.fai" --out "$RUNNER_TEMP/tui-$example.exe"
+        done
+    - name: Unix terminal input and restoration
+      if: runner.os != 'Windows'
+      shell: bash
+      run: python scripts/tests/tui_terminal.py --directory "$RUNNER_TEMP"

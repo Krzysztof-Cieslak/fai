@@ -69,7 +69,9 @@ impl Drop for Session {
 fn open(mouse: bool) -> Result<Arc<Session>, String> {
     let mut active = ACTIVE.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner());
     if let Some(previous) = active.upgrade()
-        && (!previous.closed.load(Ordering::Acquire) || previous.reader.try_lock().is_err())
+        && (!previous.closed.load(Ordering::Acquire)
+            || previous.reader.try_lock().is_err()
+            || previous.output.try_lock().is_err())
     {
         return Err("terminal is already owned or a previous reader is closing".into());
     }
@@ -360,6 +362,15 @@ mod tests {
             crate::fai_panic("terminal fault test");
         }
         assert!(open(false).is_err(), "a second owner must not disturb the first");
+        if case == "closing" {
+            let output = session.output.lock().unwrap();
+            session.closed.store(true, Ordering::Release);
+            terminal::disable_raw_mode().unwrap();
+            assert!(open(false).is_err(), "restoration still owns terminal output");
+            session.closed.store(false, Ordering::Release);
+            terminal::enable_raw_mode().unwrap();
+            drop(output);
+        }
         if case == "close" {
             session.close().unwrap();
             session.close().unwrap();
@@ -462,6 +473,12 @@ mod tests {
     #[cfg(unix)]
     fn runtime_failure_restores_terminal_before_abort() {
         assert_pty_restored("fault");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn reopening_waits_for_complete_terminal_restoration() {
+        assert_pty_restored("closing");
     }
     #[test]
     fn key_mapping_retains_unicode_and_control_modifiers() {

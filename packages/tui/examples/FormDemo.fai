@@ -1,0 +1,58 @@
+module FormDemo
+
+public type Runtime = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  terminal : TerminalHost.Terminal
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  terminal = TerminalHost.native
+}
+
+type Connection = { host : String, port : Int }
+
+type Model = { form : Form.State, result : Option Connection }
+
+let scope = Ui.id "connection"
+
+let definition =
+  Form.map2 (fun host port -> {
+    host = host,
+    port = port
+  }) (Form.required (Form.text { Form.named "host" "Host" with
+    initial = "localhost"
+  })) (Form.range 1 65535 (Form.int { Form.named "port" "Port" with initial = "5432" }))
+
+init : TuiLayout.Context -> (Model * TuiCmd.Cmd Form.Event 'e)
+let init context = ({ form = Form.initial definition, result = None }, TuiCmd.none)
+
+update : Form.Event -> Model -> (Model * TuiCmd.Cmd Form.Event 'e)
+let update event model =
+  let changed = Form.handle scope definition event model.form
+  let model = { model with form = changed.state, result = changed.value }
+  (model, if changed.value = None then changed.command else TuiCmd.quit)
+
+view : TuiLayout.Context -> Model -> Ui.Element Form.Event
+let view context model = Ui.column [
+  Ui.padding 1,
+  Ui.gap 1
+] [
+  Ui.text [Ui.style context.theme.accent] "Connection settings",
+  Form.view scope [Ui.gap 1] definition model.form,
+  Ui.text [Ui.style context.theme.muted] "Tab: next field · Enter: submit · Ctrl+C: exit"
+]
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, TerminalHost.Terminal }
+let main r =
+  match Tui.run r Tui.defaults (Tui.program init update view) with
+  | Err error -> r.console.writeLine error.message
+  | Ok model ->
+    match model.result with
+    | None -> r.console.writeLine "Cancelled"
+    | Some value ->
+      r.console.writeLine ("Connected to " ++ value.host ++ ":" ++ Int.toString value.port)
