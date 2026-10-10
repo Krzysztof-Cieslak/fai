@@ -104,8 +104,22 @@ forall xs: reverse (reverse xs) = xs
 
 /// Flatten a list of lists.
 public concat : List (List 'a) -> List 'a
-let concat xss = foldr append [] xss
+let concat xss = concatFrom [] xss
 example: concat [[1, 2], [3]] = [1, 2, 3]
+example: concat [[], [1, 2], [], [3], []] = [1, 2, 3]
+
+// Consume each chunk directly. Keeping the final chunk intact preserves its
+// shared suffix; preceding unique cons cells can flow into the result in place.
+let concatFrom current remaining =
+  match remaining with
+  | [] -> current
+  | _ :: _ ->
+    match current with
+    | [] ->
+      match remaining with
+      | [] -> []
+      | next :: rest -> concatFrom next rest
+    | x :: rest -> x :: concatFrom rest remaining
 
 /// Sum a list of integers.
 public sum : List Int -> Int

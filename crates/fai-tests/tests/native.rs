@@ -9,6 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use indoc::{formatdoc, indoc};
 
 #[test]
+fn materialized_list_concatenation_preserves_strict_producers() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/ListConcat.fai")),
+        ("produce 1\nproduce 2\nproduce 3\n12\n6\nok\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn demanded_recursive_results_preserve_argument_order_and_failure() {
     assert_eq!(
         build_and_run(include_str!("fixtures/DemandedResults.fai")),
