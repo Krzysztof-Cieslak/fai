@@ -962,6 +962,10 @@ pub fn union_find(n: i64) -> i64 {
 /// builds and prints.
 #[must_use]
 pub fn json_serialize(n: i64) -> i64 {
+    json_text(n).chars().count() as i64
+}
+
+fn json_text(n: i64) -> String {
     enum Json {
         Null,
         Bool(bool),
@@ -988,25 +992,54 @@ pub fn json_serialize(n: i64) -> i64 {
             Json::Obj(vec![("a".to_owned(), l), ("b".to_owned(), r)])
         }
     }
-    fn ser(j: &Json) -> String {
+    fn ser(j: &Json, output: &mut String) {
         match j {
-            Json::Null => "null".to_owned(),
-            Json::Bool(b) => if *b { "true" } else { "false" }.to_owned(),
-            Json::Int(k) => k.to_string(),
+            Json::Null => output.push_str("null"),
+            Json::Bool(b) => output.push_str(if *b { "true" } else { "false" }),
+            Json::Int(k) => output.push_str(&k.to_string()),
             Json::Arr(items) => {
-                format!("[{}]", items.iter().map(ser).collect::<Vec<_>>().join(","))
+                output.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index != 0 {
+                        output.push(',');
+                    }
+                    ser(item, output);
+                }
+                output.push(']');
             }
-            Json::Obj(fields) => format!(
-                "{{{}}}",
-                fields
-                    .iter()
-                    .map(|(k, v)| format!("\"{k}\":{}", ser(v)))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
+            Json::Obj(fields) => {
+                output.push('{');
+                for (index, (key, value)) in fields.iter().enumerate() {
+                    if index != 0 {
+                        output.push(',');
+                    }
+                    output.push('"');
+                    output.push_str(key);
+                    output.push_str("\":");
+                    ser(value, output);
+                }
+                output.push('}');
+            }
         }
     }
-    ser(&build(0, n)).chars().count() as i64
+    let mut output = String::with_capacity(1024);
+    ser(&build(0, n), &mut output);
+    output
+}
+
+#[cfg(test)]
+mod json_tests {
+    use super::json_text;
+
+    #[test]
+    fn buffered_traversal_preserves_nested_fields_and_separators() {
+        assert_eq!(json_text(4), "[{\"a\":2,\"b\":null},2]");
+    }
+
+    #[test]
+    fn buffered_traversal_preserves_leaf_rendering() {
+        assert_eq!(json_text(2), "[true,2]");
+    }
 }
 
 /// Safe integer division: `None` on a zero divisor. The shared helper for the

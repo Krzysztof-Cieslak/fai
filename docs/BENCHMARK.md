@@ -403,7 +403,7 @@ is closest to the pure size factor.
    in-Fai list-vs-array API cost. `List.sortBy` uses private merge buffers for large
    inputs; buffer construction and conversion back to the linked result remain
    inside the timed call. **`JsonSerialize`** (2-element ADT children
-  joined into a string) and **`GraphBFS`** (the cost is the `HashDict`/`HashSet`; the
+   rendered in order) and **`GraphBFS`** (the cost is the `HashDict`/`HashSet`; the
   `List` is only the BFS frontier) keep a `List` whose container is immaterial
   because another structure dominates.
 
@@ -422,6 +422,13 @@ then dictionary lookups during level-by-level traversal on every side. The forme
 Rust and OCaml peers calculated neighbors directly and omitted that dictionary.
 Their old runtime and RSS rows are a different workload version; the corrected
 ratios measure matched graph construction and traversal, not a compiler speedup.
+
+`JsonSerialize` builds the complete balanced tree, then renders it into one
+growing output on every side. Fai threads an owned String accumulator, Rust uses
+a mutable String, and OCaml uses Buffer. Earlier Fai/Rust versions recursively
+materialized and joined child strings while OCaml already used a buffer. The
+buffered traversal is a new workload version; retain those old rows separately
+from compiler-only comparisons.
 
 The historical `OptionTreeFind` row remains the application comparison of a Fai
 binary tree against Rust `BTreeMap` and OCaml `Map`. Use **`tree_lookup`** to

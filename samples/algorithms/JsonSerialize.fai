@@ -2,7 +2,7 @@ module JsonSerialize
 
 // Build a balanced JSON-like tree of a given size, then serialize it to a string
 // and measure that string's length. This exercises a recursive, multi-constructor
-// algebraic data type and `String` building (`++`, `String.join`, `Int.toString`).
+// algebraic data type and one growing output string (`++`, `Int.toString`).
 // Used by the Rust-vs-Fai runtime benchmark.
 type Json =
   | JNull
@@ -30,19 +30,39 @@ let build seed size =
     else
       JObj [("a", build (seed + 1) half), ("b", build (seed + 2) (size - half - 1))]
 
-serField : (String * Json) -> String
-let serField field =
-  match field with
-  | (key, value) -> "\"" ++ key ++ "\":" ++ serialize value
+// Thread the output through the traversal so unique string appends reuse the
+// buffer. Children do not create intermediate serialized strings.
+serializeInto : String -> Json -> String
+let serializeInto output j =
+  match j with
+  | JNull -> output ++ "null"
+  | JBool b -> output ++ (if b then "true" else "false")
+  | JInt k -> output ++ Int.toString k
+  | JArr items -> serializeItems (output ++ "[") true items ++ "]"
+  | JObj fields -> serializeFields (output ++ "{") true fields ++ "}"
+
+serializeItems : String -> Bool -> List Json -> String
+let serializeItems output first items =
+  match items with
+  | [] -> output
+  | item :: rest ->
+    let prefix = if first then output else output ++ ","
+    serializeItems (serializeInto prefix item) false rest
+
+serializeFields : String -> Bool -> List (String * Json) -> String
+let serializeFields output first fields =
+  match fields with
+  | [] -> output
+  | (key, value) :: rest ->
+    let prefix = if first then output else output ++ ","
+    serializeFields (serializeInto (prefix ++ "\"" ++ key ++ "\":") value) false rest
 
 serialize : Json -> String
-let serialize j =
-  match j with
-  | JNull -> "null"
-  | JBool b -> if b then "true" else "false"
-  | JInt k -> Int.toString k
-  | JArr items -> "[" ++ String.join "," (List.map serialize items) ++ "]"
-  | JObj fields -> "{" ++ String.join "," (List.map serField fields) ++ "}"
+let serialize j = serializeInto "" j
+example: serialize (JArr []) = "[]"
+example: serialize (JObj []) = "{}"
+example: serialize (JBool false) = "false"
+example: serialize (build 0 4) = "[{\"a\":2,\"b\":null},2]"
 
 /// The benchmark workload: the length of the serialized n-node JSON tree.
 public run : Int -> Int
