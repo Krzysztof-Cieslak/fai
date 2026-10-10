@@ -4921,5 +4921,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   subscription runs until stopped. Response gates close before being drained so
   a cancelled nested reader/writer cannot strand cleanup by losing a gate token.
 
+- **D155 Shared SQL sessions.** The optional SQL source package owns values,
+  metadata, immutable rows, pure decoders and effect-parameterized operation
+  bundles. Drivers own dialects, binding, native resources and transaction leases.
+  Scoped cursors close on all result paths; transactions pass a pinned child
+  session and retain both operation and cleanup failures. Name-based decoding
+  rejects duplicate names, while ordinal decoding remains unambiguous.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

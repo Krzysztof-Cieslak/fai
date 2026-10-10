@@ -1,0 +1,121 @@
+module SqlSpec
+
+let columns = [|
+  { declaredType = Some "INTEGER", name = "id" },
+  { declaredType = Some "TEXT", name = "name" }
+|]
+
+let row id name = Sql.row columns [| Sql.Integer id, Sql.Text name |]
+
+let decoder =
+  SqlDecode.map2 (fun id name -> {
+    id = id,
+    name = name
+  }) (SqlDecode.field "id" SqlDecode.int) (SqlDecode.field "name" SqlDecode.string)
+
+let read decoder row =
+  match row with
+  | Err e -> Err e
+  | Ok row -> SqlDecode.decode decoder row
+example: read decoder (row 42 "Ada") = Ok { id = 42, name = "Ada" }
+example: read (SqlDecode.index 0 SqlDecode.int) (row (-9223372036854775808) "") = Ok (-9223372036854775808)
+example: Result.isErr (read (SqlDecode.field "ID" SqlDecode.int) (row 1 "one"))
+example: read (SqlDecode.optionalField "missing" SqlDecode.string) (row 1 "one") = Ok None
+example: Result.isErr (read (SqlDecode.index (-1) SqlDecode.int) (row 1 "one"))
+example: Result.isErr (read (SqlDecode.index 2 SqlDecode.int) (row 1 "one"))
+example: Result.isErr (Sql.row columns [| Sql.Integer 1 |])
+example: Sql.row Array.empty Array.empty = Sql.row Array.empty Array.empty
+
+let repeated = [| { declaredType = None, name = "x" }, { declaredType = None, name = "x" } |]
+example: Result.isErr (read (SqlDecode.field "x" SqlDecode.int) (Sql.row repeated [|
+  Sql.Integer 1,
+  Sql.Integer 2
+|]))
+example: read (SqlDecode.index 1 SqlDecode.int) (Sql.row repeated [|
+  Sql.Integer 1,
+  Sql.Integer 2
+|]) = Ok 2
+example: Result.isErr (read (SqlDecode.optionalField "x" SqlDecode.int) (Sql.row repeated [|
+  Sql.Integer 1,
+  Sql.Integer 2
+|]))
+example: SqlDecode.decodeValue SqlDecode.int Sql.Null = Err (Sql.error Sql.DecodeFailure "decode" "expected SQL integer")
+example: SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) Sql.Null = Ok None
+example: SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) (Sql.Integer 2) = Ok (Some 2)
+example: SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 1) = Ok true
+example: SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 0) = Ok false
+example: Result.isErr (SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 2))
+example: Result.isErr (SqlDecode.decodeValue SqlDecode.int (Sql.Real 1.0))
+example: Result.isErr (SqlDecode.decodeValue SqlDecode.float (Sql.Integer 1))
+example: SqlDecode.decodeValue SqlDecode.float (Sql.Real 1.5) = Ok 1.5
+example: SqlDecode.decodeValue SqlDecode.bytes (Sql.Blob (Bytes.fromList [
+  0,
+  255
+])) = Ok (Bytes.fromList [0, 255])
+example: SqlDecode.decodeValue SqlDecode.string (Sql.Text "a\u{0}é😀") = Ok "a\u{0}é😀"
+forall n: SqlDecode.decodeValue SqlDecode.int (Sql.Integer n) = Ok n
+forall text: SqlDecode.decodeValue SqlDecode.string (Sql.Text text) = Ok text
+
+let fake rows = Sql.session {
+  begin = fun _ -> Ok (fake rows),
+  commit = fun _ -> Ok (),
+  execute = fun _ -> Ok { affectedRows = 1 },
+  query = fun _ -> Ok (Sql.fromList columns rows),
+  rollback = fun _ -> Ok ()
+}
+
+let query rows = SqlDecode.query decoder (fake rows) (Sql.statement "select id, name" Array.empty)
+
+let sampleQuery =
+  match row 1 "one" with
+  | Err e -> Err e
+  | Ok first ->
+    match row 2 "two" with
+    | Err e -> Err e
+    | Ok second -> query [first, second]
+example: sampleQuery = Ok [| { id = 1, name = "one" }, { id = 2, name = "two" } |]
+example: query [] = Ok Array.empty
+example: Sql.execute (fake []) (Sql.text "update things") = Ok { affectedRows = 1 }
+example: Sql.transaction Sql.Default (fake []) (fun child ->
+  Sql.execute child (Sql.text "update things")) = Ok { affectedRows = 1 }
+
+let primary = Sql.error Sql.BackendFailure "query" "primary"
+
+let secondary = Sql.error Sql.BackendFailure "close" "secondary"
+example: Sql.cleanup (Ok 42) (Ok ()) = Ok 42
+example: Sql.cleanup (Err primary) (Ok ()) = Err primary
+example: Sql.cleanup (Ok 42) (Err secondary) = Err secondary
+example: Sql.cleanup (Err primary) (Err secondary) = Err (Sql.CleanupFailed primary secondary)
+
+let failingClose = Sql.session {
+  begin = fun _ -> Err primary,
+  commit = fun _ -> Ok (),
+  execute = fun _ -> Ok { affectedRows = 0 },
+  query = fun _ -> Ok (Sql.rows columns (fun _ -> Ok None) (fun _ -> Err secondary)),
+  rollback = fun _ -> Ok ()
+}
+example: Sql.withRows failingClose (Sql.text "select") (fun _ ->
+  Err primary) = Err (Sql.CleanupFailed primary secondary)
+example: Sql.transaction Sql.Default failingClose (fun _ -> Ok (1 / 0)) = Err primary
+
+let commitFails = Sql.session {
+  begin = fun _ -> Ok commitFails,
+  commit = fun _ -> Err primary,
+  execute = fun _ -> Ok { affectedRows = 0 },
+  query = fun _ -> Ok (Sql.fromList columns []),
+  rollback = fun _ -> Err secondary
+}
+example: Sql.transaction Sql.Default commitFails (fun _ ->
+  Ok 42) = Err (Sql.CleanupFailed primary secondary)
+example: Sql.transaction Sql.Default commitFails (fun _ ->
+  Err primary) = Err (Sql.CleanupFailed primary secondary)
+
+let located =
+  match Sql.row columns [| Sql.Text "wrong", Sql.Text "one" |] with
+  | Err _ -> false
+  | Ok bad ->
+    match query [bad] with
+    | Err (Sql.Failure info) ->
+      info.row = Some 0 && info.column = Some 0 && info.kind = Sql.DecodeFailure
+    | _ -> false
+example: located

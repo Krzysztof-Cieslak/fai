@@ -1736,6 +1736,16 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/sql` supplies `Sql` and `SqlDecode`. Bind `Sql.Value` parameters
+separately with `Sql.statement text values`; dialects/placeholders are driver
+specific. `Sql.execute` returns an affected-row count; `SqlDecode.query decoder
+session statement` returns typed rows. `Sql.withRows` scopes cursor consumption,
+and `Sql.transaction isolation session work` commits success or rolls back
+failure using a pinned child session. Decoders use `field`/`index`, explicit
+`nullable`, `map`/`map2`/`andMap`, and retain row/column error locations. Duplicate
+names are ambiguous; ordinal access remains valid. `Sql.session` and
+`Sql.fromList` support pure fake drivers. Run `fai test -C packages sql`.
+
 Including `packages/sse/src` supplies the shared `Sse` codec. `Sse.events limits
 byteStream` yields records with `data`, `eventType`, and `lastEventId`; `Sse.updates`
 also yields `Checkpoint` and `Retry` observations. `Sse.decoder`/`next` give typed,
