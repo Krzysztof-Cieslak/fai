@@ -5832,7 +5832,7 @@ impl<M: Module> Translator<'_, M> {
     }
 
     /// Inlines the structural hash when the operand is immediate-representable,
-    /// producing the same non-negative immediate `Int` as `fai_hash`: the
+    /// producing the same non-negative `Int` as `fai_hash`: the
     /// splitmix64 finalizer of the value's payload, masked to 62 bits.
     /// `Bool`/`Char`/`Unit` untag to their payload and mix it bare; `Int` adds the
     /// immediate guard and the `fai_hash` fallback (a boxed/overflowed `Int` hashes
@@ -5842,7 +5842,8 @@ impl<M: Module> Translator<'_, M> {
     /// takes the same guard over the structural fallback, so a generic `hash` whose
     /// runtime value is an immediate (the common case — `Int` keys in a generic
     /// `HashDict`) avoids the call. The always-boxed types keep the out-of-line
-    /// structural path.
+    /// structural path. Results stay raw across the merge: the runtime guarantees
+    /// a nonnegative 62-bit immediate, so its result needs only an untag operation.
     fn inline_hash(&mut self, op: Prim, args: &[CExpr]) -> Option<Value> {
         let oty = &args[0].ty;
         if is_immediate_ty(oty) {
@@ -5860,20 +5861,23 @@ impl<M: Module> Translator<'_, M> {
                 let p = self.hash_payload_raw(a);
                 return Some(self.mark_raw(p));
             }
-            // A tagged immediate inlines (untag, mix, re-tag); a boxed (overflowed)
+            // A tagged immediate inlines (untag, mix); a boxed (overflowed)
             // `Int` falls back to the consuming `fai_hash`, which hashes its full
             // 64-bit value and frees it.
             let a = self.ensure_boxed(a);
-            Some(self.guard_immediate(
+            let result = self.guard_immediate(
                 a,
-                |s| s.prim_runtime_call(op, &[a]),
+                |s| {
+                    let tagged = s.prim_runtime_call(op, &[a]);
+                    s.untag(tagged)
+                },
                 |s, _slow, merge| {
                     let xa = s.untag(a);
                     let p = s.hash_payload_raw(xa);
-                    let tagged = s.tag_int(p);
-                    s.builder.ins().jump(merge, &[tagged.into()]);
+                    s.builder.ins().jump(merge, &[p.into()]);
                 },
-            ))
+            );
+            Some(self.mark_raw(result))
         } else if matches!(oty, Ty::Con(Con::Float)) {
             // Unboxed operand: reinterpret the `f64` bits as `i64` and mix them,
             // matching the runtime's boxed-`Float` hash (`mix64` of the raw bits),
@@ -5893,7 +5897,9 @@ impl<M: Module> Translator<'_, M> {
             // operand for its binder to drop — mirroring [`Self::inline_compare`].
             if self.niche_of(a).is_some() {
                 let a2 = self.comparison_std_operand(a);
-                return Some(self.prim_runtime_call(op, &[a2]));
+                let tagged = self.prim_runtime_call(op, &[a2]);
+                let raw = self.untag(tagged);
+                return Some(self.mark_raw(raw));
             }
             // Guard on the operand being an immediate — then mix its untagged
             // payload inline — and otherwise fall back to the structural runtime
@@ -5901,18 +5907,24 @@ impl<M: Module> Translator<'_, M> {
             // operand type (a type variable owned, a reference-counted union/`List`
             // borrowed); the immediate fast arm drops nothing either way.
             let borrowed = op.borrows_operand(oty);
-            Some(self.guard_immediate(
+            let result = self.guard_immediate(
                 a,
-                move |s| s.prim_runtime_call_borrowing(op, borrowed, &[a]),
+                move |s| {
+                    let tagged = s.prim_runtime_call_borrowing(op, borrowed, &[a]);
+                    s.untag(tagged)
+                },
                 |s, _slow, merge| {
                     let xa = s.untag(a);
                     let p = s.hash_payload_raw(xa);
-                    let tagged = s.tag_int(p);
-                    s.builder.ins().jump(merge, &[tagged.into()]);
+                    s.builder.ins().jump(merge, &[p.into()]);
                 },
-            ))
+            );
+            Some(self.mark_raw(result))
         } else {
-            None
+            let a = self.expr_boxed(&args[0]);
+            let tagged = self.prim_runtime_call_borrowing(op, op.borrows_operand(oty), &[a]);
+            let raw = self.untag(tagged);
+            Some(self.mark_raw(raw))
         }
     }
 

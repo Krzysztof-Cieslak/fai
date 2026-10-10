@@ -684,6 +684,9 @@ a calculation on the value's immediate bit, independent of constructor order.
 Native match branches reuse established tag equalities. Rejecting one alternative
 identifies the other only when type evidence proves exactly one immediate and
 one boxed constructor; facts stay local to the branch and current loop iteration.
+Structural hash results remain raw native integers across inline/runtime merges.
+The runtime's nonnegative 62-bit result needs only untagging, with no result-box
+check; ordinary uniform boundaries still tag it.
 Generic `Option 'a` values can also use the wrapper-free sentinel encoding:
 their payload is standardized at the type-variable boundary, so it cannot collide
 with the internal None sentinel. Concrete Float and nested-Option inspections
