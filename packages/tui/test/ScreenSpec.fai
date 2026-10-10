@@ -1,0 +1,22 @@
+module ScreenSpec
+
+example: TuiText.sanitize "a\u{1b}[2J\r\nb" = "a�[2J\nb"
+example: TuiText.sanitize "a\u{85}b" = "a�b"
+example: TuiText.startForCaret false 3 3 "界界x" = 1
+example: TuiText.indexAt false 10 0 1 "界x" = 0
+example: TuiText.indexAt false 10 0 2 "界x" = 1
+example: TuiText.indexAt false 2 1 0 "ab界x" = 2
+example: TuiText.wrap false 0 4 "text" = [||]
+example: TuiText.slice (-1) 1 "a\u{301}b" = "a\u{301}"
+forall text: TuiText.sanitize (TuiText.sanitize text) = TuiText.sanitize text
+
+let blank = TuiScreen.create 12 4 3
+example: Result.map TuiScreen.size blank = Ok (4, 3)
+example: Result.isErr (TuiScreen.create 11 4 3)
+example: Result.map (fun screen -> TuiScreen.cell (-1) 0 screen) blank = Ok None
+example: Result.map (fun screen ->
+  TuiScreen.lines (TuiScreen.put false (TuiScreen.bounds screen) 4 0 TuiStyle.normal "x" screen)) blank = Ok [|
+  "    ",
+  "    ",
+  "    "
+|]
