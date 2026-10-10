@@ -1,0 +1,30 @@
+module Main
+
+public step : Int -> Int
+let step value = if value % 2 = 0 then value / 2 else 3 * value + 1
+
+public guarded : Bool -> Int -> Int
+let guarded yes value = if yes then value else value / 0
+
+public effectful : Console -> Bool -> Int -> Int / { Console }
+let effectful console yes value =
+  if yes then
+    value
+  else
+    let _ = console.writeLine "chosen"
+    value + 1
+
+public choose : Bool -> 'a -> 'a -> 'a
+let choose yes left right = if yes then left else right
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let a = effectful runtime.console true 40
+  let b = effectful runtime.console false 41
+  let ok = a = 40 && b = 42 && guarded true 7 = 7
+  let wide =
+    step (-9223372036854775808) = -4611686018427387904 && step 9223372036854775807 = 9223372036854775806
+  runtime.console.writeLine (if ok && wide && choose false "left" "right" = "right" then
+    "yes"
+  else
+    "no")
