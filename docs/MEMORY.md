@@ -2625,6 +2625,10 @@ Editor integration:
     pure Int expressions are coalesced first, and ordinary ownership insertion
     balances the peer's references. Branch-only uses, closures and row-offset
     references remain conservative; the explicit marker survives worker transport.
+    Structural hash results remain raw across native fast/fallback merges. Runtime
+    hashing guarantees a nonnegative 62-bit immediate, so its result is untagged
+    directly rather than checked for a possible heap box. Uniform result positions
+    retain the ordinary tag conversion, and operand ownership is unchanged.
     After ownership insertion, an Int projection with a straight-line set of
     uniform consumers can retain its word. The boxed marker acquires its reference
     before the parent release and preserves niche-payload and row-offset reads.

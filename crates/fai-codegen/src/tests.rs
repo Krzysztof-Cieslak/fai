@@ -5113,6 +5113,22 @@ fn hash_boxed_key_stays_out_of_line() {
 }
 
 #[test]
+fn generic_hash_has_no_result_box_fallback() {
+    let ir = entry_ir_std(
+        "module M\npublic hash : 'a -> Int\nlet hash value = Prim.hash value\n",
+        "hash",
+    );
+    assert_eq!(call_count(&ir), 1, "only the boxed-operand hash fallback calls the runtime:\n{ir}");
+    assert_eq!(ir.matches("brif").count(), 1, "only the operand needs a tag guard:\n{ir}");
+}
+
+#[test]
+fn generic_hash_keeps_uniform_first_class_results() {
+    let source = "module M\npublic hash : 'a -> Int\nlet hash value = Prim.hash value\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let values = [0, -1, 9223372036854775807, -9223372036854775808]\n  let hashes = List.map hash values\n  let expected = List.map (fun value -> Prim.hash value) values\n  let boxed = hash (7, \"value\") = Prim.hash (7, \"value\")\n  let nested = hash (Some (Some 7)) = Prim.hash (Some (Some 7))\n  r.console.writeLine (if hashes = expected && boxed && nested then \"yes\" else \"no\")\n";
+    assert_eq!(run_std(source), (0, "yes\n".into()));
+}
+
+#[test]
 fn niche_b_option_references_the_none_sentinel_symbol_not_a_call() {
     // A niche Scheme-B `Option Int` tests `v != None` (the match) and builds `None`
     // from the sentinel's relocatable address — a `symbol_value`, not a
