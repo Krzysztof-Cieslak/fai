@@ -817,6 +817,10 @@ Reuse & in-place update:
     section GC, Apple dead stripping and MSVC reference elimination), reducing
     unused runtime text/data and startup memory. Referenced foreign functions and
     native initialization sections retain their ordinary linker reachability.
+    Iterative destruction handles compact data with one inlined scan-and-recycle
+    path: decode the shape, enqueue boxed children in their existing order, and
+    return the cell to its exact pool class. Extended cells and native resources
+    keep their established finalization paths; live-byte counters stay balanced.
     The same retained-root proof covers data searches with scalar or niche-scalar
     results when the reachable type contains no resources or functions. A bounded
     type walk records this conservative fact alongside data-shape metadata, keeping
