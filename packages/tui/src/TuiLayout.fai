@@ -1,0 +1,591 @@
+module TuiLayout
+
+public type Context = {
+  ambiguousWide : Bool,
+  height : Int,
+  maxCells : Int,
+  maxDepth : Int,
+  maxNodes : Int,
+  tabWidth : Int,
+  theme : TuiStyle.Theme,
+  width : Int
+}
+
+public type ScrollFrame = { id : Ui.Id, maximum : Int, rect : TuiScreen.Rect }
+
+public type Hit 'msg = {
+  body : Ui.Body 'msg,
+  clip : TuiScreen.Rect,
+  enabled : Bool,
+  focusable : Bool,
+  id : Ui.Id,
+  props : Ui.Props,
+  rect : TuiScreen.Rect,
+  scrolls : List ScrollFrame
+}
+
+public type Frame 'msg = {
+  hits : Array (Hit 'msg),
+  messages : List 'msg,
+  screen : TuiScreen.Screen,
+  state : TuiState.State
+}
+
+type Paint 'msg = {
+  error : Option String,
+  hits : List (Hit 'msg),
+  ids : Set String,
+  messages : List 'msg,
+  screen : TuiScreen.Screen,
+  scrolls : List ScrollFrame,
+  state : TuiState.State,
+  visited : Int
+}
+
+public context : Int -> Int -> Context
+let context width height = {
+  ambiguousWide = false,
+  height = height,
+  maxCells = 1048576,
+  maxDepth = 128,
+  maxNodes = 100000,
+  tabWidth = 4,
+  theme = TuiStyle.defaultTheme,
+  width = width
+}
+
+let min a b = if a < b then a else b
+
+let max a b = if a > b then a else b
+
+let clamp low high value = max low (min high value)
+
+let extra props = min 1048576 props.padding * 2 + if props.border then 2 else 0
+
+let textWidth context text = TextCells.width context.ambiguousWide (TuiText.sanitize text)
+
+let limit length minimum maximum natural =
+  let requested =
+    match length with
+    | Ui.Cells n -> n
+    | _ -> natural
+  clamp minimum (max minimum maximum) (max 0 requested)
+
+let extent horizontal size =
+  let (width, height) = size
+  if horizontal then width else height
+
+measure : Context -> Int -> Int -> Ui.Element 'msg -> (Int * Int)
+let measure context available depth element =
+  if depth >= context.maxDepth then
+    (0, 0)
+  else
+    let node = Ui.describe element
+    let inset = extra node.props
+    let available =
+      match node.props.width with
+      | Ui.Cells width -> min available (max 0 width)
+      | _ -> available
+    let inside = max 1 (available - inset)
+    let natural =
+      match node.body with
+      | Ui.TextBody text ->
+        let lines = TuiText.wrap context.ambiguousWide inside context.tabWidth text
+        (Array.foldl (fun width line ->
+          max width (textWidth context line)) 0 lines, Array.length lines)
+      | Ui.RichBody lines -> (inside, Array.length lines)
+      | Ui.TranscriptBody config -> (inside, min 10 config.source.count)
+      | Ui.ButtonBody label _ -> (textWidth context label + 4, 1)
+      | Ui.CheckBody label _ _ -> (textWidth context label + 4, 1)
+      | Ui.InputBody config ->
+        (max 20 (textWidth context config.label), (if config.label = "" then
+          0
+        else
+          1) + (if node.props.multiline then 4 else 1))
+      | Ui.BrowserBody config ->
+        (inside, min 10 config.source.count + if Array.isEmpty config.columns then 0 else 1)
+      | Ui.ScrollBody child -> measure context inside (depth + 1) child
+      | Ui.OverlayBody background _ -> measure context inside (depth + 1) background
+      | Ui.RowBody children -> measureChildren context inside depth true node.props.gap children
+      | Ui.ColumnBody children -> measureChildren context inside depth false node.props.gap children
+    let (width, height) = natural
+    (limit node.props.width node.props.minWidth node.props.maxWidth (width + inset), limit node.props.height node.props.minHeight node.props.maxHeight (height + inset))
+
+measureChildren : Context -> Int -> Int -> Bool -> Int -> List (Ui.Element 'msg) -> (Int * Int)
+let measureChildren context available depth horizontal gap children =
+  let sizes = List.map (measure context available (depth + 1)) children
+  let main =
+    List.foldl (fun total size ->
+      min 2147483647 (total + extent horizontal size)) 0 sizes + min 1048576 gap * max 0 (List.length children - 1)
+  let cross = List.foldl (fun total size -> max total (extent (not horizontal) size)) 0 sizes
+  if horizontal then (main, cross) else (cross, main)
+
+inner : TuiScreen.Rect -> Ui.Props -> TuiScreen.Rect
+let inner rect props =
+  let inset = min 1048576 props.padding + if props.border then 1 else 0
+  {
+    height = max 0 (rect.height - inset * 2),
+    width = max 0 (rect.width - inset * 2),
+    x = rect.x + min inset rect.width,
+    y = rect.y + min inset rect.height
+  }
+
+let drawLines context clip rect style lines offset screen =
+  let draw screen y =
+    match Array.get (y + offset) lines with
+    | None -> screen
+    | Some line -> TuiScreen.text context.ambiguousWide clip rect.x (rect.y + y) style line screen
+  List.foldl draw screen (List.range (max 0 (clip.y - rect.y)) (min rect.height (clip.y + clip.height - rect.y)))
+
+let border context clip rect style screen =
+  if rect.width < 2 || rect.height < 2 then
+    screen
+  else
+    let horizontal = "+" ++ TuiText.repeat (rect.width - 2) "-" ++ "+"
+    let screen = TuiScreen.text false clip rect.x rect.y style horizontal screen
+    let screen = TuiScreen.text false clip rect.x (rect.y + rect.height - 1) style horizontal screen
+    List.foldl (fun screen y ->
+      TuiScreen.put false clip (rect.x + rect.width - 1) y style "|" (TuiScreen.put false clip rect.x y style "|" screen)) screen (List.range (rect.y + 1) (rect.y + rect.height - 1))
+
+mount : Ui.Id -> TuiScreen.Rect -> TuiScreen.Rect -> Ui.Description 'msg -> Bool -> Bool -> Paint 'msg -> Paint 'msg
+let mount id rect clip node focusable enabled paint =
+  let key = Ui.idString id
+  let duplicate = Set.member key paint.ids
+  { paint with
+    error = if duplicate then Some ("duplicate widget ID: " ++ key) else paint.error,
+    hits = {
+      body = node.body,
+      clip = clip,
+      enabled = enabled,
+      focusable = focusable && not node.props.disabled && rect.width > 0 && rect.height > 0,
+      id = id,
+      props = node.props,
+      rect = rect,
+      scrolls = paint.scrolls
+    } :: paint.hits,
+    ids = Set.insert key paint.ids
+  }
+
+inputState : Ui.Id -> Ui.InputConfig 'msg -> Paint 'msg -> (TuiState.Widget * Paint 'msg)
+let inputState id config paint =
+  let existing = Dict.member (Ui.idString id) paint.state.widgets
+  let state = TuiState.get id paint.state
+  let length = TuiText.length config.value
+  let state =
+    if existing then
+      { state with
+        anchor = clamp 0 length state.anchor,
+        caret = clamp 0 length state.caret,
+        lastValue = config.value
+      }
+    else
+      { state with anchor = length, caret = length, lastValue = config.value }
+  (state, { paint with state = TuiState.put id state paint.state })
+
+selection : Context -> TuiScreen.Rect -> TuiScreen.Rect -> Int -> Int -> Array String -> Int -> Int -> Int -> Int -> TuiScreen.Screen -> TuiScreen.Screen
+let selection context clip area first last glyphs index row column offset screen =
+  if index >= Array.length glyphs || row - offset >= area.height then
+    screen
+  else
+    let glyph = Array.unsafeGet index glyphs
+    if glyph = "\n" then
+      selection context clip area first last glyphs (index + 1) (row + 1) 0 offset screen
+    else
+      let glyph =
+        if glyph = "\t" then
+          TuiText.repeat (max 1 context.tabWidth - column % max 1 context.tabWidth) " "
+        else
+          glyph
+      let size = max 1 (TextCells.width context.ambiguousWide glyph)
+      let (row, column) = if column + size > area.width then (row + 1, 0) else (row, column)
+      let screen =
+        if index >= first && index < last && row >= offset then
+          TuiScreen.text context.ambiguousWide clip (area.x + column) (area.y + row - offset) context.theme.selected glyph screen
+        else
+          screen
+      selection context clip area first last glyphs (index + 1) row (column + size) offset screen
+
+drawInput : Context -> Ui.Id -> TuiScreen.Rect -> TuiScreen.Rect -> Ui.Props -> Ui.InputConfig 'msg -> Paint 'msg -> Paint 'msg
+let drawInput context id clip rect props config paint =
+  let (state, paint) = inputState id config paint
+  let labelHeight = if config.label = "" then 0 else 1
+  let screen =
+    if labelHeight = 0 then
+      paint.screen
+    else
+      TuiScreen.text context.ambiguousWide clip rect.x rect.y props.style config.label paint.screen
+  let area = { rect with
+    height = if props.multiline then
+      max 0 (rect.height - labelHeight)
+    else
+      min 1 (max 0 (rect.height - labelHeight)),
+    y = rect.y + labelHeight
+  }
+  let areaClip = TuiScreen.intersect clip area
+  let value =
+    if props.password then TuiText.repeat (TuiText.length config.value) "*" else config.value
+  let prefix = TuiText.slice 0 state.caret value
+  let focused = paint.state.focus = Some id
+  let lines = TuiText.wrap context.ambiguousWide (max 1 area.width) context.tabWidth value
+  let prefixLines = TuiText.wrap context.ambiguousWide (max 1 area.width) context.tabWidth prefix
+  let line = max 0 (Array.length prefixLines - 1)
+  let column = textWidth context (Option.withDefault "" (Array.get line prefixLines))
+  let (line, column) =
+    if column >= area.width && area.width > 0 then (line + 1, 0) else (line, column)
+  let offset =
+    if props.multiline then
+      (if focused then
+        max 0 (max (line - area.height + 1) (min line state.scroll))
+      else
+        state.scroll)
+    else
+      TuiText.startForCaret context.ambiguousWide (max 0 (area.width - 1)) state.caret value
+  let visible =
+    if config.value = "" then
+      [| props.placeholder |]
+    else if props.multiline then lines else [| TuiText.slice offset (TuiText.length value) value |]
+  let screen =
+    drawLines context areaClip area (if config.value = "" then
+      context.theme.muted
+    else
+      props.style) visible (if props.multiline then offset else 0) screen
+  let cursorX =
+    if props.multiline then column else textWidth context (TuiText.slice offset state.caret value)
+  let cursorY = if props.multiline then line - offset else 0
+  let screen =
+    if focused && state.anchor <> state.caret then
+      let start = if props.multiline then 0 else offset
+      selection context areaClip area (min state.anchor state.caret) (max state.anchor state.caret) (TuiText.graphemes value) start 0 0 (if props.multiline then
+        offset
+      else
+        0) screen
+    else
+      screen
+  let screen =
+    if focused && TuiScreen.contains (area.x + cursorX) (area.y + cursorY) areaClip then
+      TuiScreen.cursor (Some (area.x + cursorX, area.y + cursorY)) screen
+    else
+      screen
+  { paint with screen = screen, state = TuiState.put id { state with scroll = offset } paint.state }
+
+drawBrowser : Context -> Ui.Id -> TuiScreen.Rect -> TuiScreen.Rect -> Ui.Props -> Ui.BrowserConfig 'msg -> Paint 'msg -> Paint 'msg
+let drawBrowser context id clip rect props config paint =
+  let header = if Array.isEmpty config.columns then 0 else 1
+  let state = TuiState.get id paint.state
+  let count = max 0 config.source.count
+  let visible = max 0 (rect.height - header)
+  let offset = clamp 0 (max 0 (count - visible)) state.scroll
+  let skipped = max 0 (clip.y - rect.y - header)
+  let visible = max 0 (min (visible - skipped) (clip.y + clip.height - rect.y - header - skipped))
+  let range = { count = max 0 (min visible (count - offset - skipped)), start = offset + skipped }
+  let messages =
+    if state.range = Some range then
+      paint.messages
+    else
+      match config.onRange with
+      | None -> paint.messages
+      | Some changed -> changed range :: paint.messages
+  let columns = max 1 (Array.length config.columns)
+  let columnWidth = max 1 (rect.width / columns)
+  let drawCells screen y style cells =
+    List.foldl (fun screen column ->
+      match Array.get column cells with
+      | None -> screen
+      | Some value ->
+        TuiScreen.text context.ambiguousWide clip (rect.x + column * columnWidth) y style (TuiText.fit context.ambiguousWide (max 0 (columnWidth - 1)) value) screen) screen (List.range 0 columns)
+  let screen =
+    if header = 0 then
+      paint.screen
+    else
+      drawCells paint.screen rect.y context.theme.accent config.columns
+  let items = Array.init range.count (fun index -> config.source.get (range.start + index))
+  let drawRow screen index =
+    match Array.unsafeGet index items with
+    | None ->
+      TuiScreen.text false clip rect.x (rect.y + header + skipped + index) context.theme.muted "…" screen
+    | Some item ->
+      drawCells screen (rect.y + header + skipped + index) (if Some item.key = config.selected then
+        context.theme.selected
+      else
+        props.style) item.cells
+  let screen = List.foldl drawRow screen (List.range 0 range.count)
+  let selected =
+    List.find (fun index ->
+      match Array.unsafeGet index items with
+      | Some item -> Some item.key = config.selected
+      | None -> false) (List.range 0 range.count)
+  let caret =
+    match selected with
+    | None -> state.caret
+    | Some index -> range.start + index
+  { paint with
+    messages = messages,
+    screen = screen,
+    state = TuiState.put id { state with
+      caret = caret,
+      range = Some range,
+      scroll = offset
+    } paint.state
+  }
+
+type Allocation 'msg = { base : Int, element : Ui.Element 'msg, maximum : Int, weight : Int }
+
+allocation : Context -> Int -> Int -> Bool -> Ui.Element 'msg -> Allocation 'msg
+let allocation context available depth horizontal element =
+  let node = Ui.describe element
+  let length = if horizontal then node.props.width else node.props.height
+  let minimum = if horizontal then node.props.minWidth else node.props.minHeight
+  let maximum = if horizontal then node.props.maxWidth else node.props.maxHeight
+  let natural = extent horizontal (measure context available depth element)
+  match length with
+  | Ui.Fill weight -> {
+    base = min 1048576 minimum,
+    element = element,
+    maximum = maximum,
+    weight = clamp 1 65536 weight
+  }
+  | _ -> { base = min 1048576 natural, element = element, maximum = maximum, weight = 0 }
+
+drawChildren : Context -> Int -> TuiScreen.Rect -> TuiScreen.Rect -> Bool -> Int -> Bool -> List (Ui.Element 'msg) -> Paint 'msg -> Paint 'msg
+let drawChildren context depth clip rect horizontal gap active children paint =
+  let allocations = List.map (allocation context rect.width depth horizontal) children
+  let total = List.foldl (fun total item -> total + item.base) 0 allocations
+  let weight = List.foldl (fun total item -> total + item.weight) 0 allocations
+  let extent = if horizontal then rect.width else rect.height
+  let gap = min 1048576 gap
+  let spare = max 0 (extent - total - gap * max 0 (List.length children - 1))
+  drawAllocated context depth clip rect horizontal gap active spare weight 0 0 allocations paint
+
+drawAllocated : Context -> Int -> TuiScreen.Rect -> TuiScreen.Rect -> Bool -> Int -> Bool -> Int -> Int -> Int -> Int -> List (Allocation 'msg) -> Paint 'msg -> Paint 'msg
+let drawAllocated context depth clip rect horizontal gap active spare weight usedWeight offset allocations paint =
+  match allocations with
+  | [] -> paint
+  | item :: rest ->
+    let portion =
+      if weight = 0 then
+        0
+      else
+        spare * (usedWeight + item.weight) / weight - spare * usedWeight / weight
+    let size = max 0 (min item.maximum (item.base + portion))
+    let props = (Ui.describe item.element).props
+    let crossLength = if horizontal then props.height else props.width
+    let parentCross = if horizontal then rect.height else rect.width
+    let naturalCross =
+      extent (not horizontal) (measure context (if horizontal then
+        size
+      else
+        rect.width) depth item.element)
+    let cross =
+      match crossLength with
+      | Ui.Fill _ -> parentCross
+      | _ -> min parentCross naturalCross
+    let area =
+      if horizontal then
+        { rect with height = cross, width = size, x = rect.x + offset }
+      else
+        { rect with height = size, width = cross, y = rect.y + offset }
+    let paint = draw context (depth + 1) clip area active item.element paint
+    drawAllocated context depth clip rect horizontal gap active spare weight (usedWeight + item.weight) (offset + size + gap) rest paint
+
+drawSpan : Context -> TuiScreen.Rect -> Int -> (Int * TuiScreen.Screen) -> Ui.Span -> (Int * TuiScreen.Screen)
+let drawSpan context clip y result span =
+  let (x, screen) = result
+  (x + textWidth context span.text, TuiScreen.text context.ambiguousWide clip x y span.style span.text screen)
+
+draw : Context -> Int -> TuiScreen.Rect -> TuiScreen.Rect -> Bool -> Ui.Element 'msg -> Paint 'msg -> Paint 'msg
+let draw context depth clip rect active element paint =
+  if paint.error <> None then
+    paint
+  else if depth > context.maxDepth || paint.visited >= context.maxNodes then
+    { paint with error = Some "UI tree exceeds configured limits" }
+  else
+    let node = Ui.describe element
+    let clip = TuiScreen.intersect clip rect
+    let active = active && not node.props.disabled
+    let body = inner rect node.props
+    let bodyClip = TuiScreen.intersect clip body
+    let style = if active then node.props.style else context.theme.muted
+    let screen = TuiScreen.fill clip style paint.screen
+    let screen = if node.props.border then border context clip rect style screen else screen
+    let paint = { paint with screen = screen, visited = paint.visited + 1 }
+    let focusable =
+      match node.body with
+      | Ui.ButtonBody _ _ | Ui.CheckBody _ _ _ | Ui.InputBody _ | Ui.BrowserBody _ | Ui.TranscriptBody _ | Ui.ScrollBody _ ->
+        active
+      | _ -> false
+    let paint =
+      match node.id with
+      | None -> paint
+      | Some id -> mount id body bodyClip node focusable active paint
+    match node.body with
+    | Ui.TextBody text -> { paint with
+      screen = drawLines context bodyClip body style (TuiText.wrap context.ambiguousWide body.width context.tabWidth text) 0 paint.screen
+    }
+    | Ui.RichBody lines ->
+      let drawLine screen index =
+        match Array.get index lines with
+        | None -> screen
+        | Some spans ->
+          let (_, screen) =
+            List.foldl (drawSpan context bodyClip (body.y + index)) (body.x, screen) spans
+          screen
+      { paint with
+        screen = List.foldl drawLine paint.screen (List.range (max 0 (bodyClip.y - body.y)) (min body.height (bodyClip.y + bodyClip.height - body.y)))
+      }
+    | Ui.TranscriptBody config ->
+      match node.id with
+      | None -> paint
+      | Some id ->
+        let widget = TuiState.get id paint.state
+        let last = max 0 (config.source.count - body.height)
+        let offset = if config.follow && widget.follow then last else clamp 0 last widget.scroll
+        let drawLine screen y =
+          match config.source.get (offset + y) with
+          | None -> screen
+          | Some spans ->
+            let (_, screen) =
+              List.foldl (drawSpan context bodyClip (body.y + y)) (body.x, screen) spans
+            screen
+        { paint with
+          screen = List.foldl drawLine paint.screen (List.range (max 0 (bodyClip.y - body.y)) (min body.height (bodyClip.y + bodyClip.height - body.y))),
+          state = TuiState.put id { widget with scroll = offset } paint.state
+        }
+    | Ui.ButtonBody label _ -> { paint with
+      screen = TuiScreen.text context.ambiguousWide bodyClip body.x body.y (if node.id = paint.state.focus && active then
+        context.theme.selected
+      else
+        style) ("[ " ++ label ++ " ]") paint.screen
+    }
+    | Ui.CheckBody label checked _ -> { paint with
+      screen = TuiScreen.text context.ambiguousWide bodyClip body.x body.y (if node.id = paint.state.focus && active then
+        context.theme.selected
+      else
+        style) ((if checked then "[x] " else "[ ] ") ++ label) paint.screen
+    }
+    | Ui.InputBody config ->
+      (match node.id with
+      | None -> paint
+      | Some id ->
+        drawInput context id bodyClip body { node.props with style = style } config paint)
+    | Ui.BrowserBody config ->
+      (match node.id with
+      | None -> paint
+      | Some id -> drawBrowser context id bodyClip body node.props config paint)
+    | Ui.RowBody children ->
+      drawChildren context depth bodyClip body true node.props.gap active children paint
+    | Ui.ColumnBody children ->
+      drawChildren context depth bodyClip body false node.props.gap active children paint
+    | Ui.OverlayBody background foreground ->
+      let background = draw context (depth + 1) bodyClip body false background paint
+      draw context (depth + 1) bodyClip body active foreground background
+    | Ui.ScrollBody child ->
+      let offset =
+        match node.id with
+        | None -> 0
+        | Some id -> (TuiState.get id paint.state).scroll
+      let (_, height) = measure context body.width (depth + 1) child
+      let offset = clamp 0 (max 0 (height - body.height)) offset
+      let state =
+        match node.id with
+        | None -> paint.state
+        | Some id -> TuiState.scrollTo id offset paint.state
+      let scrolls =
+        match node.id with
+        | None -> paint.scrolls
+        | Some id ->
+          { id = id, maximum = max 0 (height - body.height), rect = bodyClip } :: paint.scrolls
+      let result = draw context (depth + 1) bodyClip { body with
+        height = max height body.height,
+        y = body.y - offset
+      } active child { paint with scrolls = scrolls, state = state }
+      { result with scrolls = paint.scrolls }
+
+reveal : TuiScreen.Rect -> List ScrollFrame -> TuiState.State -> TuiState.State
+let reveal target ancestors state =
+  match ancestors with
+  | [] -> state
+  | ancestor :: rest ->
+    let area = ancestor.rect
+    let delta =
+      if target.y < area.y || target.height > area.height then
+        target.y - area.y
+      else if target.y + target.height > area.y + area.height then
+        target.y + target.height - area.y - area.height
+      else
+        0
+    let before = (TuiState.get ancestor.id state).scroll
+    let after = clamp 0 ancestor.maximum (before + delta)
+    if after = before then reveal target rest state else TuiState.scrollTo ancestor.id after state
+
+/// Pure layout, painting and interaction-state reconciliation.
+public render : Context -> TuiState.State -> Ui.Element 'msg -> Result (Frame 'msg) String
+let render context state element =
+  match TuiScreen.create context.maxCells context.width context.height with
+  | Err error -> Err error
+  | Ok screen ->
+    let paint = draw context 0 (TuiScreen.bounds screen) (TuiScreen.bounds screen) true element {
+      error = None,
+      hits = [],
+      ids = Set.empty,
+      messages = [],
+      screen = screen,
+      scrolls = [],
+      state = state,
+      visited = 0
+    }
+    match paint.error with
+    | Some error -> Err error
+    | None ->
+      let hits = Array.fromList (List.reverse paint.hits)
+      let ids = Array.toList (Array.map (fun hit -> hit.id) hits)
+      let state = TuiState.retain ids paint.state
+      let restored =
+        List.find (fun id ->
+          Array.any (fun hit -> hit.focusable && hit.id = id) hits) state.focusHistory
+      let focus =
+        if Array.any (fun hit -> hit.focusable && Some hit.id = state.focus) hits then
+          state.focus
+        else
+          match restored with
+          | Some _ -> restored
+          | None -> Option.map (fun hit -> hit.id) (Array.find (fun hit -> hit.focusable) hits)
+      if focus = state.focus then
+        let focused = Array.find (fun hit -> Some hit.id = focus) hits
+        let revealed =
+          if state.revealed = focus then
+            state
+          else
+            match focused with
+            | None -> state
+            | Some hit -> reveal hit.rect hit.scrolls state
+        if revealed = state then
+          Ok {
+            hits = hits,
+            messages = List.reverse paint.messages,
+            screen = paint.screen,
+            state = { state with revealed = focus }
+          }
+        else
+          match render context revealed element with
+          | Err error -> Err error
+          | Ok frame -> Ok { frame with
+            messages = List.append (List.reverse paint.messages) frame.messages
+          }
+      else
+        let history = List.filter (fun id -> Some id <> focus) state.focusHistory
+        let history =
+          match state.focus with
+          | Some old ->
+            if List.member old ids then
+              old :: List.filter (fun id -> id <> old) history
+            else
+              history
+          | None -> history
+        match render context { state with
+          focus = focus,
+          focusHistory = List.take 128 history
+        } element with
+        | Err error -> Err error
+        | Ok frame -> Ok { frame with
+          messages = List.append (List.reverse paint.messages) frame.messages
+        }
