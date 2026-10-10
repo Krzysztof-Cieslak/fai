@@ -1,0 +1,10 @@
+module Main
+
+public expand : Int -> Int -> Int
+let expand n value = if n <= 0 then value else expand (n - 1) (value + 1) + expand (n - 1) value
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let positive = expand 5 9223372036854775807 = 48
+  let negative = expand 4 (-9223372036854775808) = 32
+  runtime.console.writeLine (if positive && negative then "yes" else "no")

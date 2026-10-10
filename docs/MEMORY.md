@@ -1463,8 +1463,10 @@ program output are unchanged, guarded by the full type/golden suite):
     arguments are spilled, scalar Floats are raw slot bits, and borrowed operands
     remain caller-owned. They do not take the register ABI or the owned wrapper.
     Small scalar-only ABI definitions with no ordinary self-tail call can peel
-    one level of non-tail self-calls. Parameter count, source size and copied-body
-    work are bounded, and inserted bodies are not expanded again. Argument
+    bounded levels of non-tail self-calls. Parameter count, source size and
+    copied-body work are bounded. Small branching bodies can use a second layer,
+    and the smallest a third, within the same shared copy budget. Inserted bodies
+    are not revisited within a traversal. Argument
     bindings retain types and evaluation order. Mixed tail/non-tail recursion is
     left to loop lowering, avoiding duplicated loop branches and register pressure.
     Tail recursion modulo wrapping Int addition can carry pending additions in
