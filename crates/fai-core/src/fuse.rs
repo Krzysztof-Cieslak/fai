@@ -1,4 +1,4 @@
-//! Deforestation of `List`/`Array` combinator pipelines.
+//! Deforestation of sequence pipelines and bounded scalar-control specialization.
 //!
 //! A pipeline of directly-nested standard combinators — a producer, then
 //! transformers, then a consumer (`Array.sum (Array.map f (Array.range 0 n))`) —
@@ -48,15 +48,16 @@ use crate::ir::{
 };
 
 mod reverse_prefix;
+mod scalar_specialize;
 mod staged_concat;
 
 /// The `List` constructor tags (mirrors lowering's `NIL_TAG`/`CONS_TAG`).
 const NIL_TAG: u32 = 0;
 const CONS_TAG: u32 = 1;
 
-/// A synthesized loop for one fused pipeline: a pre-reference-counting definition
-/// whose entry is the self-tail-recursive loop, plus the native calling-convention
-/// shape its direct callers (and code generation) need. The driver
+/// A synthesized pipeline loop or specialized scalar helper: a pre-reference-
+/// counting definition plus the native calling-convention shape its direct
+/// callers (and code generation) need. The driver
 /// reference-counts it (`rc_owned`) and emits it like a mutual-recursion combined
 /// loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +92,7 @@ pub struct FuseResult {
     /// The consuming definition with every recognized pipeline replaced by a call
     /// to a synthesized loop.
     pub body: LoweredDef,
-    /// The synthesized loops, in deterministic (first-recognized) order.
+    /// The synthesized functions, in deterministic synthesis order.
     pub loops: Vec<FusedLoop>,
 }
 
@@ -219,6 +220,7 @@ pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> 
         chain_index: 0,
         changed: false,
         flat_sources: FxHashMap::default(),
+        scalar_variants: FxHashMap::default(),
     };
     let fns: Vec<CoreFn> = base
         .fns
@@ -266,6 +268,8 @@ struct Fuser<'a> {
     /// Single-use concatenation bindings whose materialized chunks replace a
     /// copied flat spine. Scoped to the binding's continuation.
     flat_sources: FxHashMap<LocalId, CExpr>,
+    /// Bounded private scalar entries specialized on a leading control constant.
+    scalar_variants: FxHashMap<(DefId, i64), DefId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +385,10 @@ impl Fuser<'_> {
     /// with a call to a synthesized loop; otherwise recurse into the children
     /// (so a pipeline nested elsewhere still fuses).
     fn rewrite(&mut self, e: &CExpr, base_fns: &[CoreFn]) -> CExpr {
+        if let Some(result) = self.scalar_specialized(e, base_fns) {
+            self.changed = true;
+            return result;
+        }
         if let Some(result) = self.reverse_prefix(e) {
             self.changed = true;
             return result;

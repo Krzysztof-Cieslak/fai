@@ -437,3 +437,20 @@ fn integer_box_sharing_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn scalar_specialization_edits_match_clean_generated_functions() {
+    let source = "module M\nlet descend level n = if level = 0 then n else descend (level - 1) (n + 1)\nlet run n = descend 3 n\n";
+    let edited = source.replace("n + 1", "n + 2");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("run");
+            (
+                (*fai_core::fuse_def(db, file, name)).clone(),
+                (*object_code(db, file, name, false)).clone(),
+            )
+        },
+    );
+}

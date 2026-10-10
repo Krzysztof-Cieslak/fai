@@ -850,6 +850,14 @@ Reuse & in-place update:
     callbacks, other arrays, construction and growth are conservative barriers.
     Index checks and old-element releases remain intact. The proof and code
     duplication are bounded to small bodies.
+    A small private same-file function with only Int parameters/results can
+    specialize a literal leading control value in 0..8 when all self-calls keep
+    or decrease it. At most eight variants share the ordinary synthesized-function
+    emission path. Exact wrapping constant folding removes known decisions;
+    resulting scalar recursion uses normal ownership and loop lowering. Dynamic
+    argument evaluation remains strict, including unused arguments. Other calls,
+    allocation, effects, exported definitions and unsupported control changes are
+    conservative barriers; generic functions are not specialized by type.
     Compact tag-zero pairs with two immediate fields have guarded runtime hash
     and equality paths. They preserve the existing hash formula exactly and
     bypass general kind/field traversal only after validating both the header
