@@ -840,6 +840,20 @@ The optional `packages/web` library preserves middleware headers when a terminal
 `Web` responder supplies the status/body. `Web.setHeader` replaces same-name fields
 case-insensitively; `Web.addHeader` preserves duplicates such as `Set-Cookie`.
 
+The optional `packages/json` library is written in Fai. `Json.parse`/`parseBytes`
+read strict UTF-8 JSON into an ordered, duplicate-preserving value tree;
+`toString`/`toPrettyString` render it with exact number spellings. Parse errors
+carry byte offsets and Unicode-scalar line/column locations. Explicit traversal
+frames keep native stack use bounded; the default container-depth limit is 256.
+Opaque `JsonNumber.Number` values validate arbitrary decimal text, convert exactly
+to in-range `Int`s, and round to finite binary64 with ties to even. Non-finite
+Float encoding and numeric overflow return errors. Include package sources under
+the application's workspace root; package modules are not embedded in std.
+Source packages own their Fai contracts and executable test runners. The JSON
+suite is `python3 packages/json/test/run.py --fai /path/to/fai`: it uses an existing
+compiler for formatting, contracts, JIT/AOT and seeded conformance checks, so
+library edits do not require rebuilding the Rust compiler or its tests.
+
 ## 6. Compiler pipeline
 
 ```

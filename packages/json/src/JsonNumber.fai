@@ -1,0 +1,282 @@
+module JsonNumber
+
+/// A validated JSON number. Its spelling is retained exactly, including exponent
+/// notation and negative zero; equality compares that spelling.
+public opaque type Number =
+  | MkNumber String
+
+/// A zero-based byte offset and a description of an invalid number.
+public type Error = { message : String, offset : Int }
+
+let failure offset message = Err { message = message, offset = offset }
+
+let digit b = b >= 48 && b <= 57
+
+let at bytes i = if i < Bytes.length bytes then Bytes.unsafeGet i bytes else (-1)
+
+let digitsEnd bytes i = if digit (at bytes i) then digitsEnd bytes (i + 1) else i
+
+let exponentEnd bytes i =
+  if at bytes i = 101 || at bytes i = 69 then
+    let start = if at bytes (i + 1) = 43 || at bytes (i + 1) = 45 then i + 2 else i + 1
+    if digit (at bytes start) then
+      Ok (digitsEnd bytes start)
+    else
+      failure start "expected exponent digit"
+  else
+    Ok i
+
+let fractionEnd bytes i =
+  if at bytes i = 46 then
+    if digit (at bytes (i + 1)) then
+      exponentEnd bytes (digitsEnd bytes (i + 1))
+    else
+      failure (i + 1) "expected fractional digit"
+  else
+    exponentEnd bytes i
+
+let numberEnd bytes start =
+  let i = if at bytes start = 45 then start + 1 else start
+  if at bytes i = 48 then
+    if digit (at bytes (i + 1)) then
+      failure (i + 1) "leading zero in number"
+    else
+      fractionEnd bytes (i + 1)
+  else if at bytes i >= 49 && at bytes i <= 57 then
+    fractionEnd bytes (digitsEnd bytes i)
+  else
+    failure i "expected digit"
+
+/// Read one number at a byte offset. The following delimiter belongs to the
+/// enclosing parser. Offsets in errors are relative to the complete buffer.
+internal read : Bytes -> Int -> Result (Number * Int) Error
+let read bytes start =
+  if start < 0 || start > Bytes.length bytes then
+    failure 0 "invalid number offset"
+  else
+    match numberEnd bytes start with
+    | Err e -> Err e
+    | Ok finish ->
+      match Bytes.toString (Bytes.slice start finish bytes) with
+      | None -> failure start "invalid number text"
+      | Some text -> Ok (MkNumber text, finish)
+
+/// Validate a complete JSON number, without surrounding whitespace.
+public fromString : String -> Result Number Error
+let fromString text =
+  let bytes = Bytes.fromString text
+  match read bytes 0 with
+  | Err e -> Err e
+  | Ok (number, finish) ->
+    if finish = Bytes.length bytes then Ok number else failure finish "unexpected text after number"
+example: Result.isErr (fromString "01")
+
+/// The exact validated spelling.
+public toString : Number -> String
+let toString number =
+  match number with
+  | MkNumber text -> text
+example: Result.map toString (fromString "-0.00e+12") = Ok "-0.00e+12"
+
+/// Construct an exact integer number.
+public fromInt : Int -> Number
+let fromInt value = MkNumber (Int.toString value)
+example: toString (fromInt 42) = "42"
+
+/// Construct a number from a finite Float, preserving its binary value on a
+/// Float round trip. NaNs and infinities are not JSON numbers.
+public fromFloat : Float -> Result Number String
+let fromFloat value =
+  if Int.and (Float.toBits value) 0x7ff0000000000000 = 0x7ff0000000000000 then
+    Err "non-finite Float is not a JSON number"
+  else
+    Ok (MkNumber (Float.toString value))
+example: Result.map toString (fromFloat 1.5) = Ok "1.5"
+
+// A decimal significand without leading or trailing zeroes, times 10^exponent.
+// The exponent saturates beyond the input length plus a margin: at that point
+// no decimal point or significand in this input can bring it into Float range.
+type Decimal = { digits : Bytes, exponent : Int, negative : Bool }
+
+let exponentDigits bytes i limit acc =
+  if i >= Bytes.length bytes then
+    acc
+  else
+    let d = Bytes.unsafeGet i bytes - 48
+    let next = if acc > (limit - d) / 10 then limit else acc * 10 + d
+    exponentDigits bytes (i + 1) limit next
+
+let exponentValue bytes i =
+  let negative = at bytes i = 45
+  let start = if negative || at bytes i = 43 then i + 1 else i
+  let value = exponentDigits bytes start (Bytes.length bytes + 2048) 0
+  if negative then 0 - value else value
+
+let leadingZeroes bytes i =
+  if i < Bytes.length bytes && at bytes i = 48 then leadingZeroes bytes (i + 1) else i
+
+let trailingZeroes bytes i =
+  if i >= 0 && at bytes i = 48 then trailingZeroes bytes (i - 1) else i + 1
+
+let normalize negative reversed fraction exponent =
+  let bytes = Bytes.fromList (List.reverse reversed)
+  let first = leadingZeroes bytes 0
+  if first = Bytes.length bytes then
+    { digits = Bytes.fromList [48], exponent = 0, negative = negative }
+  else
+    let finish = trailingZeroes bytes (Bytes.length bytes - 1)
+    {
+      digits = Bytes.slice first finish bytes,
+      exponent = exponent - fraction + Bytes.length bytes - finish,
+      negative = negative
+    }
+
+let significand bytes negative i fraction afterPoint reversed =
+  let b = at bytes i
+  if b = 101 || b = 69 then
+    normalize negative reversed fraction (exponentValue bytes (i + 1))
+  else if i = Bytes.length bytes then
+    normalize negative reversed fraction 0
+  else if b = 46 then
+    significand bytes negative (i + 1) fraction true reversed
+  else
+    significand bytes negative (i + 1) (fraction + (if afterPoint then
+      1
+    else
+      0)) afterPoint (b :: reversed)
+
+let decimal number =
+  let bytes = Bytes.fromString (toString number)
+  let negative = at bytes 0 = 45
+  significand bytes negative (if negative then 1 else 0) 0 false []
+
+let integerDigits digits count limit i acc =
+  if i = count then
+    Ok acc
+  else
+    let d = if i < Bytes.length digits then Bytes.unsafeGet i digits - 48 else 0
+    if acc < (limit + d) / 10 then
+      Err "number is outside Int range"
+    else
+      integerDigits digits count limit (i + 1) (acc * 10 - d)
+
+/// Decode an exactly integral, signed 64-bit value. Fractional and out-of-range
+/// numbers fail rather than round or wrap. Integral exponent notation is allowed.
+public toInt : Number -> Result Int String
+let toInt number =
+  let d = decimal number
+  let count = Bytes.length d.digits + d.exponent
+  if d.exponent < 0 then
+    Err "number is not an integer"
+  else if count > 19 then
+    Err "number is outside Int range"
+  else
+    let limit = if d.negative then (-9223372036854775808) else (-9223372036854775807)
+    Result.map (fun value ->
+      if d.negative then value else 0 - value) (integerDigits d.digits count limit 0 0)
+example: toInt (fromInt (-9223372036854775808)) = Ok (-9223372036854775808)
+
+// Small arbitrary-precision natural numbers, little-endian base 10^9. They are
+// used only to form exact binary64 rounding boundaries (at most 1075 decimals),
+// never to allocate a buffer proportional to an untrusted exponent.
+let natural value =
+  if value < 1000000000 then
+    [| value |]
+  else
+    Array.push (value / 1000000000) [| value % 1000000000 |]
+
+let multiplyFrom factor i carry limbs =
+  if i = Array.length limbs then
+    if carry = 0 then limbs else Array.push carry limbs
+  else
+    let value = Array.unsafeGet i limbs * factor + carry
+    multiplyFrom factor (i + 1) (value / 1000000000) (Array.unsafeSet i (value % 1000000000) limbs)
+
+let powerSmall factor count value =
+  if count = 0 then value else powerSmall factor (count - 1) (value * factor)
+
+let multiplyPower factor chunk power limbs =
+  if power = 0 then
+    limbs
+  else
+    let count = if power > chunk then chunk else power
+    multiplyPower factor chunk (power - count) (multiplyFrom (powerSmall factor count 1) 0 0 limbs)
+
+let naturalText limbs i output =
+  if i < 0 then
+    output
+  else
+    naturalText limbs (i - 1) (output ++ String.padStart 9 "0" (Int.toString (Array.unsafeGet i limbs)))
+
+// The midpoint between a nonnegative finite bit pattern and its successor. For
+// the largest finite value the successor is the exact 2^1024 overflow boundary.
+let midpoint bits =
+  let field = Int.shiftRight bits 52
+  let fraction = Int.and bits 0x000fffffffffffff
+  let mantissa = if field = 0 then fraction else fraction + 0x0010000000000000
+  let exponent = if field = 0 then (-1075) else field - 1076
+  let limbs = natural (2 * mantissa + 1)
+  let scaled =
+    if exponent < 0 then
+      multiplyPower 5 12 (0 - exponent) limbs
+    else
+      multiplyPower 2 29 exponent limbs
+  let last = Array.length scaled - 1
+  let text = naturalText scaled (last - 1) (Int.toString (Array.unsafeGet last scaled))
+  {
+    digits = Bytes.fromString text,
+    exponent = if exponent < 0 then exponent else 0,
+    negative = false
+  }
+
+let compareDigits left right i count =
+  if i = count then
+    0
+  else
+    let a = if i < Bytes.length left then Bytes.unsafeGet i left else 48
+    let b = if i < Bytes.length right then Bytes.unsafeGet i right else 48
+    if a < b then (-1) else if a > b then 1 else compareDigits left right (i + 1) count
+
+compareDecimal : Decimal -> Decimal -> Int
+let compareDecimal left right =
+  let a = Bytes.length left.digits + left.exponent
+  let b = Bytes.length right.digits + right.exponent
+  if a < b then
+    (-1)
+  else if a > b then
+    1
+  else
+    compareDigits left.digits right.digits 0 (if Bytes.length left.digits > Bytes.length right.digits then
+      Bytes.length left.digits
+    else
+      Bytes.length right.digits)
+
+roundedBits : Decimal -> Int -> Int -> Int
+let roundedBits value lo hi =
+  if lo = hi then
+    lo
+  else
+    let middle = lo + (hi - lo) / 2
+    let ordering = compareDecimal value (midpoint middle)
+    if ordering < 0 || (ordering = 0 && Int.and middle 1 = 0) then
+      roundedBits value lo middle
+    else
+      roundedBits value (middle + 1) hi
+
+/// Round to the nearest binary64 value, ties to even. Overflow is an error;
+/// underflow rounds to a subnormal or signed zero. Conversion uses exact decimal
+/// comparisons, so long significands do not suffer intermediate rounding.
+public toFloat : Number -> Result Float String
+let toFloat number =
+  let d = decimal number
+  let order = Bytes.length d.digits + d.exponent
+  let zero = Bytes.length d.digits = 1 && Bytes.unsafeGet 0 d.digits = 48
+  let bits =
+    if zero || order < (-324) then
+      0
+    else if order > 309 then 0x7ff0000000000000 else roundedBits d 0 0x7ff0000000000000
+  if bits = 0x7ff0000000000000 then
+    Err "number is outside finite Float range"
+  else
+    Ok (Float.fromBits (if d.negative then Int.or bits 0x8000000000000000 else bits))
+example: Result.map Float.toBits (toFloat (fromInt 0)) = Ok 0

@@ -1,0 +1,23 @@
+module JsonSpec
+
+let compact text = Result.map Json.toString (Json.parse text)
+
+let integer text =
+  match JsonNumber.fromString text with
+  | Err e -> Err e.message
+  | Ok number -> JsonNumber.toInt number
+example: compact " {\"a\": 1, \"a\": 2} " = Ok "{\"a\":1,\"a\":2}"
+example: compact "[1e99999,-0.00,18446744073709551616]" = Ok "[1e99999,-0.00,18446744073709551616]"
+example: compact "\"\\uD83D\\uDE00\"" = Ok "\"😀\""
+example: compact "\"\\u0000\\b\\f\\n\\r\\t\\/\\\\\\\"\"" = Ok "\"\\u0000\\b\\f\\n\\r\\t/\\\\\\\"\""
+example: Result.isErr (Json.parse "[1,]")
+example: Result.isErr (Json.parse "{\"x\":1,}")
+example: Result.isErr (Json.parse "\"\\uD800\"")
+example: Result.isErr (Json.parse "null true")
+example: Result.isErr (Json.parseBytes (Bytes.fromList [34, 255, 34]))
+example: integer "1.000e3" = Ok 1000
+example: integer "-9223372036854775808" = Ok (-9223372036854775808)
+example: Result.isErr (integer "9223372036854775808")
+example: Result.isErr (integer "1.01")
+forall text: Json.parse (Json.toString (Json.String text)) = Ok (Json.String text)
+forall value: JsonNumber.toInt (JsonNumber.fromInt value) = Ok value

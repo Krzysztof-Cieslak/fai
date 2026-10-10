@@ -1,0 +1,71 @@
+module ParseSpec
+
+// Pin both the reason and the exact byte/scalar location of malformed input.
+let rejected source offset line column message =
+  Json.parse source = Err { column = column, line = line, message = message, offset = offset }
+example: rejected "" 0 1 1 "expected JSON value"
+example: rejected "[1,]" 3 1 4 "expected JSON value"
+example: rejected "{\"a\":1,}" 7 1 8 "expected object member name"
+example: rejected "{\"a\" 1}" 5 1 6 "expected colon after member name"
+example: rejected "[1 2]" 3 1 4 "expected comma or closing bracket"
+example: rejected "null true" 5 1 6 "unexpected text after JSON value"
+example: rejected "01" 1 1 2 "leading zero in number"
+example: rejected "1." 2 1 3 "expected fractional digit"
+example: rejected "1e+" 3 1 4 "expected exponent digit"
+example: rejected "\"abc" 4 1 5 "unterminated string"
+example: rejected "tru" 3 1 4 "invalid JSON literal"
+example: rejected "\"a\nb\"" 2 1 3 "unescaped control character"
+example: rejected "\"\\ud800\"" 7 1 8 "expected low-surrogate escape"
+example: rejected "\"\\udc00\"" 3 1 4 "unpaired low surrogate"
+example: rejected "\"\\x\"" 2 1 3 "invalid string escape"
+example: rejected "[\n\"é😀\",?]" 11 2 6 "expected JSON value"
+example: rejected "\u{FEFF}null" 0 1 1 "expected JSON value"
+example: rejected "+1" 0 1 1 "expected JSON value"
+example: rejected "NaN" 0 1 1 "expected JSON value"
+example: rejected "// comment\nnull" 0 1 1 "expected JSON value"
+example: rejected "[" 1 1 2 "expected JSON value"
+example: rejected "{" 1 1 2 "expected object member name"
+example: rejected "\"\\u00G0\"" 5 1 6 "expected hexadecimal escape digit"
+
+let invalidBytes bytes =
+  Json.parseBytes (Bytes.fromList bytes) = Err {
+    column = 2,
+    line = 1,
+    message = "invalid UTF-8",
+    offset = 1
+  }
+example: invalidBytes [34, 192, 128, 34]
+example: invalidBytes [34, 237, 160, 128, 34]
+example: invalidBytes [34, 240, 159]
+example: invalidBytes [34, 244, 144, 128, 128, 34]
+example: invalidBytes [34, 128, 34]
+
+let nested count =
+  String.joinArray "" (Array.repeat count "[") ++ "0" ++ String.joinArray "" (Array.repeat count "]")
+example: rejected (nested 257) 256 1 257 "maximum JSON nesting exceeded"
+example: Result.map Json.toString (Json.parse (nested 256)) = Ok (nested 256)
+example: Result.map Json.toString (Json.parseWith {
+  maxDepth = 4096
+} (nested 2000)) = Ok (nested 2000)
+example: Result.isErr (Json.parseWith { maxDepth = (-1) } "null")
+example: Json.parseWith { maxDepth = 0 } "42" = Ok (Json.Number (JsonNumber.fromInt 42))
+
+let wide = "[" ++ String.joinArray "," (Array.repeat 10000 "null") ++ "]"
+example: Result.map Json.toString (Json.parse wide) = Ok wide
+example: Result.map Json.toPrettyString (Json.parse "{\"a\":[1,{}]}") = Ok "{\n  \"a\": [\n    1,\n    {}\n  ]\n}"
+
+// Generate trees through a representation with no opaque number fields.
+type Tree =
+  | Empty
+  | Text String
+  | Integer Int
+  | Sequence (List Tree)
+
+let value tree =
+  match tree with
+  | Empty -> Json.Null
+  | Text text -> Json.String text
+  | Integer n -> Json.Number (JsonNumber.fromInt n)
+  | Sequence trees -> Json.Array (Array.fromList (List.map value trees))
+forall tree: Json.parse (Json.toString (value tree)) = Ok (value tree)
+forall tree: Json.parse (Json.toPrettyString (value tree)) = Ok (value tree)

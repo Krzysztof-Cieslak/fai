@@ -1,0 +1,31 @@
+module Oracle
+
+// A line-oriented executable lets external conformance tools exercise the same
+// native library as applications, without linking against the compiler.
+let floatLine text =
+  match JsonNumber.fromString text with
+  | Err _ -> "error"
+  | Ok number ->
+    match JsonNumber.toFloat number with
+    | Err _ -> "error"
+    | Ok value -> Int.toString (Float.toBits value)
+
+let jsonLine text =
+  match Json.parse text with
+  | Err _ -> "error"
+  | Ok value -> Json.toString value
+
+loop : Console -> (String -> String) -> Unit / { Console }
+let loop console convert =
+  match console.readLine () with
+  | Err _ -> ()
+  | Ok None -> ()
+  | Ok (Some line) ->
+    let written = console.writeLine (convert line)
+    loop console convert
+
+public main : Runtime -> Unit / { Console, Env }
+let main runtime =
+  match runtime.env.args () with
+  | "float" :: _ -> loop runtime.console floatLine
+  | _ -> loop runtime.console jsonLine

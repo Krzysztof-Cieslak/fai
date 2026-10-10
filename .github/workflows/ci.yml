@@ -81,6 +81,11 @@ jobs:
         # libraries just compiled for the test run).
         run: cargo test --workspace --locked --doc
 
+      - name: Source library tests
+        run: |
+          cargo build --locked -p fai-cli
+          python packages/json/test/run.py --fai target/debug/fai
+
       - name: Verify the unit/proptest lanes partition the suite
         # A name-based guard: the two profiles must together select every
         # test exactly once. Fails the build if a new test ever escapes both lanes
@@ -212,6 +217,11 @@ jobs:
         # property tests excluded — those run on Linux only. See the `cross-os`
         # profile in .config/nextest.toml.
         run: cargo nextest run --workspace --locked --profile cross-os
+
+      - name: Source library tests
+        run: |
+          cargo build --locked -p fai-cli
+          python packages/json/test/run.py --fai target/debug/fai
 
       - name: Test summary
         if: always()
