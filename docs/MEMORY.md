@@ -843,8 +843,9 @@ Reuse & in-place update:
     ultimate owner and requires that owner to survive the field's last use and
     release point. An explicit internal projection carries that ownership through
     verification, native emission and worker serialization. Unknown/raw scalar
-    slots, captures, escaping values and owner-changing operations keep ordinary
-    owned field reads; resource release order is preserved.
+    slots, niche-Option or spread conversions, captures, escaping values and
+    owner-changing operations keep ordinary owned field reads; resource release
+    order is preserved.
     The same retained-root proof covers data searches with scalar or niche-scalar
     results when the reachable type contains no resources or functions. A bounded
     type walk records this conservative fact alongside data-shape metadata, keeping

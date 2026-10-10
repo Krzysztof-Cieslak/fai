@@ -40,17 +40,18 @@ pub(crate) fn remove_discarded_projections(e: &mut CExpr) {
 
 /// Borrows statically uniform fields when every use fits within the containing
 /// value's lifetime, following borrowed array slots back to their true owner.
-pub(crate) fn borrow_fields(body: &mut CExpr, shapes: &[(LocalId, DataShape)]) {
+pub(crate) fn borrow_fields(db: &dyn Db, body: &mut CExpr, shapes: &[(LocalId, DataShape)]) {
     fn walk(
+        db: &dyn Db,
         e: &mut CExpr,
         shapes: &[(LocalId, DataShape)],
         owners: &mut FxHashMap<LocalId, LocalId>,
     ) {
         let K::Let { local, value, body } = &mut e.kind else {
-            children(e, &mut |child| walk(child, shapes, owners));
+            children(e, &mut |child| walk(db, child, shapes, owners));
             return;
         };
-        walk(value, shapes, owners);
+        walk(db, value, shapes, owners);
         if let K::Prim { op: Prim::ArrayPeek | Prim::DataPeek, args } = &value.kind
             && let Some(K::Local(parent)) = args.first().map(|arg| &arg.kind)
         {
@@ -61,8 +62,12 @@ pub(crate) fn borrow_fields(body: &mut CExpr, shapes: &[(LocalId, DataShape)]) {
             && let K::Local(parent) = base.kind
             && !matches!(
                 value.ty,
-                Ty::Unit | Ty::Con(Con::Int | Con::Float | Con::Bool | Con::Char)
+                Ty::Error | Ty::Unit | Ty::Con(Con::Int | Con::Float | Con::Bool | Con::Char)
             )
+            // These boundaries consume the acquired cell during conversion.
+            // A borrowed field must keep its uniform representation throughout.
+            && fai_core::niche_scheme(db, &value.ty).is_none()
+            && fai_core::ir::ffa_arity(&value.ty).is_none()
             && let Ok(shape) = shapes.binary_search_by_key(&parent.index(), |(id, _)| id.index())
             && (*index >= 64 || shapes[shape].1.scalars & (1u64 << index) == 0)
         {
@@ -78,9 +83,9 @@ pub(crate) fn borrow_fields(body: &mut CExpr, shapes: &[(LocalId, DataShape)]) {
                 owners.insert(*local, owner);
             }
         }
-        walk(body, shapes, owners);
+        walk(db, body, shapes, owners);
     }
-    walk(body, shapes, &mut FxHashMap::default());
+    walk(db, body, shapes, &mut FxHashMap::default());
 }
 
 #[derive(Clone, Copy)]
@@ -350,6 +355,15 @@ mod tests {
     fn generic_tuple_fields_keep_their_possible_scalar_conversion() {
         let out = lowered(
             "module M\nlet probe key pair = match pair with | (stored, _) -> (stored = key, pair)\n",
+            "probe",
+        );
+        assert!(!out.contains("dataPeek"), "{out}");
+    }
+
+    #[test]
+    fn niche_option_field_keeps_ownership_for_its_conversion() {
+        let out = lowered(
+            "module M\ntype Holder = | Holder (Option String)\nlet probe holder =\n  let Holder value = holder\n  let size = match value with | None -> 0 | Some text -> String.length text\n  (size, holder)\n",
             "probe",
         );
         assert!(!out.contains("dataPeek"), "{out}");
