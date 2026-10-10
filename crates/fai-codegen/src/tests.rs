@@ -2375,6 +2375,18 @@ fn unique_tags_do_not_depend_on_compact_headers() {
 }
 
 #[test]
+fn projected_niche_option_string_preserves_its_parent() {
+    let source = "module M\ntype Holder = | Holder (Option String)\nlet probe holder =\n  let Holder value = holder\n  let size = match value with | None -> 0 | Some text -> String.length text\n  (size, holder)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let (first, kept) = probe (Holder (Some \"retained\"))\n  let (second, again) = probe kept\n  let (third, _) = probe again\n  r.console.writeLine (Int.toString (first + second + third))\n";
+    assert_eq!(run(source), (0, "24\n".into()));
+}
+
+#[test]
+fn projected_niche_option_int_preserves_its_parent() {
+    let source = "module M\ntype Holder = | Holder (Option Int)\nlet probe holder =\n  let Holder value = holder\n  let number = match value with | None -> 0 | Some number -> number\n  (number, holder)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let (first, kept) = probe (Holder (Some 9223372036854775807))\n  let (second, again) = probe kept\n  let (third, _) = probe again\n  r.console.writeLine (Int.toString (first + second + third))\n";
+    assert_eq!(run(source), (0, "9223372036854775805\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

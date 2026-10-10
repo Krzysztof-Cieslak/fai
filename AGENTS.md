@@ -625,8 +625,8 @@ An array data slot used only for tag/field inspection can be borrowed while its
 source array remains live. The bounded ownership proof keeps escaping slots and
 uncertain lifetimes owned. A statically uniform projected field can likewise be
 borrowed for structural comparisons and other borrowing reads while its ultimate
-owner remains live. Scalar conversions, escaping fields and uncertain lifetimes
-retain owned projections, including across array updates.
+owner remains live. Scalar and niche-Option conversions, escaping fields and
+uncertain lifetimes retain owned projections, including across array updates.
 Thread-pool cleanup batches consecutive cells from one slab into one ownership
 release. Generated native `main` destroys live values and checks leaks normally,
 then leaves its dead recycling-cache mappings for process teardown by the OS;
