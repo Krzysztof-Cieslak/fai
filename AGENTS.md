@@ -535,6 +535,9 @@ Repeated Int values crossing uniform slots in a small straight-line region can
 share one boxed peer while arithmetic retains the raw scalar. Pure duplicate Int
 expressions are coalesced first; ownership insertion balances the shared peer.
 Branch-only uses, closures and row-offset references keep their ordinary paths.
+An Int field with only uniform consumers in a straight-line continuation can keep
+its original tagged or boxed word instead of unboxing and reboxing. It acquires a
+reference before the original parent releases; arithmetic consumers stay raw.
 After ownership insertion, a field projection immediately followed by discarding
 its result is removed while its parent stays live. Parent releases and intervening
 operations retain their original order.

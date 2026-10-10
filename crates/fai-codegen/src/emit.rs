@@ -3615,6 +3615,20 @@ impl<M: Module> Translator<'_, M> {
         if op == Prim::IntBox
             && let [arg] = args
         {
+            if let ExprKind::DataField { base, index, scalar: false, niche } = &arg.kind {
+                let word = if niche.is_some() {
+                    self.expr(base)
+                } else {
+                    let base = self.data_base(base);
+                    let address = self.field_slot_addr(base, *index);
+                    self.builder.ins().load(types::I64, MemFlags::trusted(), address, 0)
+                };
+                // The acquired payload has its own representation identity, even
+                // when the parent is a wrapper-free Option with identical bits.
+                let word = self.builder.ins().iadd_imm(word, 0);
+                self.dup_value(word, &Ty::int());
+                return word;
+            }
             let value = self.expr(arg);
             return self.ensure_boxed(value);
         }

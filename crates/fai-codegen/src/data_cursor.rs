@@ -166,7 +166,8 @@ fn valid(e: &CExpr, cursors: &FxHashSet<LocalId>, position: usize, cursor_value:
 fn numeric(op: Prim) -> bool {
     matches!(
         op,
-        Prim::IntAdd
+        Prim::IntBox
+            | Prim::IntAdd
             | Prim::IntSub
             | Prim::IntMul
             | Prim::IntDiv

@@ -2614,6 +2614,10 @@ Editor integration:
     pure Int expressions are coalesced first, and ordinary ownership insertion
     balances the peer's references. Branch-only uses, closures and row-offset
     references remain conservative; the explicit marker survives worker transport.
+    After ownership insertion, an Int projection with a straight-line set of
+    uniform consumers can retain its word. The boxed marker acquires its reference
+    before the parent release and preserves niche-payload and row-offset reads.
+    Numeric consumers keep the ordinary raw-scalar projection path.
   - **Calling convention — register ABI only.** `Int` parameters and results are
     untagged only on the **register (direct-call) ABI**, where a direct caller
     receives them raw and skips the round-trip. Uniform (row-polymorphic / nullary)
