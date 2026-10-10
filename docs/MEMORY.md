@@ -3710,6 +3710,12 @@ Editor integration:
     for a following equality with zero. Divisibility uses a low-bit mask for
     positive and negative dividends alike, while nonzero comparisons and other
     uses retain the signed remainder. Divisor-zero faults keep their normal path.
+    Exact scalar fixed-point detection also accepts descending unit counters and
+    literal terminal bounds. The strict nonterminal comparison proves that a
+    unit step cannot wrap before reaching the bound. Already-finished inputs keep
+    their original counter; a shortcut still executes the original terminal
+    branch at the exact bound. Effects and counter-dependent transitions remain
+    barriers, and signed-zero cycles are not treated as fixed points.
     Native Float ordering against a literal uses signed bit order for a
     nonnegative constant and reversed unsigned order for a negative constant.
     This preserves totalOrder, including NaN signs/payloads and signed zeros.

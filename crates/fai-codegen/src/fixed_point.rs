@@ -5,13 +5,24 @@ use fai_resolve::LocalId;
 use fai_types::{Con, Ty};
 use rustc_hash::FxHashMap;
 
-/// A counter-independent transition, terminating at an invariant upper bound.
+/// An invariant terminal bound for a counted transition.
+#[derive(Clone, Copy)]
+pub(crate) enum Bound {
+    /// A parameter that remains unchanged on every back-edge.
+    Parameter(usize),
+    /// A signed literal in the terminal comparison.
+    Literal(i64),
+}
+
+/// A counter-independent transition, terminating at an invariant bound.
 #[derive(Clone)]
 pub(crate) struct Plan {
     /// The unit-step induction variable.
     pub(crate) counter: usize,
-    /// Its invariant terminal upper bound.
-    pub(crate) bound: usize,
+    /// Its invariant terminal bound.
+    pub(crate) bound: Bound,
+    /// Whether each transition decrements the counter instead of incrementing it.
+    pub(crate) descending: bool,
     /// All potentially changing state, compared by exact Float bits.
     pub(crate) floats: Vec<usize>,
 }
@@ -36,17 +47,20 @@ pub(crate) fn plan(params: &[LocalId], body: &CExpr, types: &FxHashMap<usize, Ty
     }
     let K::If { cond, then, els } = &prefix.kind else { return None };
     let cond = resolve(cond, &defs);
-    let K::Prim { op: Prim::IntGe, args } = &cond.kind else { return None };
+    let K::Prim { op: op @ (Prim::IntGe | Prim::IntLe), args } = &cond.kind else { return None };
+    let descending = *op == Prim::IntLe;
     let [left, right] = args.as_slice() else { return None };
     let K::Local(counter) = resolve(left, &defs).kind else { return None };
-    let K::Local(bound) = resolve(right, &defs).kind else { return None };
-    if counter == bound {
-        return None;
-    }
+    let bound = match resolve(right, &defs).kind {
+        K::Local(local) if local != counter => {
+            Bound::Parameter(params.iter().position(|p| *p == local)?)
+        }
+        K::Lit(Lit::Int(value)) => Bound::Literal(value),
+        _ => return None,
+    };
     let counter = params.iter().position(|p| *p == counter)?;
-    let bound = params.iter().position(|p| *p == bound)?;
     if !matches!(types.get(&params[counter].index()), Some(Ty::Con(Con::Int)))
-        || !matches!(types.get(&params[bound].index()), Some(Ty::Con(Con::Int)))
+        || matches!(bound, Bound::Parameter(index) if !matches!(types.get(&params[index].index()), Some(Ty::Con(Con::Int))))
     {
         return None;
     }
@@ -60,7 +74,7 @@ pub(crate) fn plan(params: &[LocalId], body: &CExpr, types: &FxHashMap<usize, Ty
     if floats.is_empty() {
         return None;
     }
-    let result = Plan { counter, bound, floats };
+    let result = Plan { counter, bound, descending, floats };
     let mut scan = Scan {
         params,
         plan: &result,
@@ -144,7 +158,10 @@ impl Scan<'_> {
             K::Dup { body, .. } | K::Drop { body, .. } => self.walk(body, tail),
             K::Recur { args } if tail && args.len() == self.params.len() => {
                 let count = resolve(&args[self.plan.counter], &self.defs);
-                let K::Prim { op: Prim::IntAdd, args: increment } = count.kind else { return None };
+                let K::Prim { op, args: increment } = count.kind else { return None };
+                if op != if self.plan.descending { Prim::IntSub } else { Prim::IntAdd } {
+                    return None;
+                }
                 let [a, b] = increment.as_slice() else { return None };
                 if !matches!(resolve(a, &self.defs).kind, K::Local(id) if id == self.params[self.plan.counter])
                     || !matches!(resolve(b, &self.defs).kind, K::Lit(Lit::Int(1)))
@@ -232,6 +249,46 @@ mod tests {
     fn scalar_counted_transition_can_have_an_exact_fixed_point() {
         assert!(planned(
             "module M\nlet loop i n x = if i >= n then x else loop (i + 1) n (x * 0.5)\n"
+        ));
+    }
+
+    #[test]
+    fn a_descending_counter_can_finish_at_a_literal_bound() {
+        assert!(planned("module M\nlet loop n x = if n <= 0 then x else loop (n - 1) (x * 0.5)\n"));
+    }
+
+    #[test]
+    fn a_descending_counter_can_finish_at_an_invariant_bound() {
+        assert!(planned(
+            "module M\nlet loop i bound x = if i <= bound then x else loop (i - 1) bound (x * 0.5)\n"
+        ));
+    }
+
+    #[test]
+    fn an_ascending_counter_can_finish_at_a_literal_bound() {
+        assert!(planned(
+            "module M\nlet loop i x = if i >= 10 then x else loop (i + 1) (x * 0.5)\n"
+        ));
+    }
+
+    #[test]
+    fn a_descending_two_step_counter_keeps_its_original_iterations() {
+        assert!(!planned(
+            "module M\nlet loop n x = if n <= 0 then x else loop (n - 2) (x * 0.5)\n"
+        ));
+    }
+
+    #[test]
+    fn a_counter_moving_away_from_its_bound_cannot_skip() {
+        assert!(!planned(
+            "module M\nlet loop n x = if n <= 0 then x else loop (n + 1) (x * 0.5)\n"
+        ));
+    }
+
+    #[test]
+    fn descending_counter_dependent_traps_remain_observable() {
+        assert!(!planned(
+            "module M\nlet loop n x = if n <= 0 then x else\n  let _ = 1 / (n - 2)\n  loop (n - 1) (x * 0.5)\n"
         ));
     }
 

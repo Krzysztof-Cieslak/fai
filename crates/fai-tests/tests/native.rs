@@ -773,6 +773,14 @@ fn a_zero_divisor_is_not_a_divisibility_shortcut() {
 }
 
 #[test]
+fn descending_fixed_points_keep_counter_and_effect_boundaries() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/DescendingFixedPoint.fai")),
+        ("step\nstep\nstep\nyes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

@@ -7556,7 +7556,12 @@ impl<M: Module> Translator<'_, M> {
             .flatten()
             .filter(|plan| {
                 self.is_int_local(params[plan.counter])
-                    && self.is_int_local(params[plan.bound])
+                    && match plan.bound {
+                        crate::fixed_point::Bound::Parameter(index) => {
+                            self.is_int_local(params[index])
+                        }
+                        crate::fixed_point::Bound::Literal(_) => true,
+                    }
                     && plan.floats.iter().all(|i| self.is_f64_local(params[*i]))
             });
         let prev = self.loop_ctx.replace(LoopCtx {
@@ -7819,7 +7824,12 @@ impl<M: Module> Translator<'_, M> {
                 let same = self.builder.ins().icmp(IntCC::Equal, old_bits, new_bits);
                 stable = self.builder.ins().band(stable, same);
             }
-            let bound = self.use_var(params[fixed.bound]);
+            let bound = match fixed.bound {
+                crate::fixed_point::Bound::Parameter(index) => self.use_var(params[index]),
+                crate::fixed_point::Bound::Literal(value) => {
+                    self.builder.ins().iconst(types::I64, value)
+                }
+            };
             let next = self.builder.ins().select(stable, bound, vals[fixed.counter]);
             vals[fixed.counter] = self.mark_raw(next);
         }
