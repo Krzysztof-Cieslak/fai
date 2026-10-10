@@ -1,0 +1,113 @@
+module SseSpec
+
+let updates text = Sse.parse Sse.defaults (Bytes.fromString text)
+
+let events text = Stream.toList (Sse.events Sse.defaults (Stream.singleton (Bytes.fromString text)))
+
+let message data = { data = data, eventType = "message", lastEventId = "" }
+example: events "" = Ok []
+example: events "data: hello\n\n" = Ok [message "hello"]
+example: events "data: hello\r\n\r\n" = Ok [message "hello"]
+example: events "data: hello\r\r" = Ok [message "hello"]
+example: events "data\n\n" = Ok [message ""]
+example: events "data\ndata\n\n" = Ok [message "\n"]
+example: events "data: first\ndata: second\n\n" = Ok [message "first\nsecond"]
+example: events "data:  leading\ndata:\t tab\n\n" = Ok [message " leading\n\t tab"]
+example: events "data: a:b:c\n\n" = Ok [message "a:b:c"]
+example: events "Data: ignored\n\n" = Ok []
+example: events ": comment\nunknown: ignored\ndata: yes\n\n" = Ok [message "yes"]
+example: events "event: first\nevent: last\ndata: x\n\ndata: y\n\n" = Ok [
+  { data = "x", eventType = "last", lastEventId = "" },
+  message "y"
+]
+example: events "event: custom\nevent:\ndata:x\n\n" = Ok [message "x"]
+example: events "data: incomplete" = Ok []
+example: events "data: incomplete\n" = Ok []
+example: events "data: done\n\ndata: incomplete\n" = Ok [message "done"]
+example: events "\u{FEFF}data: é😀\n\n" = Ok [message "é😀"]
+example: events "data: \u{FEFF}kept\n\n" = Ok [message "\u{FEFF}kept"]
+example: events "id: one\ndata: a\n\ndata: b\n\nid\ndata: c\n\n" = Ok [
+  { data = "a", eventType = "message", lastEventId = "one" },
+  { data = "b", eventType = "message", lastEventId = "one" },
+  message "c"
+]
+example: events "id: one\nid: bad\u{0}id\ndata: a\n\n" = Ok [
+  { data = "a", eventType = "message", lastEventId = "one" }
+]
+example: updates "id: one\n\nid\n\n" = Ok [Sse.Checkpoint "one", Sse.Checkpoint ""]
+example: updates "retry: 20\n" = Ok [Sse.Retry 20]
+example: updates "retry: 0\n" = Ok [Sse.Retry 0]
+example: updates "retry: 0012\n" = Ok [Sse.Retry 12]
+example: updates "retry: -1\nretry: +2\nretry: 1.5\nretry: ２\nretry:\n" = Ok []
+example: updates "retry: 999999999999999999999999\n" = Ok [Sse.Retry 9223372036854775807]
+example: updates "retry: 2\nid: a\n\ndata:x\n\n" = Ok [
+  Sse.Retry 2,
+  Sse.Checkpoint "a",
+  Sse.Dispatch { data = "x", eventType = "message", lastEventId = "a" }
+]
+
+let byteEvents bytes =
+  Stream.toList (Sse.events Sse.defaults (Stream.singleton (Bytes.concat (Bytes.fromString "data: ") (Bytes.concat (Bytes.fromList bytes) (Bytes.fromString "\n\n")))))
+example: byteEvents [255] = Ok [message "\u{FFFD}"]
+example: byteEvents [226, 130] = Ok [message "\u{FFFD}"]
+example: byteEvents [226, 40, 161] = Ok [message "\u{FFFD}(\u{FFFD}"]
+example: byteEvents [224, 128, 128] = Ok [message "\u{FFFD}\u{FFFD}\u{FFFD}"]
+example: byteEvents [237, 160, 128] = Ok [message "\u{FFFD}\u{FFFD}\u{FFFD}"]
+example: byteEvents [244, 144, 128, 128] = Ok [message "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"]
+example: byteEvents [240, 159, 152, 128] = Ok [message "😀"]
+
+let limits = { maxEventBytes = 2, maxLineBytes = 3 }
+example: Sse.parse limits (Bytes.fromString "data") = Err {
+  kind = Sse.LineTooLong,
+  line = Some 1,
+  message = "SSE line exceeds its byte limit",
+  offset = Some 3
+}
+example: Sse.parse { limits with
+  maxLineBytes = 100
+} (Bytes.fromString "data: abc\n\n") = Err {
+  kind = Sse.EventTooLarge,
+  line = Some 1,
+  message = "SSE event data exceeds its byte limit",
+  offset = Some 9
+}
+example: Sse.parse { limits with
+  maxLineBytes = 100
+} (Bytes.fromString "data: ab\n\n") = Ok [Sse.Dispatch (message "ab")]
+example: Result.isErr (Sse.decoder { limits with maxLineBytes = (-1) })
+example: Result.isErr (Sse.decoder { limits with maxEventBytes = (-1) })
+
+let stopBeforeLaterError =
+  match Sse.decoder { maxEventBytes = 2, maxLineBytes = 6 } with
+  | Err _ -> false
+  | Ok decoder ->
+    match Sse.next decoder (Bytes.fromString "data:a\n\nxxxxxxxx") 0 with
+    | Err _ -> false
+    | Ok step -> step.update = Some (Sse.Dispatch (message "a")) && step.nextIndex = 8
+example: stopBeforeLaterError
+
+let splitUpdates bytes split =
+  Stream.toList (Sse.updates Sse.defaults (Stream.fromList [
+    Bytes.slice 0 split bytes,
+    Bytes.slice split (Bytes.length bytes) bytes
+  ]))
+forall index: splitUpdates (Bytes.fromString "\u{FEFF}id: a\r\nretry: 3000\r\ndata: é😀\r\n\r\n") (Int.and index 63) = Result.mapError Sse.errorToString (updates "\u{FEFF}id: a\r\nretry: 3000\r\ndata: é😀\r\n\r\n")
+forall values: splitUpdates (Bytes.fromList (List.map (fun value ->
+  Int.and value 255) values)) 7 = Result.mapError Sse.errorToString (Sse.parse Sse.defaults (Bytes.fromList (List.map (fun value ->
+  Int.and value 255) values)))
+
+let encoded text = Sse.encode (Sse.event text)
+example: Bytes.toString (encoded "") = Some "data: \n\n"
+example: Bytes.toString (encoded "a\r\nb\rc\n") = Some "data: a\ndata: b\ndata: c\ndata: \n\n"
+example: Bytes.toString (Sse.encode (Sse.comment "one\ntwo")) = Some ": one\n: two\n\n"
+example: Result.isErr (Sse.withType "bad\ndata: injected" (Sse.event "x"))
+example: Result.isErr (Sse.withId "bad\u{0}id" (Sse.event "x"))
+example: Result.isErr (Sse.withId "bad\rid" (Sse.event "x"))
+example: Result.isErr (Sse.withType "type" (Sse.comment "comment"))
+example: Result.isErr (Sse.retry (-1))
+example: Result.map Sse.encode (Sse.retry 42) = Ok (Bytes.fromString "retry: 42\n\n")
+example: Result.map Sse.encode (Sse.checkpoint "") = Ok (Bytes.fromString "id: \n\n")
+example: Result.map Sse.encode (Sse.withId "one" (Sse.event "hello")) = Ok (Bytes.fromString "id: one\ndata: hello\n\n")
+forall text: Stream.toList (Sse.events Sse.defaults (Sse.encodeStream (Stream.singleton (Sse.event (String.join "" (String.split "\r" text)))))) = Ok [
+  message (String.join "" (String.split "\r" text))
+]

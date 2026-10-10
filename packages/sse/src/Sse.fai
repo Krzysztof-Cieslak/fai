@@ -1,0 +1,360 @@
+module Sse
+
+/// A dispatched event. An omitted/empty event type becomes "message".
+public type Event = { data : String, eventType : String, lastEventId : String }
+
+/// Ordered protocol observations. Checkpoint includes ID-only empty blocks;
+/// Retry is observed as soon as its complete line arrives.
+public type Update =
+  | Dispatch Event
+  | Checkpoint String
+  | Retry Int
+
+/// Maximum wire line bytes and decoded UTF-8 event-data bytes, excluding delimiters.
+public type Limits = { maxEventBytes : Int, maxLineBytes : Int }
+
+public defaults : Limits
+let defaults = { maxEventBytes = 1048576, maxLineBytes = 65536 }
+
+public type ErrorKind =
+  | InvalidConfiguration
+  | InvalidInput
+  | LineTooLong
+  | EventTooLarge
+  | InvalidFrame
+
+/// Byte offset is zero-based; line is one-based. Encoding errors have no location.
+public type Error = { kind : ErrorKind, line : Option Int, message : String, offset : Option Int }
+
+type State = {
+  data : Array String,
+  dataBytes : Int,
+  eventType : String,
+  firstLine : Bool,
+  id : String,
+  limits : Limits,
+  lineBytes : Array Int,
+  lineNumber : Int,
+  offset : Int,
+  skipLf : Bool
+}
+
+/// Immutable incremental parsing state. Unconsumed input stays with the caller.
+public opaque type Decoder =
+  | MkDecoder State
+
+/// nextIndex is the first unconsumed byte in the supplied chunk. A step stops at
+/// one observation, so a consumer can stop without committing later chunk data.
+public type Progress = { decoder : Decoder, nextIndex : Int, update : Option Update }
+
+let issue kind message = { kind = kind, line = None, message = message, offset = None }
+
+let located kind message state = {
+  kind = kind,
+  line = Some state.lineNumber,
+  message = message,
+  offset = Some state.offset
+}
+
+/// Validate limits and create a decoder for a new HTTP connection.
+public decoder : Limits -> Result Decoder Error
+let decoder limits =
+  if limits.maxLineBytes < 0 || limits.maxEventBytes < 0 then
+    Err (issue InvalidConfiguration "SSE limits must be nonnegative")
+  else
+    Ok (MkDecoder {
+      data = Array.empty,
+      dataBytes = 0,
+      eventType = "",
+      firstLine = true,
+      id = "",
+      limits = limits,
+      lineBytes = Array.empty,
+      lineNumber = 1,
+      offset = 0,
+      skipLf = false
+    })
+
+let replacement = "\u{FFFD}"
+
+let continuation b = b >= 128 && b <= 191
+
+let secondValid first second =
+  continuation second && (first <> 224 || second >= 160) && (first <> 237 || second <= 159) && (first <> 240 || second >= 144) && (first <> 244 || second <= 143)
+
+let codeTail bytes index remaining code =
+  if remaining = 0 then
+    (index, Some code)
+  else if index >= Array.length bytes || not (continuation (Array.unsafeGet index bytes)) then
+    (index, None)
+  else
+    codeTail bytes (index + 1) (remaining - 1) (code * 64 + Array.unsafeGet index bytes - 128)
+
+let utf8From bytes index output =
+  if index >= Array.length bytes then
+    String.join "" (List.reverse output)
+  else
+    let first = Array.unsafeGet index bytes
+    if first < 128 then
+      utf8From bytes (index + 1) (Char.toString (Option.withDefault '\u{FFFD}' (Char.fromCode first)) :: output)
+    else if first < 194 || first > 244 then
+      utf8From bytes (index + 1) (replacement :: output)
+    else if index + 1 >= Array.length bytes || not (secondValid first (Array.unsafeGet (index + 1) bytes)) then
+      utf8From bytes (index + 1) (replacement :: output)
+    else
+      let width = if first < 224 then 2 else if first < 240 then 3 else 4
+      let initial = first - (if width = 2 then 192 else if width = 3 then 224 else 240)
+      let (next, code) = codeTail bytes (index + 1) (width - 1) initial
+      let text =
+        match code with
+        | None -> replacement
+        | Some code -> Char.toString (Option.withDefault '\u{FFFD}' (Char.fromCode code))
+      utf8From bytes next (text :: output)
+
+let lineText state =
+  let bytes = state.lineBytes
+  let bom =
+    state.firstLine && Array.length bytes >= 3 && Array.unsafeGet 0 bytes = 239 && Array.unsafeGet 1 bytes = 187 && Array.unsafeGet 2 bytes = 191
+  utf8From bytes (if bom then 3 else 0) []
+
+let digits bytes index value =
+  if index >= Bytes.length bytes then
+    Some value
+  else
+    let digit = Bytes.unsafeGet index bytes - 48
+    if digit < 0 || digit > 9 then
+      None
+    else
+      digits bytes (index + 1) (if value > (9223372036854775807 - digit) / 10 then
+        9223372036854775807
+      else
+        value * 10 + digit)
+
+let retryValue text = if text = "" then None else digits (Bytes.fromString text) 0 0
+
+let field text =
+  match String.split ":" text with
+  | [] -> ("", "")
+  | name :: rest ->
+    let value = String.join ":" rest
+    (name, if String.take 1 value = " " then String.drop 1 value else value)
+
+processLine : State -> Result (State * Option Update) Error
+let processLine state =
+  let text = lineText state
+  if text = "" then
+    let update =
+      if Array.length state.data = 0 then
+        Checkpoint state.id
+      else
+        Dispatch {
+          data = String.joinArray "\n" state.data,
+          eventType = if state.eventType = "" then "message" else state.eventType,
+          lastEventId = state.id
+        }
+    Ok ({ state with data = Array.empty, dataBytes = 0, eventType = "" }, Some update)
+  else if String.take 1 text = ":" then
+    Ok (state, None)
+  else
+    let (name, value) = field text
+    if name = "data" then
+      let added =
+        Bytes.length (Bytes.fromString value) + (if Array.length state.data = 0 then 0 else 1)
+      if added > state.limits.maxEventBytes - state.dataBytes then
+        Err (located EventTooLarge "SSE event data exceeds its byte limit" state)
+      else
+        Ok ({ state with
+          data = Array.push value state.data,
+          dataBytes = state.dataBytes + added
+        }, None)
+    else if name = "event" then
+      Ok ({ state with eventType = value }, None)
+    else if name = "id" && not (String.contains value "\u{0}") then
+      Ok ({ state with id = value }, None)
+    else if name = "retry" then
+      Ok (state, Option.map Retry (retryValue value))
+    else
+      Ok (state, None)
+
+scan : State -> Bytes -> Int -> Result Progress Error
+let scan state bytes index =
+  if index >= Bytes.length bytes then
+    Ok { decoder = MkDecoder state, nextIndex = index, update = None }
+  else
+    let byte = Bytes.unsafeGet index bytes
+    if state.skipLf && byte = 10 then
+      scan { state with offset = state.offset + 1, skipLf = false } bytes (index + 1)
+    else if byte = 10 || byte = 13 then
+      match processLine state with
+      | Err error -> Err error
+      | Ok (processed, update) ->
+        let next = { processed with
+          firstLine = false,
+          lineBytes = Array.empty,
+          lineNumber = state.lineNumber + 1,
+          offset = state.offset + 1,
+          skipLf = byte = 13
+        }
+        match update with
+        | None -> scan next bytes (index + 1)
+        | Some _ -> Ok { decoder = MkDecoder next, nextIndex = index + 1, update = update }
+    else if Array.length state.lineBytes >= state.limits.maxLineBytes then
+      Err (located LineTooLong "SSE line exceeds its byte limit" state)
+    else
+      scan { state with
+        lineBytes = Array.push byte state.lineBytes,
+        offset = state.offset + 1,
+        skipLf = false
+      } bytes (index + 1)
+
+/// Process bytes starting at index, stopping after one protocol observation or
+/// at the chunk's end. EOF discards a decoder's unfinished line/event.
+public next : Decoder -> Bytes -> Int -> Result Progress Error
+let next decoder bytes index =
+  if index < 0 || index > Bytes.length bytes then
+    Err (issue InvalidInput "SSE chunk index is out of bounds")
+  else
+    match decoder with
+    | MkDecoder state -> scan state bytes index
+
+let parseFrom decoder bytes index output =
+  match next decoder bytes index with
+  | Err error -> Err error
+  | Ok progress ->
+    match progress.update with
+    | None -> Ok (List.reverse output)
+    | Some update -> parseFrom progress.decoder bytes progress.nextIndex (update :: output)
+
+/// Decode a complete byte buffer. An unfinished final event is discarded.
+public parse : Limits -> Bytes -> Result (List Update) Error
+let parse limits bytes =
+  match decoder limits with
+  | Err error -> Err error
+  | Ok decoder -> parseFrom decoder bytes 0 []
+
+/// Render a codec or outbound-frame error.
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.line with
+  | None -> ""
+  | Some line -> " at line " ++ Int.toString line)
+
+updatesFrom : Decoder -> Bytes -> Int -> Stream Bytes 'e -> Stream Update 'e
+let updatesFrom decoder bytes index source =
+  Stream.defer (fun _ -> updatesStep decoder bytes index source)
+
+updatesStep : Decoder -> Bytes -> Int -> Stream Bytes 'e -> Stream Update 'e / 'e
+let updatesStep decoder bytes index source =
+  match next decoder bytes index with
+  | Err error -> Stream.failed (errorToString error)
+  | Ok progress ->
+    match progress.update with
+    | Some update ->
+      Stream.cons update (updatesFrom progress.decoder bytes progress.nextIndex source)
+    | None ->
+      match Stream.uncons source with
+      | Err message -> Stream.failed message
+      | Ok None -> Stream.empty
+      | Ok (Some (chunk, rest)) -> updatesStep progress.decoder chunk 0 rest
+
+/// Lazy ordered updates. Stream failures render typed codec errors as strings;
+/// use next directly when an application needs structured errors.
+public updates : Limits -> Stream Bytes 'e -> Stream Update 'e
+let updates limits source =
+  match decoder limits with
+  | Err error -> Stream.failed (errorToString error)
+  | Ok decoder -> updatesFrom decoder Bytes.empty 0 source
+
+let eventsStep source =
+  match Stream.uncons source with
+  | Err message -> Stream.failed message
+  | Ok None -> Stream.empty
+  | Ok (Some (Dispatch event, rest)) -> Stream.cons event (Stream.defer (fun _ -> eventsStep rest))
+  | Ok (Some (_, rest)) -> eventsStep rest
+
+/// Lazy dispatched events, omitting checkpoint and retry observations.
+public events : Limits -> Stream Bytes 'e -> Stream Event 'e
+let events limits source = Stream.defer (fun _ -> eventsStep (updates limits source))
+
+type Message = { data : String, eventType : Option String, id : Option String }
+
+/// A validated outbound frame. Encoding cannot inject extra protocol fields.
+public opaque type Frame =
+  | Message Message
+  | Comment String
+  | RetryFrame Int
+  | IdFrame String
+
+/// An ordinary message. CRLF and CR in data are normalized to LF on the wire.
+public event : String -> Frame
+let event data = Message { data = data, eventType = None, id = None }
+
+let singleLine text = not (String.contains text "\r") && not (String.contains text "\n")
+
+let validId text = singleLine text && not (String.contains text "\u{0}")
+
+/// Set an event's type; only message frames accept event metadata.
+public withType : String -> Frame -> Result Frame Error
+let withType name frame =
+  if not (singleLine name) then
+    Err (issue InvalidFrame "SSE event type must be one line")
+  else
+    match frame with
+    | Message message -> Ok (Message { message with eventType = Some name })
+    | _ -> Err (issue InvalidFrame "event metadata requires a message frame")
+
+/// Set an event ID, including the empty string to reset it.
+public withId : String -> Frame -> Result Frame Error
+let withId id frame =
+  if not (validId id) then
+    Err (issue InvalidFrame "SSE id must be one line without NUL")
+  else
+    match frame with
+    | Message message -> Ok (Message { message with id = Some id })
+    | _ -> Err (issue InvalidFrame "event metadata requires a message frame")
+
+/// A comment, such as a heartbeat. Multiline comments are encoded line by line.
+public comment : String -> Frame
+let comment text = Comment text
+
+/// A reconnect-delay hint in milliseconds; zero is valid.
+public retry : Int -> Result Frame Error
+let retry delay =
+  if delay < 0 then
+    Err (issue InvalidFrame "SSE retry delay must be nonnegative")
+  else
+    Ok (RetryFrame delay)
+
+/// An ID-only block, including an empty ID to clear the reconnect cursor.
+public checkpoint : String -> Result Frame Error
+let checkpoint id =
+  if validId id then
+    Ok (IdFrame id)
+  else
+    Err (issue InvalidFrame "SSE id must be one line without NUL")
+
+let normalized text =
+  String.join "\n" (List.concatMap (String.split "\r") (String.split "\r\n" text))
+
+let lines prefix text =
+  String.join "" (List.map (fun line ->
+    prefix ++ line ++ "\n") (String.split "\n" (normalized text)))
+
+let optionalField name value =
+  match value with
+  | None -> ""
+  | Some text -> name ++ ": " ++ text ++ "\n"
+
+/// Encode a complete LF-terminated frame, including its final empty line.
+public encode : Frame -> Bytes
+let encode frame =
+  Bytes.fromString (match frame with
+  | Message message ->
+    optionalField "id" message.id ++ optionalField "event" message.eventType ++ lines "data: " message.data ++ "\n"
+  | Comment text -> lines ": " text ++ "\n"
+  | RetryFrame delay -> "retry: " ++ Int.toString delay ++ "\n\n"
+  | IdFrame id -> "id: " ++ id ++ "\n\n")
+
+/// Encode frames lazily, preserving producer effects and backpressure.
+public encodeStream : Stream Frame 'e -> Stream Bytes 'e
+let encodeStream frames = Stream.map encode frames

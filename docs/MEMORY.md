@@ -4874,5 +4874,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   consumption. Consumer failures never trigger retries. Successful streaming has
   no buffered-body limit; response bodies remain valid only during the callback.
 
+- **D154 Shared server-sent events.** A standard-library-only source package
+  owns SSE framing and incremental UTF-8 replacement decoding. Ordered event,
+  checkpoint and retry observations preserve ID-only blocks and consumption
+  boundaries within chunks. EOF discards incomplete events. Validated opaque
+  outbound frames prevent metadata from injecting extra fields; payload line
+  endings normalize to LF. Byte limits are explicit configuration.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
