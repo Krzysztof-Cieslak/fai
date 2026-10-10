@@ -638,6 +638,11 @@ field, with minutes/seconds in 00..59 and the same overall ±18-hour bound.
 teardown sleeps. Other wakes do not shorten its deadline; nonpositive delays
 return immediately and oversized delays use representable clock intervals.
 
+Task-context and yielder reads load their values through out-of-line accessors.
+Optimized runtime retry loops must not retain a worker's thread-local cell address
+across a suspension: a resumed task may be on another worker. Cancellation and
+waiter registration therefore observe the resuming worker's task context.
+
 `Async.pipe` cancels its producer and closes its channel when the consumer
 returns, then joins the producer. Consumers may stop early without leaving a
 finite producer parked on a full channel; cancellation remains cooperative.

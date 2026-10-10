@@ -213,6 +213,7 @@ The runner checks formatting, types and contracts, effect forwarding, and real
 loopback HTTP requests through JIT and AOT executables. Library edits do not
 require rebuilding the compiler. Keep `web` and `json` beside each other when
 moving them to another source workspace.
+The native HTTP checks cover one-, two-, and four-worker scheduler pools.
 
 ## Status
 

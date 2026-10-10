@@ -2,6 +2,7 @@
 """Run the web package's contracts and JSON examples with an existing compiler."""
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -47,11 +48,19 @@ def main():
         fai("build", "web/examples/JsonWebExample.fai", "--out", str(executable))
         if executable.with_suffix(".exe").exists():
             executable = executable.with_suffix(".exe")
-        result = subprocess.run(
-            [str(executable)], check=True, capture_output=True,
-            text=True, encoding="utf-8", timeout=120,
-        )
-        assert result.stdout == expected, result
+        for workers in (1, 2, 4):
+            try:
+                result = subprocess.run(
+                    [str(executable)], check=True, capture_output=True,
+                    text=True, encoding="utf-8", timeout=120,
+                    env={**os.environ, "FAI_WORKERS": str(workers)},
+                )
+            except subprocess.TimeoutExpired as error:
+                raise AssertionError(
+                    f"native HTTP shutdown timed out with {workers} workers; "
+                    f"stdout={error.stdout!r}, stderr={error.stderr!r}"
+                ) from error
+            assert result.stdout == expected, (workers, result)
     print("Web package: contracts, effect forwarding, and JIT/AOT HTTP checks passed")
 
 
