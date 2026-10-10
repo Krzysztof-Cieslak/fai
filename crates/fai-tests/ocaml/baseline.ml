@@ -7,12 +7,11 @@
    (process startup, the workload, and exit). Printing the result keeps the
    computation from being optimized away, matching the other binaries' `main`.
 
-   Each implementation matches its Fai sample's / the Rust oracle's data
-   representation, so the comparison measures the runtime/codegen gap rather than
-   an incidental data-structure difference: a workload that iterates or indexes
-   uses a contiguous `array`, and one that is naturally persistent — backtracking,
-   or a cons-pattern-matched parser — uses an OCaml `list` (the faithful twin of
-   Fai's linked `List`). Hash workloads use `Hashtbl`, ordered ones `Map`/`Set`.
+   The implementations compute the same results but do not always use identical
+   representations. Many pair an `array` with Fai's `Array`, or a persistent
+   `list` with Fai's `List`. Hash workloads use `Hashtbl`; OptionTreeFind uses
+   `Map` rather than the Fai binary tree. ListSort uses a list here and in Fai,
+   but a Vec in Rust. See docs/BENCHMARK.md for the comparison's scope.
 
    OCaml's native `int` is 63-bit, so the two workloads that depend on full 64-bit
    wrapping — `PrngXorshift` (u64 bit-twiddling) and `FibMemo` (i64 wrapping over
@@ -81,13 +80,12 @@ let collatz_sum n =
   done;
   !acc
 
-(* Sum of doubling every element of `[0, n)`. `Sys.opaque_identity` per element
-   keeps the loop from collapsing to a closed form, matching the Rust oracle's
-   `black_box`. *)
+(* Sum of doubling every element of `[0, n)`. Every compiler may simplify the
+   arithmetic series; there are no per-element optimization barriers. *)
 let map_sum n =
   let acc = ref 0 in
   for x = 0 to n - 1 do
-    acc := !acc + Sys.opaque_identity (x * 2)
+    acc := !acc + (x * 2)
   done;
   !acc
 
@@ -147,8 +145,8 @@ let word_count n =
    The mapped intermediate is fused into its fold on all three sides. *)
 let map_sum_shared n =
   let xs = Array.init (max n 0) Fun.id in
-  let doubled = Array.fold_left (fun acc x -> acc + Sys.opaque_identity (x * 2)) 0 xs in
-  let original = Array.fold_left (fun acc x -> acc + Sys.opaque_identity x) 0 xs in
+  let doubled = Array.fold_left (fun acc x -> acc + (x * 2)) 0 xs in
+  let original = Array.fold_left (fun acc x -> acc + x) 0 xs in
   doubled + original
 
 (* The sum of the distinct values among `[0, n)` reduced modulo a bucket count. *)
@@ -164,7 +162,7 @@ let set_dedup n =
 let fold_pipeline n =
   let acc = ref 0 in
   for x = 0 to n - 1 do
-    acc := !acc + Sys.opaque_identity (((x + 1) * 2) + 3)
+    acc := !acc + (((x + 1) * 2) + 3)
   done;
   !acc
 

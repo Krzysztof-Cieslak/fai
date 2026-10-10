@@ -2,14 +2,14 @@
 //! benchmarks compare against Fai, plus the registry tying each to its Fai sample
 //! module and workload sizes.
 //!
-//! Each implementation **matches its Fai sample's data representation**, so the
-//! benchmark measures the runtime/codegen gap (Fai's boxed, reference-counted
-//! values vs Rust's, both via their native backends) rather than an incidental
-//! data-structure difference: a workload that iterates or indexes uses a
-//! contiguous `Vec` against Fai's `Array`, and one that is naturally persistent —
-//! backtracking, or a cons-pattern-matched parser — uses the [`PList`] cons-list
-//! (the faithful twin of Fai's linked `List`) against Fai's `List`. The code is
-//! otherwise idiomatic within that representation (unboxed scalars, iterators).
+//! These are application and kernel baselines with the same observable results,
+//! not uniformly identical data structures. Many pair a contiguous `Vec` with
+//! Fai's `Array`, or the persistent [`PList`] with Fai's `List`. Exceptions include
+//! `list_sort_sum` (`Vec` versus `List`) and `option_tree_find` (`BTreeMap` versus
+//! binary tree); allocation, hashing and traversal choices also differ. See
+//! `docs/BENCHMARK.md` for the scope of each comparison. Optimizers may simplify
+//! the whole computation; benchmark barriers belong around calls, not inside a
+//! reference implementation that its peers are free to optimize.
 //! They are shared by the in-process JIT bench (the Rust side and the correctness
 //! oracle), the `algo-baseline` binary (the Rust side of the subprocess AOT
 //! bench), and the sample validation tests.
@@ -67,15 +67,14 @@ pub fn collatz_sum(n: i64) -> i64 {
     (1..=n).map(collatz_steps).sum()
 }
 
-/// Sum of doubling every element of `[0, n)`. Allocation-free in Rust (the Fai
-/// version builds and folds a `List`); `black_box` per element defeats LLVM's
-/// scalar-evolution collapse of this arithmetic series to a closed form, so the
-/// benchmark times a real loop rather than a constant.
+/// Sum of doubling every element of `[0, n)`. Rust iterates without an intermediate
+/// allocation; the Fai Array pipeline can fuse. Either compiler may reduce the
+/// arithmetic series to a closed form.
 #[must_use]
 pub fn map_sum(n: i64) -> i64 {
     let mut acc: i64 = 0;
     for x in 0..n {
-        acc += std::hint::black_box(x * 2);
+        acc += x * 2;
     }
     acc
 }
@@ -182,13 +181,12 @@ pub fn string_slice(n: i64) -> i64 {
 /// Two consumers of one materialized array: the sum of doubling `[0, n)` plus
 /// the sum of the original values. The source stays live through both traversals,
 /// matching the shared `Array` in Fai; the mapped intermediate is an iterator.
-/// `black_box` per element prevents collapsing the sums into a closed form.
+/// The compiler may vectorize or simplify either traversal.
 #[must_use]
 pub fn map_sum_shared(n: i64) -> i64 {
     let xs: Vec<i64> = (0..n).collect();
-    let doubled =
-        xs.iter().fold(0i64, |acc, &x| acc.wrapping_add(std::hint::black_box(x.wrapping_mul(2))));
-    let original = xs.into_iter().fold(0i64, |acc, x| acc.wrapping_add(std::hint::black_box(x)));
+    let doubled = xs.iter().fold(0i64, |acc, &x| acc.wrapping_add(x.wrapping_mul(2)));
+    let original = xs.into_iter().fold(0i64, i64::wrapping_add);
     doubled.wrapping_add(original)
 }
 
@@ -202,14 +200,13 @@ pub fn set_dedup(n: i64) -> i64 {
 }
 
 /// The sum over `[0, n)` of `((x + 1) * 2) + 3`, the composed/partially-applied
-/// pipeline the Fai version folds with closures. `black_box` per element defeats
-/// LLVM's scalar-evolution collapse of this arithmetic series to a closed form, so
-/// the benchmark times a real loop rather than a constant (as [`map_sum`] does).
+/// pipeline the Fai version folds with closures. As with [`map_sum`], either
+/// compiler may simplify the arithmetic series instead of executing every step.
 #[must_use]
 pub fn fold_pipeline(n: i64) -> i64 {
     let mut acc: i64 = 0;
     for x in 0..n {
-        acc = acc.wrapping_add(std::hint::black_box(((x + 1).wrapping_mul(2)).wrapping_add(3)));
+        acc = acc.wrapping_add((x + 1).wrapping_mul(2).wrapping_add(3));
     }
     acc
 }
