@@ -2388,7 +2388,7 @@ impl<M: Module> Translator<'_, M> {
             DropPlan::Fixed(fields) => self.emit_inline_drop(local, &fields),
             DropPlan::Leaf { tag_check } => {
                 self.emit_rc_dec_then(local, tag_check, |s, cell| {
-                    // A leaf (Int/Float/String) has no reference-counted children,
+                    // A proven leaf has no reference-counted children,
                     // so a dead one is reclaimed directly.
                     let free = s.runtime("fai_free", 1, false);
                     s.builder.ins().call(free, &[cell]);
@@ -8084,8 +8084,9 @@ fn inline_aggregate_fields(ty: &Ty, cap: usize) -> Option<Vec<AggField>> {
 /// a borrowing slice whose one child is the base it views, so a dead string is
 /// released through the child-scanning runtime drop (which is a direct free for the
 /// inline representation and releases the base for a slice).
+/// A known array of immediate elements or raw Floats likewise has no child owners.
 fn is_leaf_boxed_ty(ty: &Ty) -> bool {
-    matches!(ty, Ty::Con(Con::Int | Con::Float))
+    matches!(ty, Ty::Con(Con::Int | Con::Float)) || fai_core::ir::reference_free_array(ty)
 }
 
 /// Whether `ty` is a data type that may also be an immediate — a discriminated
@@ -8542,7 +8543,7 @@ enum DropPlan {
     NoOp,
     /// A fixed-shape record/tuple (always boxed): unroll its per-field release.
     Fixed(Vec<FieldDrop>),
-    /// A boxed leaf (Int/Float/String): decrement and, when dead, free directly.
+    /// A boxed scalar or reference-free array: decrement and, when dead, free directly.
     Leaf {
         /// Whether to guard with an immediate tag-check (true for `Int`).
         tag_check: bool,
@@ -8667,12 +8668,40 @@ mod classifier_tests {
     use fai_syntax::Symbol;
     use fai_types::{Con, RecordRow, RowEnd, RowVarId, Ty};
 
-    use super::{AggField, FieldDrop, fixed_shape_drop, inline_aggregate_fields};
+    use super::{
+        AggField, DropPlan, FieldDrop, drop_class, fixed_shape_drop, inline_aggregate_fields,
+    };
 
     use FieldDrop::{Boxed, Immediate};
 
     /// A high cap, so width never interferes with shape-recognition cases.
     const WIDE: usize = 64;
+
+    #[test]
+    fn boolean_arrays_release_without_a_child_scan() {
+        assert_eq!(drop_class(&Ty::array(Ty::bool())), DropPlan::Leaf { tag_check: false });
+    }
+
+    #[test]
+    fn raw_float_arrays_release_without_a_child_scan() {
+        assert_eq!(
+            drop_class(&Ty::array(Ty::Con(Con::Float))),
+            DropPlan::Leaf { tag_check: false }
+        );
+    }
+
+    #[test]
+    fn full_width_integer_arrays_keep_their_child_scan() {
+        assert_eq!(drop_class(&Ty::array(Ty::int())), DropPlan::Data { tag_check: false });
+    }
+
+    #[test]
+    fn arrays_of_reference_free_arrays_still_own_their_children() {
+        assert_eq!(
+            drop_class(&Ty::array(Ty::array(Ty::bool()))),
+            DropPlan::Data { tag_check: false }
+        );
+    }
 
     fn closed_record(fields: &[(&str, Ty)]) -> Ty {
         Ty::Record(RecordRow {
@@ -8950,6 +8979,7 @@ mod wire_projection_proptests {
                     Ty::Record(RecordRow { fields, tail })
                 }),
                 inner.clone().prop_map(Ty::list),
+                inner.clone().prop_map(Ty::array),
                 inner.clone().prop_map(|a| Ty::App(Arc::new(adt()), Arc::new(a))),
                 (inner.clone(), inner.clone()).prop_map(|(a, b)| Ty::arrow(a, b)),
             ]

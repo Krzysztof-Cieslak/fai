@@ -233,6 +233,9 @@ pub enum WireTy {
     Interface,
     /// A function value / closure (always boxed).
     Arrow,
+    /// A concrete array whose slots contain no counted references. Its element
+    /// class survives so native access and destruction agree with the warm path.
+    LeafArray(Box<WireTy>),
 }
 
 /// A Core expression in wire form: a [`WireExprKind`] plus its projected type.
@@ -460,6 +463,9 @@ pub fn project_ty(ty: &Ty) -> WireTy {
         {
             WireTy::ScalarList(Box::new(project_ty(element)))
         }
+        Ty::App(_, element) if crate::ir::reference_free_array(ty) => {
+            WireTy::LeafArray(Box::new(project_ty(element)))
+        }
         Ty::App(head, _) => project_app_head(head),
     }
 }
@@ -505,6 +511,7 @@ pub fn reconstruct_ty(w: &WireTy) -> Ty {
         WireTy::List => Ty::list(Ty::Error),
         WireTy::ScalarList(element) => Ty::list(reconstruct_ty(element)),
         WireTy::Array => Ty::array(Ty::Error),
+        WireTy::LeafArray(element) => Ty::array(reconstruct_ty(element)),
         WireTy::Adt => Ty::Adt(AdtRef::new(SourceId::new(0), Symbol::intern("_Adt"))),
         WireTy::Interface => {
             Ty::Interface(InterfaceRef::new(SourceId::new(0), Symbol::intern("_Interface")))
@@ -1365,6 +1372,20 @@ mod tests {
         assert!(!shape.resource_free);
         assert!(!shape.always_boxed);
         assert_eq!((shape.boxed_tag, shape.immediate_tag), (None, None));
+    }
+
+    #[test]
+    fn reference_free_array_projection_preserves_its_element_class() {
+        let ty = Ty::array(Ty::bool());
+        let wire = project_ty(&ty);
+        assert_eq!(wire, WireTy::LeafArray(Box::new(WireTy::Bool)));
+        assert_eq!(reconstruct_ty(&wire), ty);
+    }
+
+    #[test]
+    fn erased_and_integer_arrays_do_not_claim_reference_free_slots() {
+        assert_eq!(project_ty(&Ty::array(Ty::int())), WireTy::Array);
+        assert!(!crate::ir::reference_free_array(&reconstruct_ty(&WireTy::Array)));
     }
 
     #[test]

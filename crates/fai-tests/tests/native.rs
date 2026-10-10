@@ -9,6 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use indoc::{formatdoc, indoc};
 
 #[test]
+fn reference_free_arrays_preserve_shared_values_and_boxed_integer_release() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/ReferenceFreeArrays.fai")),
+        ("ok\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn native_float_array_loads_keep_exact_bits_across_generic_calls() {
     let library = "module Reads\npublic generic : Array 'a -> 'a\nlet generic values = Array.unsafeGet 0 values\npublic invoke : (Array Float -> Float) -> Array Float -> Float\nlet invoke f values = f values\n";
     let main = "module Main\npublic first : Array Float -> Float\nlet first values = Array.unsafeGet 0 values\nlet check bits =\n  let values = [| Float.fromBits bits |]\n  let mapped = Array.map (fun value -> value) values\n  Float.toBits (first values) = bits && Float.toBits (Reads.generic mapped) = bits && Float.toBits (Reads.invoke first values) = bits\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (if check 0x8000000000000000 && check 0x7ff0000000001234 && check 0xfff8000000005678 && check 1 then \"yes\" else \"no\")\n";
