@@ -697,6 +697,9 @@ a calculation on the value's immediate bit, independent of constructor order.
 Native match branches reuse established tag equalities. Rejecting one alternative
 identifies the other only when type evidence proves exactly one immediate and
 one boxed constructor; facts stay local to the branch and current loop iteration.
+Constructor equality predicates can test the original SSA value's immediate bit
+directly, avoiding a materialized numeric tag. The saved SSA word, rather than a
+later loop binding, supplies the bit and needs no owner dereference.
 Structural hash results remain raw native integers across inline/runtime merges.
 The runtime's nonnegative 62-bit result needs only untagging, with no result-box
 check; ordinary uniform boundaries still tag it.

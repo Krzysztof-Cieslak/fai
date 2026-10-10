@@ -1019,6 +1019,7 @@ fn build_fn<M: Module>(
             niche_locals: FxHashMap::default(),
             standard_data_locals: FxHashSet::default(),
             niche_values: FxHashMap::default(),
+            tag_bit_values: FxHashMap::default(),
             runtime: FxHashMap::default(),
             string_counter: 0,
             descriptors: FxHashMap::default(),
@@ -1504,6 +1505,8 @@ struct Translator<'a, M: Module> {
     /// standard one by Cranelift type). Boundary sites query [`Self::niche_of`] to
     /// convert to the standard representation before a value crosses a uniform slot.
     niche_values: FxHashMap<Value, NicheKind>,
+    /// Numeric tag values derived from one immutable SSA word and its two tags.
+    tag_bit_values: FxHashMap<Value, (Value, u32, u32)>,
     /// Runtime-function import cache, keyed by symbol name. An owned `String` key
     /// (rather than `&'static str`) so an interned foreign symbol — a host
     /// capability or a user `foreign` function — caches alongside the fixed `fai_*`
@@ -3332,21 +3335,27 @@ impl<M: Module> Translator<'_, M> {
                     self.builder.ins().uextend(types::I64, is_some)
                 }
             };
-            return if matches!(result_ty, Ty::Con(Con::Int)) {
+            let result = if matches!(result_ty, Ty::Con(Con::Int)) {
                 self.mark_raw(raw)
             } else {
                 let shifted = self.builder.ins().ishl_imm(raw, 1);
                 self.builder.ins().bor_imm(shifted, 1)
             };
+            if k == NicheKind::A {
+                self.tag_bit_values.insert(result, (v, 1, 0));
+            }
+            return result;
         }
         if self.is_list_value(base) {
             let lowbit = self.builder.ins().band_imm(v, 1);
             let raw = self.builder.ins().bxor_imm(lowbit, 1);
-            return if matches!(result_ty, Ty::Con(Con::Int)) {
+            let result = if matches!(result_ty, Ty::Con(Con::Int)) {
                 self.mark_raw(raw)
             } else {
                 self.tag_int(raw)
             };
+            self.tag_bit_values.insert(result, (v, 1, 0));
+            return result;
         }
         if let ExprKind::Local(local) = base.kind
             && let Some(shape) = self.local_data_shape(local)
@@ -3362,11 +3371,15 @@ impl<M: Module> Translator<'_, M> {
                 let immediate = self.untag(v);
                 self.builder.ins().select(bit, immediate, tag)
             };
-            return if matches!(result_ty, Ty::Con(Con::Int)) {
+            let result = if matches!(result_ty, Ty::Con(Con::Int)) {
                 self.mark_raw(raw)
             } else {
                 self.tag_int(raw)
             };
+            if let Some(immediate) = shape.immediate_tag {
+                self.tag_bit_values.insert(result, (v, boxed, immediate));
+            }
+            return result;
         }
         let raw = if is_always_boxed_ty(&base.ty) {
             self.boxed_data_tag(v)
@@ -5677,6 +5690,11 @@ impl<M: Module> Translator<'_, M> {
             let b = self.expr(&args[1]);
             // Raw operands: a bare `icmp eq` (raw word equality is value equality).
             if self.is_raw_int(a) && self.is_raw_int(b) {
+                if let Some(result) =
+                    self.tag_bit_equal(a, &args[1]).or_else(|| self.tag_bit_equal(b, &args[0]))
+                {
+                    return Some(result);
+                }
                 let c = self.builder.ins().icmp(IntCC::Equal, a, b);
                 return Some(self.tag_bool(c));
             }
@@ -5741,6 +5759,24 @@ impl<M: Module> Translator<'_, M> {
             inline_aggregate_fields(oty, AGG_FIELD_CAP)
                 .map(|fields| self.inline_aggregate_eq(args, &fields))
         }
+    }
+
+    /// Tests the SSA word that produced a logical tag, never a later binding of
+    /// its source local. A released owner needs no dereference for its tag bit.
+    fn tag_bit_equal(&mut self, tag: Value, other: &CExpr) -> Option<Value> {
+        let ExprKind::Lit(Lit::Int(expected)) = other.kind else { return None };
+        let tag = self.builder.func.dfg.resolve_aliases(tag);
+        let (word, boxed, immediate) = self.tag_bit_values.get(&tag).copied()?;
+        let condition = if expected == i64::from(boxed) {
+            IntCC::Equal
+        } else if expected == i64::from(immediate) {
+            IntCC::NotEqual
+        } else {
+            return Some(self.builder.ins().iconst(types::I64, 1));
+        };
+        let bit = self.builder.ins().band_imm(word, 1);
+        let test = self.builder.ins().icmp_imm(condition, bit, 0);
+        Some(self.tag_bool(test))
     }
 
     /// Inlines structural ordering when the operands are immediate-representable,

@@ -459,6 +459,24 @@ fn borrowed_list_match_has_no_alias_reference_count_traffic() {
 }
 
 #[test]
+fn list_constructor_predicates_use_the_original_word_bit() {
+    let ir = entry_ir(
+        "module M\npublic empty : List Int -> Bool\nlet empty xs = match xs with | [] -> true | _ :: _ -> false\n",
+        "empty",
+    );
+    assert!(ir.contains("icmp_imm ne"), "the nil decision reads the tag bit directly:\n{ir}");
+}
+
+#[test]
+fn reversed_constructor_order_uses_the_opposite_bit_predicate() {
+    let ir = entry_ir(
+        "module M\ntype T = | Full Int | Empty\nlet empty value = match value with | Full _ -> false | Empty -> true\n",
+        "empty",
+    );
+    assert!(ir.contains("icmp_imm eq"), "the boxed-first decision tests a clear tag bit:\n{ir}");
+}
+
+#[test]
 fn scalar_list_scan_keeps_the_callers_root_borrowed() {
     let source = "module M\npublic scan : Int -> List Int -> Int\nlet scan acc xs = match xs with | [] -> acc | x :: rest -> scan (acc + x) rest\n";
     let ir = entry_ir(source, "scan");
