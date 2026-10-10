@@ -1317,8 +1317,8 @@ fn alloc_raw(size: usize) -> *mut u8 {
 /// its children, if any, have been released); it must not be used afterward.
 unsafe fn free_obj(p: *mut u8) {
     // A task/channel handle owns an `Arc` (the scheduler's state) in its slot rather
-    // than a Fai child; release it before the cell's memory is reclaimed. Every free
-    // path funnels through here, so this is the one place the `Arc` is dropped.
+    // than a Fai child; release it before the cell's memory is reclaimed. Every
+    // resource-release path funnels through here, so its `Arc` is dropped once.
     // SAFETY: `p` is a live cell with a valid descriptor; the handle slot holds the
     // raw pointer `scheduler` stored at construction.
     let size = unsafe {
@@ -1338,6 +1338,16 @@ unsafe fn free_obj(p: *mut u8) {
             read_u64(p, SIZE_OFFSET) as usize
         }
     };
+    // SAFETY: resource finalization is complete and `size` matches this allocation.
+    unsafe { free_storage(p, size) };
+}
+
+/// Returns dead storage to its allocator after all required finalization.
+///
+/// # Safety
+/// `p` is a dead allocation of `size` bytes and is not used after this call.
+#[inline]
+unsafe fn free_storage(p: *mut u8, size: usize) {
     match size_class(size) {
         // SAFETY: `p` is a dead class-`c` cell; pooling repurposes its memory.
         Some(c) => unsafe { pool_push(c, p) },
@@ -1402,8 +1412,9 @@ pub extern "C" fn fai_drop(v: Value) {
 /// memory. Shared by [`fai_drop`]'s dead branch and [`fai_drop_dead`]. The
 /// children (and their descendants) are drained iteratively with an explicit
 /// worklist, so freeing an arbitrarily deep structure never overflows the native
-/// stack. The child pointers are gathered (into the worklist) before `p` is
-/// freed; the heap is acyclic, so a child release can never reach `p`.
+/// stack. Child pointers are gathered before their parent storage is freed;
+/// a wide array retains its remaining prefix as a worklist continuation. The
+/// heap is acyclic, so a child release can never reach its dead parent.
 ///
 /// # Safety
 /// `p` is a live object pointer whose reference count has reached zero.
@@ -1413,12 +1424,7 @@ unsafe fn release_dead(p: *mut u8) {
     unsafe {
         let mut work = DropWork::new();
         if !release_compact(p, &mut work) {
-            let kind = scan_push(p, &mut work);
-            // A stack closure or partial application belongs to its creating
-            // frame. Release its captures without returning that cell to a pool.
-            if kind != KIND_STACK_CLOSURE && kind != KIND_STACK_PAP {
-                free_obj(p);
-            }
+            release_other(p, &mut work);
         }
         drain(&mut work);
     }
@@ -1451,6 +1457,79 @@ unsafe fn release_compact(p: *mut u8, work: &mut DropWork) -> bool {
         pool_push(size / SIZE_STEP, p);
         note_free(size);
         true
+    }
+}
+
+/// Keeps the variable-size release paths outside the compact-data drain loop.
+///
+/// # Safety
+/// `p` is a dead, descriptor-based allocation.
+#[inline(never)]
+unsafe fn release_other(p: *mut u8, work: &mut DropWork) {
+    // SAFETY: the descriptor identifies initialized fields, and native
+    // resources retain their finalization through free_obj.
+    unsafe {
+        match desc_kind(obj_descriptor(p)) {
+            KIND_ARRAY => release_array(p, work),
+            KIND_INT | KIND_FLOAT | KIND_STRING | KIND_BYTES => {
+                free_storage(p, read_u64(p, SIZE_OFFSET) as usize);
+            }
+            KIND_DATA | KIND_CLOSURE | KIND_PAP | KIND_STRING_SLICE => {
+                scan_push(p, work);
+                free_storage(p, read_u64(p, SIZE_OFFSET) as usize);
+            }
+            KIND_STACK_CLOSURE | KIND_STACK_PAP => {
+                scan_push(p, work);
+            }
+            _ => free_obj(p),
+        }
+    }
+}
+
+/// Releases a dead array in bounded suffix batches, preserving reverse child order.
+///
+/// # Safety
+/// `p` is an array with no external owners. A scheduled continuation owns only
+/// the remaining prefix; the allocation size and descriptor remain unchanged.
+unsafe fn release_array(p: *mut u8, work: &mut DropWork) {
+    const BATCH: usize = DROP_INLINE - 1;
+    // SAFETY: every read stays in the live prefix. Once the count reaches zero,
+    // only this worklist can reach the buffer, so its length can track progress.
+    unsafe {
+        let size = read_u64(p, SIZE_OFFSET) as usize;
+        if array_obj_is_float(p) {
+            free_storage(p, size);
+            return;
+        }
+        let mut remaining = read_u64(p, ARRAY_LEN_OFFSET) as usize;
+        while remaining > 0 {
+            let start = remaining.saturating_sub(BATCH);
+            let mut suspended = false;
+            for index in start..remaining {
+                let value = read_i64(p, ARRAY_ELEMS_OFFSET + index * 8);
+                if is_boxed(value) {
+                    if !suspended {
+                        if start > 0 {
+                            write_u64(p, ARRAY_LEN_OFFSET, start as u64);
+                            // Only the worklist owns this continuation, even
+                            // when the array was previously shared across tasks.
+                            write_u64(p, RC_OFFSET, 1);
+                            work.push(from_obj(p));
+                        }
+                        suspended = true;
+                    }
+                    work.push(value);
+                }
+            }
+            remaining = start;
+            if suspended {
+                if remaining == 0 {
+                    free_storage(p, size);
+                }
+                return;
+            }
+        }
+        free_storage(p, size);
     }
 }
 
@@ -1613,8 +1692,7 @@ fn drain(work: &mut DropWork) {
         // SAFETY: `q` is a live object pointer.
         unsafe {
             if rc_dec_is_dead(q) && !release_compact(q, work) {
-                scan_push(q, work);
-                free_obj(q);
+                release_other(q, work);
             }
         }
     }
@@ -4901,6 +4979,8 @@ pub use tls::{
 
 #[cfg(test)]
 mod alloc_tests;
+#[cfg(test)]
+mod array_drop_tests;
 #[cfg(test)]
 mod array_tests;
 #[cfg(test)]
