@@ -4,6 +4,22 @@ use std::io::Write as _;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // Lowering large higher-order programs needs the same stack budget as the
+    // compiler pool. The process main stack is only 1 MiB on Windows.
+    match std::thread::Builder::new()
+        .name("fai-main".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(run)
+    {
+        Ok(thread) => thread.join().unwrap_or_else(|_| ExitCode::from(101)),
+        Err(error) => {
+            eprintln!("could not start compiler thread: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> ExitCode {
     // Use the unlocked stream handles (each write locks briefly) rather than
     // holding the locks for the whole run: `fai lsp` hands stdio to the language
     // server, whose own writer thread must be able to lock stdout — a persistent

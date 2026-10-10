@@ -41,6 +41,17 @@ def main():
     )
     result = fai("run", "web/examples/JsonWebExample.fai", capture_output=True)
     assert result.stdout == expected, result
+    if os.name == "posix":
+        import resource
+
+        def small_main_stack():
+            _, hard = resource.getrlimit(resource.RLIMIT_STACK)
+            resource.setrlimit(resource.RLIMIT_STACK, (1024 * 1024, hard))
+
+        # Model Windows' small initial stack while compiling the same program.
+        result = fai("run", "web/examples/JsonWebExample.fai", capture_output=True,
+                     preexec_fn=small_main_stack)
+        assert result.stdout == expected, result
     effects = fai("run", "web/test/JsonEffects.fai", capture_output=True)
     assert effects.stdout == "read\nhandled\n200\n", effects
     with tempfile.TemporaryDirectory(prefix="fai-web-") as temp:
