@@ -210,6 +210,13 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_crypto_scram_password", rt::fai_crypto_scram_password);
     sym!("fai_crypto_random", rt::fai_crypto_random);
     sym!("fai_terminal_open", rt::fai_terminal_open);
+    sym!("fai_process_start", rt::fai_process_start);
+    sym!("fai_process_next", rt::fai_process_next);
+    sym!("fai_process_write", rt::fai_process_write);
+    sym!("fai_process_end_input", rt::fai_process_end_input);
+    sym!("fai_process_stop", rt::fai_process_stop);
+    sym!("fai_process_status", rt::fai_process_status);
+    sym!("fai_process_close", rt::fai_process_close);
     sym!("fai_terminal_close", rt::fai_terminal_close);
     sym!("fai_terminal_poll", rt::fai_terminal_poll);
     sym!("fai_terminal_write", rt::fai_terminal_write);

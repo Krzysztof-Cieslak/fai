@@ -270,6 +270,8 @@ pub const KIND_TLS: u64 = 17;
 pub const KIND_SQLITE: u64 = 18;
 /// An explicitly owned terminal session.
 pub const KIND_TERMINAL: u64 = 19;
+/// A supervised process scope owning pipes, process groups and exit statuses.
+pub const KIND_PROCESS: u64 = 20;
 
 /// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
 /// cell.
@@ -365,6 +367,9 @@ pub static FAI_SQLITE_DESC: Descriptor = descriptor(KIND_SQLITE, "Sqlite");
 /// Descriptor for scoped terminal ownership.
 #[unsafe(no_mangle)]
 pub static FAI_TERMINAL_DESC: Descriptor = descriptor(KIND_TERMINAL, "Terminal");
+/// Descriptor for supervised native processes.
+#[unsafe(no_mangle)]
+pub static FAI_PROCESS_DESC: Descriptor = descriptor(KIND_PROCESS, "Process");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -1354,6 +1359,7 @@ unsafe fn free_obj(p: *mut u8) {
                 KIND_TLS => tls::drop_tls_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 KIND_SQLITE => sqlite::drop_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 KIND_TERMINAL => terminal::drop_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                KIND_PROCESS => process::drop_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 _ => {}
             }
             read_u64(p, SIZE_OFFSET) as usize
@@ -1382,6 +1388,7 @@ unsafe fn free_storage(p: *mut u8, size: usize) {
 /// well-typed program cannot produce, e.g. applying a non-function).
 fn fai_panic(msg: &str) -> ! {
     terminal::restore_on_fault();
+    process::restore_on_fault();
     eprintln!("fai runtime error: {msg}");
     std::process::abort()
 }
@@ -4129,6 +4136,7 @@ fn is_function_value(v: Value) -> bool {
 fn guard_comparable(a: Value, b: Value) {
     if is_function_value(a) || is_function_value(b) {
         terminal::restore_on_fault();
+        process::restore_on_fault();
         eprintln!("fai: equality/ordering is not defined on functions");
         std::process::exit(71);
     }
@@ -4147,6 +4155,7 @@ fn is_resource_kind(kind: u64) -> bool {
             | KIND_TLS
             | KIND_SQLITE
             | KIND_TERMINAL
+            | KIND_PROCESS
     )
 }
 
@@ -4468,6 +4477,7 @@ fn values_hash(v: Value) -> u64 {
     }
     if is_function_value(v) {
         terminal::restore_on_fault();
+        process::restore_on_fault();
         eprintln!("fai: hashing is not defined on functions");
         std::process::exit(71);
     }
@@ -5236,7 +5246,12 @@ mod reactor;
 mod io;
 
 mod crypto;
+mod process;
 mod terminal;
+pub use process::{
+    fai_process_close, fai_process_end_input, fai_process_next, fai_process_start,
+    fai_process_status, fai_process_stop, fai_process_write,
+};
 pub use scheduler::fai_cleanup;
 pub use terminal::{
     fai_terminal_close, fai_terminal_open, fai_terminal_poll, fai_terminal_size,

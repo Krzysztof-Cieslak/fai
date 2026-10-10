@@ -1105,6 +1105,16 @@ line on append, providing an indexed source for virtualized agent transcripts.
 
 ## 6. Compiler pipeline
 
+`ProcessHost` supplies an explicit native `Process` capability. A supervised
+session owns one child or a connected pipeline, with bounded tagged stdout/stderr,
+chunked stdin writes, structured exit statuses and configurable monotonic deadlines.
+Unix process groups retain their unreaped leader identity through teardown;
+Windows children enter kill-on-close Jobs before their primary thread resumes.
+One supervisor per session multiplexes nonblocking pipes; blocked child I/O never
+occupies the general blocking pool. Closing expires aliases, stops the groups and
+reaps direct children. External programs execute with their OS permissions; the
+`ProcessHost.Process` effect represents that native authority.
+
 ```
 source (.fai)
   → lex                 (fai-syntax)   tokens + spans

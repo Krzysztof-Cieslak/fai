@@ -39,7 +39,7 @@ unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Globalization"] }
 
 # Exposes the allocator fuzz harness (`run_ops`) for the out-of-workspace
 # cargo-fuzz target. Off by default and dependency-free, so the staticlib/rlib and

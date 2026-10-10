@@ -1078,7 +1078,7 @@ impl Drop for CleanupGuard {
     }
 }
 
-fn cleanup<T>(body: impl FnOnce() -> T) -> T {
+pub(crate) fn cleanup<T>(body: impl FnOnce() -> T) -> T {
     let task = current_task_opt();
     if let Some(task) = &task {
         task.cleanup_depth.fetch_add(1, Ordering::AcqRel);
