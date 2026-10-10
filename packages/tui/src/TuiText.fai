@@ -1,0 +1,135 @@
+module TuiText
+
+let clean bytes i output =
+  if i = Bytes.length bytes then
+    Option.withDefault "" (Bytes.toString (Bytes.fromList (List.reverse output)))
+  else
+    let byte = Bytes.unsafeGet i bytes
+    let next = if i + 1 < Bytes.length bytes then Bytes.unsafeGet (i + 1) bytes else 0
+    if byte = 13 then
+      clean bytes (i + (if next = 10 then 2 else 1)) (10 :: output)
+    else if (byte < 32 && byte <> 9 && byte <> 10) || byte = 127 || (byte = 194 && next >= 128 && next <= 159) then
+      clean bytes (i + (if byte = 194 then 2 else 1)) (189 :: 191 :: 239 :: output)
+    else
+      clean bytes (i + 1) (byte :: output)
+
+/// Normalize line endings and replace terminal control characters with a visible
+/// replacement. Display text can never introduce terminal escape sequences.
+public sanitize : String -> String
+let sanitize text = clean (Bytes.fromString text) 0 []
+
+/// Repeat a string, treating negative counts as zero.
+public repeat : Int -> String -> String
+let repeat count text = String.joinArray "" (Array.repeat count text)
+
+/// Safe extended graphemes. Tabs expand to spaces at rendering time.
+public graphemes : String -> Array String
+let graphemes text = TextCells.graphemes (sanitize text)
+
+/// Grapheme count, used for caret and selection positions.
+public length : String -> Int
+let length text = Array.length (TextCells.graphemes text)
+
+let sliceParts start finish parts i output =
+  if i >= finish || i >= Array.length parts then
+    String.join "" (List.reverse output)
+  else
+    sliceParts start finish parts (i + 1) (Array.unsafeGet i parts :: output)
+
+/// A grapheme-indexed, clamped substring with an exclusive end.
+public slice : Int -> Int -> String -> String
+let slice start finish text =
+  let start = if start < 0 then 0 else start
+  sliceParts start finish (TextCells.graphemes text) start []
+
+/// Replace a clamped grapheme selection. Input remains ordinary immutable text.
+public replace : Int -> Int -> String -> String -> String
+let replace start finish insertion text =
+  let first = if start < finish then start else finish
+  let last = if start > finish then start else finish
+  slice 0 first text ++ insertion ++ slice last (length text) text
+
+let cells wide glyph =
+  let width = TextCells.width wide glyph
+  if width = 0 then ("◌" ++ glyph, 1) else (glyph, width)
+
+let wrapParts wide width tabs parts i column line output =
+  if i = Array.length parts then
+    Array.fromList (List.reverse (String.join "" (List.reverse line) :: output))
+  else
+    let glyph = Array.unsafeGet i parts
+    if glyph = "\n" then
+      wrapParts wide width tabs parts (i + 1) 0 [] (String.join "" (List.reverse line) :: output)
+    else
+      let (glyph, size) =
+        if glyph = "\t" then
+          (repeat (tabs - column % tabs) " ", tabs - column % tabs)
+        else
+          cells wide glyph
+      let (glyph, size) = if size > width then ("�", 1) else (glyph, size)
+      if column + size > width then
+        wrapParts wide width tabs parts i 0 [] (String.join "" (List.reverse line) :: output)
+      else
+        wrapParts wide width tabs parts (i + 1) (column + size) (glyph :: line) output
+
+/// Wrap safe text by terminal cells without splitting a grapheme cluster.
+/// A cluster wider than the whole viewport is replaced visibly to ensure progress.
+public wrap : Bool -> Int -> Int -> String -> Array String
+let wrap wide width tabWidth text =
+  if width <= 0 then
+    Array.empty
+  else
+    wrapParts wide width (if tabWidth < 1 then 1 else tabWidth) (graphemes text) 0 0 [] []
+
+/// The safe, single-line prefix fitting within the specified display width.
+public fit : Bool -> Int -> String -> String
+let fit wide width text = Option.withDefault "" (Array.get 0 (wrap wide width 4 text))
+
+let caretStart wide columns parts index used =
+  if index < 0 then
+    0
+  else
+    let size = TextCells.width wide (Array.unsafeGet index parts)
+    let size = if size < 1 then 1 else size
+    if used + size > columns then
+      index + 1
+    else
+      caretStart wide columns parts (index - 1) (used + size)
+
+/// First visible grapheme that leaves the caret within a single-line viewport.
+public startForCaret : Bool -> Int -> Int -> String -> Int
+let startForCaret wide columns caret text =
+  let parts = TextCells.graphemes text
+  let caret =
+    if caret < 0 then 0 else if caret > Array.length parts then Array.length parts else caret
+  caretStart wide columns parts (caret - 1) 0
+
+let locate wide width targetRow targetColumn parts index row column =
+  if index >= Array.length parts then
+    Array.length parts
+  else
+    let glyph = Array.unsafeGet index parts
+    let size = TextCells.width wide glyph
+    let size = if size < 1 then 1 else if size > width then 1 else size
+    let (row, column) =
+      if glyph <> "\n" && column + size > width then (row + 1, 0) else (row, column)
+    if row > targetRow || (row = targetRow && (column >= targetColumn || column + size > targetColumn)) then
+      index
+    else if glyph = "\n" then
+      if row = targetRow then
+        index
+      else
+        locate wide width targetRow targetColumn parts (index + 1) (row + 1) 0
+    else
+      locate wide width targetRow targetColumn parts (index + 1) row (column + size)
+
+/// Map a visual cell coordinate back to a whole grapheme boundary.
+public indexAt : Bool -> Int -> Int -> Int -> String -> Int
+let indexAt wide width row column text =
+  if width < 1 || row < 0 then 0 else locate wide width row column (TextCells.graphemes text) 0 0 0
+example: sanitize "a\u{1b}[2J\r\nb" = "a�[2J\nb"
+example: length "a\u{301}👩‍💻" = 2
+example: replace 1 2 "x" "a\u{301}👩‍💻z" = "a\u{301}xz"
+example: wrap false 3 4 "ab界c" = [| "ab", "界c" |]
+example: wrap false 1 4 "界" = [| "�" |]
+example: wrap false 5 4 "a\n" = [| "a", "" |]

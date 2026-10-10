@@ -1093,6 +1093,10 @@ forall xs: mirror (mirror xs) = xs
 
 ### Terminal and Unicode cells
 
+The optional `packages/tui` source package provides `TuiText` grapheme editing and
+safe display text, `TuiStyle` colors/styles, and `TuiScreen` checked cell grids and
+incremental ANSI output. Run its pure contracts directly with `fai test -C packages tui`.
+
 `TerminalHost.Terminal` supplies `open : Bool -> Result Session String` (mouse
 capture flag), `close`, `size`, raw `write`, and `poll` with a millisecond timeout.
 Every operation carries `{ TerminalHost.Terminal }`. Only one session owns the

@@ -4979,6 +4979,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   typed attribute lists and stable widget IDs, with application-owned domain
   data and framework-owned focus/caret/scroll state. Forms retain explicit draft
   state and produce typed validated application values.
+  Display text is sanitized before cell painting. A wide glyph owns its entire
+  span; overwriting a continuation clears that span before constructing the new
+  cells. Differential output is derived from immutable frame snapshots.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
