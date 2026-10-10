@@ -1,0 +1,21 @@
+module Main
+
+step : Int -> Int -> Option (Int * Int)
+let step n value = if n <= 0 then Some (value, n) else if n = 1 then None else step (n - 1) value
+
+public unpack : Int -> Int -> Int
+let unpack n value =
+  match step n value with
+  | None -> -1
+  | Some (left, right) -> left + right
+
+emit : Console -> Int -> Int / { Console }
+let emit console value =
+  let _ = console.writeLine (Int.toString value)
+  value
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let result = unpack (emit runtime.console 0) (emit runtime.console 42)
+  let other = unpack 200 1
+  runtime.console.writeLine (Int.toString (result + other))

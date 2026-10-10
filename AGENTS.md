@@ -615,6 +615,10 @@ signature firewall.
 Resource-free local constructor values used only through matching projections
 and tag tests can lose their temporary cells. Bounded constructor-producing
 branches may receive small duplicated continuations with fresh local binders.
+An immediately deconstructed optional tuple may expose one layer of a small,
+monomorphic, same-file recursive helper. Its inputs must be resource-free and
+its body effect-free; fixed copy budgets bound growth, residual recursion keeps
+the ordinary call boundary, and other result shapes keep their existing path.
 Field initializers remain strict and ordered, including unused effects and traps;
 escaping values, unknown representations and resource-bearing fields stay boxed.
 

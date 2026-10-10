@@ -9,6 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use indoc::{formatdoc, indoc};
 
 #[test]
+fn demanded_recursive_results_preserve_argument_order_and_failure() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/DemandedResults.fai")),
+        ("0\n42\n41\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn reference_free_arrays_preserve_shared_values_and_boxed_integer_release() {
     assert_eq!(
         build_and_run(include_str!("fixtures/ReferenceFreeArrays.fai")),

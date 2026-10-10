@@ -15,6 +15,19 @@ use indoc::indoc;
 static RUN_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn demanded_recursive_results_preserve_the_worker_boundary() {
+    let dir = workspace(&[("Main.fai", include_str!("fixtures/DemandedResults.fai"))]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+    let rebuilt = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    let exit = jit_run_bundle(&rebuilt);
+    let output = fai_runtime::capture_take();
+    assert_eq!((exit, output.as_str()), (0, "0\n42\n41\n"));
+}
+
+#[test]
 fn reference_free_array_classes_survive_the_worker_boundary() {
     let source = include_str!("fixtures/ReferenceFreeArrays.fai");
     let dir = workspace(&[("Main.fai", source)]);
