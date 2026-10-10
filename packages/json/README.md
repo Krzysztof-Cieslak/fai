@@ -14,6 +14,16 @@ The package tests are Fai `example`/`forall` declarations and run directly with
 can move to another repository together with its `.fai` tests. Repository CI
 dependency metadata lives in `ci.json` and is not needed by the test runner.
 
+Repository CI checks both JSON and its Web dependent when this package changes.
+It restores the matching compiler and runs native Fai checks; a compiler-cache
+hit requires no Rust build or Rust test suite. The equivalent contract checks
+locally are:
+
+```sh
+fai test -C packages json
+fai test -C packages web
+```
+
 ## Values and documents
 
 `Json.Value` has `Null`, `Boolean Bool`, `Number JsonNumber.Number`,
