@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the web package's contracts and JSON examples with an existing compiler."""
+"""Compiler execution checks using the web package's native HTTP fixtures."""
 
 import argparse
 import os
@@ -19,7 +19,7 @@ def main():
     compiler = str(candidate.resolve()) if candidate.exists() else shutil.which(args.fai)
     if compiler is None:
         parser.error("fai was not found; pass --fai /path/to/fai")
-    package = Path(__file__).resolve().parents[1]
+    package = Path(__file__).resolve().parents[2] / "packages" / "web"
     root = package.parent
     if not (root / "json" / "src" / "Json.fai").exists():
         parser.error("place the json package beside the web package")
@@ -30,9 +30,6 @@ def main():
             check=True, text=True, encoding="utf-8", timeout=600, **kwargs,
         )
 
-    fai("fmt", "--check", "web")
-    fai("check", "--no-examples", "web")
-    fai("test", "web", "--seed", "42", "--count", "128")
     expected = (
         '200 {"id":42,"name":"Ada"}\n'
         '200 {"id":7,"name":"Fai"}\n'
@@ -54,6 +51,10 @@ def main():
         assert result.stdout == expected, result
     effects = fai("run", "web/test/JsonEffects.fai", capture_output=True)
     assert effects.stdout == "read\nhandled\n200\n", effects
+    headers = fai("run", "web/test/HeadersOnWire.fai", capture_output=True)
+    assert headers.stdout == "kept|a=1,b=2|ok\n", headers
+    redirect = fai("run", "web/test/RedirectSafety.fai", capture_output=True)
+    assert redirect.stdout == "rejected\n", redirect
     with tempfile.TemporaryDirectory(prefix="fai-web-") as temp:
         executable = Path(temp) / "web-json"
         fai("build", "web/examples/JsonWebExample.fai", "--out", str(executable))
@@ -72,7 +73,7 @@ def main():
                     f"stdout={error.stdout!r}, stderr={error.stderr!r}"
                 ) from error
             assert result.stdout == expected, (workers, result)
-    print("Web package: contracts, effect forwarding, and JIT/AOT HTTP checks passed")
+    print("Web compiler fixtures: effect forwarding and JIT/AOT HTTP checks passed")
 
 
 if __name__ == "__main__":

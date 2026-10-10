@@ -854,10 +854,11 @@ Opaque `JsonNumber.Number` values validate arbitrary decimal text, convert exact
 to in-range `Int`s, and round to finite binary64 with ties to even. Non-finite
 Float encoding and numeric overflow return errors. Include package sources under
 the application's workspace root; package modules are not embedded in std.
-Source packages own their Fai contracts and executable test runners. The JSON
-suite is `python3 packages/json/test/run.py --fai /path/to/fai`: it uses an existing
-compiler for formatting, contracts, JIT/AOT and seeded conformance checks, so
-library edits do not require rebuilding the Rust compiler or its tests.
+Source packages own ordinary Fai contracts: run `fai test -C packages json` or
+`fai test -C packages web` directly, retaining the warm daemon. A `ci.json` in each
+package declares dependency-aware CI selection; it does not introduce a separate
+test framework. Compiler-only JIT/AOT/differential fixtures live under
+`scripts/tests/`, and library edits require no Rust compiler/test rebuild.
 `JsonDecode` adds pure composable typed decoders, with field/index error paths,
 checked numeric conversion, explicit missing-versus-null handling, alternatives
 and recursive decoders. Its entry points reject duplicate names throughout the
@@ -869,8 +870,8 @@ The web package depends on this source library. `Web.json`/`jsonWith` and
 `bindJson` decode request bodies while forwarding effects. The binding helper
 maps unsupported Content-Type to 415 and syntax/schema errors to 400; transport
 and encoding errors become `Fail`. JSON responders retain middleware headers.
-Use the shared `packages/` root; `packages/web/test/run.py` runs its self-contained
-contracts, effect-forwarding checks, and JIT/AOT loopback examples.
+Use the shared `packages/` root for contract tests. The compiler's web execution
+fixtures additionally verify effect forwarding and JIT/AOT loopback examples.
 
 ## 6. Compiler pipeline
 

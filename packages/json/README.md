@@ -8,16 +8,11 @@ fai run -C packages/json examples/JsonExample.fai
 fai test -C packages/json
 ```
 
-The complete package-local suite uses an **existing compiler binary**, with no
-Cargo invocation or compiler rebuild:
-
-```sh
-python3 packages/json/test/run.py --fai /path/to/fai
-```
-
-It checks formatting and types, runs the Fai contracts, exercises JIT and AOT,
-and compares seeded native numeric/JSON results with Python's standard library.
-The package can move to another repository together with its tests and runner.
+The package tests are Fai `example`/`forall` declarations and run directly with
+`fai test`. From the shared source-package workspace, use
+`fai test -C packages json`; repeated calls reuse the warm daemon. The package
+can move to another repository together with its `.fai` tests. Repository CI
+dependency metadata lives in `ci.json` and is not needed by the test runner.
 
 ## Values and documents
 

@@ -191,6 +191,17 @@ thin client for the `fai lsp` language server plus syntax highlighting.
 
 ## Documentation
 
+For source-package development, activate a cached compiler as described in
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md), then use native commands:
+
+```sh
+fai check -C packages json
+fai test -C packages json
+fai test -C packages web
+```
+
+Repeated calls reuse the warm daemon; package edits do not rebuild Rust.
+
 - [`llms.txt`](llms.txt) — a single, self-contained guide to **writing Fai programs**, aimed at AI agents (and humans new to the language). Point your agent here.
 - [`samples/`](samples/) — the language by example, the source of truth for the syntax.
 - [`docs/CLI.md`](docs/CLI.md) — the command-line and daemon reference.
