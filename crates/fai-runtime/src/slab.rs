@@ -20,6 +20,7 @@ pub(super) struct Slab {
 /// the pool in small batches, leaving unused pages uncommitted until needed.
 pub(super) fn allocate() -> *mut Slab {
     let memory = map();
+    super::allocation_stats::acquire(super::allocation_stats::Kind::Slab, BYTES);
     debug_assert_eq!(memory.addr() % BYTES, 0);
     let slab = memory.cast::<Slab>();
     // SAFETY: map returns an aligned, writable BYTES-byte mapping.
@@ -62,6 +63,7 @@ pub(super) unsafe fn release_many(slab: *mut Slab, count: usize) -> bool {
     // SAFETY: all cells and the cursor have been released; no owner can touch
     // the mapping after this final decrement.
     unsafe { unmap(slab.cast()) };
+    super::allocation_stats::release(super::allocation_stats::Kind::Slab, BYTES);
     true
 }
 
