@@ -1,0 +1,40 @@
+module PgControl
+
+timer : PgConfig.Runtime -> Int -> String -> Channel (Result 'a Sql.Error) -> Unit / { Clock, Concurrency }
+let timer env timeout operation output =
+  let waited = env.clock.sleep timeout
+  env.concurrency.send output (Err (Sql.error Sql.Timeout operation "deadline exceeded"))
+
+inScope : PgConfig.Runtime -> Option Int -> String -> (Unit -> Result 'a Sql.Error / 'e) -> Nursery -> Result 'a Sql.Error / { Clock, Concurrency | 'e }
+let inScope env timeout operation work nursery =
+  let output = env.concurrency.channel 1
+  let worker = env.concurrency.spawn nursery (fun _ -> env.concurrency.send output (work ()))
+  let deadline =
+    match timeout with
+    | None -> None
+    | Some ms -> Some (env.concurrency.spawn nursery (fun _ -> timer env ms operation output))
+  let received = env.concurrency.recv output
+  let cancelled = env.concurrency.cancel worker
+  let cancelledTimer =
+    match deadline with
+    | None -> ()
+    | Some task -> env.concurrency.cancel task
+  let closed = env.concurrency.close output
+  Option.withDefault (Err (Sql.error Sql.Cancelled operation "operation cancelled")) received
+
+/// Cooperative deadline with distinct timeout/caller-cancellation results.
+public deadline : PgConfig.Runtime -> Option Int -> String -> (Unit -> Result 'a Sql.Error / 'e) -> Result 'a Sql.Error / { Clock, Concurrency | 'e }
+let deadline env timeout operation work = env.concurrency.scope (inScope env timeout operation work)
+
+/// Restore resource state even when the requesting task has been cancelled.
+public cleanup : PgConfig.Runtime -> (Unit -> 'a / 'e) -> 'a / { Concurrency | 'e }
+let cleanup env work = Wire.cleanup env.concurrency work
+
+/// Test cancellation without reading worker-local state across a suspension.
+public alive : PgConfig.Runtime -> Bool / { Concurrency }
+let alive env =
+  let gate = env.concurrency.channel 1
+  let sent = env.concurrency.send gate ()
+  let value = env.concurrency.recv gate
+  let closed = env.concurrency.close gate
+  value <> None

@@ -1767,6 +1767,11 @@ SQL values also include `Boolean`, `Decimal` (`SqlDecimal.parse`), `Uuid`
 `Sql.Finite`/`NegativeInfinity`/`PositiveInfinity` represent temporal values;
 `Sql.TimeOfDay`/`EndOfDay` represent SQL time. Use the corresponding explicit
 `SqlDecode` value decoders. SQLite stores rich scalar values as integers or text.
+
+The optional `postgres` source package depends on `sql` and `json`. Its Fai
+protocol modules implement PostgreSQL v3 framing, verified TLS, SCRAM-SHA-256
+and channel binding, and checked common scalar conversions. Pure contracts run
+directly with `fai test -C packages postgres`.
 `packages/sqlite` implements sessions with `Sqlite.withMemory env work` and
 `withConnection env options path work`, where env supplies `sqlite : SqliteHost.Sqlite`.
 `Sqlite.defaults` uses writable connections, a configurable 5000 ms busy timeout

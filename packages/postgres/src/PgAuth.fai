@@ -1,0 +1,152 @@
+module PgAuth
+
+/// SCRAM state contains no password; the server proof is retained only to verify
+/// the final authentication message.
+public type First = {
+  bare : String,
+  binding : Bytes,
+  gs2 : String,
+  message : String,
+  nonce : String
+}
+
+public type Final = { message : String, serverProof : Bytes }
+
+let digit byte =
+  if byte >= 65 && byte <= 90 then
+    byte - 65
+  else if byte >= 97 && byte <= 122 then
+    byte - 71
+  else if byte >= 48 && byte <= 57 then
+    byte + 4
+  else if byte = 43 then 62 else if byte = 47 then 63 else (-1)
+
+let base64From bytes offset output =
+  if offset = Bytes.length bytes then
+    Ok (Bytes.fromList (List.reverse output))
+  else
+    let a = digit (Bytes.unsafeGet offset bytes)
+    let b = digit (Bytes.unsafeGet (offset + 1) bytes)
+    let third = Bytes.unsafeGet (offset + 2) bytes
+    let fourth = Bytes.unsafeGet (offset + 3) bytes
+    let c = digit third
+    let d = digit fourth
+    let last = offset + 4 = Bytes.length bytes
+    if a < 0 || b < 0 then
+      Err "invalid base64"
+    else
+      let one = a * 4 + b / 16
+      if third = 61 then
+        if not last || fourth <> 61 || b % 16 <> 0 then
+          Err "invalid base64 padding"
+        else
+          Ok (Bytes.fromList (List.reverse (one :: output)))
+      else if c < 0 then
+        Err "invalid base64"
+      else
+        let two = (b % 16) * 16 + c / 4
+        if fourth = 61 then
+          if not last || c % 4 <> 0 then
+            Err "invalid base64 padding"
+          else
+            Ok (Bytes.fromList (List.reverse (two :: one :: output)))
+        else if d < 0 then
+          Err "invalid base64"
+        else
+          base64From bytes (offset + 4) ((c % 4 * 64 + d) :: two :: one :: output)
+
+/// Strict standard base64, including canonical padding bits.
+public base64Decode : String -> Result Bytes String
+let base64Decode text =
+  let bytes = Bytes.fromString text
+  if Bytes.length bytes % 4 <> 0 then Err "invalid base64 length" else base64From bytes 0 []
+
+let attributes parts output =
+  match parts with
+  | [] -> Ok output
+  | part :: rest ->
+    if String.length part < 2 || String.substring 1 1 part <> "=" then
+      Err "invalid SCRAM attribute"
+    else
+      let key = String.take 1 part
+      if HashDict.member key output then
+        Err "duplicate SCRAM attribute"
+      else
+        attributes rest (HashDict.insert key (String.drop 2 part) output)
+
+let escape text = String.join "=2C" (String.split "," (String.join "=3D" (String.split "=" text)))
+
+let nonceBytes bytes i =
+  if i = Bytes.length bytes then
+    true
+  else
+    let byte = Bytes.unsafeGet i bytes
+    byte >= 33 && byte <= 126 && byte <> 44 && nonceBytes bytes (i + 1)
+
+/// Prepare SCRAM first-message text. gs2 is n,, y,, or p=tls-server-end-point,,.
+public first : String -> String -> String -> Bytes -> First
+let first user nonce gs2 binding =
+  let bare = "n=" ++ escape user ++ ",r=" ++ nonce
+  { bare = bare, binding = binding, gs2 = gs2, message = gs2 ++ bare, nonce = nonce }
+
+let xorFrom a b i output =
+  if i = Bytes.length a then
+    Bytes.fromList (List.reverse output)
+  else
+    xorFrom a b (i + 1) (Int.xor (Bytes.unsafeGet i a) (Bytes.unsafeGet i b) :: output)
+
+/// Validate the challenge and derive the client/server proofs using audited
+/// primitives. The configured iteration ceiling bounds untrusted server work.
+public respond : Int -> String -> First -> String -> Result Final String
+let respond maximum password first challenge =
+  match attributes (String.split "," challenge) HashDict.empty with
+  | Err error -> Err error
+  | Ok fields ->
+    let nonce = HashDict.getOr "" "r" fields
+    let iterationsText = HashDict.getOr "" "i" fields
+    let saltText = HashDict.getOr "" "s" fields
+    if HashDict.member "m" fields then
+      Err "unsupported mandatory SCRAM extension"
+    else if String.take (String.length first.nonce) nonce <> first.nonce || String.length nonce <= String.length first.nonce || not (nonceBytes (Bytes.fromString nonce) 0) then
+      Err "SCRAM server nonce does not extend client nonce"
+    else if String.take 1 iterationsText = "+" || String.take 1 iterationsText = "-" then
+      Err "invalid SCRAM iteration count"
+    else
+      match (PgWire.decimalInt iterationsText, base64Decode saltText) with
+      | (Ok iterations, Ok salt) ->
+        if iterations <= 0 || iterations > maximum || Bytes.length salt = 0 then
+          Err "SCRAM iteration/salt limit"
+        else
+          match Crypto.pbkdf2Sha256 (Bytes.fromString (Crypto.scramPassword password)) salt iterations with
+          | Err error -> Err error
+          | Ok salted ->
+            let clientKey = Crypto.hmacSha256 salted (Bytes.fromString "Client Key")
+            let storedKey = Crypto.sha256 clientKey
+            let finalBare =
+              "c=" ++ Http.base64Encode (Bytes.concat (Bytes.fromString first.gs2) first.binding) ++ ",r=" ++ nonce
+            let auth = Bytes.fromString (first.bare ++ "," ++ challenge ++ "," ++ finalBare)
+            let signature = Crypto.hmacSha256 storedKey auth
+            let proof = xorFrom clientKey signature 0 []
+            let serverKey = Crypto.hmacSha256 salted (Bytes.fromString "Server Key")
+            Ok {
+              message = finalBare ++ ",p=" ++ Http.base64Encode proof,
+              serverProof = Crypto.hmacSha256 serverKey auth
+            }
+      | _ -> Err "invalid SCRAM salt or iteration count"
+
+/// Verify the authenticated server's final signature in constant time.
+public verify : Final -> String -> Result Unit String
+let verify final message =
+  match attributes (String.split "," message) HashDict.empty with
+  | Err error -> Err error
+  | Ok fields ->
+    if HashDict.member "e" fields then
+      Err "SCRAM server rejected authentication"
+    else
+      match base64Decode (HashDict.getOr "" "v" fields) with
+      | Ok proof ->
+        if Bytes.length proof = 32 && Crypto.equal proof final.serverProof then
+          Ok ()
+        else
+          Err "SCRAM server signature mismatch"
+      | Err error -> Err error

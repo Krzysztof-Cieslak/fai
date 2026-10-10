@@ -1006,6 +1006,12 @@ PostgreSQL SCRAM password normalization. OS entropy is a separate explicit
 masks sticky cancellation for bounded cleanup, restoring it afterwards and
 cancelling children that outlive the cleanup boundary.
 
+The optional `packages/postgres` package implements PostgreSQL v3 framing,
+checked common scalar codecs, verified TLS and SCRAM authentication in Fai.
+It shares SQL values with SQLite; exact decimals never pass through Float,
+timestamp precision is checked at microseconds, and TLS channel binding can be
+required. Pure protocol contracts run with `fai test -C packages postgres`.
+
 ## 6. Compiler pipeline
 
 ```

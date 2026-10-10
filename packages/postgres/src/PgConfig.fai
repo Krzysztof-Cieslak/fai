@@ -1,0 +1,136 @@
+module PgConfig
+
+public type TlsMode =
+  | VerifyFull (Option Bytes)
+  | Disabled
+
+public type Binding =
+  | PreferBinding
+  | RequireBinding
+  | DisableBinding
+
+public type Runtime = {
+  clock : Clock,
+  concurrency : Concurrency,
+  entropy : Crypto.Entropy,
+  net : Net,
+  tls : Tls
+}
+
+public type Options = {
+  applicationName : String,
+  channelBinding : Binding,
+  cleanupTimeoutMs : Int,
+  connectTimeoutMs : Option Int,
+  database : String,
+  fetchRows : Int,
+  host : String,
+  maxBatchBytes : Int,
+  maxColumnBytes : Int,
+  maxFrameBytes : Int,
+  maxScramIterations : Int,
+  operationTimeoutMs : Option Int,
+  password : String,
+  port : Int,
+  tls : TlsMode,
+  user : String
+}
+
+public defaults : Options
+let defaults = {
+  applicationName = "fai",
+  channelBinding = PreferBinding,
+  cleanupTimeoutMs = 5000,
+  connectTimeoutMs = Some 30000,
+  database = "postgres",
+  fetchRows = 128,
+  host = "localhost",
+  maxBatchBytes = 33554432,
+  maxColumnBytes = 16777216,
+  maxFrameBytes = 67108864,
+  maxScramIterations = 1000000,
+  operationTimeoutMs = Some 30000,
+  password = "",
+  port = 5432,
+  tls = VerifyFull None,
+  user = "postgres"
+}
+
+let timeout value =
+  match value with
+  | None -> true
+  | Some ms -> ms > 0
+
+let clean value = not (String.contains value "\u{0}")
+
+public validate : Options -> Result Unit Sql.Error
+let validate options =
+  if options.host = "" || options.user = "" || options.database = "" || not (List.all clean [
+    options.host,
+    options.user,
+    options.database,
+    options.applicationName
+  ]) then
+    Err (Sql.error Sql.InvalidInput "connect" "invalid PostgreSQL connection fields")
+  else if options.port < 1 || options.port > 65535 then
+    Err (Sql.error Sql.InvalidInput "connect" "port must be in 1..65535")
+  else if not (timeout options.connectTimeoutMs && timeout options.operationTimeoutMs) || options.cleanupTimeoutMs <= 0 then
+    Err (Sql.error Sql.InvalidInput "connect" "timeouts must be positive or None")
+  else if options.maxFrameBytes < 8 || options.maxFrameBytes > 2147483647 || options.maxColumnBytes < 0 || options.maxColumnBytes > options.maxFrameBytes || options.maxBatchBytes < options.maxColumnBytes || options.maxBatchBytes > 2147483647 || options.maxScramIterations < 1 || options.maxScramIterations > 4294967295 || options.fetchRows < 1 || options.fetchRows > 2147483647 then
+    Err (Sql.error Sql.InvalidInput "connect" "invalid protocol limits")
+  else if options.tls = Disabled && options.channelBinding = RequireBinding then
+    Err (Sql.error Sql.InvalidInput "connect" "channel binding requires TLS")
+  else
+    Ok ()
+
+let uriPair options pair =
+  let (key, value) = pair
+  if key = "sslmode" then
+    if value = "disable" then
+      Ok { options with tls = Disabled }
+    else if value = "verify-full" then
+      Ok { options with tls = VerifyFull None }
+    else
+      Err (Sql.error Sql.InvalidInput "URI" "supported sslmode values are disable and verify-full")
+  else if key = "application_name" then
+    Ok { options with applicationName = value }
+  else
+    Err (Sql.error Sql.InvalidInput "URI" "unsupported PostgreSQL URI option")
+
+let uriOptions options pairs =
+  match pairs with
+  | [] -> Ok options
+  | pair :: rest ->
+    (match uriPair options pair with
+    | Err error -> Err error
+    | Ok options -> uriOptions options rest)
+
+/// Parse a PostgreSQL URI without reading ambient environment or credential files.
+public fromUri : String -> Result Options Sql.Error
+let fromUri text =
+  match Url.parse text with
+  | Err _ -> Err (Sql.error Sql.InvalidInput "URI" "invalid PostgreSQL URI")
+  | Ok url ->
+    if not (List.member (Url.scheme url) [
+      Some "postgres",
+      Some "postgresql"
+    ]) || Url.host url = None || Url.fragment url <> None then
+      Err (Sql.error Sql.InvalidInput "URI" "expected postgres:// URI")
+    else
+      let host = Option.withDefault "" (Url.host url)
+      let host =
+        if String.take 1 host = "[" then String.substring 1 (String.length host - 2) host else host
+      let credentials = String.split ":" (Option.withDefault "postgres" (Url.userinfo url))
+      let user = Url.decodeComponent (Option.withDefault "postgres" (List.head credentials))
+      let password = Url.decodeComponent (String.join ":" (List.drop 1 credentials))
+      let path = Url.decodeComponent (String.drop 1 (Url.path url))
+      let options = { defaults with
+        database = if path = "" then user else path,
+        host = host,
+        password = password,
+        port = Option.withDefault 5432 (Url.port url),
+        user = user
+      }
+      match uriOptions options (Url.queryPairs url) with
+      | Err error -> Err error
+      | Ok options -> Result.map (fun _ -> options) (validate options)

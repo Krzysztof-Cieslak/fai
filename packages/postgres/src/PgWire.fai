@@ -1,0 +1,351 @@
+module PgWire
+
+/// A length-validated PostgreSQL backend message.
+public type Message = { body : Bytes, tag : Int }
+
+/// PostgreSQL's result-column type information.
+public type Column = { format : Int, name : String, oid : Int }
+
+let joinRange chunks start count =
+  if count = 0 then
+    Bytes.empty
+  else if count = 1 then
+    Array.unsafeGet start chunks
+  else
+    let half = count / 2
+    Bytes.concat (joinRange chunks start half) (joinRange chunks (start + half) (count - half))
+
+/// Concatenate chunks with bounded-depth, nonquadratic copying.
+public join : List Bytes -> Bytes
+let join chunks =
+  let values = Array.fromList chunks
+  joinRange values 0 (Array.length values)
+
+/// Big-endian low 16 bits.
+public int16 : Int -> Bytes
+let int16 value = Bytes.fromList [Int.shiftRightLogical value 8, value]
+
+/// Big-endian low 32 bits.
+public int32 : Int -> Bytes
+let int32 value = Bytes.fromList [
+  Int.shiftRightLogical value 24,
+  Int.shiftRightLogical value 16,
+  Int.shiftRightLogical value 8,
+  value
+]
+
+/// Big-endian 64-bit word.
+public int64 : Int -> Bytes
+let int64 value = Bytes.concat (int32 (Int.shiftRightLogical value 32)) (int32 value)
+
+/// NUL-terminated UTF-8. Callers validate that protocol strings contain no NUL.
+public zero : String -> Bytes
+let zero text = Bytes.concat (Bytes.fromString text) (Bytes.fromList [0])
+
+/// Frame a frontend message. Callers enforce configured length limits.
+public packet : Int -> Bytes -> Bytes
+let packet tag body = join [Bytes.fromList [tag], int32 (Bytes.length body + 4), body]
+
+let word bytes index finish value =
+  if index = finish then
+    value
+  else
+    word bytes (index + 1) finish (Int.or (Int.shiftLeft value 8) (Bytes.unsafeGet index bytes))
+
+/// Read a fixed-width unsigned word at a checked offset. 64-bit words retain bits.
+public unsigned : Bytes -> Int -> Int -> Result Int String
+let unsigned bytes offset width =
+  if offset < 0 || width < 1 || width > 8 || offset > Bytes.length bytes || width > Bytes.length bytes - offset then
+    Err "truncated integer"
+  else
+    Ok (word bytes offset (offset + width) 0)
+
+/// Decode an exact-width signed integer.
+public signed : Int -> Bytes -> Result Int String
+let signed width bytes =
+  if Bytes.length bytes <> width then
+    Err "invalid integer width"
+  else
+    match unsigned bytes 0 width with
+    | Err error -> Err error
+    | Ok value ->
+      if width = 8 then
+        Ok value
+      else
+        Ok (Int.shiftRight (Int.shiftLeft value (64 - width * 8)) (64 - width * 8))
+
+let zeroEnd bytes index =
+  if index >= Bytes.length bytes || Bytes.unsafeGet index bytes = 0 then
+    index
+  else
+    zeroEnd bytes (index + 1)
+
+/// Read one terminated UTF-8 string and its next offset.
+public string : Bytes -> Int -> Result (String * Int) String
+let string bytes offset =
+  if offset < 0 || offset >= Bytes.length bytes then
+    Err "missing terminated string"
+  else
+    let finish = zeroEnd bytes offset
+    if finish = Bytes.length bytes then
+      Err "unterminated protocol string"
+    else
+      match Bytes.toString (Bytes.slice offset finish bytes) with
+      | None -> Err "invalid protocol UTF-8"
+      | Some text -> Ok (text, finish + 1)
+
+/// Decode a complete frame prefix; incomplete data returns None.
+public frame : Int -> Bytes -> Result (Option (Message * Bytes)) String
+let frame maximum bytes =
+  if Bytes.length bytes < 5 then
+    Ok None
+  else
+    let length = Result.withDefault 0 (unsigned bytes 1 4)
+    if length < 4 || length > maximum then
+      Err "invalid PostgreSQL frame length"
+    else
+      if length + 1 > Bytes.length bytes then
+        Ok None
+      else
+        Ok (Some ({
+          body = Bytes.slice 5 (length + 1) bytes,
+          tag = Bytes.unsafeGet 0 bytes
+        }, Bytes.slice (length + 1) (Bytes.length bytes) bytes))
+
+let columnsFrom bytes count offset output =
+  if count = 0 then
+    if offset = Bytes.length bytes then
+      Ok (Array.fromList (List.reverse output))
+    else
+      Err "trailing column metadata"
+  else
+    match string bytes offset with
+    | Err error -> Err error
+    | Ok (name, next) ->
+      if Bytes.length bytes - next < 18 then
+        Err "truncated column metadata"
+      else
+        let oid = Result.withDefault 0 (unsigned bytes (next + 6) 4)
+        let format = Result.withDefault 0 (unsigned bytes (next + 16) 2)
+        if format > 1 then
+          Err "invalid column format"
+        else
+          columnsFrom bytes (count - 1) (next + 18) ({
+            format = format,
+            name = name,
+            oid = oid
+          } :: output)
+
+/// Parse RowDescription, retaining column order and duplicate names.
+public columns : Bytes -> Result (Array Column) String
+let columns bytes =
+  match unsigned bytes 0 2 with
+  | Err error -> Err error
+  | Ok count -> columnsFrom bytes count 2 []
+
+let paramsFrom bytes index count output =
+  if count = 0 then
+    Ok (Array.fromList (List.reverse output))
+  else
+    paramsFrom bytes (index + 4) (count - 1) (Result.withDefault 0 (unsigned bytes index 4) :: output)
+
+/// Parse ParameterDescription without accepting trailing/truncated words.
+public parameters : Bytes -> Result (Array Int) String
+let parameters bytes =
+  match unsigned bytes 0 2 with
+  | Err error -> Err error
+  | Ok count ->
+    if Bytes.length bytes <> 2 + count * 4 then
+      Err "invalid parameter metadata"
+    else
+      paramsFrom bytes 2 count []
+
+let rowFrom bytes count offset output =
+  if count = 0 then
+    if offset = Bytes.length bytes then
+      Ok (Array.fromList (List.reverse output))
+    else
+      Err "trailing row data"
+  else
+    match unsigned bytes offset 4 with
+    | Err error -> Err error
+    | Ok length ->
+      if length = 4294967295 then
+        rowFrom bytes (count - 1) (offset + 4) (None :: output)
+      else if length > 2147483647 || length > Bytes.length bytes - offset - 4 then
+        Err "invalid column length"
+      else
+        rowFrom bytes (count - 1) (offset + 4 + length) (Some (Bytes.slice (offset + 4) (offset + 4 + length) bytes) :: output)
+
+/// Parse one DataRow. NULL and empty values remain distinct.
+public row : Bytes -> Result (Array (Option Bytes)) String
+let row bytes =
+  match unsigned bytes 0 2 with
+  | Err error -> Err error
+  | Ok count -> rowFrom bytes count 2 []
+
+let fieldsFrom bytes offset output =
+  if offset >= Bytes.length bytes then
+    Err "unterminated error fields"
+  else
+    let tag = Bytes.unsafeGet offset bytes
+    if tag = 0 then
+      if offset + 1 = Bytes.length bytes then
+        Ok (List.reverse output)
+      else
+        Err "trailing error fields"
+    else
+      match string bytes (offset + 1) with
+      | Err error -> Err error
+      | Ok (text, next) -> fieldsFrom bytes next ((tag, text) :: output)
+
+/// Parse ErrorResponse/NoticeResponse fields.
+public fields : Bytes -> Result (List (Int * String)) String
+let fields bytes = fieldsFrom bytes 0 []
+
+let find tag fields =
+  match fields with
+  | [] -> None
+  | (key, value) :: rest -> if key = tag then Some value else find tag rest
+
+/// Map a PostgreSQL error while retaining its SQLSTATE and server details.
+public serverError : String -> Bytes -> Sql.Error
+let serverError operation bytes =
+  match fields bytes with
+  | Err error -> Sql.error Sql.Protocol operation error
+  | Ok fields ->
+    let code = find 67 fields
+    let state = Option.withDefault "" code
+    let kind =
+      if String.take 2 state = "23" then
+        Sql.Constraint
+      else if state = "40001" || state = "40P01" || state = "55P03" then
+        Sql.Busy
+      else if state = "57014" then
+        Sql.Cancelled
+      else if String.take 2 state = "28" then
+        Sql.Authentication
+      else if String.take 2 state = "22" || String.take 2 state = "42" then
+        Sql.InvalidInput
+      else
+        Sql.BackendFailure
+    let message = Option.withDefault "PostgreSQL error" (find 77 fields)
+    let detail =
+      match find 68 fields with
+      | None -> ""
+      | Some text -> "; detail: " ++ text
+    let hint =
+      match find 72 fields with
+      | None -> ""
+      | Some text -> "; hint: " ++ text
+    Sql.Failure {
+      backend = Some "postgres",
+      code = code,
+      column = None,
+      kind = kind,
+      message = message ++ detail ++ hint,
+      operation = operation,
+      row = None
+    }
+
+let decimalFrom bytes i negative limit acc =
+  if i = Bytes.length bytes then
+    Ok (if negative then acc else 0 - acc)
+  else
+    let digit = Bytes.unsafeGet i bytes - 48
+    if digit < 0 || digit > 9 || acc < (limit + digit) / 10 then
+      Err "invalid or overflowing integer"
+    else
+      decimalFrom bytes (i + 1) negative limit (acc * 10 - digit)
+
+/// Checked signed decimal conversion, including full-width Int bounds.
+public decimalInt : String -> Result Int String
+let decimalInt text =
+  let bytes = Bytes.fromString text
+  if Bytes.length bytes = 0 then
+    Err "empty integer"
+  else
+    let first = Bytes.unsafeGet 0 bytes
+    let negative = first = 45
+    let start = if first = 45 || first = 43 then 1 else 0
+    if start = Bytes.length bytes then
+      Err "missing integer digits"
+    else
+      decimalFrom bytes start negative (if negative then
+        (-9223372036854775808)
+      else
+        (-9223372036854775807)) 0
+
+/// Extract affected rows from a valid CommandComplete tag.
+public affected : Bytes -> Result Int String
+let affected bytes =
+  match string bytes 0 with
+  | Err error -> Err error
+  | Ok (text, finish) ->
+    if finish <> Bytes.length bytes then
+      Err "trailing command completion"
+    else
+      let words = String.split " " text
+      if List.member (Option.withDefault "" (List.head words)) [
+        "SELECT",
+        "UPDATE",
+        "DELETE",
+        "INSERT",
+        "MOVE",
+        "FETCH",
+        "COPY",
+        "MERGE"
+      ] then
+        match List.reverse words with
+        | value :: _ -> decimalInt value
+        | [] -> Err "missing command count"
+      else
+        Ok 0
+
+let byteAt bytes i = if i < Bytes.length bytes then Bytes.unsafeGet i bytes else (-1)
+
+let lineEnd bytes i =
+  if i >= Bytes.length bytes || byteAt bytes i = 10 || byteAt bytes i = 13 then
+    i
+  else
+    lineEnd bytes (i + 1)
+
+let commentEnd bytes i depth =
+  if i >= Bytes.length bytes then
+    i
+  else if byteAt bytes i = 47 && byteAt bytes (i + 1) = 42 then
+    commentEnd bytes (i + 2) (depth + 1)
+  else if byteAt bytes i = 42 && byteAt bytes (i + 1) = 47 then
+    if depth = 1 then i + 2 else commentEnd bytes (i + 2) (depth - 1)
+  else
+    commentEnd bytes (i + 1) depth
+
+let significant bytes i =
+  let b = byteAt bytes i
+  if b = 32 || b = 9 || b = 10 || b = 13 || b = 12 || b = 59 then
+    significant bytes (i + 1)
+  else if b = 45 && byteAt bytes (i + 1) = 45 then
+    significant bytes (lineEnd bytes (i + 2))
+  else if b = 47 && byteAt bytes (i + 1) = 42 then
+    significant bytes (commentEnd bytes (i + 2) 1)
+  else
+    i
+
+let wordEnd bytes i =
+  let b = byteAt bytes i
+  if (b >= 65 && b <= 90) || (b >= 97 && b <= 122) then wordEnd bytes (i + 1) else i
+
+let keywordsFrom bytes i count output =
+  if count = 0 then
+    List.reverse output
+  else
+    let start = significant bytes i
+    let finish = wordEnd bytes start
+    if start = finish then
+      List.reverse output
+    else
+      keywordsFrom bytes finish (count - 1) (String.toUpper (Option.withDefault "" (Bytes.toString (Bytes.slice start finish bytes))) :: output)
+
+/// Initial unquoted SQL keywords, skipping nested comments and empty statements.
+public keywords : String -> List String
+let keywords sql = keywordsFrom (Bytes.fromString sql) 0 2 []

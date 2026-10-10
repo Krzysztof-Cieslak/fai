@@ -1,0 +1,55 @@
+module ProtocolSpec
+
+example: PgWire.signed 2 (PgWire.int16 (-32768)) = Ok (-32768)
+example: PgWire.signed 4 (PgWire.int32 (-2147483648)) = Ok (-2147483648)
+forall n: PgWire.signed 8 (PgWire.int64 n) = Ok n
+example: Result.isErr (PgWire.signed 4 (Bytes.fromList [1]))
+example: PgWire.frame 100 (Bytes.fromList [90, 0, 0]) = Ok None
+example: Result.isErr (PgWire.frame 100 (Bytes.fromList [90, 0, 0, 0, 3]))
+example: Result.isErr (PgWire.frame 100 (Bytes.fromList [90, 255, 255, 255, 255]))
+example: PgWire.frame 100 (PgWire.packet 90 (Bytes.fromString "I")) = Ok (Some ({
+  body = Bytes.fromString "I",
+  tag = 90
+}, Bytes.empty))
+example: PgWire.string (PgWire.zero "é😀") 0 = Ok ("é😀", 7)
+example: Result.isErr (PgWire.string (Bytes.fromString "no terminator") 0)
+example: PgWire.row (PgWire.join [
+  PgWire.int16 2,
+  PgWire.int32 (-1),
+  PgWire.int32 0
+]) = Ok [| None, Some Bytes.empty |]
+example: Result.isErr (PgWire.row (PgWire.join [
+  PgWire.int16 1,
+  PgWire.int32 5,
+  Bytes.fromString "abc"
+]))
+example: PgWire.decimalInt "9223372036854775807" = Ok 9223372036854775807
+example: PgWire.decimalInt "-9223372036854775808" = Ok (-9223372036854775808)
+example: Result.isErr (PgWire.decimalInt "9223372036854775808")
+example: PgWire.affected (PgWire.zero "INSERT 0 12") = Ok 12
+example: PgTypes.decode 16 1 (Bytes.fromList [1]) = Ok (Sql.Boolean true)
+example: PgTypes.decode 700 1 (PgWire.int32 1065353216) = Ok (Sql.Real 1.0)
+example: PgTypes.decode 700 1 (PgWire.int32 (-2147483648)) = Ok (Sql.Real (-0.0))
+example: PgTypes.decode 1082 1 (PgWire.int32 0) = Ok (Sql.Date (Sql.Finite (LocalDate.fromEpochDay 10957)))
+example: PgTypes.decode 1083 1 (PgWire.int64 86400000000) = Ok (Sql.Time Sql.EndOfDay)
+example: PgTypes.decode 1184 1 (PgWire.int64 9223372036854775807) = Ok (Sql.TimestampTz Sql.PositiveInfinity)
+example: Result.isErr (PgTypes.parameter 21 (Sql.Integer 32768))
+example: PgTypes.parameter 20 (Sql.Integer (-9223372036854775808)) = Ok (Some (Bytes.fromString "-9223372036854775808"))
+example: Result.isErr (PgTypes.parameter 1083 (Sql.Time (Sql.TimeOfDay (LocalTime.fromNanoOfDay 1))))
+example: PgAuth.base64Decode "AQID" = Ok (Bytes.fromList [1, 2, 3])
+example: Result.isErr (PgAuth.base64Decode "AR==")
+forall text: PgAuth.base64Decode (Http.base64Encode (Bytes.fromString text)) = Ok (Bytes.fromString text)
+
+let first = PgAuth.first "user" "rOprNGfwEbeRWgbNEkqO" "n,," Bytes.empty
+
+let challenge =
+  "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
+
+let proof = PgAuth.respond 10000 "pencil" first challenge
+example: Result.map (fun final ->
+  final.message) proof = Ok "c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ="
+example: (match proof with
+| Err _ -> false
+| Ok final -> PgAuth.verify final "v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=" = Ok ())
+example: Result.isErr (PgAuth.respond 1 "pencil" first challenge)
+example: Result.isErr (PgAuth.respond 10000 "pencil" first "r=wrong,s=YQ==,i=10")

@@ -4957,5 +4957,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   the boundary. This lets resource owners restore gates and close connections
   even when the requesting task was cancelled.
 
+- **D158 PostgreSQL wire client.** PostgreSQL framing, authentication state,
+  codecs and session ownership live in an optional Fai source package, sharing
+  `Sql` values and decoders with SQLite. Native support is limited to general
+  cryptographic, TLS, networking and cancellation-cleanup primitives. TLS is
+  verified by default; SCRAM server proofs and optional required channel binding
+  are checked. Connection and operation deadlines are configurable and optional.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
