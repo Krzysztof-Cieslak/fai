@@ -28,6 +28,7 @@ public type Subscription = {
   reconnectDelayMs : Int
 }
 
+/// Reconnect indefinitely with an initial three-second delay and no delay cap.
 public subscription : Subscription
 let subscription = {
   events = events,

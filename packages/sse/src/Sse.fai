@@ -13,9 +13,11 @@ public type Update =
 /// Maximum wire line bytes and decoded UTF-8 event-data bytes, excluding delimiters.
 public type Limits = { maxEventBytes : Int, maxLineBytes : Int }
 
+/// Default bounds: 64 KiB per wire line and 1 MiB of decoded event data.
 public defaults : Limits
 let defaults = { maxEventBytes = 1048576, maxLineBytes = 65536 }
 
+/// Stable categories for configuration, input, buffering, and encoding failures.
 public type ErrorKind =
   | InvalidConfiguration
   | InvalidInput
@@ -74,6 +76,17 @@ let decoder limits =
       offset = 0,
       skipLf = false
     })
+
+/// Start a new connection while retaining the subscription's committed ID.
+/// Data, event type, UTF-8/BOM and line state are fresh for the new connection.
+public decoderFrom : Limits -> String -> Result Decoder Error
+let decoderFrom limits id =
+  if not (validId id) then
+    Err (issue InvalidInput "invalid initial SSE event ID")
+  else
+    match decoder limits with
+    | Err error -> Err error
+    | Ok (MkDecoder state) -> Ok (MkDecoder { state with id = id })
 
 let replacement = "\u{FFFD}"
 

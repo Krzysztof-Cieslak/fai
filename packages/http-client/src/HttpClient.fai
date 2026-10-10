@@ -595,6 +595,7 @@ let withResponse client consume req =
 /// SSE-specific timeouts and buffering limits. None disables a timeout.
 public type EventOptions = SseOptions.Events
 
+/// Default connect/read-idle timeouts and decoder limits, with no total deadline.
 public eventOptions : EventOptions
 let eventOptions = SseOptions.events
 
@@ -607,11 +608,13 @@ public type EventDecision =
 /// blocks and retry hints. received counts dispatched events across connections.
 public type EventState = { lastEventId : String, received : Int, retryDelayMs : Option Int }
 
+/// A normal end of an event connection or subscription.
 public type EventEnd =
   | EventEof
   | EventStopped
   | EventNoContent
 
+/// The normal stopping reason and the last committed protocol progress.
 public type EventResult = { reason : EventEnd, state : EventState }
 
 type EventOutcome =
@@ -703,7 +706,7 @@ let consumeEventResponse env options wire previous timer connected consume respo
     match connected response.head with
     | Err error -> Ok (eventAttempt response.head state (EventRejected error))
     | Ok _ ->
-      match Sse.decoder options.limits with
+      match Sse.decoderFrom options.limits state.lastEventId with
       | Err error -> Ok (eventAttempt response.head state (EventRejected (EventCodec error)))
       | Ok decoder ->
         Ok (readEvents env options consume response.head decoder Bytes.empty 0 response.body state)
@@ -778,6 +781,112 @@ let withEvents client options consume request =
         deadline env options.subscriptionTimeoutMs (fun _ ->
           eventResult (eventConnection cfg env pool options wire emptyEventState (fun _ ->
             Ok ()) consume))
+
+/// All subscription durations, reconnect bounds, and the optional initial cursor.
+public type SubscriptionOptions = SseOptions.Subscription
+
+/// Default indefinite subscription settings; every duration is configurable.
+public subscriptionOptions : SubscriptionOptions
+let subscriptionOptions = SseOptions.subscription
+
+/// Lifecycle observations are sequential with event delivery. Returning an error
+/// from an observer stops the subscription just like an event consumer error.
+public type SubscriptionNotice =
+  | EventOpening Int
+  | EventConnected ResponseHead
+  | EventReconnecting { cause : Option Error, connection : Int, delayMs : Int, state : EventState }
+
+resumeHeaders : EventState -> Prepared -> Result Prepared Error
+let resumeHeaders state wire =
+  if not (SseOptions.validResumeId state.lastEventId) then
+    Err (InvalidRequest "SSE event ID cannot be represented as an HTTP header")
+  else
+    let headers =
+      if state.lastEventId = "" then
+        Headers.remove "Last-Event-ID" wire.headers
+      else
+        Headers.set "Last-Event-ID" state.lastEventId wire.headers
+    Ok { wire with headers = headers }
+
+reconnectWire : Config -> Prepared -> EventAttempt -> Prepared
+let reconnectWire cfg wire attempt =
+  match attempt.url with
+  | None -> wire
+  | Some url ->
+    let headers =
+      if sameOrigin wire.url url then
+        wire.headers
+      else
+        List.foldl (fun headers name ->
+          Headers.remove name headers) wire.headers (policySettings cfg).sensitiveHeaders
+    { wire with headers = headers, url = url }
+
+subscriptionLoop : Config -> Capabilities -> Http.Client -> SubscriptionOptions -> Prepared -> EventState -> Int -> (SubscriptionNotice -> Result Unit Error / 'e) -> (Sse.Event -> Result EventDecision Error / 'e) -> Result EventResult Error / { Clock, Concurrency, Net, Tls | 'e }
+let subscriptionLoop cfg env pool options wire state reconnects observe consume =
+  if not (cancellationPoint env.concurrency) then
+    Err Cancelled
+  else
+    match resumeHeaders state wire with
+    | Err error -> Err error
+    | Ok prepared ->
+      match observe (EventOpening (reconnects + 1)) with
+      | Err error -> Err error
+      | Ok _ ->
+        let attempt =
+          eventConnection cfg env pool options.events prepared state (fun head ->
+            observe (EventConnected head)) consume
+        match attempt.outcome with
+        | EventRejected error -> Err error
+        | EventEnded EventStopped -> Ok { reason = EventStopped, state = attempt.state }
+        | EventEnded EventNoContent -> Ok { reason = EventNoContent, state = attempt.state }
+        | _ ->
+          let exhausted =
+            match options.maxReconnects with
+            | None -> false
+            | Some limit -> reconnects >= limit
+          if exhausted then
+            Err (EventReconnectLimit reconnects)
+          else
+            let delay = SseOptions.reconnectDelay options attempt.state.retryDelayMs
+            let cause =
+              match attempt.outcome with
+              | EventLost error -> Some error
+              | _ -> None
+            match observe (EventReconnecting {
+              cause = cause,
+              connection = reconnects + 2,
+              delayMs = delay,
+              state = attempt.state
+            }) with
+            | Err error -> Err error
+            | Ok _ ->
+              let slept = if delay > 0 then env.clock.sleep delay else ()
+              subscriptionLoop cfg env pool options (reconnectWire cfg prepared attempt) attempt.state (reconnects + 1) observe consume
+
+/// Subscribe with lifecycle notifications. Only GET is replayed. EOF, connection
+/// loss and read-idle expiry reconnect; 204 and consumer stop succeed, while
+/// status/media/codec/consumer errors are terminal. One optional total deadline
+/// covers connections, consumers, notices and all reconnect delays.
+public subscribeEventsWith : Client -> SubscriptionOptions -> (SubscriptionNotice -> Result Unit Error / 'e) -> (Sse.Event -> Result EventDecision Error / 'e) -> String -> Result EventResult Error / { Clock, Concurrency, Net, Tls | 'e }
+let subscribeEventsWith client options observe consume target =
+  match SseOptions.validateSubscription options with
+  | Err message -> Err (InvalidConfiguration message)
+  | Ok _ ->
+    match client with
+    | MkClient original env pool ->
+      let cfg = eventConfig original
+      match prepare cfg (header "Accept" "text/event-stream" (get target)) with
+      | Err error -> Err error
+      | Ok wire ->
+        let initial = { emptyEventState with lastEventId = options.initialLastEventId }
+        deadline env options.events.subscriptionTimeoutMs (fun _ ->
+          subscriptionLoop cfg env pool options wire initial 0 observe consume)
+
+/// A reconnecting GET subscription without lifecycle notifications. Defaults
+/// reconnect until stopped; every duration and the reconnect count are configurable.
+public subscribeEvents : Client -> SubscriptionOptions -> (Sse.Event -> Result EventDecision Error / 'e) -> String -> Result EventResult Error / { Clock, Concurrency, Net, Tls | 'e }
+let subscribeEvents client options consume target =
+  subscribeEventsWith client options (fun _ -> Ok ()) consume target
 
 /// Render a structured failure for a console or log.
 public errorToString : Error -> String

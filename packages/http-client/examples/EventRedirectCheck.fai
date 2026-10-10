@@ -1,0 +1,67 @@
+module EventRedirectCheck
+
+handleDestination : Runtime -> Channel Int -> Channel (List (Option String * Option String)) -> Http.Request 'e -> Result (Http.Response { Concurrency }) String / { Concurrency }
+let handleDestination r count received request =
+  let n = Option.withDefault 0 (r.concurrency.recv count)
+  let counted = r.concurrency.send count (n + 1)
+  let previous = Option.withDefault [] (r.concurrency.recv received)
+  let recorded =
+    r.concurrency.send received ((Headers.get "Authorization" request.headers, Headers.get "Last-Event-ID" request.headers) :: previous)
+  if n = 0 then
+    Ok (Http.chunkedResponse 200 (Headers.fromList [
+      ("Content-Type", "text/event-stream")
+    ]) (Http.stringBody "id:destination\ndata:hello\n\n"))
+  else
+    Ok (Http.response 204 Http.emptyBody)
+
+session : Runtime -> Listener -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let session r origin destination nursery =
+  let count = r.concurrency.channel 1
+  let received = r.concurrency.channel 1
+  let seedCount = r.concurrency.send count 0
+  let seedReceived = r.concurrency.send received []
+  let target = "http://127.0.0.1:" ++ Int.toString (r.net.localPort destination) ++ "/events"
+  let serverA =
+    r.concurrency.spawn nursery (fun _ ->
+      Http.serveListener r origin (fun _ -> Ok {
+        body = Http.emptyBody,
+        headers = Headers.fromList [("Location", target)],
+        reason = "Found",
+        status = 302
+      }))
+  let serverB =
+    r.concurrency.spawn nursery (fun _ ->
+      Http.serveListener r destination (handleDestination r count received))
+  let cfg = HttpClient.config ("http://127.0.0.1:" ++ Int.toString (r.net.localPort origin) ++ "/")
+  let options = { HttpClient.subscriptionOptions with
+    initialLastEventId = "origin",
+    maxReconnects = Some 2,
+    reconnectDelayMs = 0
+  }
+  let result =
+    HttpClient.withClient r { cfg with
+      headers = Headers.fromList [("Authorization", "secret")]
+    } (fun client ->
+      HttpClient.subscribeEvents client options (fun _ -> Ok HttpClient.ContinueEvents) "")
+  let headers = List.reverse (Option.withDefault [] (r.concurrency.recv received))
+  let stopA = r.concurrency.cancel serverA
+  let stopB = r.concurrency.cancel serverB
+  r.console.writeLine (if Result.isOk result && headers = [
+    (None, None),
+    (None, Some "destination")
+  ] then
+    "redirect cursor check passed"
+  else
+    "redirect cursor check failed")
+
+start : Runtime -> Listener -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let start r origin =
+  match r.net.listen 0 with
+  | Err error -> r.console.writeLine error
+  | Ok destination -> r.concurrency.scope (session r origin destination)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main r =
+  match r.net.listen 0 with
+  | Err error -> r.console.writeLine error
+  | Ok origin -> start r origin

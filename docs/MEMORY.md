@@ -4893,6 +4893,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   delivers one observation at a time. Its connection, read-idle and overall
   deadlines are optional, validated configuration; application callback time is
   outside read-idle timing. EOF, 204 and explicit stop return committed progress.
+  GET subscriptions reconnect after EOF or transport/connect/idle failure, with
+  sequential lifecycle notifications. Callback errors never request replay.
+  Reconnect hints and retained IDs follow ordered decoder observations, with
+  origin-aware header stripping and explicit empty-ID resets. Initial delay,
+  delay bounds, reconnect count, and all deadlines are configurable; the default
+  subscription runs until stopped. Response gates close before being drained so
+  a cancelled nested reader/writer cannot strand cleanup by losing a gate token.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
