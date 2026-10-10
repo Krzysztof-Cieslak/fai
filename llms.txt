@@ -1778,6 +1778,11 @@ Callbacks receive a `Sql.Session`; use `Sql.statement` with `$1` parameters and
 explicit SQL casts, `SqlDecode.query`, `Sql.withRows`, and `Sql.transaction`.
 Named portals bound row batches. Parent aliases cannot join an active child
 transaction. Cancellation discards the physical connection; SQL is not replayed.
+`Postgres.withPool runtime options Postgres.poolOptions callback` owns a pool;
+`Postgres.withSession pool callback` leases a connection. Pool capacity, waiters,
+acquisition timeout, idle timeout, lifetime and maintenance are configurable.
+Optional durations accept `None`; reset/validation/maintenance stay bounded.
+Connections reset before reuse; escaped aliases are invalidated by generation.
 `packages/sqlite` implements sessions with `Sqlite.withMemory env work` and
 `withConnection env options path work`, where env supplies `sqlite : SqliteHost.Sqlite`.
 `Sqlite.defaults` uses writable connections, a configurable 5000 ms busy timeout

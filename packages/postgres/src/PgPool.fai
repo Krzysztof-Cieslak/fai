@@ -1,0 +1,426 @@
+module PgPool
+
+public type Options = {
+  acquireTimeoutMs : Option Int,
+  idleTimeoutMs : Option Int,
+  maintenanceIntervalMs : Int,
+  maxConnections : Int,
+  maxLifetimeMs : Option Int,
+  maxWaiters : Int,
+  minConnections : Int,
+  validationTimeoutMs : Int
+}
+
+public defaults : Options
+let defaults = {
+  acquireTimeoutMs = Some 30000,
+  idleTimeoutMs = Some 300000,
+  maintenanceIntervalMs = 1000,
+  maxConnections = 10,
+  maxLifetimeMs = Some 1800000,
+  maxWaiters = 128,
+  minConnections = 0,
+  validationTimeoutMs = 5000
+}
+
+type Entry = {
+  born : Int,
+  handle : PgSession.Handle,
+  id : Int,
+  lease : Int,
+  leased : Bool,
+  used : Int
+}
+
+type Waiter = { id : Int, notified : Bool, ready : Channel Unit }
+
+type State = { entries : List Entry, opening : Int, sequence : Int, waiters : List Waiter }
+
+public opaque type Pool =
+  | Pool PgConfig.Runtime PgConfig.Options Options (Channel State)
+
+type Claim =
+  | Waiting
+  | Existing Entry
+  | Opening Int
+
+let timeout value =
+  match value with
+  | None -> true
+  | Some n -> n > 0
+
+public validate : Options -> Result Unit Sql.Error
+let validate options =
+  if options.minConnections < 0 || options.maxConnections < 1 || options.minConnections > options.maxConnections || options.maxWaiters < 1 || options.validationTimeoutMs <= 0 || options.maintenanceIntervalMs <= 0 || not (timeout options.acquireTimeoutMs && timeout options.idleTimeoutMs && timeout options.maxLifetimeMs) then
+    Err (Sql.error Sql.InvalidInput "pool" "invalid pool limits or timeouts")
+  else
+    Ok ()
+
+let runtime pool =
+  match pool with
+  | Pool env _ _ _ -> env
+
+let options pool =
+  match pool with
+  | Pool _ _ options _ -> options
+
+let config pool =
+  match pool with
+  | Pool _ config _ _ -> config
+
+available : Int -> State -> Bool
+let available limit state =
+  List.any (fun entry ->
+    not entry.leased) state.entries || List.length state.entries + state.opening < limit
+
+wake : Options -> State -> (State * Option (Channel Unit))
+let wake options state =
+  match state.waiters with
+  | [] -> (state, None)
+  | first :: rest ->
+    if not first.notified && available options.maxConnections state then
+      ({ state with waiters = { first with notified = true } :: rest }, Some first.ready)
+    else
+      (state, None)
+
+alterImpl : Pool -> (State -> State * 'a) -> Unit -> Result 'a Sql.Error / { Concurrency }
+let alterImpl pool action unit =
+  match pool with
+  | Pool env _ options gate ->
+    match env.concurrency.recv gate with
+    | None -> Err (Sql.error Sql.Closed "pool" "pool is closed")
+    | Some state ->
+      let (updated, result) = action state
+      let (updated, signal) = wake options updated
+      let restored = env.concurrency.send gate updated
+      let signalled =
+        match signal with
+        | None -> ()
+        | Some ready -> env.concurrency.send ready ()
+      Ok result
+
+let alter pool action = PgControl.cleanup (runtime pool) (alterImpl pool action)
+
+let elapsed now thenTime =
+  if now < thenTime then
+    0
+  else if thenTime < 0 && now > 9223372036854775807 + thenTime then
+    9223372036854775807
+  else
+    now - thenTime
+
+let expired limit now start =
+  match limit with
+  | None -> false
+  | Some duration -> elapsed now start >= duration
+
+stale : Options -> Int -> Entry -> Bool
+let stale opts now entry =
+  not entry.leased && (expired opts.idleTimeoutMs now entry.used || expired opts.maxLifetimeMs now entry.born)
+
+purgeAction : Options -> Int -> State -> (State * List Entry)
+let purgeAction opts now state =
+  let dead = List.filter (stale opts now) state.entries
+  ({ state with
+    entries = List.filter (fun entry -> not (stale opts now entry)) state.entries
+  }, dead)
+
+destroyEntries : List Entry -> Unit / { Concurrency, Net }
+let destroyEntries entries =
+  match entries with
+  | [] -> ()
+  | entry :: rest ->
+    let closed = PgSession.destroy entry.handle
+    destroyEntries rest
+
+purge : Pool -> Int -> Result Unit Sql.Error / { Concurrency, Net }
+let purge pool now =
+  match alter pool (purgeAction (options pool) now) with
+  | Err error -> Err error
+  | Ok entries ->
+    let closed = PgControl.cleanup (runtime pool) (fun _ -> destroyEntries entries)
+    Ok ()
+
+enqueue : Channel Unit -> Options -> State -> (State * Result Int Sql.Error)
+let enqueue ready opts state =
+  if List.length state.waiters >= opts.maxWaiters || state.sequence = 9223372036854775807 then
+    (state, Err (Sql.error Sql.Busy "acquire" "pool waiter limit reached"))
+  else
+    let id = state.sequence + 1
+    ({ state with
+      sequence = id,
+      waiters = List.append state.waiters [{ id = id, notified = false, ready = ready }]
+    }, Ok id)
+
+cancelWait : Int -> State -> (State * Unit)
+let cancelWait id state =
+  ({ state with waiters = List.filter (fun waiter -> waiter.id <> id) state.waiters }, ())
+
+claim : Int -> Options -> State -> (State * Claim)
+let claim id opts state =
+  match state.waiters with
+  | first :: rest ->
+    if first.id <> id then
+      (state, Waiting)
+    else
+      match List.find (fun entry -> not entry.leased) state.entries with
+      | Some entry ->
+        ({ state with
+          entries = List.map (fun current ->
+            if current.id = entry.id then
+              { current with lease = id, leased = true }
+            else
+              current) state.entries,
+          waiters = rest
+        }, Existing { entry with lease = id, leased = true })
+      | None ->
+        if List.length state.entries + state.opening < opts.maxConnections then
+          ({ state with opening = state.opening + 1, waiters = rest }, Opening id)
+        else
+          ({ state with waiters = { first with notified = false } :: rest }, Waiting)
+  | [] -> (state, Waiting)
+
+removeEntry : Int -> State -> (State * Unit)
+let removeEntry id state =
+  ({ state with entries = List.filter (fun entry -> entry.id <> id) state.entries }, ())
+
+releaseReservation : State -> (State * Unit)
+let releaseReservation state = ({ state with opening = state.opening - 1 }, ())
+
+install : Entry -> State -> (State * Unit)
+let install entry state =
+  ({ state with entries = entry :: state.entries, opening = state.opening - 1 }, ())
+
+let bounded original remaining =
+  match (original, remaining) with
+  | (None, value) -> value
+  | (value, None) -> value
+  | (Some a, Some b) -> Some (if a < b then a else b)
+
+let remaining pool start now =
+  match (options pool).acquireTimeoutMs with
+  | None -> None
+  | Some duration -> Some (duration - elapsed now start)
+
+let ranOut left =
+  match left with
+  | None -> false
+  | Some n -> n <= 0
+
+remove : Pool -> Entry -> Unit / { Concurrency, Net }
+let remove pool entry =
+  let removed = alter pool (removeEntry entry.id)
+  PgSession.destroy entry.handle
+
+openClaim : Pool -> Int -> Option Int -> Result Entry Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let openClaim pool id left =
+  let env = runtime pool
+  let cfg = config pool
+  let result = PgSession.connect env { cfg with
+    connectTimeoutMs = bounded cfg.connectTimeoutMs left
+  }
+  match result with
+  | Err error ->
+    let released = alter pool releaseReservation
+    Err error
+  | Ok handle ->
+    let now = env.clock.now ()
+    let entry = { born = now, handle = handle, id = id, lease = id, leased = true, used = now }
+    match alter pool (install entry) with
+    | Err error ->
+      let closed = PgControl.cleanup env (fun _ -> PgSession.destroy handle)
+      Err error
+    | Ok _ ->
+      match PgSession.activate handle id with
+      | Ok _ -> Ok entry
+      | Err error ->
+        let removed = PgControl.cleanup env (fun _ -> remove pool entry)
+        Err error
+
+acquireLoop : Pool -> Int -> Channel Unit -> Int -> Result Entry Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let acquireLoop pool ticket ready start =
+  let env = runtime pool
+  let left = remaining pool start (env.clock.now ())
+  if ranOut left then
+    Err (Sql.error Sql.Timeout "acquire" "pool acquisition timed out")
+  else
+    match PgControl.deadline env left "acquire" (fun _ ->
+      match env.concurrency.recv ready with
+      | Some _ -> Ok ()
+      | None -> Err (Sql.error Sql.Closed "acquire" "pool closed")) with
+    | Err error -> Err error
+    | Ok _ -> claimReady pool ticket ready start
+
+claimReady : Pool -> Int -> Channel Unit -> Int -> Result Entry Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let claimReady pool ticket ready start =
+  let env = runtime pool
+  let now = env.clock.now ()
+  let left = remaining pool start now
+  if not (PgControl.alive env) then
+    Err (Sql.error Sql.Cancelled "acquire" "operation cancelled")
+  else if ranOut left then
+    Err (Sql.error Sql.Timeout "acquire" "pool acquisition timed out")
+  else
+    match purge pool now with
+    | Err error -> Err error
+    | Ok _ ->
+      match alter pool (claim ticket (options pool)) with
+      | Err error -> Err error
+      | Ok Waiting -> acquireLoop pool ticket ready start
+      | Ok (Opening id) -> openClaim pool id left
+      | Ok (Existing entry) ->
+        match PgSession.activate entry.handle ticket with
+        | Err error ->
+          let removed = PgControl.cleanup env (fun _ -> remove pool entry)
+          Err error
+        | Ok _ ->
+          let timeout =
+            Option.withDefault (options pool).validationTimeoutMs (bounded (Some (options pool).validationTimeoutMs) left)
+          match PgSession.ping entry.handle ticket timeout with
+          | Ok _ -> Ok { entry with leased = true }
+          | Err _ ->
+            let removed = PgControl.cleanup env (fun _ -> remove pool entry)
+            acquire pool start
+
+acquire : Pool -> Int -> Result Entry Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let acquire pool start =
+  let env = runtime pool
+  let ready = env.concurrency.channel 1
+  match alter pool (enqueue ready (options pool)) with
+  | Err error -> Err error
+  | Ok (Err error) -> Err error
+  | Ok (Ok ticket) ->
+    let result = acquireLoop pool ticket ready start
+    let removed = alter pool (cancelWait ticket)
+    let closed = env.concurrency.close ready
+    result
+
+// The physical ID and lease generation are separate: the entry's handle identity
+// locates it, while the generation guards every session and cursor operation.
+returnEntry : Int -> Int -> Bool -> State -> (State * Unit)
+let returnEntry id now retire state =
+  let entries =
+    if retire then
+      List.filter (fun entry -> entry.id <> id) state.entries
+    else
+      List.map (fun entry ->
+        if entry.id = id then
+          { entry with lease = 0, leased = false, used = now }
+        else
+          entry) state.entries
+  ({ state with entries = entries }, ())
+
+releaseImpl : Pool -> Entry -> Unit -> Result Unit Sql.Error / { Clock, Concurrency, Net, Tls }
+let releaseImpl pool entry unit =
+  let reset = PgSession.reset entry.handle entry.lease
+  let now = (runtime pool).clock.now ()
+  let retire = Result.isErr reset || expired (options pool).maxLifetimeMs now entry.born
+  let returned = alter pool (returnEntry entry.id now retire)
+  let destroyed = if retire || Result.isErr returned then PgSession.destroy entry.handle else ()
+  Sql.cleanup reset returned
+
+/// Lease one connection for a callback. Reset is bounded and performed even after
+/// cancellation; failed reset discards the connection rather than reusing it.
+public withSession : Pool -> (Sql.Session { Clock, Concurrency, Net, Tls | 'e } -> Result 'a Sql.Error / { Clock, Concurrency, Net, Tls | 'e }) -> Result 'a Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls | 'e }
+let withSession pool work =
+  let env = runtime pool
+  match acquire pool (env.clock.now ()) with
+  | Err error -> Err error
+  | Ok entry ->
+    let result =
+      if PgControl.alive env then
+        work (PgSession.session entry.handle entry.lease 0)
+      else
+        Err (Sql.error Sql.Cancelled "acquire" "operation cancelled")
+    Sql.cleanup result (PgControl.cleanup env (releaseImpl pool entry))
+
+closePool : Pool -> Unit / { Concurrency, Net }
+let closePool pool =
+  match pool with
+  | Pool env _ _ gate ->
+    let remaining = env.concurrency.recv gate
+    let closed = env.concurrency.close gate
+    match remaining with
+    | None -> ()
+    | Some state ->
+      let signalled = List.map (fun waiter -> env.concurrency.close waiter.ready) state.waiters
+      destroyEntries state.entries
+
+maintenance : Pool -> Unit / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let maintenance pool =
+  let env = runtime pool
+  let waited = env.clock.sleep (options pool).maintenanceIntervalMs
+  if not (PgControl.alive env) then
+    ()
+  else
+    match purge pool (env.clock.now ()) with
+    | Err _ -> ()
+    | Ok _ ->
+      let replenished = ensureMinimum pool
+      maintenance pool
+
+reserveMinimum : Options -> State -> (State * Option Int)
+let reserveMinimum options state =
+  if List.length state.entries + state.opening >= options.minConnections || state.sequence = 9223372036854775807 then
+    (state, None)
+  else
+    ({ state with
+      opening = state.opening + 1,
+      sequence = state.sequence + 1
+    }, Some (state.sequence + 1))
+
+ensureMinimum : Pool -> Result Unit Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let ensureMinimum pool =
+  match alter pool (reserveMinimum (options pool)) with
+  | Err error -> Err error
+  | Ok None -> Ok ()
+  | Ok (Some id) ->
+    match openClaim pool id None with
+    | Err error -> Err error
+    | Ok entry ->
+      match PgControl.cleanup (runtime pool) (releaseImpl pool entry) with
+      | Err error -> Err error
+      | Ok _ -> Ok ()
+
+warm : Pool -> Int -> Result Unit Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let warm pool count =
+  if count = 0 then
+    Ok ()
+  else
+    match alter pool (fun state ->
+      ({ state with
+        opening = state.opening + 1,
+        sequence = state.sequence + 1
+      }, state.sequence + 1)) with
+    | Err error -> Err error
+    | Ok id ->
+      match openClaim pool id None with
+      | Err error -> Err error
+      | Ok entry ->
+        match PgControl.cleanup (runtime pool) (releaseImpl pool entry) with
+        | Err error -> Err error
+        | Ok _ -> warm pool (count - 1)
+
+poolScope : PgConfig.Runtime -> PgConfig.Options -> Options -> (Pool -> Result 'a Sql.Error / 'e) -> Nursery -> Result 'a Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls | 'e }
+let poolScope env config options work nursery =
+  let gate = env.concurrency.channel 1
+  let seeded = env.concurrency.send gate { entries = [], opening = 0, sequence = 0, waiters = [] }
+  let pool = Pool env config options gate
+  let result =
+    match warm pool options.minConnections with
+    | Err error -> Err error
+    | Ok _ ->
+      let task = env.concurrency.spawn nursery (fun _ -> maintenance pool)
+      let result = work pool
+      let stopped = env.concurrency.cancel task
+      result
+  let closed = PgControl.cleanup env (fun _ -> closePool pool)
+  result
+
+/// Own a pool and its maintenance task for exactly one callback scope.
+public withPool : PgConfig.Runtime -> PgConfig.Options -> Options -> (Pool -> Result 'a Sql.Error / 'e) -> Result 'a Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls | 'e }
+let withPool env config options work =
+  match (PgConfig.validate config, validate options) with
+  | (Err error, _) -> Err error
+  | (_, Err error) -> Err error
+  | (Ok _, Ok _) -> env.concurrency.scope (poolScope env config options work)

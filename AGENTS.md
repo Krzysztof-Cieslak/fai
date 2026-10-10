@@ -1015,6 +1015,10 @@ required. Pure protocol contracts run with `fai test -C packages postgres`.
 parameter descriptions and named, bounded portals. Transactions pin child sessions
 and nest through savepoints; cancelled operations target the original backend and
 discard the connection. SQL is never automatically replayed.
+`Postgres.withPool`/`withSession` add bounded FIFO acquisition, generation-checked
+leases, idle validation, rollback/`DISCARD ALL` reset, configurable expiry and
+minimum-capacity maintenance. Lifetime expiry retires a connection on return,
+and scoped shutdown closes active connections and wakes waiters.
 
 ## 6. Compiler pipeline
 

@@ -4967,6 +4967,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   batches and pin an internal transaction outside explicit transactions. Session
   generations and transaction IDs invalidate escaped aliases. Cancellation
   targets the original peer and discards the connection; no SQL is replayed.
+  Scoped pools bound capacity and FIFO waiters, validate idle connections, reset
+  with rollback/`DISCARD ALL`, and retire expired leases only on return. All
+  durations are configurable; optional deadlines/expiry accept `None`.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
