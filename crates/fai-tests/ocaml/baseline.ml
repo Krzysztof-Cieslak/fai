@@ -476,9 +476,15 @@ let expr_eval n =
   in
   match parse_expr (gen_tokens n) with Some (e, _) -> eval e | None -> 0
 
-(* The number of nodes reachable from `0` in the deterministic `n`-node graph. *)
-let graph_bfs n =
-  let neighbors i = [ (i + 1) mod n; ((2 * i) + 1) mod n; ((3 * i) + 2) mod n ] in
+(* Build and retain the same adjacency dictionary as the Fai workload. *)
+let graph_adjacency n =
+  let graph = Hashtbl.create 1024 in
+  for i = 0 to n - 1 do
+    Hashtbl.add graph i [ (i + 1) mod n; ((2 * i) + 1) mod n; ((3 * i) + 2) mod n ]
+  done;
+  graph
+
+let graph_reachable graph =
   let visited = Hashtbl.create 1024 in
   Hashtbl.replace visited 0 ();
   let frontier = ref [ 0 ] in
@@ -492,11 +498,14 @@ let graph_bfs n =
               Hashtbl.replace visited nb ();
               next := nb :: !next
             end)
-          (neighbors node))
+           (match Hashtbl.find_opt graph node with Some neighbors -> neighbors | None -> []))
       !frontier;
     frontier := !next
   done;
   Hashtbl.length visited
+
+(* The number of nodes reachable from `0`, including adjacency construction. *)
+let graph_bfs n = graph_reachable (graph_adjacency n)
 
 (* The number of ways to make amount `n` from `[1,2,5,10,25,50]`, modulo a large
    prime (a dynamic program over a sub-amount table). *)

@@ -417,6 +417,12 @@ old timing and RSS rows are a different workload version; do not treat correctin
 those baselines as a Fai speedup. `MapSum` remains the fully fused single-consumer
 arithmetic workload.
 
+`GraphBFS` includes construction of an adjacency hash dictionary for all nodes,
+then dictionary lookups during level-by-level traversal on every side. The former
+Rust and OCaml peers calculated neighbors directly and omitted that dictionary.
+Their old runtime and RSS rows are a different workload version; the corrected
+ratios measure matched graph construction and traversal, not a compiler speedup.
+
 The historical `OptionTreeFind` row remains the application comparison of a Fai
 binary tree against Rust `BTreeMap` and OCaml `Map`. Use **`tree_lookup`** to
 isolate the matched binary-node kernel: all three insert the same 1,000 keys in

@@ -73,3 +73,33 @@ fn build(name: &str, contents: &str) -> Option<Utf8PathBuf> {
     );
     Some(dir.join("baseline"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[track_caller]
+    fn validate(name: &str, assertion: &str) {
+        let source = format!("{SOURCE}\nlet () = {assertion}\n");
+        let Some(binary) = build(name, &source) else { return };
+        let output = Command::new(binary).args(["GraphBFS", "4"]).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(output.stdout, b"4\n");
+    }
+
+    #[test]
+    fn bfs_materializes_every_node_and_ordered_edge() {
+        validate(
+            "graph-shape",
+            "let rows = Hashtbl.fold (fun k v acc -> (k, v) :: acc) (graph_adjacency 4) [] in assert (List.sort compare rows = [(0, [1; 1; 2]); (1, [2; 3; 1]); (2, [3; 1; 0]); (3, [0; 3; 3])])",
+        );
+    }
+
+    #[test]
+    fn bfs_traversal_reads_the_stored_graph() {
+        validate(
+            "graph-traversal",
+            "let graph = Hashtbl.create 4 in Hashtbl.add graph 0 [7]; Hashtbl.add graph 7 []; Hashtbl.add graph 10 [11]; assert (graph_reachable graph = 2)",
+        );
+    }
+}
