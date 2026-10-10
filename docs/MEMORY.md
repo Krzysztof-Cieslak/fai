@@ -2531,6 +2531,9 @@ Editor integration:
     values are structurally identical). `List.sortBy` remains a stable bottom-up
     merge sort. Lists of at most 32 elements use linked runs; larger inputs use
     two private contiguous merge buffers, including both conversions in the call.
+    A buffered merge carries both current run heads and reloads only the head of
+    the advancing run. The source remains live throughout, preserving element
+    lifetimes and the original comparator schedule, including equal elements.
     The second buffer is initialized with one bulk copy through the existing
     array ownership gate, exposed only to the standard library as `Prim.arrayUnique`.
     Retaining the source forces a separate destination without per-element Fai

@@ -264,10 +264,24 @@ let mergeSortRunBy cmp middle high left right source destination =
   else
     let x = Prim.arrayGet source left
     let y = Prim.arrayGet source right
-    if cmp x y <= 0 then
-      mergeSortRunBy cmp middle high (left + 1) right source (Prim.arraySet destination (left + right - middle) x)
+    mergeSortHeadsBy cmp middle high left right x y source destination
+
+// Keep the unchosen head: only the run that advances needs another array read.
+let mergeSortHeadsBy cmp middle high left right x y source destination =
+  if cmp x y <= 0 then
+    let changed = Prim.arraySet destination (left + right - middle) x
+    let next = left + 1
+    if next >= middle then
+      copySortRun source right high (next + right - middle) changed
     else
-      mergeSortRunBy cmp middle high left (right + 1) source (Prim.arraySet destination (left + right - middle) y)
+      mergeSortHeadsBy cmp middle high next right (Prim.arrayGet source next) y source changed
+  else
+    let changed = Prim.arraySet destination (left + right - middle) y
+    let next = right + 1
+    if next >= high then
+      copySortRun source left middle (left + next - middle) changed
+    else
+      mergeSortHeadsBy cmp middle high left next x (Prim.arrayGet source next) source changed
 
 let mergeSortPassBy cmp width n low source destination =
   if low >= n then
