@@ -2430,6 +2430,30 @@ fn spread_result_keeps_post_call_effects() {
 }
 
 #[test]
+fn canonical_subtraction_callback_keeps_full_width_loop_results() {
+    let source = "module M\nlet loop f n a b = if n <= 0 then a else loop f (n - 1) (f a b) b\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop (fun a b -> a - b) 3 (-9223372036854775808) 1))\n";
+    assert_eq!(run(source), (0, "9223372036854775805\n".into()));
+}
+
+#[test]
+fn reversed_subtraction_is_not_the_canonical_callback() {
+    let source = "module M\nlet loop f n a = if n <= 0 then a else loop f (n - 1) (f a 1)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop (fun a b -> b - a) 3 10))\n";
+    assert_eq!(run(source), (0, "-9\n".into()));
+}
+
+#[test]
+fn subtraction_with_a_capture_keeps_its_environment() {
+    let source = "module M\nlet loop f n a = if n <= 0 then a else loop f (n - 1) (f a 1)\nlet runWith offset = loop (fun a b -> a - b + offset) 3 10\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (runWith 2))\n";
+    assert_eq!(run(source), (0, "13\n".into()));
+}
+
+#[test]
+fn effectful_subtraction_keeps_every_effect() {
+    let source = "module M\nlet loop f n a = if n <= 0 then a else loop f (n - 1) (f a 1)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let step a b =\n    let _ = r.console.writeLine (Int.toString a)\n    a - b\n  let value = loop step 3 10\n  r.console.writeLine (Int.toString value)\n";
+    assert_eq!(run(source), (0, "10\n9\n8\n7\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

@@ -3559,6 +3559,12 @@ Editor integration:
     tagged at that boundary. Checked addition/subtraction on the tags produce the
     tagged result directly, with the existing wrapping runtime operation handling
     boxed inputs or an out-of-immediate result. Direct scalar entries stay raw.
+    An exact capture-free two-argument Int subtraction lambda is represented by
+    a canonical immortal runtime closure with the same uniform ABI. Invariant
+    callback evidence can identify it once and select inline tagged subtraction
+    instead of an indirect call and argument spill. Full-width operands retain
+    the ordinary consuming subtraction fallback; reversed, capturing and
+    effectful functions keep their normal entries.
 
 - **D133 Unboxed `Array Float` (raw inline `f64` slots, self-tagged, no
   monomorphization).** An `Array Float` used to store each element as a pointer to a

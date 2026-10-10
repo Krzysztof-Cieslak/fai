@@ -1,0 +1,9 @@
+module Main
+
+let loop f n a b =
+  if n <= 0 then a else loop f (n - 1) (f a b) b
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let value = loop (fun a b -> a - b) 3 (-9223372036854775808) 1
+  runtime.console.writeLine (Int.toString value)

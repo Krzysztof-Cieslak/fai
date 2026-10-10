@@ -635,6 +635,14 @@ fn spread_self_recursion_runs_in_constant_native_stack() {
 }
 
 #[test]
+fn canonical_callback_links_and_runs_natively() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/CanonicalCallback.fai")),
+        ("9223372036854775805\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn const_preserves_native_effect_order() {
     let source = indoc! {r#"
         module Main

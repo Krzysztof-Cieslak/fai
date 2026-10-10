@@ -556,6 +556,10 @@ Noncapturing uniform callbacks that perform one Int addition or subtraction can
 keep their once-used inputs tagged. One combined immediate check and a checked
 tagged operation replace separate unbox/rebox steps; full-width values retain
 the ordinary wrapping runtime path.
+A capture-free two-argument `fun a b -> a - b` over Int uses a canonical immortal
+closure. An invariant callback loop can recognize it once and inline subtraction
+without argument spills or an indirect call, retaining full-width wrapping and
+the ordinary uniform closure ABI elsewhere.
 
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names
