@@ -1107,6 +1107,11 @@ capabilities and configurable options. `TuiCmd` provides effectful thunks, keyed
 replacement/cancellation and focus/scroll/quit controls; `TuiSub` provides timers
 and keyed, revisioned streams. Use `combine` to union differing command effects.
 `Tui.runWith` accepts an owned backend for deterministic integration tests.
+`Form` composes typed text/password/integer/checkbox/choice fields with `map2` and
+`andMap`. Keep `Form.State` in the model; `Form.handle` returns state, a submitted
+value and focus commands. `Form.view` or individual `Form.field`s create the UI.
+`TuiMarkdown.append` incrementally updates a document; feed its indexed `source`
+to `Ui.transcript`, and reflow via `resize` when the viewport changes.
 
 `TerminalHost.Terminal` supplies `open : Bool -> Result Session String` (mouse
 capture flag), `close`, `size`, raw `write`, and `poll` with a millisecond timeout.

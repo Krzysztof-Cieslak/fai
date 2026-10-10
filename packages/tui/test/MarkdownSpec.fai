@@ -1,0 +1,10 @@
+module MarkdownSpec
+
+let options = { ambiguousWide = false, theme = TuiStyle.defaultTheme, width = 80 }
+example: TuiMarkdown.toText (TuiMarkdown.fromString options "# Hello\n**bold** and `code`") = "Hello\nbold and code"
+example: TuiMarkdown.toText (TuiMarkdown.fromString options "[link](https://example.com)") = "link (https://example.com)"
+example: TuiMarkdown.toText (TuiMarkdown.fromString { options with width = 3 } "ab界c") = "ab\n界c"
+example: TuiMarkdown.toText (TuiMarkdown.append "ld**" (TuiMarkdown.fromString options "**bo")) = "bold"
+example: TuiMarkdown.toText (TuiMarkdown.fromString options "```fai\nlet x = 1\n```\nafter") = "── fai\nlet x = 1\n──\nafter"
+example: TuiMarkdown.toText (TuiMarkdown.fromString options "\u{1b}[2J") = "�[2J"
+forall first second: TuiMarkdown.toText (TuiMarkdown.append second (TuiMarkdown.fromString options first)) = TuiMarkdown.toText (TuiMarkdown.fromString options (first ++ second))

@@ -4990,6 +4990,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   every command/subscription task. Keyed generations reject stale results; task
   slots include cancelled-but-unfinished work. A bounded batch mailbox supplies
   backpressure, and terminal restoration precedes structured shutdown joining.
+  Typed forms separate draft storage from decoded application values, accumulate
+  independent errors and gate asynchronous errors by draft revision. Streaming
+  Markdown retains completed lines in an indexed persistent cache; viewport
+  changes reflow explicitly, and display text never carries raw terminal control.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

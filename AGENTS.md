@@ -1040,6 +1040,11 @@ mailbox supplies backpressure; replaced work cannot deliver stale messages, and
 cancelled jobs keep their concurrency slot until completion. Shutdown restores
 the terminal before joining cooperative background work. Runtime-reported faults
 also restore an active native terminal before process termination.
+`Form` supplies typed field composition, exact integer decoding, accumulated
+validation, draft/touched/dirty state, configurable error visibility and
+revision-checked async errors. Submit commands reveal the first invalid field.
+`TuiMarkdown` caches completed display lines and reparses only the unfinished
+line on append, providing an indexed source for virtualized agent transcripts.
 
 ## 6. Compiler pipeline
 

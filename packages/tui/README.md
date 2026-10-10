@@ -119,3 +119,53 @@ hard maximum of 128. Clipboard actions retain a local copy for Ctrl+V and can al
 emit OSC 52 to supporting terminals; `clipboard = false` disables that external
 write. System paste arrives through the terminal's normal paste/bracketed-paste
 support. Copy and cut never expose password input text.
+
+## Typed forms
+
+`Form.Definition 'a` combines field declarations and decoders into a typed value.
+`Form.State` remains in the application model and retains raw drafts, touched and
+dirty state, submission status and a revision for asynchronous validation.
+
+```fai
+let connectionForm =
+  Form.map2 (fun host port -> { host = host, port = port })
+    (Form.required (Form.text (Form.named "host" "Host")))
+    (Form.range 1 65535
+      (Form.int { Form.named "port" "Port" with initial = "5432" }))
+```
+
+Use `Form.initial` to create state. In update, call `Form.handle scope definition
+event state`; it returns updated state, an optional successfully submitted typed
+value, and a command that focuses the first invalid field. Lift the command with
+`TuiCmd.map` when the form is a child component. In view:
+
+```fai
+Form.view scope [Ui.gap 1] connectionForm model.form
+|> Ui.map FormChanged
+```
+
+`Form.text`, `password`, `int`, `checkbox`, and `choice` are the field constructors.
+`map`, `map2`, `succeed` and `andMap` compose them. `optional` makes an empty
+single-field draft decode as `None`. `validate` adds typed validation;
+`validateAt` attaches cross-field validation to a chosen field. Independent field
+errors accumulate. Integer parsing rejects overflow and preserves incomplete
+drafts such as `-` without silently coercing them to zero.
+
+The default error-display policy is `OnBlur`; `Form.withValidation` also selects
+`OnChange` or `OnSubmit`. A submit attempt reveals every error. `Form.withErrors
+revision errors state` installs server/async errors only when the revision still
+matches. `Form.field` and `submitButton` support custom form layouts while retaining
+the same definition and state. Field names must be nonempty and unique.
+
+## Streaming Markdown
+
+`TuiMarkdown.empty options` creates an incremental document; `append chunk doc`
+adds stream text. Completed lines are cached in a persistent indexed map; only
+the unfinished line is reparsed on an ordinary append. `resize options doc`
+reflows when the width, theme or ambiguous-width policy changes.
+
+Pass `TuiMarkdown.source doc` to `Ui.transcript` for virtualized display. Keep the
+document in the application model and update its width when receiving a resize
+event. The line-oriented renderer supports headings, bullets, blockquotes, fenced
+code, emphasis, inline code and links. HTML is displayed as text, and pipe tables
+retain their source layout. Terminal control characters are always sanitized.

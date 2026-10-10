@@ -1,0 +1,60 @@
+module FormSpec
+
+let optional = Form.optional (Form.int (Form.named "optional" "Optional"))
+example: Form.decode optional (Form.initial optional) = Ok None
+example: Form.decode optional (Form.update (Form.Edited "optional" "12") (Form.initial optional)) = Ok (Some 12)
+example: Set.member "optional" (Form.update (Form.Edited "optional" "-") (Form.withValidation Form.OnChange (Form.initial optional))).touched
+example: not (Set.member "optional" (Form.update (Form.Blurred "optional") (Form.withValidation Form.OnSubmit (Form.initial optional))).touched)
+
+let definition =
+  Form.map2 (fun host port -> {
+    host = host,
+    port = port
+  }) (Form.required (Form.text (Form.named "host" "Host"))) (Form.range 1 65535 (Form.int { Form.named "port" "Port" with
+    initial = "5432"
+  }))
+
+let empty = Form.initial definition
+
+let invalidPort =
+  Form.update (Form.Edited "port" "-") (Form.update (Form.Edited "host" "localhost") empty)
+example: (match TuiCmd.operations (Form.handle (Ui.id "form") definition Form.Submit invalidPort).command with
+| [TuiCmd.Focus id] -> id = Form.fieldId (Ui.id "form") "port"
+| _ -> false)
+
+let rendered state =
+  Result.map (fun frame ->
+    String.joinArray "\n" (TuiScreen.lines frame.screen)) (TuiLayout.render (TuiLayout.context 80 20) TuiState.empty (Form.view (Ui.id "form") [] definition state))
+example: Result.map (fun text ->
+  String.contains text "This field is required") (rendered empty) = Ok false
+example: Result.map (fun text ->
+  String.contains text "This field is required") (rendered (Form.update (Form.Blurred "host") empty)) = Ok true
+example: Result.map (fun text ->
+  String.contains text "This field is required") (rendered (Form.update (Form.Blurred "host") (Form.withValidation Form.OnSubmit empty))) = Ok false
+
+let valid = Form.update (Form.Edited "host" "localhost") empty
+example: Form.decode definition valid = Ok { host = "localhost", port = 5432 }
+example: Form.dirty valid
+example: not (Form.dirty empty)
+example: List.length (Form.errors definition empty) = 1
+example: List.length (Form.errors definition (Form.update (Form.Edited "port" "-") empty)) = 2
+example: Dict.get "port" (Form.update (Form.Edited "port" "-") empty).values = Some "-"
+example: Result.isErr (Form.decode definition (Form.update (Form.Edited "port" "9223372036854775808") valid))
+example: Result.isErr (Form.decode definition (Form.update (Form.Edited "port" "65536") valid))
+example: (Form.handle (Ui.id "form") definition Form.Submit empty).state.submitted
+example: (Form.handle (Ui.id "form") definition Form.Submit valid).value = Some {
+  host = "localhost",
+  port = 5432
+}
+example: (Form.withErrors 0 [{ field = None, message = "obsolete" }] valid).serverErrors = []
+example: (Form.withErrors valid.revision [
+  { field = Some "host", message = "unavailable" }
+] valid).serverErrors = [{ field = Some "host", message = "unavailable" }]
+
+let duplicate =
+  Form.map2 (fun a b ->
+    (a, b)) (Form.text (Form.named "same" "A")) (Form.text (Form.named "same" "B"))
+example: Result.isErr (Form.validateDefinition duplicate)
+
+let allInts = Form.int (Form.named "n" "Number")
+forall n: Form.decode allInts (Form.update (Form.Edited "n" (Int.toString n)) (Form.initial allInts)) = Ok n
