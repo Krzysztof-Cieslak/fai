@@ -622,6 +622,14 @@ fn a_checked_array_does_not_remove_another_arrays_native_check() {
 }
 
 #[test]
+fn borrowed_scalar_list_scans_preserve_retained_values() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/BorrowedListScan.fai")),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

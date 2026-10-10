@@ -4543,11 +4543,8 @@ fn borrow_isempty() {
 }
 
 #[test]
-fn borrow_sum_acc_owns_the_list() {
-    // The accumulator fold is *tail*-recursive, so the list parameter flows into a
-    // tail self-call and is owned (unlike non-tail `sum`, which borrows). Owning it
-    // keeps the call in tail position so it can be flattened into a loop, and frees
-    // the input cell-by-cell as it is consumed.
+fn borrow_sum_acc_lends_the_read_only_list() {
+    // The scalar-only scan borrows successive tails from the caller's root.
     assert_eq!(
         crate::tests::borrow_sig(
             indoc! {r#"
@@ -4560,7 +4557,7 @@ fn borrow_sum_acc_owns_the_list() {
             "#},
             "sumAcc",
         ),
-        vec![false, false],
+        vec![false, true],
     );
 }
 
@@ -4599,10 +4596,8 @@ fn swapped_loop_parameters_stay_owned() {
 }
 
 #[test]
-fn borrow_all_pos_owns_the_list() {
-    // A tail-recursive predicate also owns its list (its self-call is the
-    // then-branch tail), where the otherwise-identical non-recursive `isEmpty`
-    // borrows.
+fn borrow_all_pos_lends_the_read_only_list() {
+    // Early exits keep the same borrowed root as a complete scalar scan.
     assert_eq!(
         crate::tests::borrow_sig(
             indoc! {r#"
@@ -4615,7 +4610,7 @@ fn borrow_all_pos_owns_the_list() {
             "#},
             "allPos",
         ),
-        vec![false],
+        vec![true],
     );
 }
 

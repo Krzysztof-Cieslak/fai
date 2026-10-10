@@ -12,6 +12,8 @@
 //! prevent loop lowering. An unchanged, inspect-only parameter may stay borrowed
 //! throughout the loop. Arrays that are read and reconstructed stay owned so a
 //! later in-place update can reuse their storage.
+//! A bounded scalar-only traversal of a primitive list may also borrow successive
+//! tails: the caller retains the root throughout the complete scan.
 //!
 //! The analysis is **inter-procedural**: a parameter that is only forwarded to
 //! another function's borrowing parameter is itself borrowed. A saturated direct
@@ -133,6 +135,11 @@ pub fn borrow_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> BorrowSi
             }
             ty = to;
         }
+    }
+    if let Some(plan) = crate::borrow_scan::plan(db, def, entry)
+        && let Some(position) = entry.params.iter().position(|param| *param == plan.root)
+    {
+        sig[position] = true;
     }
     BorrowSig(sig)
 }

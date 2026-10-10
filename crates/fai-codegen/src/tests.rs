@@ -459,13 +459,13 @@ fn borrowed_list_match_has_no_alias_reference_count_traffic() {
 }
 
 #[test]
-fn scalar_list_scan_updates_only_the_retained_root_count() {
+fn scalar_list_scan_keeps_the_callers_root_borrowed() {
     let source = "module M\npublic scan : Int -> List Int -> Int\nlet scan acc xs = match xs with | [] -> acc | x :: rest -> scan (acc + x) rest\n";
     let ir = entry_ir(source, "scan");
     assert_eq!(
         ir.lines().filter(|line| line.trim_start().starts_with("store")).count(),
-        1,
-        "only final root release writes a count; cursor steps borrow:\n{ir}"
+        0,
+        "the caller owns the root; the complete traversal borrows:\n{ir}"
     );
 }
 
