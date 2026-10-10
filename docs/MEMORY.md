@@ -41,6 +41,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- The source process runner separates pure command descriptions from execution.
+  Captured output retains binary data and ordered per-stage statuses. Nonzero
+  exits are data until explicitly checked. A bounded capture limit returns a
+  typed failure and partial output; cleanup failures remain separate. A small
+  effect-carrying record supplies test doubles without invoking native effects.
+
 - Native process execution is an explicit `ProcessHost.Process` capability.
   Command construction is pure; execution owns scoped process groups/Jobs and
   bounded byte pipes. Native supervisors multiplex cancellable I/O independently

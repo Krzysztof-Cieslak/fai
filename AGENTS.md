@@ -1115,6 +1115,12 @@ occupies the general blocking pool. Closing expires aliases, stops the groups an
 reaps direct children. External programs execute with their OS permissions; the
 `ProcessHost.Process` effect represents that native authority.
 
+The optional `packages/process` package adds pure command/environment builders,
+concurrent finite-input capture, typed failures with partial output, explicit exit
+checking and an effect-carrying `Runner` record for scripted application tests.
+Native contracts run with `fai test -C packages process`. Native supervision owns
+monotonic deadlines; execution carries `{ Concurrency, ProcessHost.Process }`.
+
 ```
 source (.fai)
   → lex                 (fai-syntax)   tokens + spans

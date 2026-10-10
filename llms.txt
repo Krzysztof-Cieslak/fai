@@ -746,6 +746,14 @@ capabilities any function transitively reaches.
 
 ### Defining your own capability
 
+The optional `packages/process` source package provides `Process.command`, pure
+argv/environment/stdin builders, and `Process.run runtime options command` for
+concurrent capture. The runtime supplies `process` and `concurrency`; execution
+has `{ Concurrency, ProcessHost.Process }` effects. Output is binary and preserves
+exit statuses; `expectSuccess` checks them and `stdoutText` validates UTF-8.
+Failures keep partial output and cleanup details. `Process.Runner 'e` is an
+effect-carrying function record for applications and pure scripted tests.
+
 `ProcessHost.Process` is the native subprocess capability. Add
 `process = ProcessHost.native` to a custom runtime record. `start` takes a nonempty
 list of command descriptions and explicit buffer/deadline options; adjacent

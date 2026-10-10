@@ -1,0 +1,37 @@
+module ProcessCapture
+
+public type AppRuntime = {
+  concurrency : Concurrency,
+  console : Console,
+  env : Env,
+  process : ProcessHost.Process
+}
+
+let runtime = {
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  env = stdEnv,
+  process = ProcessHost.native
+}
+
+let showExit exit =
+  match exit with
+  | Some (ProcessHost.Exited code) -> "exit=" ++ Int.toString code
+  | Some (ProcessHost.Signaled signal core) -> "signal=" ++ Int.toString signal
+  | None -> "not started"
+
+printResult : Console -> Result Process.Output Process.Error -> Unit / { Console }
+let printResult console result =
+  match result with
+  | Err failure -> console.writeLine (Process.errorToString failure)
+  | Ok output ->
+    let printed =
+      console.write (Option.withDefault "<binary stdout>" (Bytes.toString output.stdout))
+    console.writeLine (String.join ", " (List.map showExit output.exits))
+
+public main : AppRuntime -> Unit / { Concurrency, Console, Env, ProcessHost.Process }
+let main app =
+  match app.env.args () with
+  | executable :: arguments ->
+    printResult app.console (Process.run app Process.defaults (Process.command executable arguments))
+  | [] -> app.console.writeLine "Pass an executable and arguments after --"

@@ -1,0 +1,359 @@
+module Process
+
+/// Process exit status retains the platform's code or Unix signal information.
+public type Exit = ProcessHost.Exit
+
+public type Description = { input : Bytes, launch : ProcessHost.Command }
+
+/// A pure, reusable command description. It contains no running process.
+public opaque type Command =
+  | Command Description
+
+public type Options = {
+  bufferBytes : Int,
+  chunkBytes : Int,
+  drainTimeoutMs : Option Int,
+  graceMs : Int,
+  maxCaptureBytes : Int,
+  maxPipelineStages : Int,
+  pollMs : Int,
+  timeoutMs : Option Int
+}
+
+/// Overall deadlines are opt-in; all sizes and wait policies are configurable.
+public defaults : Options
+let defaults = {
+  bufferBytes = 1048576,
+  chunkBytes = 65536,
+  drainTimeoutMs = Some 5000,
+  graceMs = 1000,
+  maxCaptureBytes = 16777216,
+  maxPipelineStages = 64,
+  pollMs = 10,
+  timeoutMs = None
+}
+
+/// One exit and stderr buffer per stage, in declaration order. A missing exit
+/// means the stage never started or its status could not be collected.
+public type Output = {
+  exits : List (Option Exit),
+  stderr : List Bytes,
+  stdout : Bytes,
+  stopped : Bool
+}
+
+public type ErrorKind =
+  | InvalidInput
+  | SpawnFailure
+  | IoFailure
+  | Cancelled
+  | DeadlineExceeded
+  | DrainDeadlineExceeded
+  | Closed
+  | Busy
+  | CleanupFailure
+  | CaptureLimitExceeded
+  | UnsuccessfulExit
+  | InvalidUtf8
+  | ConsumerFailure
+
+/// Both the original failure and cleanup failures retain bounded partial output.
+public type Error = {
+  cleanup : List ProcessHost.Error,
+  kind : ErrorKind,
+  message : String,
+  native : Option ProcessHost.Error,
+  partial : Output
+}
+
+public emptyOutput : Output
+let emptyOutput = { exits = [], stderr = [], stdout = Bytes.empty, stopped = false }
+
+public error : ErrorKind -> String -> Error
+let error kind message = {
+  cleanup = [],
+  kind = kind,
+  message = message,
+  native = None,
+  partial = emptyOutput
+}
+
+public errorToString : Error -> String
+let errorToString failure = failure.message
+
+/// Construct a command with inherited environment, closed finite stdin and piped output.
+public command : String -> List String -> Command
+let command executable arguments = Command {
+  input = Bytes.empty,
+  launch = {
+    arguments = arguments,
+    directory = "",
+    edits = [],
+    executable = executable,
+    inherit = true
+  }
+}
+
+public describe : Command -> Description
+let describe command =
+  match command with
+  | Command value -> value
+
+public arguments : List String -> Command -> Command
+let arguments args command =
+  let value = describe command
+  Command { value with
+    launch = { value.launch with arguments = List.append value.launch.arguments args }
+  }
+
+public argument : String -> Command -> Command
+let argument arg command = arguments [arg] command
+
+public workingDirectory : String -> Command -> Command
+let workingDirectory directory command =
+  let value = describe command
+  Command { value with launch = { value.launch with directory = directory } }
+
+public inheritEnvironment : Bool -> Command -> Command
+let inheritEnvironment inherit command =
+  let value = describe command
+  Command { value with launch = { value.launch with inherit = inherit } }
+
+public clearEnvironment : Command -> Command
+let clearEnvironment command = inheritEnvironment false command
+
+editEnvironment : String -> Option String -> Command -> Command
+let editEnvironment name replacement command =
+  let value = describe command
+  Command { value with
+    launch = { value.launch with
+      edits = List.append value.launch.edits [{ name = name, value = replacement }]
+    }
+  }
+
+public setEnvironment : String -> String -> Command -> Command
+let setEnvironment name value command = editEnvironment name (Some value) command
+
+public unsetEnvironment : String -> Command -> Command
+let unsetEnvironment name command = editEnvironment name None command
+
+public stdinBytes : Bytes -> Command -> Command
+let stdinBytes bytes command = Command { describe command with input = bytes }
+
+public stdinText : String -> Command -> Command
+let stdinText text command = stdinBytes (Bytes.fromString text) command
+
+let noNul text = not (String.contains text "\u{0}")
+
+let positiveOptional value =
+  match value with
+  | None -> true
+  | Some n -> n > 0
+
+/// Validation is pure and precedes all native launch activity.
+public validate : Options -> Command -> Result Unit Error
+let validate options command =
+  let value = (describe command).launch
+  if options.bufferBytes <= 0 || options.bufferBytes > 1073741824 || options.chunkBytes <= 0 || options.chunkBytes > options.bufferBytes || options.maxCaptureBytes < 0 || options.maxPipelineStages <= 0 || options.maxPipelineStages > 1024 || options.graceMs < 0 || options.pollMs <= 0 || options.pollMs > 1000 || not (positiveOptional options.timeoutMs) || not (positiveOptional options.drainTimeoutMs) then
+    Err (error InvalidInput "invalid process buffer, stage or duration limit")
+  else if value.executable = "" || not (noNul value.executable) || not (noNul value.directory) || not (List.all noNul value.arguments) || not (List.all (fun edit ->
+    edit.name <> "" && noNul edit.name && not (String.contains edit.name "=") && (match edit.value with
+    | None -> true
+    | Some value -> noNul value)) value.edits) then
+    Err (error InvalidInput "invalid executable, argument, directory or environment edit")
+  else
+    Ok ()
+
+hostOptions : Options -> ProcessHost.Options
+let hostOptions options = {
+  bufferBytes = options.bufferBytes,
+  chunkBytes = options.chunkBytes,
+  drainTimeoutMs = options.drainTimeoutMs,
+  graceMs = options.graceMs,
+  pollMs = options.pollMs,
+  timeoutMs = options.timeoutMs
+}
+
+nativeError : ProcessHost.Error -> Error
+let nativeError native =
+  let kind =
+    match native.kind with
+    | 1 -> InvalidInput
+    | 2 -> SpawnFailure
+    | 5 -> Cancelled
+    | 6 -> DeadlineExceeded
+    | 7 -> DrainDeadlineExceeded
+    | 8 -> Closed
+    | 9 -> Busy
+    | 10 -> CleanupFailure
+    | _ -> IoFailure
+  { error kind native.message with native = Some native }
+
+/// Test the complete native status, preserving nonzero exits as ordinary data.
+public succeeded : Exit -> Bool
+let succeeded exit =
+  match exit with
+  | ProcessHost.Exited code -> code = 0
+  | _ -> false
+
+public expectSuccess : Output -> Result Output Error
+let expectSuccess output =
+  if output.exits <> [] && List.all (fun exit ->
+    match exit with
+    | Some value -> succeeded value
+    | None -> false) output.exits then
+    Ok output
+  else
+    Err { error UnsuccessfulExit "one or more process stages did not exit successfully" with
+      partial = output
+    }
+
+public stdoutText : Output -> Result String Error
+let stdoutText output =
+  match Bytes.toString output.stdout with
+  | Some text -> Ok text
+  | None -> Err { error InvalidUtf8 "stdout is not valid UTF-8" with partial = output }
+
+let pairs chunks =
+  match chunks with
+  | a :: b :: rest -> Bytes.concat a b :: pairs rest
+  | rest -> rest
+
+let join chunks =
+  match chunks with
+  | [] -> Bytes.empty
+  | [one] -> one
+  | _ -> join (pairs chunks)
+
+type Capture = { count : Int, stderr : Dict Int (List Bytes), stdout : List Bytes }
+
+emptyCapture : Capture
+let emptyCapture = { count = 0, stderr = Dict.empty, stdout = [] }
+
+captured : Int -> Capture -> Output
+let captured stages state = {
+  exits = [],
+  stderr = List.map (fun stage ->
+    join (List.reverse (Dict.getOr [] stage state.stderr))) (List.range 0 stages),
+  stdout = join (List.reverse state.stdout),
+  stopped = false
+}
+
+collect : Int -> ProcessHost.Chunk -> Capture -> Capture
+let collect limit chunk state =
+  let available = limit - state.count
+  let bytes =
+    if Bytes.length chunk.bytes > available then
+      Bytes.slice 0 available chunk.bytes
+    else
+      chunk.bytes
+  let count = state.count + Bytes.length bytes
+  if chunk.stderr then
+    { state with
+      count = count,
+      stderr = Dict.insert chunk.stage (bytes :: Dict.getOr [] chunk.stage state.stderr) state.stderr
+    }
+  else
+    { state with count = count, stdout = bytes :: state.stdout }
+
+writeAll : ProcessHost.Process -> ProcessHost.Session -> Int -> Bytes -> Int -> Result Unit Error / { ProcessHost.Process }
+let writeAll host session chunkSize bytes offset =
+  let remaining = Bytes.length bytes - offset
+  let amount = if remaining < chunkSize then remaining else chunkSize
+  if remaining <= 0 then
+    Ok ()
+  else
+    match host.write session (Bytes.slice offset (offset + amount) bytes) with
+    | Err failure -> Err (nativeError failure)
+    | Ok count ->
+      if count <= 0 then
+        Err (error IoFailure "process input made no progress")
+      else
+        writeAll host session chunkSize bytes (offset + count)
+
+feed : ProcessHost.Process -> ProcessHost.Session -> Int -> Bytes -> Unit -> Result Unit Error / { ProcessHost.Process }
+let feed host session chunkSize bytes unit =
+  let result = writeAll host session chunkSize bytes 0
+  let closed = host.endInput session
+  match result with
+  | Err failure -> Err failure
+  | Ok _ -> Result.mapError nativeError closed
+
+drain : ProcessHost.Process -> ProcessHost.Session -> Options -> Int -> Capture -> Result Output Error / { ProcessHost.Process }
+let drain host session options stages state =
+  match host.next session with
+  | Err failure -> Err { nativeError failure with partial = captured stages state }
+  | Ok None -> Ok (captured stages state)
+  | Ok (Some chunk) ->
+    let next = collect options.maxCaptureBytes chunk state
+    if Bytes.length chunk.bytes > options.maxCaptureBytes - state.count then
+      Err { error CaptureLimitExceeded "process capture limit exceeded" with
+        partial = captured stages next
+      }
+    else
+      drain host session options stages next
+
+finish : ProcessHost.Report -> Result Output Error -> Result Output Error
+let finish report result =
+  match result with
+  | Err failure -> Err { failure with
+    cleanup = report.cleanup,
+    partial = { failure.partial with exits = report.exits }
+  }
+  | Ok output ->
+    let output = { output with exits = report.exits }
+    match report.failure with
+    | Some failure -> Err { nativeError failure with cleanup = report.cleanup, partial = output }
+    | None ->
+      if report.cleanup = [] then
+        Ok output
+      else
+        Err { error CleanupFailure "process cleanup failed" with
+          cleanup = report.cleanup,
+          partial = output
+        }
+
+type Services = { concurrency : Concurrency, process : ProcessHost.Process }
+
+cleanupResult : Services -> ProcessHost.Session -> Task (Result Unit Error) -> Result Output Error -> Unit -> Result Output Error / { Concurrency, ProcessHost.Process }
+let cleanupResult env session input result unit =
+  let report = env.process.close session
+  let fed = env.concurrency.await input
+  let result =
+    match result with
+    | Err failure -> Err failure
+    | Ok output ->
+      (match fed with
+      | Err failure -> Err { failure with partial = output }
+      | Ok _ -> Ok output)
+  finish report result
+
+inScope : Services -> Options -> Int -> ProcessHost.Session -> Bytes -> Nursery -> Result Output Error / { Concurrency, ProcessHost.Process }
+let inScope env options stages session bytes nursery =
+  let input = env.concurrency.spawn nursery (feed env.process session options.chunkBytes bytes)
+  let result = drain env.process session options stages emptyCapture
+  Wire.cleanup env.concurrency (cleanupResult env session input result)
+
+execute : Services -> Options -> List Command -> Result Output Error / { Concurrency, ProcessHost.Process }
+let execute env options commands =
+  match commands with
+  | [] -> Err (error InvalidInput "a pipeline must contain at least one command")
+  | first :: _ ->
+    match env.process.start (List.map (fun command ->
+      (describe command).launch) commands) (hostOptions options) with
+    | Err failure -> Err (nativeError failure)
+    | Ok session ->
+      env.concurrency.scope (inScope env options (List.length commands) session (describe first).input)
+
+/// Capture one command with concurrent stdin, stdout and stderr progress.
+public run : { concurrency : Concurrency, process : ProcessHost.Process | _ } -> Options -> Command -> Result Output Error / { Concurrency, ProcessHost.Process }
+let run env options command =
+  match validate options command with
+  | Err failure -> Err failure
+  | Ok _ -> execute { concurrency = env.concurrency, process = env.process } options [command]
+
+/// A small effect-carrying execution port; a scripted Runner {} is pure.
+public type Runner 'e = { run : Options -> Command -> Result Output Error / 'e }
+
+public runner : { concurrency : Concurrency, process : ProcessHost.Process | _ } -> Runner { Concurrency, ProcessHost.Process }
+let runner env = { run = fun options command -> run env options command }
