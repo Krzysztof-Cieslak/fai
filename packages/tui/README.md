@@ -169,3 +169,29 @@ document in the application model and update its width when receiving a resize
 event. The line-oriented renderer supports headings, bullets, blockquotes, fenced
 code, emphasis, inline code and links. HTML is displayed as text, and pipe tables
 retain their source layout. Terminal control characters are always sanitized.
+
+## Examples and verification
+
+Run an interactive example from a real terminal:
+
+```sh
+fai run --no-daemon -C packages tui/examples/FormDemo.fai
+fai run --no-daemon -C packages tui/examples/DataBrowser.fai
+fai run --no-daemon -C packages tui/examples/AgentDemo.fai
+```
+
+`FormDemo` submits typed connection settings. `DataBrowser` pages, filters and
+sorts 10,000 rows in an embedded SQLite database, using cancellable keyed loads.
+`AgentDemo` streams a simulated Markdown response, has collapsible tool output,
+a multiline composer and configurable keyboard mappings. No network credentials
+or external service is required. Ctrl+C exits; the agent demo also uses Escape to
+cancel active streaming before exiting on a later Escape.
+
+`RuntimeChecks.fai` runs headlessly through both JIT and AOT in CI. It checks
+message dispatch, bounded backpressure, stale results, subscription completion
+and removal, primary/cleanup errors and restore-before-join ordering. Native
+compiler fixtures reject incompatible attributes and effectful widget callbacks.
+Unix PTY fixtures exercise real keyboard input, resizing, submission and terminal
+restoration for all three interactive examples; native host tests also cover
+restoration on a runtime-reported fault. The required platform checks build and
+exercise the backend-independent runtime on Linux, macOS and Windows.

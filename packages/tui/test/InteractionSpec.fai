@@ -57,6 +57,8 @@ let composer =
     onSubmit = Some "submit",
     value = "abc"
   })
+example: Result.map (fun frame -> (send (key "p" 2) frame).messages) composer = Ok []
+example: Result.map (fun frame -> (send (key "n" 2) frame).messages) composer = Ok []
 example: Result.map (fun frame -> (send (key "Enter" 0) frame).messages) composer = Ok ["submit"]
 example: Result.map (fun frame -> (send (key "Enter" 1) frame).messages) composer = Ok ["abc\n"]
 

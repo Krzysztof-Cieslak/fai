@@ -16,7 +16,7 @@ let blank = { style = TuiStyle.normal, text = " ", width = 1 }
 /// Allocate a checked cell grid. maxCells is a caller-controlled resource bound.
 public create : Int -> Int -> Int -> Result Screen String
 let create maxCells width height =
-  if width < 0 || height < 0 || maxCells < 0 || (height <> 0 && width > maxCells / height) then
+  if width < 0 || height < 0 || maxCells < 0 || width > maxCells || height > maxCells || (height <> 0 && width > maxCells / height) then
     Err "terminal cell limit exceeded"
   else
     Ok {
