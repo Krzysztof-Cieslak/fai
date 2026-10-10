@@ -913,6 +913,10 @@ default and configured sensitive headers. Opt-in GET/HEAD retries use selected
 status codes, bounded backoff and Retry-After, sharing the operation's deadline.
 Discarded responses are released before another attempt, and consumers see only the
 final response. `HttpClientPolicy` exposes the pure decision function for tests.
+`HttpClient.withResponse` consumes a final byte stream in a callback, forwarding
+the consumer's effects and retaining the overall deadline. It applies status
+expectations before invoking the consumer, runs the consumer once, and releases
+the response before returning. Streaming bypasses the buffered-body limit.
 
 ## 6. Compiler pipeline
 

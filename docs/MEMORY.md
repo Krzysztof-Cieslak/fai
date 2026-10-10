@@ -4850,6 +4850,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   origin change; retries are opt-in for GET/HEAD status responses, never inferred
   from transport-message text. Valid Retry-After delays take precedence over the
   backoff cap. Final response metadata records total attempts and the final URL.
+  Scoped streaming forwards consumer effects, applies status expectations before
+  invoking the callback, and keeps the operation's deadline active through body
+  consumption. Consumer failures never trigger retries. Successful streaming has
+  no buffered-body limit; response bodies remain valid only during the callback.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

@@ -383,6 +383,12 @@ let checkHead expectation response =
 /// and size rules as live requests. This is also a deterministic testing seam.
 public decodeResponse : Config -> Request 'a -> Response Bytes -> Result (Response 'a) Error
 let decodeResponse cfg req response =
+  match validateConfig cfg with
+  | Err error -> Err error
+  | Ok _ -> decodeBuffered cfg req response
+
+decodeBuffered : Config -> Request 'a -> Response Bytes -> Result (Response 'a) Error
+let decodeBuffered cfg req response =
   match req with
   | MkRequest info decode ->
     if info.expectation <> AnyStatus && not (successful response.head.status) then
@@ -466,7 +472,10 @@ let bufferResponse cfg req head body =
 /// Consume and decode a response stream with bounded buffering. Pure streams
 /// make chunk-boundary and body-failure behavior testable with ordinary contracts.
 public decodeStream : Config -> Request 'a -> Response (Stream Bytes 'e) -> Result (Response 'a) Error / 'e
-let decodeStream cfg req response = bufferResponse cfg req response.head response.body
+let decodeStream cfg req response =
+  match validateConfig cfg with
+  | Err error -> Err error
+  | Ok _ -> bufferResponse cfg req response.head response.body
 
 deadlineTimer : Concurrency -> Clock -> Int -> Channel (Result 'a Error) -> Unit / { Clock, Concurrency }
 let deadlineTimer c clock ms output =
@@ -549,6 +558,33 @@ let send client req =
     | Err error -> Err error
     | Ok wire ->
       deadline env cfg.timeoutMs (fun _ -> exchange cfg env pool wire 0 0 1 (decodeStream cfg req))
+
+streamResponse : Config -> Request Bytes -> (Response (Stream Bytes { Concurrency, Net, Tls }) -> Result 'a Error / 'e) -> Response (Stream Bytes { Concurrency, Net, Tls }) -> Result 'a Error / { Concurrency, Net, Tls | 'e }
+let streamResponse cfg req consume response =
+  match req with
+  | MkRequest info _ ->
+    if info.expectation <> AnyStatus && not (successful response.head.status) then
+      match readPrefix response.head cfg.maxErrorBytes response.body Array.empty with
+      | Err error -> Err error
+      | Ok (bytes, truncated) -> Err (UnexpectedStatus response.head bytes truncated)
+    else
+      match checkHead info.expectation response.head with
+      | Err error -> Err error
+      | Ok _ -> consume response
+
+/// Consume the final response inside its lifetime scope. The callback runs once
+/// after redirects/retries, shares the overall deadline, and may return early.
+/// Raw requests expose every status; expectBytes requires 2xx. The buffered-body
+/// limit does not constrain streaming. Use the body only within this callback.
+public withResponse : Client -> (Response (Stream Bytes { Concurrency, Net, Tls }) -> Result 'a Error / 'e) -> Request Bytes -> Result 'a Error / { Clock, Concurrency, Net, Tls | 'e }
+let withResponse client consume req =
+  match client with
+  | MkClient cfg env pool ->
+    match prepare cfg req with
+    | Err error -> Err error
+    | Ok wire ->
+      deadline env cfg.timeoutMs (fun _ ->
+        exchange cfg env pool wire 0 0 1 (streamResponse cfg req consume))
 
 /// Render a structured failure for a console or log.
 public errorToString : Error -> String

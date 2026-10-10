@@ -126,6 +126,53 @@ fai run -C packages http-client/examples/RetryRedirect.fai
 # ok attempts=3 path=/done
 ```
 
+## Scoped streaming
+
+`withResponse client consume request` gives the callback a
+`Response (Stream Bytes { Concurrency, Net, Tls })`. The callback returns a
+`Result 'a Error`, and its own effects are forwarded. It runs once, after all
+redirect/retry decisions. The overall deadline remains active until it returns.
+
+```fai
+HttpClient.get "exports/latest"
+|> HttpClient.expectBytes
+|> HttpClient.withResponse client (fun response ->
+  Result.mapError HttpClient.ConsumerFailure
+    (Stream.toFile runtime "export.bin" response.body))
+```
+
+Raw requests expose any final status; `expectBytes` requires 2xx before invoking
+the callback. Streaming consumes the raw bytes rather than a buffered decoder.
+The buffered-body size limit does not apply to a successful streamed response.
+Status failures still carry the bounded error preview.
+
+Consume a body once and only inside its callback. Full consumption permits
+connection reuse after callback completion. Early return, cancellation, and an
+unfinished body close the connection. The underlying response gate prevents a
+retained body closure from reading a later exchange on a reused connection.
+Callbacks are not retried, including when they return an error.
+
+`decodeStream config request response` buffers a supplied stream with the normal
+size/status/JSON rules and preserves body-read errors. A custom consumer can map
+its own failure to `ConsumerFailure`, or retain response metadata using `BodyRead`.
+
+Run the self-contained loopback examples and lifecycle checks:
+
+```sh
+fai run -C packages http-client/examples/TypedClient.fai
+fai run -C packages http-client/examples/RetryRedirect.fai
+fai run -C packages http-client/examples/LifecycleChecks.fai
+fai run -C packages http-client/examples/DownloadCheck.fai -- /tmp/download-check.txt
+fai run -C packages http-client/examples/Download.fai -- https://example.com/data output.bin
+```
+
+The lifecycle checks cover early return while the pool remains open, cancellation,
+deadline expiry during a stalled body, exactly one callback after a retry, a stream
+larger than the configured buffering limit, and consumer failures. They also check
+deadline expiration inside callbacks and retry delays, and status rejection before
+callback invocation. `DownloadCheck` streams a loopback response to the supplied
+file and verifies its complete UTF-8 contents, covering FileSystem effect forwarding.
+
 ## Native contracts
 
 ```sh

@@ -1,0 +1,192 @@
+module LifecycleChecks
+
+configuration : Runtime -> Listener -> HttpClient.Config / { Net }
+let configuration r listener =
+  HttpClient.config ("http://127.0.0.1:" ++ Int.toString (r.net.localPort listener) ++ "/")
+
+stall : Runtime -> Listener -> Channel Unit -> Bool / { Concurrency, Net }
+let stall r listener ready =
+  match r.net.accept listener with
+  | Err _ -> false
+  | Ok connection ->
+    let request = r.net.recv connection 4096
+    let sent =
+      r.net.send connection (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+    let signalled = r.concurrency.send ready ()
+    let eof = r.net.recv connection 1
+    let closed = r.net.close connection
+    eof = Ok Bytes.empty
+
+earlyClient : Runtime -> Task Bool -> HttpClient.Client -> Result Bool HttpClient.Error / { Clock, Concurrency, Net, Tls }
+let earlyClient r server client =
+  let response =
+    HttpClient.get "" |> HttpClient.withResponse client (fun response -> Ok response.head.status)
+  let closed = r.concurrency.await server
+  Ok (response = Ok 200 && closed)
+
+earlyInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let earlyInScope r listener nursery =
+  let ready = r.concurrency.channel 1
+  let server = r.concurrency.spawn nursery (fun _ -> stall r listener ready)
+  let result = HttpClient.withClient r (configuration r listener) (earlyClient r server)
+  result = Ok true
+
+cancelInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let cancelInScope r listener nursery =
+  let ready = r.concurrency.channel 1
+  let server = r.concurrency.spawn nursery (fun _ -> stall r listener ready)
+  let worker =
+    r.concurrency.spawn nursery (fun _ ->
+      HttpClient.withClient r (configuration r listener) (fun client ->
+        HttpClient.send client (HttpClient.get "")))
+  let started = r.concurrency.recv ready
+  let cancelled = r.concurrency.cancel worker
+  let result = r.concurrency.await worker
+  let closed = r.concurrency.await server
+  result = Err HttpClient.Cancelled && closed
+
+timeoutInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let timeoutInScope r listener nursery =
+  let ready = r.concurrency.channel 1
+  let server = r.concurrency.spawn nursery (fun _ -> stall r listener ready)
+  let cfg = configuration r listener
+  let result =
+    HttpClient.withClient r { cfg with
+      timeoutMs = Some 1000
+    } (fun client -> HttpClient.send client (HttpClient.get ""))
+  let stopped = r.concurrency.cancel server
+  let closed = r.concurrency.await server
+  result = Err HttpClient.DeadlineExceeded
+
+respond : Runtime -> Listener -> String -> Unit / { Net }
+let respond r listener text =
+  match r.net.accept listener with
+  | Err _ -> ()
+  | Ok connection ->
+    let request = r.net.recv connection 4096
+    let sent = r.net.send connection (Bytes.fromString text)
+    r.net.close connection
+
+retryServer : Runtime -> Listener -> Unit / { Net }
+let retryServer r listener =
+  let first =
+    respond r listener "HTTP/1.1 503 Busy\r\nConnection: close\r\nContent-Length: 10\r\n\r\n"
+  respond r listener "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 6\r\n\r\nabcdef"
+
+countBody : Runtime -> Channel Int -> HttpClient.Response (Stream Bytes { Concurrency, Net, Tls }) -> Result Int HttpClient.Error / { Concurrency, Net, Tls }
+let countBody r calls response =
+  let count = Option.withDefault 0 (r.concurrency.recv calls)
+  let counted = r.concurrency.send calls (count + 1)
+  Result.mapError (HttpClient.BodyRead response.head) (Stream.fold (fun total bytes ->
+    total + Bytes.length bytes) 0 response.body)
+
+streamInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let streamInScope r listener nursery =
+  let server = r.concurrency.spawn nursery (fun _ -> retryServer r listener)
+  let calls = r.concurrency.channel 1
+  let seeded = r.concurrency.send calls 0
+  let cfg = configuration r listener
+  let retry = { HttpClient.retryTransient with initialDelayMs = 0, maxDelayMs = 0 }
+  let result =
+    HttpClient.withClient r { cfg with
+      maxBodyBytes = 1,
+      retry = retry
+    } (fun client ->
+      HttpClient.get "" |> HttpClient.expectBytes |> HttpClient.withResponse client (countBody r calls))
+  let count = r.concurrency.recv calls
+  let stopped = r.concurrency.cancel server
+  result = Ok 6 && count = Some 1
+
+consumerInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let consumerInScope r listener nursery =
+  let server =
+    r.concurrency.spawn nursery (fun _ ->
+      respond r listener "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabcdef")
+  let cfg = configuration r listener
+  let result =
+    HttpClient.withClient r { cfg with
+      retry = HttpClient.retryTransient
+    } (fun client ->
+      HttpClient.get "" |> HttpClient.withResponse client (fun response ->
+        Err (HttpClient.ConsumerFailure "stop")))
+  let stopped = r.concurrency.cancel server
+  result = Err (HttpClient.ConsumerFailure "stop")
+
+slowConsumer : Runtime -> HttpClient.Response (Stream Bytes { Concurrency, Net, Tls }) -> Result Unit HttpClient.Error / { Clock }
+let slowConsumer r response =
+  let slept = r.clock.sleep 5000
+  Ok ()
+
+callbackTimeoutInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let callbackTimeoutInScope r listener nursery =
+  let server =
+    r.concurrency.spawn nursery (fun _ ->
+      respond r listener "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+  let cfg = configuration r listener
+  let result =
+    HttpClient.withClient r { cfg with
+      timeoutMs = Some 100
+    } (fun client -> HttpClient.get "" |> HttpClient.withResponse client (slowConsumer r))
+  let stopped = r.concurrency.cancel server
+  result = Err HttpClient.DeadlineExceeded
+
+backoffTimeoutInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let backoffTimeoutInScope r listener nursery =
+  let server =
+    r.concurrency.spawn nursery (fun _ ->
+      respond r listener "HTTP/1.1 503 Busy\r\nConnection: close\r\nContent-Length: 0\r\nRetry-After: 3600\r\n\r\n")
+  let cfg = configuration r listener
+  let result =
+    HttpClient.withClient r { cfg with
+      retry = HttpClient.retryTransient,
+      timeoutMs = Some 100
+    } (fun client -> HttpClient.get "" |> HttpClient.send client)
+  let stopped = r.concurrency.cancel server
+  result = Err HttpClient.DeadlineExceeded
+
+markConsumer : Runtime -> Channel Int -> HttpClient.Response (Stream Bytes { Concurrency, Net, Tls }) -> Result Unit HttpClient.Error / { Concurrency }
+let markConsumer r calls response =
+  let previous = r.concurrency.recv calls
+  let marked = r.concurrency.send calls 1
+  Ok ()
+
+statusInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let statusInScope r listener nursery =
+  let server =
+    r.concurrency.spawn nursery (fun _ ->
+      respond r listener "HTTP/1.1 404 Missing\r\nConnection: close\r\nContent-Length: 6\r\n\r\nabcdef")
+  let calls = r.concurrency.channel 1
+  let seeded = r.concurrency.send calls 0
+  let cfg = configuration r listener
+  let result =
+    HttpClient.withClient r { cfg with
+      maxErrorBytes = 3
+    } (fun client ->
+      HttpClient.get "" |> HttpClient.expectBytes |> HttpClient.withResponse client (markConsumer r calls))
+  let count = r.concurrency.recv calls
+  let stopped = r.concurrency.cancel server
+  match result with
+  | Err (HttpClient.UnexpectedStatus head bytes truncated) ->
+    head.status = 404 && bytes = Bytes.fromString "abc" && truncated && count = Some 0
+  | _ -> false
+
+run : Runtime -> (Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }) -> Bool / { Clock, Concurrency, Net, Tls }
+let run r check =
+  match r.net.listen 0 with
+  | Err _ -> false
+  | Ok listener -> r.concurrency.scope (check r listener)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main r =
+  let early = run r earlyInScope
+  let cancelled = run r cancelInScope
+  let timedOut = run r timeoutInScope
+  let streamed = run r streamInScope
+  let consumer = run r consumerInScope
+  let callbackTimedOut = run r callbackTimeoutInScope
+  let backoffTimedOut = run r backoffTimeoutInScope
+  let status = run r statusInScope
+  r.console.writeLine (if early && cancelled && timedOut && streamed && consumer && callbackTimedOut && backoffTimedOut && status then
+    "lifecycle checks passed"
+  else
+    "lifecycle checks failed")
