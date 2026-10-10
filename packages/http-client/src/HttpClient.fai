@@ -1,0 +1,520 @@
+module HttpClient
+
+/// Metadata for the final response. Attempts count actual HTTP exchanges.
+public type ResponseHead = {
+  attempts : Int,
+  headers : Headers,
+  reason : String,
+  status : Int,
+  url : Url
+}
+
+/// A response retains its metadata alongside the application's decoded value.
+public type Response 'a = { body : 'a, head : ResponseHead }
+
+/// Located codec errors and HTTP metadata remain available without parsing text.
+public type Error =
+  | InvalidConfiguration String
+  | InvalidRequest String
+  | Encoding JsonEncode.Error
+  | Transport String
+  | BodyRead ResponseHead String
+  | DeadlineExceeded
+  | Cancelled
+  | RedirectLimit Int
+  | UnexpectedStatus ResponseHead Bytes Bool
+  | BodyTooLarge ResponseHead Int
+  | UnsupportedJsonMediaType ResponseHead (Option String)
+  | InvalidJson ResponseHead JsonDecode.ReadError
+  | InvalidText ResponseHead
+  | ConsumerFailure String
+
+/// Immutable client configuration. Size limits are bytes; timeouts are milliseconds.
+public type Config = {
+  baseUrl : String,
+  extraRoots : Option Bytes,
+  headers : Headers,
+  maxBodyBytes : Int,
+  maxErrorBytes : Int,
+  timeoutMs : Option Int
+}
+
+/// Defaults: a 30-second deadline, 16 MiB buffered body, and 8 KiB error preview.
+public config : String -> Config
+let config baseUrl = {
+  baseUrl = baseUrl,
+  extraRoots = None,
+  headers = Headers.empty,
+  maxBodyBytes = 16777216,
+  maxErrorBytes = 8192,
+  timeoutMs = Some 30000
+}
+
+type Expectation =
+  | AnyStatus
+  | Success
+  | JsonSuccess
+
+type RequestInfo = {
+  body : Bytes,
+  expectation : Expectation,
+  headers : Headers,
+  issue : Option Error,
+  method : Http.Method,
+  query : List (String * String),
+  removed : List String,
+  target : String
+}
+
+/// A pure request description and a pure response decoder.
+public opaque type Request 'a =
+  | MkRequest RequestInfo (ResponseHead -> Bytes -> Result 'a Error)
+
+/// A validated wire request. Useful for inspecting and testing request builders.
+public type Prepared = { body : Bytes, headers : Headers, method : Http.Method, url : Url }
+
+/// Construct a raw-byte request; every HTTP status is returned to the caller.
+public request : Http.Method -> String -> Request Bytes
+let request method target =
+  MkRequest {
+    body = Bytes.empty,
+    expectation = AnyStatus,
+    headers = Headers.empty,
+    issue = None,
+    method = method,
+    query = [],
+    removed = [],
+    target = target
+  } (fun head bytes -> Ok bytes)
+
+/// Construct a GET request.
+public get : String -> Request Bytes
+let get target = request Http.GET target
+
+/// Construct a HEAD request.
+public head : String -> Request Bytes
+let head target = request Http.HEAD target
+
+/// Construct a POST request.
+public post : String -> Request Bytes
+let post target = request Http.POST target
+
+/// Construct a PUT request.
+public put : String -> Request Bytes
+let put target = request Http.PUT target
+
+/// Construct a PATCH request.
+public patch : String -> Request Bytes
+let patch target = request Http.PATCH target
+
+/// Construct a DELETE request.
+public delete : String -> Request Bytes
+let delete target = request Http.DELETE target
+
+/// Replace all request fields of this name, case-insensitively.
+public header : String -> String -> Request 'a -> Request 'a
+let header name value req =
+  match req with
+  | MkRequest info decode ->
+    MkRequest { info with headers = Headers.set name value info.headers } decode
+
+/// Append a duplicate-preserving request header.
+public addHeader : String -> String -> Request 'a -> Request 'a
+let addHeader name value req =
+  match req with
+  | MkRequest info decode ->
+    MkRequest { info with headers = Headers.add name value info.headers } decode
+
+/// Remove a field, including any client default with the same name.
+public removeHeader : String -> Request 'a -> Request 'a
+let removeHeader name req =
+  match req with
+  | MkRequest info decode ->
+    MkRequest { info with
+      headers = Headers.remove name info.headers,
+      removed = name :: info.removed
+    } decode
+
+/// Append a percent-encoded query pair, retaining repeated names and order.
+public query : String -> String -> Request 'a -> Request 'a
+let query name value req =
+  match req with
+  | MkRequest info decode ->
+    MkRequest { info with query = List.append info.query [(name, value)] } decode
+
+/// Supply immutable bytes. Framing headers are generated at execution time.
+public bytesBody : String -> Bytes -> Request 'a -> Request 'a
+let bytesBody media bytes req =
+  match req with
+  | MkRequest info decode ->
+    MkRequest { info with
+      body = bytes,
+      headers = Headers.set "Content-Type" media info.headers
+    } decode
+
+/// Supply UTF-8 text with a text/plain media type.
+public textBody : String -> Request 'a -> Request 'a
+let textBody text req = bytesBody "text/plain; charset=utf-8" (Bytes.fromString text) req
+
+/// Encode once during request construction. Encoding errors precede all I/O.
+public jsonBody : JsonEncode.Encoder 'a -> 'a -> Request 'b -> Request 'b
+let jsonBody encoder value req =
+  match JsonEncode.toString encoder value with
+  | Ok text -> bytesBody "application/json" (Bytes.fromString text) req
+  | Err error ->
+    match req with
+    | MkRequest info decode -> MkRequest { info with issue = Some (Encoding error) } decode
+
+let formPair pair =
+  let (name, value) = pair
+  Url.encodeComponent name ++ "=" ++ Url.encodeComponent value
+
+/// Supply URL-encoded form fields, retaining duplicates and order.
+public formBody : List (String * String) -> Request 'a -> Request 'a
+let formBody pairs req =
+  bytesBody "application/x-www-form-urlencoded" (Bytes.fromString (String.join "&" (List.map formPair pairs))) req
+
+/// Require a 2xx response and retain its raw bytes.
+public expectBytes : Request 'a -> Request Bytes
+let expectBytes req =
+  match req with
+  | MkRequest info _ -> MkRequest { info with expectation = Success } (fun head bytes -> Ok bytes)
+
+decodeText : ResponseHead -> Bytes -> Result String Error
+let decodeText head bytes =
+  match Bytes.toString bytes with
+  | Some text -> Ok text
+  | None -> Err (InvalidText head)
+
+/// Require a 2xx response and valid UTF-8.
+public expectText : Request 'a -> Request String
+let expectText req =
+  match req with
+  | MkRequest info _ -> MkRequest { info with expectation = Success } decodeText
+
+/// Require 2xx and discard the body. Useful for HEAD and 204 responses.
+public expectEmpty : Request 'a -> Request Unit
+let expectEmpty req =
+  match req with
+  | MkRequest info _ -> MkRequest { info with expectation = Success } (fun head bytes -> Ok ())
+
+/// Require 2xx and a JSON media type, then decode with located JSON errors.
+public expectJson : JsonDecode.Decoder 'a -> Request 'b -> Request 'a
+let expectJson decoder req =
+  match req with
+  | MkRequest info _ ->
+    MkRequest { info with
+      expectation = JsonSuccess
+    } (fun head bytes -> Result.mapError (InvalidJson head) (JsonDecode.fromBytes decoder bytes))
+
+let asciiTokenByte b =
+  (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || List.member b [
+    33,
+    35,
+    36,
+    37,
+    38,
+    39,
+    42,
+    43,
+    45,
+    46,
+    94,
+    95,
+    96,
+    124,
+    126
+  ]
+
+let bytesAll predicate bytes i =
+  i >= Bytes.length bytes || (predicate (Bytes.unsafeGet i bytes) && bytesAll predicate bytes (i + 1))
+
+let token text = text <> "" && bytesAll asciiTokenByte (Bytes.fromString text) 0
+
+let validHeader pair =
+  let (name, value) = pair
+  token name && bytesAll (fun b -> (b >= 32 && b <> 127) || b = 9) (Bytes.fromString value) 0
+
+let validHeaders headers = List.all validHeader (Headers.toList headers)
+
+let validUrl url =
+  (Url.scheme url = Some "http" || Url.scheme url = Some "https") && Url.host url <> None && Url.userinfo url = None && bytesAll (fun b ->
+    b > 32 && b <> 127) (Bytes.fromString (Url.requestTarget url)) 0
+
+/// Validate configuration without opening a connection.
+public validateConfig : Config -> Result Unit Error
+let validateConfig cfg =
+  if cfg.maxBodyBytes < 0 || cfg.maxErrorBytes < 0 then
+    Err (InvalidConfiguration "body limits must be nonnegative")
+  else if not (validHeaders cfg.headers) then
+    Err (InvalidConfiguration "invalid default header")
+  else if (match cfg.timeoutMs with
+  | Some ms -> ms <= 0
+  | None -> false) then
+    Err (InvalidConfiguration "timeout must be positive or None")
+  else
+    match Url.parse cfg.baseUrl with
+    | Ok url ->
+      if validUrl url then
+        Ok ()
+      else
+        Err (InvalidConfiguration "base URL must be an absolute http(s) URL without userinfo")
+    | Err message -> Err (InvalidConfiguration message)
+
+let sameOrigin a b =
+  Url.scheme a = Url.scheme b && Option.map String.toLower (Url.host a) = Option.map String.toLower (Url.host b) && Url.effectivePort a = Url.effectivePort b
+
+let removePair headers pair =
+  let (name, value) = pair
+  Headers.remove name headers
+
+let appendPair headers pair =
+  let (name, value) = pair
+  Headers.add name value headers
+
+let mergeHeaders defaults overrides removed =
+  let base = List.foldl (fun headers name -> Headers.remove name headers) defaults removed
+  List.foldl appendPair (List.foldl removePair base (Headers.toList overrides)) (Headers.toList overrides)
+
+let withQuery url pairs =
+  let text = Option.withDefault "" (List.head (String.split "#" (Url.toString url)))
+  if List.isEmpty pairs then
+    Ok url
+  else
+    Url.parse (text ++ (if Url.query url = None then
+      "?"
+    else
+      "&") ++ String.join "&" (List.map formPair pairs))
+
+let methodName method =
+  match method with
+  | Http.GET -> "GET"
+  | Http.HEAD -> "HEAD"
+  | Http.POST -> "POST"
+  | Http.PUT -> "PUT"
+  | Http.PATCH -> "PATCH"
+  | Http.DELETE -> "DELETE"
+  | Http.OPTIONS -> "OPTIONS"
+  | Http.Custom name -> name
+
+/// Resolve a request and merge headers without effects. Default headers apply
+/// only to the base origin; request fields override defaults as a group.
+public prepare : Config -> Request 'a -> Result Prepared Error
+let prepare cfg req =
+  match validateConfig cfg with
+  | Err error -> Err error
+  | Ok _ ->
+    match req with
+    | MkRequest info _ ->
+      match info.issue with
+      | Some error -> Err error
+      | None ->
+        if not (token (methodName info.method)) || not (validHeaders info.headers) then
+          Err (InvalidRequest "invalid method or header")
+        else
+          match Url.parse cfg.baseUrl with
+          | Err message -> Err (InvalidConfiguration message)
+          | Ok base ->
+            match Url.resolve base info.target with
+            | Err message -> Err (InvalidRequest message)
+            | Ok resolved ->
+              match withQuery resolved info.query with
+              | Err message -> Err (InvalidRequest message)
+              | Ok url ->
+                if not (validUrl url) then
+                  Err (InvalidRequest "target must be an absolute http(s) URL without userinfo")
+                else
+                  let headers =
+                    mergeHeaders (if sameOrigin base url then
+                      cfg.headers
+                    else
+                      Headers.empty) info.headers info.removed
+                  Ok {
+                    body = info.body,
+                    headers = Headers.remove "Host" (Headers.remove "Content-Length" (Headers.remove "Transfer-Encoding" headers)),
+                    method = info.method,
+                    url = url
+                  }
+
+let successful status = status >= 200 && status < 300
+
+let jsonMedia media =
+  let name =
+    String.toLower (String.trim (Option.withDefault "" (List.head (String.split ";" media))))
+  name = "application/json" || (String.take 12 name = "application/" && String.length name > 17 && token (String.drop 12 name) && String.drop (String.length name - 5) name = "+json" && not (String.contains name "*"))
+
+let jsonHeader headers =
+  match Headers.getAll "Content-Type" headers with
+  | media :: [] -> jsonMedia media
+  | _ -> false
+
+checkHead : Expectation -> ResponseHead -> Result Unit Error
+let checkHead expectation response =
+  if expectation = JsonSuccess && not (jsonHeader response.headers) then
+    Err (UnsupportedJsonMediaType response (Headers.get "Content-Type" response.headers))
+  else
+    Ok ()
+
+/// Decode a buffered response without effects, using the same status, media,
+/// and size rules as live requests. This is also a deterministic testing seam.
+public decodeResponse : Config -> Request 'a -> Response Bytes -> Result (Response 'a) Error
+let decodeResponse cfg req response =
+  match req with
+  | MkRequest info decode ->
+    if info.expectation <> AnyStatus && not (successful response.head.status) then
+      Err (UnexpectedStatus response.head (Bytes.slice 0 cfg.maxErrorBytes response.body) (Bytes.length response.body > cfg.maxErrorBytes))
+    else
+      match checkHead info.expectation response.head with
+      | Err error -> Err error
+      | Ok _ ->
+        if Bytes.length response.body > cfg.maxBodyBytes then
+          Err (BodyTooLarge response.head cfg.maxBodyBytes)
+        else
+          Result.map (fun value -> {
+            body = value,
+            head = response.head
+          }) (decode response.head response.body)
+
+// A balanced concatenation avoids quadratic copying with small network chunks.
+let joinRange chunks start count =
+  if count = 0 then
+    Bytes.empty
+  else if count = 1 then
+    Array.unsafeGet start chunks
+  else
+    let half = count / 2
+    Bytes.concat (joinRange chunks start half) (joinRange chunks (start + half) (count - half))
+
+let join chunks = joinRange chunks 0 (Array.length chunks)
+
+readPrefix : ResponseHead -> Int -> Stream Bytes 'e -> Array Bytes -> Result (Bytes * Bool) Error / 'e
+let readPrefix head remaining stream chunks =
+  match Stream.uncons stream with
+  | Err message -> Err (BodyRead head message)
+  | Ok None -> Ok (join chunks, false)
+  | Ok (Some (bytes, rest)) ->
+    if Bytes.length bytes = 0 then
+      readPrefix head remaining rest chunks
+    else if Bytes.length bytes > remaining then
+      Ok (join (Array.push (Bytes.slice 0 remaining bytes) chunks), true)
+    else
+      readPrefix head (remaining - Bytes.length bytes) rest (Array.push bytes chunks)
+
+type Capabilities = { clock : Clock, concurrency : Concurrency, net : Net, tls : Tls }
+
+/// A scoped pool and its immutable configuration. Use only inside withClient.
+public opaque type Client =
+  | MkClient Config Capabilities Http.Client
+
+/// Validate configuration and run a callback with a reusable connection pool.
+public withClient : { clock : Clock, concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Config -> (Client -> Result 'a Error / 'e) -> Result 'a Error / { Concurrency | 'e }
+let withClient env cfg callback =
+  match validateConfig cfg with
+  | Err error -> Err error
+  | Ok _ ->
+    Http.withClientWith env cfg.extraRoots (fun pool ->
+      callback (MkClient cfg {
+        clock = env.clock,
+        concurrency = env.concurrency,
+        net = env.net,
+        tls = env.tls
+      } pool))
+
+bufferResponse : Config -> Request 'a -> ResponseHead -> Stream Bytes 'e -> Result (Response 'a) Error / 'e
+let bufferResponse cfg req head body =
+  match req with
+  | MkRequest info _ ->
+    let rejected = info.expectation <> AnyStatus && not (successful head.status)
+    let limit = if rejected then cfg.maxErrorBytes else cfg.maxBodyBytes
+    match (if rejected then Ok () else checkHead info.expectation head) with
+    | Err error -> Err error
+    | Ok _ ->
+      match readPrefix head limit body Array.empty with
+      | Err error -> Err error
+      | Ok (bytes, truncated) ->
+        if rejected then
+          Err (UnexpectedStatus head bytes truncated)
+        else if truncated then
+          Err (BodyTooLarge head limit)
+        else
+          decodeResponse cfg req { body = bytes, head = head }
+
+/// Consume and decode a response stream with bounded buffering. Pure streams
+/// make chunk-boundary and body-failure behavior testable with ordinary contracts.
+public decodeStream : Config -> Request 'a -> Response (Stream Bytes 'e) -> Result (Response 'a) Error / 'e
+let decodeStream cfg req response = bufferResponse cfg req response.head response.body
+
+deadlineTimer : Concurrency -> Clock -> Int -> Channel (Result 'a Error) -> Unit / { Clock, Concurrency }
+let deadlineTimer c clock ms output =
+  let slept = clock.sleep ms
+  c.send output (Err DeadlineExceeded)
+
+deadlineScope : Concurrency -> Clock -> Option Int -> (Unit -> Result 'a Error / 'e) -> Nursery -> Result 'a Error / { Clock, Concurrency | 'e }
+let deadlineScope c clock timeout work nursery =
+  let output = c.channel 1
+  let worker = c.spawn nursery (fun _ -> c.send output (work ()))
+  let timer =
+    match timeout with
+    | None -> None
+    | Some ms -> Some (c.spawn nursery (fun _ -> deadlineTimer c clock ms output))
+  let received = c.recv output
+  let cancelledWorker = c.cancel worker
+  let cancelledTimer =
+    match timer with
+    | None -> ()
+    | Some task -> c.cancel task
+  let closed = c.close output
+  match received with
+  | None -> Err Cancelled
+  | Some result -> result
+
+deadline : Capabilities -> Option Int -> (Unit -> Result 'a Error / 'e) -> Result 'a Error / { Clock, Concurrency | 'e }
+let deadline env timeout work =
+  env.concurrency.scope (deadlineScope env.concurrency env.clock timeout work)
+
+exchangeBuffered : Config -> Capabilities -> Http.Client -> Request 'a -> Prepared -> Result (Response 'a) Error / { Concurrency, Net, Tls }
+let exchangeBuffered cfg env pool req wire =
+  let request = {
+    body = Http.bytesBody wire.body,
+    headers = wire.headers,
+    method = wire.method,
+    url = wire.url
+  }
+  match Http.withResponseOn env pool request (fun response ->
+    bufferResponse cfg req {
+      attempts = 1,
+      headers = response.headers,
+      reason = response.reason,
+      status = response.status,
+      url = wire.url
+    } response.body) with
+  | Err message -> Err (Transport message)
+  | Ok result -> result
+
+/// Execute and buffer a typed response. One deadline covers the full exchange.
+public send : Client -> Request 'a -> Result (Response 'a) Error / { Clock, Concurrency, Net, Tls }
+let send client req =
+  match client with
+  | MkClient cfg env pool ->
+    match prepare cfg req with
+    | Err error -> Err error
+    | Ok wire -> deadline env cfg.timeoutMs (fun _ -> exchangeBuffered cfg env pool req wire)
+
+/// Render a structured failure for a console or log.
+public errorToString : Error -> String
+let errorToString error =
+  match error with
+  | InvalidConfiguration message -> "invalid client configuration: " ++ message
+  | InvalidRequest message -> "invalid request: " ++ message
+  | Encoding error -> "request JSON: " ++ JsonEncode.errorToString error
+  | Transport message -> "HTTP transport: " ++ message
+  | BodyRead head message -> "response body: " ++ message
+  | DeadlineExceeded -> "HTTP deadline exceeded"
+  | Cancelled -> "HTTP operation cancelled"
+  | RedirectLimit limit -> "HTTP redirect limit exceeded: " ++ Int.toString limit
+  | UnexpectedStatus head bytes truncated -> "unexpected HTTP status " ++ Int.toString head.status
+  | BodyTooLarge head limit -> "response body exceeds " ++ Int.toString limit ++ " bytes"
+  | UnsupportedJsonMediaType head media -> "expected a JSON Content-Type"
+  | InvalidJson head error -> "invalid response JSON: " ++ JsonDecode.readErrorToString error
+  | InvalidText head -> "response body is not valid UTF-8"
+  | ConsumerFailure message -> "response consumer: " ++ message

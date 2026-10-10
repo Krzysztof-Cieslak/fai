@@ -1722,6 +1722,18 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional web framework
 
+Including `packages/http-client/src` and `packages/json/src` supplies `HttpClient`.
+`withClient runtime (config baseUrl) callback` opens a scoped pool. Pure `get`,
+`post`, `request method target`, `header`, `query`, `jsonBody encoder value`,
+`textBody` and `bytesBody media bytes` build requests. Pipe through `expectJson
+decoder`, `expectText`, `expectBytes`, or `expectEmpty`, then `send client`.
+The result is `Result (Response 'a) Error`; responses have `head` metadata and a
+typed `body`. Raw requests return all statuses; expectations require 2xx. Defaults
+are a 30-second whole-operation deadline, 16 MiB buffering and 8 KiB error preview.
+Configuration uses record updates; additional trusted roots are fixed per pool.
+`prepare`, `decodeResponse` and `decodeStream` are reusable testing entry points.
+Run `fai test -C packages http-client`; see `packages/http-client/README.md`.
+
 Including `packages/cli/src` supplies the pure `Args` argument parser. Build a
 typed `Args.Parser 'a` with `flag`, `count`, `option`, `requiredOption`,
 `optionWithDefault`, `options`, `argument`, `optionalArgument`, and `arguments`;
