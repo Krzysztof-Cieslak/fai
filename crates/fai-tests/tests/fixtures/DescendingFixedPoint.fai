@@ -1,0 +1,18 @@
+module Main
+
+let terminal n x = if n <= 0 then n else terminal (n - 1) (x * 0.5)
+
+effects : Console -> Int -> Float -> Float / { Console }
+let effects console n x =
+  if n <= 0 then
+    x
+  else
+    let _ = console.writeLine "step"
+    effects console (n - 1) (x * 0.5)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let result = terminal 1000000 0.0
+  let unchanged = terminal (-5) 0.0
+  let _ = effects runtime.console 3 0.0
+  runtime.console.writeLine (if result = 0 && unchanged = -5 then "yes" else "no")

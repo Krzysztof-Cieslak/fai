@@ -626,7 +626,8 @@ Multiplication by the literal `2.0` uses one exact doubling addition; its operan
 is evaluated once, with the same overflow, subnormal and NaN behavior.
 An eligible pure scalar loop can skip identical remaining transitions after its
 entire changing state reaches a bitwise fixed point. The proof requires an
-invariant bound, a non-wrapping unit-step counter, and counter-independent state
+invariant parameter or literal bound, a non-wrapping ascending or descending
+unit-step counter, and counter-independent state
 and internal control. The original terminal branch still runs at the exact final
 counter; effects, calls, and counter-dependent traps prevent the shortcut.
 Equality-only differences against a uniformly stepping Int loop counter can use
