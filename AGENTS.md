@@ -446,6 +446,11 @@ Small scalar-ABI recursive definitions can peel one bounded level of non-tail
 self-calls before ownership insertion. Mixed tail/non-tail functions retain
 their loop lowering; the expansion keeps argument and effect order and does not
 change data ownership or generic code sharing.
+Small private same-file integer functions can specialize a literal leading
+control parameter when recursive calls preserve it or decrease it by a constant.
+At most eight variants are generated; exact constant folding exposes ordinary
+loop lowering. Dynamic arguments retain evaluation order, and generic, exported,
+effectful or unsupported functions keep their shared entry.
 Spread-result entries can loop an exactly returned self-call by rebinding their
 scalar and aggregate-component locals simultaneously. Post-call work, temporary
 borrow conversions and stack-backed captures keep ordinary calls. A carried Float

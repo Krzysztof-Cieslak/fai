@@ -666,6 +666,23 @@ fn scalar_fixed_state_does_not_skip_a_counter_dependent_trap() {
 }
 
 #[test]
+fn scalar_specializations_link_with_other_generated_loops() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/ScalarSpecialization.fai")),
+        ("9 -9223372036854775807 16\n".into(), Some(0))
+    );
+}
+
+#[test]
+fn scalar_specialization_keeps_unused_argument_traps() {
+    let source = "module Main\nlet choose level n = if level = 0 then 7 else choose (level - 1) n\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (choose 0 (1 / 0)))\n";
+    let (stdout, stderr, code) = build_and_run_captured(source);
+    assert!(stdout.is_empty());
+    assert_ne!(code, Some(0));
+    assert!(stderr.contains("division by zero"), "{stderr}");
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

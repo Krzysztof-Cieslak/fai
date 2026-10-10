@@ -2502,6 +2502,12 @@ fn scalar_fixed_state_does_not_skip_effects() {
 }
 
 #[test]
+fn scalar_specialization_keeps_unused_argument_effects() {
+    let source = "module M\nlet choose level n = if level = 0 then 7 else choose (level - 1) n\nlet argument _ =\n  let _ = stdConsole.writeLine \"argument\"\n  123\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (choose 0 (argument ())))\n";
+    assert_eq!(run(source), (0, "argument\n7\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.
