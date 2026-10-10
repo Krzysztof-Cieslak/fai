@@ -1743,10 +1743,22 @@ Primitive, `list`, `array`, `nullable`, and `dict` encoders compose; `toString
 encoder value` returns JSON text or a located encoding error. Object builders
 reject duplicate names, dictionary keys are sorted, and non-finite Floats fail.
 
-Including `packages/web/src` in a workspace supplies `Web` handlers and `Router`.
+Including `packages/web/src` and its `packages/json/src` dependency in a workspace
+supplies `Web` handlers and `Router`.
 Terminal responders preserve unrelated middleware headers. `Web.setHeader`
 replaces a header case-insensitively; `Web.addHeader` appends a distinct field
-(for example, multiple `Set-Cookie` values). See `packages/web/README.md`.
+(for example, multiple `Set-Cookie` values). `Web.json value` and
+`Web.jsonWith encoder value` respond 200 with JSON; `respondJson status value`
+and `respondJsonWith status encoder value` take an explicit status.
+`Web.bindJson decoder handler` decodes one request body and invokes
+`handler decodedValue`, forwarding body and handler effects. Missing/unsupported
+Content-Type becomes 415; syntax/schema/duplicate-key errors become 400.
+`Web.readJson decoder context` instead returns a structured `JsonBodyError`,
+allowing custom responses. JSON and concrete application `+json` media types are
+accepted with case-insensitive names and optional parameters; bytes must be UTF-8.
+Run examples with `fai run -C packages web/examples/JsonWebExample.fai` and the
+self-contained suite with `python3 packages/web/test/run.py --fai /path/to/fai`.
+See `packages/web/README.md`.
 
 ---
 

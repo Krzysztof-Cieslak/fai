@@ -1,0 +1,61 @@
+module JsonWebExample
+
+type User = { id : Int, name : String }
+
+let userDecoder =
+  JsonDecode.map2 (fun id name -> {
+    id = id,
+    name = name
+  }) (JsonDecode.field "id" JsonDecode.int) (JsonDecode.field "name" JsonDecode.string)
+
+encodeUser : JsonEncode.Encoder User
+let encodeUser user = JsonEncode.object [
+  ("id", JsonEncode.int user.id),
+  ("name", JsonEncode.string user.name)
+]
+
+app : Web.HttpHandler 'e
+let app = Web.chain [
+  Web.setHeader "X-Example" "json",
+  Web.addHeader "Set-Cookie" "a=1",
+  Web.addHeader "Set-Cookie" "b=2",
+  Router.router (Web.notFound "missing") [
+    Router.post [Router.route "/users" (Web.bindJson userDecoder (Web.jsonWith encodeUser))]
+  ]
+]
+
+let renderResponse response =
+  if Headers.get "X-Example" response.headers <> Some "json" || Headers.getAll "Set-Cookie" response.headers <> [
+    "a=1",
+    "b=2"
+  ] then
+    "middleware headers were lost"
+  else
+    match Http.bodyText response.body with
+    | Err e -> e
+    | Ok text -> Int.toString response.status ++ " " ++ text
+
+post : Runtime -> Int -> String -> String -> String / { Net, Tls }
+let post runtime port contentType body =
+  match Http.post runtime ("http://127.0.0.1:" ++ Int.toString port ++ "/users") (Headers.set "Content-Type" contentType Headers.empty) (Http.stringBody body) with
+  | Err e -> e
+  | Ok response -> renderResponse response
+
+serveThenProbe : Runtime -> Listener -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+let serveThenProbe runtime listener nursery =
+  let server = runtime.concurrency.spawn nursery (fun _ -> Web.serveListener runtime listener app)
+  let port = runtime.net.localPort listener
+  let responses = [
+    post runtime port "application/json" "{\"id\":42,\"name\":\"Ada\"}",
+    post runtime port "application/vnd.example+json" "{\"id\":7,\"name\":\"Fai\"}",
+    post runtime port "application/json" "{\"id\":false,\"name\":\"Ada\"}",
+    post runtime port "text/plain" "{}"
+  ]
+  let stopped = runtime.concurrency.cancel server
+  List.foldl (fun _ line -> runtime.console.writeLine line) () responses
+
+public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+let main runtime =
+  match runtime.net.listen 0 with
+  | Err e -> runtime.console.writeLine e
+  | Ok listener -> runtime.concurrency.scope (serveThenProbe runtime listener)
