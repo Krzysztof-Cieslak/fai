@@ -17,6 +17,7 @@ fai-resolve.workspace = true
 fai-syntax.workspace = true
 fai-types.workspace = true
 camino.workspace = true
+wait-timeout.workspace = true
 
 [dev-dependencies]
 fai-cli.workspace = true
@@ -41,7 +42,6 @@ divan.workspace = true
 rayon.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
-wait-timeout.workspace = true
 tempfile.workspace = true
 
 [[bench]]
@@ -94,6 +94,10 @@ harness = false
 
 [[bench]]
 name = "algorithms_aot"
+harness = false
+
+[[bench]]
+name = "algorithms_aot_warm"
 harness = false
 
 [[bench]]

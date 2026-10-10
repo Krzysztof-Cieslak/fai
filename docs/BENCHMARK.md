@@ -3,9 +3,27 @@
 This document explains how performance is measured and protected in the Fai
 compiler: the two layers of performance protection (the deterministic gate vs the
 informational wall-clock benches), how to run the benches, how the CI report is
-produced, and — in depth — how the **Fai-vs-Rust runtime comparison** benches
-work. The last part answers a question the numbers invite: *why is "Rust" so much
-slower in the AOT comparison than in the JIT comparison if it is the same Rust?*
+produced, and how the **AOT comparisons with Rust and OCaml** work. Warm execution,
+whole-process execution, memory and Fai JIT regression measurements have distinct
+scopes and are reported separately.
+
+## Primary comparison scopes
+
+- **Warm AOT:** `algorithms_aot_warm` is the primary compute comparison. All three
+  languages execute native AOT programs in persistent workers, with runtime input
+  windows, identical batches and explicit harness-floor measurements.
+- **End-to-end AOT:** `algorithms_aot` includes process startup, one runtime-sized
+  workload, output and exit. `algorithms_mem` measures its peak process RSS.
+- **Fai JIT regression:** `algorithms_jit` tracks Fai's execution route for
+  `run`/contracts. Rust is an untimed correctness oracle. Historical Rust timing
+  rows were real AOT function calls, not a simulated Rust JIT, and remain labelled
+  as historical mixed-compilation diagnostics.
+
+Compute-performance issues are assessed using reliable warm AOT results at the
+relevant size. Startup and footprint issues use the end-to-end/RSS measurements.
+Floor-limited or inconsistent results do not establish parity; neither does a
+favorable result in a different scope. Preserve previous JIT measurements under
+their original labels when refreshing an issue.
 
 ## What a comparison establishes
 
@@ -115,7 +133,7 @@ For the same compiler locally:
 
 ```sh
 opam switch create fai-bench-5.5.1 ocaml-variants.5.5.1+options ocaml-option-flambda
-opam exec --switch=fai-bench-5.5.1 -- cargo bench -p fai-tests --bench algorithms_aot
+opam exec --switch=fai-bench-5.5.1 -- cargo bench -p fai-tests --bench algorithms_aot_warm
 ```
 
 The Rust benchmark helpers use `FAI_BENCH_OCAMLOPT` when set, otherwise `ocamlopt`
@@ -132,6 +150,7 @@ representativeness checks described above.
 cargo bench --workspace --benches            # everything
 cargo bench -p fai-tests --bench inference    # one suite
 cargo bench -p fai-cli   --bench test_loop    # the end-to-end fai test loop
+cargo bench -p fai-tests --bench algorithms_aot_warm -- --module Fib --size both
 ```
 
 `DIVAN_MAX_TIME=<seconds>` caps the wall time per benchmarked function. The
@@ -140,6 +159,11 @@ benches (`algorithms_aot`, the daemon e2e, the `fai test` loop) reach divan's fu
 ~100-sample target for steady medians, while still bounding any pathological
 function. Use a shorter local cap such as `DIVAN_MAX_TIME=1` for a quick,
 informational comparison.
+
+The warm AOT sampler is separate from divan: it defaults to three passes of
+21 paired samples after calibration and two warmups. Use `--samples N`,
+`--passes N`, repeated `--module Name`, and `--size small|large|both`; `--list`
+lists cases and `--test` validates them without emitting timing records.
 
 ## The CI Benchmarks workflow
 
@@ -155,15 +179,18 @@ output with the `bench-summary` tool
   columns). Parsing is best-effort and never panics — an unrecognized line is
   skipped, so a divan format change degrades to a thinner report rather than a
   failure.
-- The raw output and a parsed `bench-results.json` are uploaded as the
-  `benchmark-results` artifact.
+- The raw output, parsed `bench-results.json`, compiler metadata and retained
+  warm-worker binaries/sources are uploaded as the `benchmark-results` artifact.
+  Set `FAI_BENCH_ARTIFACT_DIR` locally to retain the workers in a chosen directory.
 - A benchmark *case* label that looks like a source location (`<path>.fai#Lnn`,
   produced by the real-world language-server benches) is **linked** to the exact
   file and line on the forge, so a report row points at the code it measured.
-- For a group whose rows pair a `rust` and a `fai` leaf (the runtime-comparison
-  benches), the report adds a **"Fai vs Rust" ratio table** (median `fai/rust`;
-  lower is better). The pairing is **within a single group** — `algorithms_jit`
-  and `algorithms_aot` are paired separately and never against each other.
+- Warm `WARMSTAT` records are rendered first, with per-invocation time, batch size,
+  floor fractions and reliability status. The JSON `warmAot` array retains every
+  raw batch/floor duration and its pass metadata.
+- Other comparison groups get a ratio table within their own scope. Historical
+  mixed JIT/AOT control rows are diagnostic; current JIT regression output is
+  Fai-only. Results from different scopes are never paired together.
 
 To inspect a past run locally:
 
@@ -197,24 +224,21 @@ All under `crates/fai-tests/benches/` unless noted. None is a CI gate.
 | `daemon` | Daemon-path pieces: content-addressed cache key, run-bundle serialization, wire framing, workspace file-state sync. |
 | `lsp` | Per-request language-server latency: warm `analysis_*` (the work to answer a request) and full `roundtrip_*` through the real server over an in-memory connection, for every editor feature (see below). |
 | `lsp_scenarios` | Multi-step language-server *workflows*: a keystroke-incremental typing session, the type-a-character → diagnostics loop, cross-module change propagation, a rename refactor, and a typo → quick-fix (see below). |
-| `algorithms_jit` | Runtime comparison, in-process compute: compiled Fai code vs idiomatic Rust (see below). |
+| `algorithms_jit` | Fai-only JIT execution regression coverage, with Rust used for untimed answer validation. |
 | `algorithms_aot` | Runtime comparison, delivered binaries: a `fai build` executable vs a Rust release binary vs an `ocamlopt`-compiled OCaml binary, end to end (see below). |
+| `algorithms_aot_warm` | Primary compute comparison: checked persistent AOT workers for Fai/Rust/OCaml at both registered sizes, with common batches, paired sampling and explicit harness floors. |
 | `algorithms_mem` | Memory comparison, delivered binaries: peak resident set size of the same `fai build` vs Rust vs OCaml binaries (see below). |
 | `sort_patterns` | Build/sort/order-sensitive-checksum across ascending, descending, Fisher–Yates shuffled, equal, four-key, and partially sorted runs; both JIT compute (Fai/Rust) and AOT processes (Fai/Rust/OCaml), at 6,000 and 80,000 elements. |
 | `tree_lookup` | Matched four-field binary nodes in Fai/Rust/OCaml, with explicit `rust_btree_map`/`ocaml_map` application alternatives. Separates build+lookup from lookup-only; validates full shapes and every hit/miss before timing. |
 | `concurrency` | Runtime concurrency/networking (Fai-only, delivered binaries): task fan-out/join throughput, bounded-channel throughput, shared PRNG contention, CPU-bound **parallel speedup** (`FAI_WORKERS=1` vs the host default), and loopback TCP/UDP round-trip throughput (see below). |
 | `test_loop` (`fai-cli`) | The supervised `edit → fai test` loop through the real `fai` binary + daemon: client → daemon → worker subprocess → JIT → run → stream back. |
 
-## Runtime comparison: Fai vs Rust
+## Runtime comparison: AOT Fai, Rust and OCaml
 
-Two benches compare Fai's runtime performance against an idiomatic Rust
-reference. They are the source of the most confusing numbers, so they get the
-most explanation. The two *delivered-binary* benches (`algorithms_aot` and
-`algorithms_mem`) add a **third baseline — an `ocamlopt`-compiled OCaml binary** —
-a native, strict, ML-family compiler with no VM, the closest apples-to-apples
-peer for Fai's own native, strict, ML-family model (see *The OCaml baseline*
-below). The in-process `algorithms_jit` bench stays Rust-only: a foreign-language
-binary cannot be called in process, so OCaml joins only the subprocess benches.
+Warm and whole-process comparisons execute real native AOT binaries on every
+side. The persistent-worker comparison excludes process startup; the delivered
+comparison includes it. The memory comparison uses the same runtime-input entry
+shape. Fai JIT is retained as a separate regression surface for tooling.
 
 The idiomatic Rust references live in `crates/fai-tests/src/algorithms.rs`, each
 paired with its Fai sample under `samples/algorithms/` and two workload sizes in
@@ -223,15 +247,11 @@ performance change is measured broadly rather than against a handful of cases:
 
 - **arithmetic / recursion** — `fib` (wide, non-tail), `ackermann` (deep stack),
   `collatz` and `pi` (tail loops), `prng_xorshift` (bitwise `Int` intrinsics);
-- **lists** — `map_sum` (reuse fast path) and `map_sum_shared` (the copying
-  fallback), `merge_sort`, `quicksort`, `matrix_multiply` (nested lists),
-  `fold_pipeline` (a composed/partially-applied `transform` folded over a range —
-  the closure-confinement path: its compositions and CAF are reduced to a register
-  loop before reference counting, so it now tracks the Rust oracle rather than
-  paying per-element closure construction and first-class calls), `nqueens` and
-  `fannkuch` (backtracking / permutations);
-- **arrays** — `sieve` (a flat mutable `Array Bool`: in-place update of a
-  uniquely-owned array, mirroring the Rust `vec![bool]` reference);
+- **lists** — `list_sort`, `nqueens` and `fannkuch` (sorting, persistent
+  backtracking and permutations);
+- **arrays and pipelines** — `map_sum`, `map_sum_shared`, `merge_sort`,
+  `quicksort`, `matrix_multiply`, `fold_pipeline`, and `sieve`. Some pipelines
+  fuse or simplify to arithmetic; a shared materialized source stays observable;
 - **hash maps & sets** — `dict_histogram`, `set_dedup`, `option_path`,
   `graph_bfs` (`HashDict`+`HashSet`+`List`), `union_find`, `game_of_life`
   (`(Int*Int)` tuple keys); all over the unordered `HashDict`/`HashSet`;
@@ -256,11 +276,11 @@ This is the key to reading these benches. Fai has two execution paths:
   execute it directly, no link step.
 - **AOT** — `fai build` compiles and links a native executable.
 
-The two benches are named after the **Fai** path they exercise. **Rust is always
-ahead-of-time compiled** (by Cargo/LLVM at the bench profile's optimization); it
-is the *baseline*, never the thing being JIT'd. So "the JIT bench's Rust number"
-just means "the Rust baseline measured alongside the JIT-compiled Fai code in the
-in-process bench."
+**Rust and OCaml comparison programs are always ahead-of-time compiled.** Old
+"JIT versus Rust" tables measured a Rust AOT function alongside Fai JIT code in
+process. They were actual measurements, but combined compilation route and
+measurement-scope differences. Current cross-language headline results use AOT
+on every side; the JIT suite reports Fai regression timings only.
 
 ### Correctness vs timing — two separate comparisons
 
@@ -274,21 +294,45 @@ irrelevant to the first:
   (`crates/fai-codegen/src/proptests.rs`) does this generatively: JIT-compiled
   programs agree with a Rust reference evaluator. Whether the machine code came
   from a JIT or a linked binary makes no difference to whether `28 == 28`.
-- **Timing.** The two benches below.
+- **Timing.** The separately labelled scopes below.
 
-### `algorithms_jit` — in-process compute
+### `algorithms_jit` — Fai execution regression
 
-`crates/fai-tests/benches/algorithms_jit.rs` compares the *execution* of compiled
-code in one process:
+`crates/fai-tests/benches/algorithms_jit.rs` JIT-compiles the reachable Fai closure
+once in untimed setup. The timed loop applies that finished function. Rust is
+called only for correctness validation. The suite remains useful for `fai run`
+and contract execution; compilation/edit latency is measured by the dedicated
+compiler and contract suites. JIT uses native CPU features, while the AOT peer
+comparison uses the portable host ISA.
 
-- **Fai side**: the sample's reachable closure is JIT-compiled **once, in untimed
-  setup** (`jit_compile`); the timed loop only *applies* the finished function.
-- **Rust side**: the timed loop calls the idiomatic reference function directly.
+### `algorithms_aot_warm` — primary warm compute comparison
 
-Because the JIT compile is excluded from timing, this is
-**native-execution vs native-execution** — not "JIT compile vs AOT binary." (The
-JIT even keeps the host's native CPU features, where the portable AOT build
-targets a baseline ISA.)
+Every registered workload runs at both its smaller and larger registered sizes.
+All three programs read an input window of 32 copies of that size after startup;
+the contents are unknown to their compilers. Worker construction, input parsing,
+raw-result validation and warmup are outside timing. Each timed batch cycles over
+the same window and returns a checked checksum. This keeps each invocation's
+input runtime-dependent without adding barriers inside a workload.
+
+Calibration chooses **one batch count for every language** in a case. It doubles
+from one until the fastest median reaches 5 ms, the slowest reaches 100 ms, or
+1,048,576 invocations are reached. Sampling defaults to three interleaved passes
+of 21 observations with alternating peer/floor order. Reported ns/invocation is
+the median of pass medians divided by the common batch count.
+
+The measured boundary includes the request round trip, input-window traversal,
+checksum and response. A paired `floor` request measures that harness without
+the workload. **Floors are not subtracted.** If a side's median floor is at least
+10% of its elapsed time, ratios involving that side are suppressed and marked
+floor-limited. Missing passes and mismatched batches also suppress comparisons.
+The raw observations remain available. Very fast closed-form kernels may remain
+floor-limited despite batching; those rows cannot prove compute parity.
+
+Use the default baseline target CPU for Rust, the portable Fai AOT ISA, and the
+recorded OCaml configuration; record any CPU/profile override as another
+configuration. The sampler's `WARMMETA` and `AOTARTIFACT` records identify its
+configuration and worker paths, while `WARMSTAT` carries raw batch and floor
+durations. The CI artifact retains worker executables, source and compiler data.
 
 ### `algorithms_aot` — delivered binaries, end to end
 
@@ -407,10 +451,11 @@ stdout and stderr. Oracle computation stays outside timing. The
 `ocaml_baseline_matches_oracle` integration test additionally re-checks each
 algorithm wherever `ocamlopt` is available (skipping cleanly when it is not).
 
-### Why the Rust numbers differ so much between the two benches
+### Historical mixed JIT/AOT tables
 
-The Rust *implementation* is identical, but the two benches are **different
-experiments**, so their Rust baselines are not comparable. Two effects compound.
+Older reports timed the same Rust implementation in two different experiments.
+The following explains those historical numbers; current warm AOT measures both
+registered sizes without changing compilation route. Two effects compounded.
 
 **1. Different workload sizes.** Each algorithm registers two sizes: a small
 `jit_size` (for stable in-process medians) and a large `aot_size` (to amortize
@@ -463,10 +508,9 @@ is closest to the pure size factor.
   Fai row measured the same way in that bench. The summary's ratio table pairs them
   per-group for exactly this reason, reporting `fai/rust` and (in the
   delivered-binary benches) `fai/ocaml`.
-- **Never compare a Rust row across benches.** `algorithms_jit` answers "how fast
-  is compiled Fai *code* vs Rust *code*, in process"; `algorithms_aot` answers
-  "how fast is a *delivered Fai binary* vs a *delivered Rust/OCaml binary*, end to
-  end."
+- Compare only equal sizes and measurement boundaries. `algorithms_aot_warm`
+  reports warmed native batches; `algorithms_aot` reports delivered processes;
+  `algorithms_jit` reports the separate Fai JIT regression path.
 - Interpret the ratio according to its scope. Fai uses uniform values plus
   scalar-specialized representations, reference counting and Cranelift; Rust uses
   LLVM and its own representations. These are legitimate implementation choices,

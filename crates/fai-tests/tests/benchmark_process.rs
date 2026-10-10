@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use fai_tests::benchmark_process::{ExpectedAnswer, spawn_checked};
+use fai_tests::benchmark_process::{ExpectedAnswer, Worker, spawn_checked};
 
 fn baseline() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_algo-baseline"));
@@ -75,4 +75,32 @@ fn invalid_utf8_is_reported_with_stderr() {
     let error =
         ExpectedAnswer::Int(55).verify("invalid encoding", &output).unwrap_err().to_string();
     assert!(error.contains("diagnostic detail"), "{error}");
+}
+
+fn worker() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_algo-worker"));
+    command.arg("MapSum");
+    command
+}
+
+#[test]
+fn persistent_client_checks_multiple_requests_and_clean_exit() {
+    let mut worker = Worker::start(worker(), "2 3").unwrap();
+    assert_eq!(worker.request("value 0").unwrap(), "2");
+    assert_eq!(worker.request("run 5").unwrap(), "18");
+    assert_eq!(worker.request("floor 5").unwrap(), "12");
+    worker.finish().unwrap();
+}
+
+#[test]
+fn rejected_configuration_is_not_a_ready_worker() {
+    let error = Worker::start(worker(), "invalid").err().expect("configuration fails");
+    assert!(error.to_string().contains("did not become ready"));
+}
+
+#[test]
+fn request_errors_and_failed_worker_exit_are_reported() {
+    let mut worker = Worker::start(worker(), "2").unwrap();
+    assert!(worker.request("run -1").unwrap_err().to_string().contains("rejected"));
+    assert!(worker.finish().unwrap_err().to_string().contains("worker exit"));
 }
