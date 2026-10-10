@@ -1,0 +1,50 @@
+module Basic
+
+public type Runtime = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  entropy : Crypto.Entropy,
+  env : Env,
+  fs : FileSystem,
+  net : Net,
+  tls : Tls
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  entropy = Crypto.systemEntropy,
+  env = stdEnv,
+  fs = stdFs,
+  net = stdNet,
+  tls = stdTls
+}
+
+public configuration : Runtime -> Result Postgres.Options Sql.Error / { Env, FileSystem }
+let configuration env =
+  let uri = Option.withDefault "postgres://postgres@localhost/postgres" (env.env.get "FAI_PG_URL")
+  match Postgres.fromUri uri with
+  | Err error -> Err error
+  | Ok options ->
+    match env.env.get "FAI_PG_ROOT" with
+    | None -> Ok options
+    | Some path ->
+      Result.map (fun text ->
+        Postgres.verifiedTls (Some (Bytes.fromString text)) options) (Result.mapError (Sql.error Sql.InvalidInput "roots") (env.fs.readFile path))
+
+let work session =
+  SqlDecode.query (SqlDecode.field "value" SqlDecode.int) session (Sql.statement "select $1::bigint as value" [|
+    Sql.Integer 42
+  |])
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Crypto.Entropy, Env, FileSystem, Net, Tls }
+let main env =
+  let result =
+    match configuration env with
+    | Err error -> Err error
+    | Ok options -> Postgres.withConnection env options work
+  match result with
+  | Err error -> env.console.writeLine (Sql.errorToString error)
+  | Ok rows -> env.console.writeLine (Int.toString (Option.withDefault 0 (Array.get 0 rows)))

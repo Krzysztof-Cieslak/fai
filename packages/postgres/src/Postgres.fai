@@ -1,0 +1,48 @@
+module Postgres
+
+/// Explicit connection configuration, including every protocol timeout and limit.
+public type Options = PgConfig.Options
+
+public options : Options
+let options = PgConfig.defaults
+
+/// Parse postgres:// or postgresql:// without ambient environment reads.
+public fromUri : String -> Result Options Sql.Error
+let fromUri uri = PgConfig.fromUri uri
+
+/// Explicit plaintext mode, useful for trusted local/test transports.
+public plaintext : Options -> Options
+let plaintext options = { options with
+  channelBinding = PgConfig.DisableBinding,
+  tls = PgConfig.Disabled
+}
+
+/// Verified TLS, with optional additional trusted PEM roots.
+public verifiedTls : Option Bytes -> Options -> Options
+let verifiedTls roots options = { options with tls = PgConfig.VerifyFull roots }
+
+let capabilities env = {
+  clock = env.clock,
+  concurrency = env.concurrency,
+  entropy = env.entropy,
+  net = env.net,
+  tls = env.tls
+}
+
+/// Open one connection for a callback, closing it and invalidating all aliases
+/// afterwards. The SQL interface is shared with other database drivers.
+public withConnection : { clock : Clock, concurrency : Concurrency, entropy : Crypto.Entropy, net : Net, tls : Tls | 'r } -> Options -> (Sql.Session { Clock, Concurrency, Net, Tls | 'e } -> Result 'a Sql.Error / { Clock, Concurrency, Net, Tls | 'e }) -> Result 'a Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls | 'e }
+let withConnection env options work =
+  match PgConfig.validate options with
+  | Err error -> Err error
+  | Ok _ ->
+    let env = capabilities env
+    match PgSession.connect env options with
+    | Err error -> Err error
+    | Ok handle ->
+      let result =
+        match PgSession.activate handle 1 with
+        | Err error -> Err error
+        | Ok _ -> work (PgSession.session handle 1 0)
+      let closed = PgControl.cleanup env (fun _ -> PgSession.destroy handle)
+      result

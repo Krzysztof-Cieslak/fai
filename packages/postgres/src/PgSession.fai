@@ -1,0 +1,732 @@
+module PgSession
+
+type Cursor = {
+  columns : Array PgWire.Column,
+  done : Bool,
+  id : Int,
+  implicit : Bool,
+  name : String,
+  offset : Int,
+  owner : Int,
+  rows : Array (Array (Option Bytes))
+}
+
+type State = {
+  cursor : Option Cursor,
+  lease : Int,
+  sequence : Int,
+  status : Int,
+  transactions : List Int,
+  wire : PgConnect.Started
+}
+
+public opaque type Handle = {
+  env : PgConfig.Runtime,
+  gate : Channel State,
+  options : PgConfig.Options,
+  original : PgConnect.Started
+}
+
+type Reply = {
+  columns : Array PgWire.Column,
+  command : Option Bytes,
+  error : Option Sql.Error,
+  events : List Int,
+  parameters : Array Int,
+  rows : Array (Array (Option Bytes)),
+  size : Int,
+  state : State,
+  suspended : Bool
+}
+
+let failure kind operation text = Sql.error kind operation text
+
+let closed operation = failure Sql.Closed operation "PostgreSQL session is closed or expired"
+
+let protocol text = failure Sql.Protocol "protocol" text
+
+owner : State -> Int
+let owner state = Option.withDefault 0 (List.head state.transactions)
+
+/// Establish a physical connection without exposing it outside a scoped owner.
+public connect : PgConfig.Runtime -> PgConfig.Options -> Result Handle Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let connect env options =
+  match PgControl.deadline env options.connectTimeoutMs "connect" (fun _ ->
+    PgConnect.start env options) with
+  | Err error -> Err error
+  | Ok wire ->
+    let gate = env.concurrency.channel 1
+    let seeded =
+      PgControl.cleanup env (fun _ -> env.concurrency.send gate {
+        cursor = None,
+        lease = 0,
+        sequence = 0,
+        status = 73,
+        transactions = [],
+        wire = wire
+      })
+    Ok { env = env, gate = gate, options = options, original = wire }
+
+/// Close the state gate before discarding its token, so nested cancellation cannot
+/// strand cleanup. The original transport is retained independently of the gate.
+public destroy : Handle -> Unit / { Concurrency, Net }
+let destroy handle =
+  let closed = handle.env.concurrency.close handle.gate
+  let discarded = handle.env.concurrency.recv handle.gate
+  PgConnect.close handle.env handle.original.handle
+
+abort : Handle -> Sql.Error -> Unit / { Clock, Concurrency, Net, Tls }
+let abort handle error =
+  let cancel =
+    match error with
+    | Sql.Failure info -> info.kind = Sql.Timeout || info.kind = Sql.Cancelled
+    | _ -> false
+  let cancelled =
+    if cancel then
+      PgControl.deadline handle.env (Some handle.options.cleanupTimeoutMs) "cancel" (fun _ ->
+        PgConnect.cancel handle.env handle.options handle.original)
+    else
+      Ok ()
+  destroy handle
+
+run : Handle -> Int -> String -> (State -> Result (State * Result 'a Sql.Error) Sql.Error / { Net, Tls }) -> Result 'a Sql.Error / { Clock, Concurrency, Net, Tls }
+let run handle lease operation action =
+  PgControl.deadline handle.env handle.options.operationTimeoutMs operation (runLocked handle lease operation action)
+
+runLocked : Handle -> Int -> String -> (State -> Result (State * Result 'a Sql.Error) Sql.Error / { Net, Tls }) -> Unit -> Result 'a Sql.Error / { Clock, Concurrency, Net, Tls }
+let runLocked handle lease operation action unit =
+  match handle.env.concurrency.recv handle.gate with
+  | None -> Err (closed operation)
+  | Some state ->
+    if state.lease <> lease || lease = 0 then
+      let restored =
+        PgControl.cleanup handle.env (fun _ -> handle.env.concurrency.send handle.gate state)
+      Err (closed operation)
+    else
+      let performed = action state
+      let result =
+        if PgControl.alive handle.env then
+          performed
+        else
+          Err (failure Sql.Cancelled operation "operation cancelled")
+      match result with
+      | Ok (state, value) ->
+        let restored =
+          PgControl.cleanup handle.env (fun _ -> handle.env.concurrency.send handle.gate state)
+        value
+      | Err error ->
+        let ended = PgControl.cleanup handle.env (fun _ -> abort handle error)
+        Err error
+
+let parameterStatus bytes =
+  match PgWire.string bytes 0 with
+  | Err error -> Err (protocol error)
+  | Ok (name, next) ->
+    match PgWire.string bytes next with
+    | Ok (value, finish) ->
+      if finish = Bytes.length bytes && (name <> "client_encoding" || value = "UTF8") then
+        Ok ()
+      else
+        Err (protocol "unsupported server encoding")
+    | Err error -> Err (protocol error)
+
+drain : PgConfig.Options -> String -> Reply -> Result Reply Sql.Error / { Net, Tls }
+let drain options operation reply =
+  match PgConnect.receive reply.state.wire.handle reply.state.wire.buffered options.maxFrameBytes with
+  | Err error -> Err error
+  | Ok (message, buffered) ->
+    let state = { reply.state with wire = { reply.state.wire with buffered = buffered } }
+    let events =
+      if List.member message.tag [49, 50, 51, 67, 73, 84, 110, 115, 116] then
+        message.tag :: reply.events
+      else
+        reply.events
+    let reply = { reply with events = events, state = state }
+    if message.tag = 90 then
+      if Bytes.length message.body <> 1 || not (List.member (Bytes.unsafeGet 0 message.body) [
+        73,
+        84,
+        69
+      ]) then
+        Err (protocol "invalid ReadyForQuery")
+      else
+        Ok { reply with state = { state with status = Bytes.unsafeGet 0 message.body } }
+    else if message.tag = 69 then
+      drain options operation { reply with
+        error = Some (PgWire.serverError operation message.body)
+      }
+    else if message.tag = 78 then
+      match PgWire.fields message.body with
+      | Err error -> Err (protocol error)
+      | Ok _ -> drain options operation reply
+    else if message.tag = 83 then
+      match parameterStatus message.body with
+      | Err error -> Err error
+      | Ok _ -> drain options operation reply
+    else if message.tag = 84 then
+      match PgWire.columns message.body with
+      | Err error -> Err (protocol error)
+      | Ok columns -> drain options operation { reply with columns = columns }
+    else if message.tag = 116 then
+      match PgWire.parameters message.body with
+      | Err error -> Err (protocol error)
+      | Ok parameters -> drain options operation { reply with parameters = parameters }
+    else if message.tag = 68 then
+      if Array.length reply.rows >= options.fetchRows || Bytes.length message.body > options.maxBatchBytes - reply.size then
+        Err (protocol "row batch exceeds configured limit")
+      else
+        match PgWire.row message.body with
+        | Err error -> Err (protocol error)
+        | Ok row ->
+          if Array.any (fun field ->
+            match field with
+            | None -> false
+            | Some bytes -> Bytes.length bytes > options.maxColumnBytes) row then
+            Err (protocol "column exceeds configured limit")
+          else
+            drain options operation { reply with
+              rows = Array.push row reply.rows,
+              size = reply.size + Bytes.length message.body
+            }
+    else if message.tag = 67 then
+      match PgWire.affected message.body with
+      | Err error -> Err (protocol error)
+      | Ok _ -> drain options operation { reply with command = Some message.body }
+    else if message.tag = 115 && Bytes.isEmpty message.body then
+      drain options operation { reply with suspended = true }
+    else if List.member message.tag [49, 50, 51, 110, 73] && Bytes.isEmpty message.body then
+      drain options operation reply
+    else if message.tag = 65 then
+      match PgWire.string message.body 4 with
+      | Err error -> Err (protocol error)
+      | Ok (_, next) ->
+        (match PgWire.string message.body next with
+        | Ok (_, finish) ->
+          if finish = Bytes.length message.body then
+            drain options operation reply
+          else
+            Err (protocol "invalid notification")
+        | Err error -> Err (protocol error))
+    else
+      Err (protocol "unexpected PostgreSQL response")
+
+exchange : PgConfig.Options -> String -> State -> Bytes -> Result Reply Sql.Error / { Net, Tls }
+let exchange options operation state bytes =
+  if Bytes.length bytes > options.maxFrameBytes then
+    Err (failure Sql.InvalidInput operation "request exceeds configured frame limit")
+  else
+    match PgConnect.send state.wire.handle bytes with
+    | Err error -> Err error
+    | Ok _ ->
+      let result = drain options operation {
+        columns = Array.empty,
+        command = None,
+        error = None,
+        events = [],
+        parameters = Array.empty,
+        rows = Array.empty,
+        size = 0,
+        state = state,
+        suspended = false
+      }
+      match result with
+      | Err error -> Err error
+      | Ok reply ->
+        let valid =
+          match Bytes.get 0 bytes with
+          | Some 80 -> reply.events = [84, 116, 49] || reply.events = [110, 116, 49]
+          | Some 66 -> reply.events = [50] || reply.events = [67, 50] || reply.events = [73, 50]
+          | Some 69 -> reply.events = [67] || reply.events = [115]
+          | Some 67 -> reply.events = [51]
+          | Some 81 -> reply.events = [67] || reply.events = [67, 67] || reply.events = [67, 84]
+          | _ -> false
+        if reply.error <> None || valid then
+          Ok reply
+        else
+          Err (protocol "incomplete or out-of-order PostgreSQL response")
+
+let sync = PgWire.packet 83 Bytes.empty
+
+let simple text = PgWire.packet 81 (PgWire.zero text)
+
+permission : State -> Int -> Result Unit Sql.Error
+let permission state transaction =
+  if owner state <> transaction then
+    Err (failure Sql.TransactionState "session" "use the active transaction session")
+  else if state.status = 69 then
+    Err (failure Sql.TransactionState "session" "transaction is aborted; roll it back")
+  else if state.cursor <> None then
+    Err (failure Sql.TransactionState "session" "close the active row cursor first")
+  else if state.sequence = 9223372036854775807 then
+    Err (failure Sql.Closed "session" "session generation exhausted")
+  else
+    Ok ()
+
+let encodedParameters types values index remaining maximum output =
+  if index = Array.length values then
+    Ok (List.reverse output)
+  else
+    match PgTypes.parameter (Array.unsafeGet index types) (Array.unsafeGet index values) with
+    | Err error ->
+      Err (failure Sql.InvalidInput "bind" ("parameter " ++ Int.toString index ++ ": " ++ error))
+    | Ok None ->
+      if remaining < 4 then
+        Err (failure Sql.InvalidInput "bind" "parameter request exceeds configured limit")
+      else
+        encodedParameters types values (index + 1) (remaining - 4) maximum (PgWire.int32 (-1) :: output)
+    | Ok (Some bytes) ->
+      if Bytes.length bytes > maximum || Bytes.length bytes > remaining - 4 then
+        Err (failure Sql.InvalidInput "bind" "parameter exceeds configured byte limit")
+      else
+        encodedParameters types values (index + 1) (remaining - Bytes.length bytes - 4) maximum (PgWire.join [
+          PgWire.int32 (Bytes.length bytes),
+          bytes
+        ] :: output)
+
+let ownsControl text =
+  let words = PgWire.keywords text
+  List.member (Option.withDefault "" (List.head words)) [
+    "BEGIN",
+    "START",
+    "COMMIT",
+    "END",
+    "ROLLBACK",
+    "ABORT",
+    "SAVEPOINT",
+    "RELEASE",
+    "PREPARE",
+    "DECLARE",
+    "CLOSE",
+    "FETCH",
+    "MOVE",
+    "DISCARD"
+  ] || words = ["SET", "TRANSACTION"]
+
+prepare : Handle -> State -> Sql.Statement -> Result (State * Result (Array PgWire.Column * List Bytes) Sql.Error) Sql.Error / { Net, Tls }
+let prepare handle state statement =
+  if String.contains statement.text "\u{0}" || statement.text = "" || Array.length statement.parameters > 32767 || Bytes.length (Bytes.fromString statement.text) > handle.options.maxFrameBytes - 32 then
+    Ok (state, Err (failure Sql.InvalidInput "prepare" "invalid SQL or parameter count"))
+  else if ownsControl statement.text then
+    Ok (state, Err (failure Sql.Unsupported "prepare" "transaction and cursor control belong to the session API"))
+  else
+    let request = PgWire.join [
+      PgWire.packet 80 (PgWire.join [PgWire.zero "", PgWire.zero statement.text, PgWire.int16 0]),
+      PgWire.packet 68 (Bytes.fromList [83, 0]),
+      sync
+    ]
+    match exchange handle.options "prepare" state request with
+    | Err error -> Err error
+    | Ok reply ->
+      match reply.error with
+      | Some error -> Ok (reply.state, Err error)
+      | None ->
+        if Array.length reply.parameters <> Array.length statement.parameters then
+          Ok (reply.state, Err (failure Sql.InvalidInput "bind" "parameter count mismatch"))
+        else if Array.any (fun column -> PgTypes.name column.oid = None) reply.columns then
+          Ok (reply.state, Err (failure Sql.Unsupported "query" "unsupported PostgreSQL column type; use an explicit cast"))
+        else
+          Ok (reply.state, Result.map (fun parameters ->
+            (reply.columns, parameters)) (encodedParameters reply.parameters statement.parameters 0 (handle.options.maxFrameBytes - 128 - Array.length reply.columns * 2) handle.options.maxColumnBytes []))
+
+bind : String -> Array PgWire.Column -> List Bytes -> Bytes
+let bind name columns parameters =
+  PgWire.packet 66 (PgWire.join [
+    PgWire.zero name,
+    PgWire.zero "",
+    PgWire.int16 0,
+    PgWire.int16 (List.length parameters),
+    PgWire.join parameters,
+    PgWire.int16 (Array.length columns),
+    PgWire.join (Array.toList (Array.map (fun column ->
+      PgWire.int16 (PgTypes.format column.oid)) columns))
+  ])
+
+let executePortal name count =
+  PgWire.packet 69 (Bytes.concat (PgWire.zero name) (PgWire.int32 count))
+
+executeAction : Handle -> Int -> Sql.Statement -> State -> Result (State * Result Sql.Execution Sql.Error) Sql.Error / { Net, Tls }
+let executeAction handle transaction statement state =
+  match permission state transaction with
+  | Err error -> Ok (state, Err error)
+  | Ok _ ->
+    match prepare handle state statement with
+    | Err error -> Err error
+    | Ok (state, Err error) -> Ok (state, Err error)
+    | Ok (state, Ok (columns, parameters)) ->
+      if not (Array.isEmpty columns) then
+        Ok (state, Err (failure Sql.InvalidInput "execute" "use query for a statement returning columns"))
+      else
+        match exchange handle.options "execute" state (PgWire.join [
+          bind "" columns parameters,
+          executePortal "" 0,
+          sync
+        ]) with
+        | Err error -> Err error
+        | Ok reply ->
+          let expected = if List.isEmpty state.transactions then 73 else 84
+          let value =
+            match reply.error with
+            | Some error -> Err error
+            | None ->
+              Result.map (fun count -> {
+                affectedRows = count
+              }) (Result.mapError protocol (PgWire.affected (Option.withDefault (PgWire.zero "EMPTY") reply.command)))
+          if reply.error = None && reply.state.status <> expected then
+            Err (protocol "unexpected transaction state after command")
+          else
+            Ok (reply.state, value)
+
+metadata : Array PgWire.Column -> Array Sql.Column
+let metadata columns =
+  Array.map (fun column -> { declaredType = PgTypes.name column.oid, name = column.name }) columns
+
+queryFailure : Handle -> Bool -> State -> Sql.Error -> Result (State * Result 'a Sql.Error) Sql.Error / { Net, Tls }
+let queryFailure handle implicit state error =
+  if not implicit then
+    Ok (state, Err error)
+  else
+    match exchange handle.options "rollback cursor" state (simple "ROLLBACK") with
+    | Err cleanup -> Err (Sql.CleanupFailed error cleanup)
+    | Ok cleaned ->
+      match cleaned.error with
+      | Some cleanup -> Err (Sql.CleanupFailed error cleanup)
+      | None -> Ok (cleaned.state, Err error)
+
+queryPrepared : Handle -> Int -> Bool -> Sql.Statement -> State -> Result (State * Result (Int * Array Sql.Column) Sql.Error) Sql.Error / { Net, Tls }
+let queryPrepared handle transaction implicit statement state =
+  match prepare handle state statement with
+  | Err error -> Err error
+  | Ok (state, Err error) -> queryFailure handle implicit state error
+  | Ok (state, Ok (columns, parameters)) ->
+    if Array.isEmpty columns then
+      queryFailure handle implicit state (failure Sql.InvalidInput "query" "use execute for a statement without columns")
+    else
+      let id = state.sequence + 1
+      let name = "fai_" ++ Int.toString id
+      match exchange handle.options "bind" state (PgWire.join [
+        bind name columns parameters,
+        sync
+      ]) with
+      | Err error -> Err error
+      | Ok reply ->
+        match reply.error with
+        | Some error -> queryFailure handle implicit reply.state error
+        | None ->
+          Ok ({ reply.state with
+            cursor = Some {
+              columns = columns,
+              done = false,
+              id = id,
+              implicit = implicit,
+              name = name,
+              offset = 0,
+              owner = transaction,
+              rows = Array.empty
+            },
+            sequence = id
+          }, Ok (id, metadata columns))
+
+queryAction : Handle -> Int -> Sql.Statement -> State -> Result (State * Result (Int * Array Sql.Column) Sql.Error) Sql.Error / { Net, Tls }
+let queryAction handle transaction statement state =
+  match permission state transaction with
+  | Err error -> Ok (state, Err error)
+  | Ok _ ->
+    if not (List.isEmpty state.transactions) then
+      queryPrepared handle transaction false statement state
+    else
+      match exchange handle.options "begin cursor" state (simple "BEGIN") with
+      | Err error -> Err error
+      | Ok reply ->
+        match reply.error with
+        | Some error -> Ok (reply.state, Err error)
+        | None -> queryPrepared handle transaction true statement reply.state
+
+decodeRow : Array PgWire.Column -> Array (Option Bytes) -> Int -> Array Sql.Value -> Result Sql.Row Sql.Error
+let decodeRow columns fields index values =
+  if index = Array.length columns then
+    Sql.row (metadata columns) values
+  else
+    let column = Array.unsafeGet index columns
+    let decoded =
+      match Array.unsafeGet index fields with
+      | None -> Ok Sql.Null
+      | Some bytes ->
+        Result.mapError (fun error ->
+          Sql.atColumn index (failure Sql.DecodeFailure "decode" error)) (PgTypes.decode column.oid (PgTypes.format column.oid) bytes)
+    match decoded with
+    | Err error -> Err error
+    | Ok value -> decodeRow columns fields (index + 1) (Array.push value values)
+
+nextAction : Handle -> Int -> Int -> State -> Result (State * Result (Option Sql.Row) Sql.Error) Sql.Error / { Net, Tls }
+let nextAction handle transaction id state =
+  match state.cursor with
+  | None -> Ok (state, Err (closed "next"))
+  | Some cursor ->
+    if cursor.id <> id || cursor.owner <> transaction || owner state <> transaction then
+      Ok (state, Err (closed "next"))
+    else if cursor.offset < Array.length cursor.rows then
+      let fields = Array.unsafeGet cursor.offset cursor.rows
+      if Array.length fields <> Array.length cursor.columns then
+        Err (protocol "row column count mismatch")
+      else
+        let result =
+          Result.map (fun row -> Some row) (decodeRow cursor.columns fields 0 Array.empty)
+        Ok ({ state with cursor = Some { cursor with offset = cursor.offset + 1 } }, result)
+    else if cursor.done then
+      Ok (state, Ok None)
+    else
+      match exchange handle.options "fetch" state (PgWire.join [
+        executePortal cursor.name handle.options.fetchRows,
+        sync
+      ]) with
+      | Err error -> Err error
+      | Ok reply ->
+        match reply.error with
+        | Some error ->
+          Ok ({ reply.state with cursor = Some { cursor with done = true } }, Err error)
+        | None -> nextAction handle transaction id { reply.state with
+          cursor = Some { cursor with done = not reply.suspended, offset = 0, rows = reply.rows }
+        }
+
+closeCursor : Handle -> State -> Result (State * Result Unit Sql.Error) Sql.Error / { Net, Tls }
+let closeCursor handle state =
+  match state.cursor with
+  | None -> Ok (state, Ok ())
+  | Some cursor ->
+    match exchange handle.options "close cursor" state (PgWire.join [
+      PgWire.packet 67 (Bytes.concat (Bytes.fromList [80]) (PgWire.zero cursor.name)),
+      sync
+    ]) with
+    | Err error -> Err error
+    | Ok reply ->
+      let state = { reply.state with cursor = None }
+      if cursor.implicit then
+        match exchange handle.options "end cursor" state (simple (if state.status = 69 || reply.error <> None then
+          "ROLLBACK"
+        else
+          "COMMIT")) with
+        | Err error -> Err error
+        | Ok ended ->
+          Ok (ended.state, match ended.error with
+          | None -> Ok ()
+          | Some error -> Err error)
+      else
+        Ok (state, match reply.error with
+        | None -> Ok ()
+        | Some error -> Err error)
+
+beginAction : Handle -> Int -> Sql.Isolation -> State -> Result (State * Result Int Sql.Error) Sql.Error / { Net, Tls }
+let beginAction handle transaction isolation state =
+  match permission state transaction with
+  | Err error -> Ok (state, Err error)
+  | Ok _ ->
+    let id = state.sequence + 1
+    let level =
+      match isolation with
+      | Sql.Default -> ""
+      | Sql.ReadCommitted -> " ISOLATION LEVEL READ COMMITTED"
+      | Sql.RepeatableRead -> " ISOLATION LEVEL REPEATABLE READ"
+      | Sql.Serializable -> " ISOLATION LEVEL SERIALIZABLE"
+    let text =
+      if List.isEmpty state.transactions then
+        "BEGIN" ++ level
+      else
+        "SAVEPOINT fai_tx_" ++ Int.toString id
+    match exchange handle.options "begin" state (simple text) with
+    | Err error -> Err error
+    | Ok reply ->
+      match reply.error with
+      | Some error -> Ok (reply.state, Err error)
+      | None ->
+        if reply.state.status <> 84 then
+          Err (protocol "transaction did not begin")
+        else
+          Ok ({ reply.state with sequence = id, transactions = id :: state.transactions }, Ok id)
+
+endAction : Handle -> Int -> Bool -> State -> Result (State * Result Unit Sql.Error) Sql.Error / { Net, Tls }
+let endAction handle transaction commit state =
+  if owner state <> transaction || transaction = 0 then
+    Ok (state, if not commit && not (List.member transaction state.transactions) then
+      Ok ()
+    else
+      Err (closed "transaction"))
+  else if commit && state.status = 69 then
+    Ok (state, Err (failure Sql.TransactionState "commit" "cannot commit an aborted transaction"))
+  else
+    match closeCursor handle state with
+    | Err error -> Err error
+    | Ok (state, closedCursor) ->
+      let nested = List.length state.transactions > 1
+      let text =
+        if commit then
+          (if nested then "RELEASE SAVEPOINT fai_tx_" ++ Int.toString transaction else "COMMIT")
+        else if nested then
+          "ROLLBACK TO SAVEPOINT fai_tx_" ++ Int.toString transaction ++ "; RELEASE SAVEPOINT fai_tx_" ++ Int.toString transaction
+        else
+          "ROLLBACK"
+      match exchange handle.options (if commit then
+        "commit"
+      else
+        "rollback") state (simple text) with
+      | Err error -> Err error
+      | Ok reply ->
+        match reply.error with
+        | Some error -> Ok (reply.state, Err error)
+        | None ->
+          let expected = if nested then 84 else 73
+          if reply.state.status <> expected then
+            Err (protocol "unexpected transaction state")
+          else
+            let state = { reply.state with transactions = List.drop 1 state.transactions }
+            if commit && Option.map Bytes.toString reply.command = Some (Some "ROLLBACK\u{0}") then
+              Ok (state, Err (failure Sql.TransactionState "commit" "server rolled the transaction back"))
+            else
+              Ok (state, closedCursor)
+
+finish : Handle -> Int -> Int -> Unit -> Result Unit Sql.Error / { Clock, Concurrency, Net, Tls }
+let finish handle lease id unit = PgControl.cleanup handle.env (finishImpl handle lease id)
+
+finishImpl : Handle -> Int -> Int -> Unit -> Result Unit Sql.Error / { Clock, Concurrency, Net, Tls }
+let finishImpl original lease id unit =
+  let handle = { original with
+    options = { original.options with operationTimeoutMs = Some original.options.cleanupTimeoutMs }
+  }
+  let result =
+    run handle lease "close cursor" (fun state ->
+      match state.cursor with
+      | Some cursor -> if cursor.id = id then closeCursor handle state else Ok (state, Ok ())
+      | None -> Ok (state, Ok ()))
+  match result with
+  | Err (Sql.Failure error) -> if error.kind = Sql.Closed then Ok () else result
+  | _ -> result
+
+rows : Handle -> Int -> Int -> Int -> Array Sql.Column -> Sql.Rows { Clock, Concurrency, Net, Tls | 'e }
+let rows handle lease transaction id columns =
+  Sql.rows columns (pull handle lease transaction id columns) (finish handle lease id)
+
+pull : Handle -> Int -> Int -> Int -> Array Sql.Column -> Unit -> Result (Option (Sql.Row * Sql.Rows { Clock, Concurrency, Net, Tls | 'e })) Sql.Error / { Clock, Concurrency, Net, Tls | 'e }
+let pull handle lease transaction id columns unit =
+  match run handle lease "next" (nextAction handle transaction id) with
+  | Err error -> Err error
+  | Ok None -> Ok None
+  | Ok (Some row) -> Ok (Some (row, rows handle lease transaction id columns))
+
+query : Handle -> Int -> Int -> Sql.Statement -> Result (Sql.Rows { Clock, Concurrency, Net, Tls | 'e }) Sql.Error / { Clock, Concurrency, Net, Tls | 'e }
+let query handle lease transaction statement =
+  match run handle lease "query" (queryAction handle transaction statement) with
+  | Err error -> Err error
+  | Ok (id, columns) -> Ok (rows handle lease transaction id columns)
+
+begin : Handle -> Int -> Int -> Sql.Isolation -> Result (Sql.Session { Clock, Concurrency, Net, Tls | 'e }) Sql.Error / { Clock, Concurrency, Net, Tls | 'e }
+let begin handle lease transaction isolation =
+  Result.map (session handle lease) (run handle lease "begin" (beginAction handle transaction isolation))
+
+rollback : Handle -> Int -> Int -> Unit -> Result Unit Sql.Error / { Clock, Concurrency, Net, Tls }
+let rollback handle lease transaction unit =
+  PgControl.cleanup handle.env (rollbackImpl handle lease transaction)
+
+rollbackImpl : Handle -> Int -> Int -> Unit -> Result Unit Sql.Error / { Clock, Concurrency, Net, Tls }
+let rollbackImpl original lease transaction unit =
+  let handle = { original with
+    options = { original.options with operationTimeoutMs = Some original.options.cleanupTimeoutMs }
+  }
+  let result = run handle lease "rollback" (endAction handle transaction false)
+  match result with
+  | Err (Sql.Failure error) -> if error.kind = Sql.Closed then Ok () else result
+  | _ -> result
+
+/// A generation-checked session. Transactions have separate child IDs.
+public session : Handle -> Int -> Int -> Sql.Session { Clock, Concurrency, Net, Tls | 'e }
+let session handle lease transaction = Sql.session {
+  begin = begin handle lease transaction,
+  commit = fun _ -> run handle lease "commit" (endAction handle transaction true),
+  execute = fun statement ->
+    run handle lease "execute" (executeAction handle transaction statement),
+  query = query handle lease transaction,
+  rollback = rollback handle lease transaction
+}
+
+/// Activate a new lease only on an idle, synchronized physical connection.
+public activate : Handle -> Int -> Result Unit Sql.Error / { Concurrency }
+let activate handle lease = PgControl.cleanup handle.env (activateImpl handle lease)
+
+activateImpl : Handle -> Int -> Unit -> Result Unit Sql.Error / { Concurrency }
+let activateImpl handle lease unit =
+  match handle.env.concurrency.recv handle.gate with
+  | None -> Err (closed "acquire")
+  | Some state ->
+    let valid =
+      state.lease = 0 && state.status = 73 && state.cursor = None && List.isEmpty state.transactions
+    let restored =
+      handle.env.concurrency.send handle.gate (if valid then
+        { state with lease = lease }
+      else
+        state)
+    if valid then Ok () else Err (failure Sql.TransactionState "acquire" "connection is not idle")
+
+resetAction : Handle -> State -> Result (State * Result Unit Sql.Error) Sql.Error / { Net, Tls }
+let resetAction handle state =
+  let rollback =
+    if state.status <> 73 then
+      exchange handle.options "pool rollback" state (simple "ROLLBACK")
+    else
+      Ok {
+        columns = Array.empty,
+        command = None,
+        error = None,
+        events = [],
+        parameters = Array.empty,
+        rows = Array.empty,
+        size = 0,
+        state = state,
+        suspended = false
+      }
+  match rollback with
+  | Err error -> Err error
+  | Ok reply ->
+    match reply.error with
+    | Some error -> Ok (reply.state, Err error)
+    | None ->
+      match exchange handle.options "pool reset" reply.state (simple "DISCARD ALL") with
+      | Err error -> Err error
+      | Ok reply ->
+        match reply.error with
+        | Some error -> Ok (reply.state, Err error)
+        | None ->
+          if reply.state.status <> 73 then
+            Err (protocol "pool reset did not become idle")
+          else
+            Ok ({ reply.state with cursor = None, lease = 0, transactions = [] }, Ok ())
+
+/// Reset before reuse; failure closes the physical connection.
+public reset : Handle -> Int -> Result Unit Sql.Error / { Clock, Concurrency, Net, Tls }
+let reset handle lease = PgControl.cleanup handle.env (resetImpl handle lease)
+
+resetImpl : Handle -> Int -> Unit -> Result Unit Sql.Error / { Clock, Concurrency, Net, Tls }
+let resetImpl handle lease unit =
+  let bounded = { handle with
+    options = { handle.options with operationTimeoutMs = Some handle.options.cleanupTimeoutMs }
+  }
+  let result =
+    PgControl.deadline handle.env (Some handle.options.cleanupTimeoutMs) "pool reset" (fun _ ->
+      run bounded lease "reset" (resetAction bounded))
+  match result with
+  | Ok _ -> result
+  | Err _ ->
+    let closed = destroy handle
+    result
+
+let pingAction handle state =
+  match exchange handle.options "validate connection" state (simple "SELECT 1") with
+  | Err error -> Err error
+  | Ok reply ->
+    Ok (reply.state, match reply.error with
+    | None ->
+      if reply.state.status = 73 then Ok () else Err (protocol "validation did not return idle")
+    | Some error -> Err error)
+
+/// Validate an idle checked-out connection before exposing a lease to a caller.
+public ping : Handle -> Int -> Int -> Result Unit Sql.Error / { Clock, Concurrency, Net, Tls }
+let ping handle lease timeout =
+  let bounded = { handle with options = { handle.options with operationTimeoutMs = Some timeout } }
+  run bounded lease "validate connection" (pingAction bounded)

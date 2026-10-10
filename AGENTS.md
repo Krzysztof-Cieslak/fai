@@ -1011,6 +1011,10 @@ checked common scalar codecs, verified TLS and SCRAM authentication in Fai.
 It shares SQL values with SQLite; exact decimals never pass through Float,
 timestamp precision is checked at microseconds, and TLS channel binding can be
 required. Pure protocol contracts run with `fai test -C packages postgres`.
+`Postgres.withConnection` supplies the shared `Sql.Session`, using extended-query
+parameter descriptions and named, bounded portals. Transactions pin child sessions
+and nest through savepoints; cancelled operations target the original backend and
+discard the connection. SQL is never automatically replayed.
 
 ## 6. Compiler pipeline
 
