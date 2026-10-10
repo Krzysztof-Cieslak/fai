@@ -156,6 +156,30 @@ fn descending_runs_keep_the_comparator_schedule() {
 }
 
 #[test]
+fn equal_runs_retain_heads_without_skipping_comparisons() {
+    check_trace(vec![7; 128]);
+}
+
+#[test]
+fn long_unchosen_runs_keep_the_exact_comparator_order() {
+    check_trace((64..128).chain(0..64).collect());
+}
+
+#[test]
+fn standard_list_contracts_hold() {
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut db = FaiDatabase::new();
+    let ids = fai_types::std_lib::load_std(&mut db);
+    let file = ids
+        .into_iter()
+        .filter_map(|id| db.source_file(id))
+        .find(|file| file.path(&db).ends_with("/List.fai"))
+        .unwrap();
+    let result = fai_driver::test(&db, &[file], None, fai_driver::TestConfig::default());
+    assert!(result.ok && result.passed > 0, "{:?}", result.diagnostics);
+}
+
+#[test]
 fn duplicate_keys_keep_their_original_order() {
     let values: Vec<_> = (0..129).map(|i| i * 7 % 5).collect();
     let mut expected: Vec<_> = (0..values.len()).collect();

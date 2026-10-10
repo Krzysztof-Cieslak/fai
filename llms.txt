@@ -1101,7 +1101,8 @@ compare  : 'a -> 'a -> Int                          // -, 0, + (any non-function
 
 ### List — linked list `List 'a` (head/tail recursion, `::`, `[...]`)
 
-`sortBy` is stable: equal-key elements keep their input order. Large calls use
+`sortBy` is stable: equal-key elements keep their input order. Buffered merging
+retains the unchosen run head while preserving every comparator call. Large calls use
 private merge buffers while small lists stay on the linked path; both preserve
 the same comparator call order and leave retained input lists unchanged.
 The second private buffer is initialized by one bulk copy.

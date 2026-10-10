@@ -381,6 +381,8 @@ one bulk copy through the standard-library-private array ownership gate.
 Both paths merge adjacent runs in the same order and choose the left element on
 equality, preserving stability and the exact
 comparator call schedule. Input/result values remain immutable linked lists.
+Buffered merging retains the unchosen run head, loading a new element only from
+the advancing run. Comparisons, shared values and resource lifetimes are preserved.
 
 `HashDict.updateOr fallback f key dict` applies its pure updater once to the
 existing value or fallback and stores the result. It hashes once and follows one

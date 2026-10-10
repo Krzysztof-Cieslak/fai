@@ -27,6 +27,7 @@ let byRemainder xs = List.sortBy (fun a b -> compare (a % 3) (b % 3)) xs
 example: byRemainder [3, 1, 6, 4, 9, 2] = [3, 6, 9, 1, 4, 2]
 // Large stable sorts use two private buffers, with one initial bulk copy.
 example: List.sortBy compare (reverse (List.range 0 65)) = List.range 0 65
+example: List.sortBy compare (List.map (const 7) (List.range 0 65)) = List.map (const 7) (List.range 0 65)
 
 /// Folding concatenated chunks preserves their left-to-right element order.
 public chunkSum : List (List Int) -> Int
