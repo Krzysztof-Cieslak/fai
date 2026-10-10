@@ -1,0 +1,89 @@
+module EdgeSpec
+
+example: PgWire.parameters (PgWire.join [
+  PgWire.int16 2,
+  PgWire.int32 20,
+  PgWire.int32 25
+]) = Ok [| 20, 25 |]
+example: Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 2, PgWire.int32 20]))
+example: Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 0, PgWire.int32 20]))
+example: Result.isErr (PgWire.columns (PgWire.int16 1))
+example: Result.isErr (PgWire.row (PgWire.join [PgWire.int16 1, PgWire.int32 (-2)]))
+example: Result.isErr (PgWire.row (PgWire.join [PgWire.int16 0, Bytes.fromList [1]]))
+example: Result.isErr (PgWire.string (Bytes.fromList [255, 0]) 0)
+example: Result.isErr (PgWire.unsigned Bytes.empty (-1) 8)
+example: Result.isErr (PgWire.fields (Bytes.fromString "missing terminator"))
+example: PgWire.fields (PgWire.join [
+  Bytes.fromList [67],
+  PgWire.zero "23505",
+  Bytes.fromList [0]
+]) = Ok [(67, "23505")]
+example: PgWire.keywords " /* x /* y */ z */ -- ignored\n; rollback" = ["ROLLBACK"]
+example: PgWire.keywords "select 'COMMIT'" = ["SELECT"]
+example: Result.isErr (PgWire.decimalInt "-9223372036854775809")
+example: Result.isErr (PgWire.decimalInt "+")
+example: Result.isErr (PgWire.decimalInt "123 ")
+forall n: PgWire.decimalInt (Int.toString n) = Ok n
+forall bytes: PgWire.row (PgWire.join [
+  PgWire.int16 1,
+  PgWire.int32 (List.length bytes),
+  Bytes.fromList bytes
+]) = Ok [| Some (Bytes.fromList bytes) |]
+example: Result.isErr (PgTypes.decode 16 1 (Bytes.fromList [2]))
+example: Result.isErr (PgTypes.decode 99999 1 Bytes.empty)
+example: Result.isErr (PgTypes.decode 25 1 (Bytes.fromList [255]))
+example: Result.isErr (PgTypes.decode 20 0 (Bytes.fromString "42"))
+example: PgTypes.decode 700 1 (PgWire.int32 1) = Ok (Sql.Real (Float.fromBits 3936146074321813504))
+example: PgTypes.decode 701 1 (PgWire.int64 (-9223372036854775808)) = Ok (Sql.Real (-0.0))
+example: PgTypes.decode 1082 1 (PgWire.int32 (-2147483648)) = Ok (Sql.Date Sql.NegativeInfinity)
+example: PgTypes.decode 1184 1 (PgWire.int64 (-1)) = Ok (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 10956 86399999999000)))
+example: Result.isErr (PgTypes.decode 1083 1 (PgWire.int64 86400000001))
+example: Result.isErr (PgTypes.parameter 23 (Sql.Integer 2147483648))
+example: Result.isErr (PgTypes.parameter 25 (Sql.Text "a\u{0}b"))
+example: Result.isErr (PgTypes.parameter 700 (Sql.Real 0.1))
+example: Result.isOk (PgTypes.parameter 700 (Sql.Real 1.25))
+example: Result.isOk (PgTypes.parameter 700 (Sql.Real (Float.fromBits 3936146074321813504)))
+example: Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440589)))))
+example: Result.isOk (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440588)))))
+example: Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay 2145042906))))
+example: Result.isErr (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762940 0))))
+example: Result.isOk (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762939 86399999999000))))
+example: Result.isErr (PgTypes.parameter 114 (Sql.Json "{"))
+example: PgTypes.parameter 20 Sql.Null = Ok None
+example: Result.isErr (PgAuth.base64Decode "AQ=")
+example: Result.isErr (PgAuth.base64Decode "AQ==AAAA")
+example: Result.isErr (PgAuth.base64Decode "AAB=")
+example: Result.isErr (PgAuth.base64Decode "A A=")
+
+let first = PgAuth.first "a,b=c" "nonce" "n,," Bytes.empty
+example: first.message = "n,,n=a=2Cb=3Dc,r=nonce"
+example: Result.isErr (PgAuth.respond 100 "password" first "r=nonceX,s=YQ==,i=1,i=2")
+example: Result.isErr (PgAuth.respond 100 "password" first "m=unsupported,r=nonceX,s=YQ==,i=1")
+example: Result.isErr (PgAuth.respond 100 "password" first "r=nonceX,s=YQ==,i=0")
+example: Result.isErr (PgAuth.respond 100 "password" first "r=nonceX,s=YQ==,i=101")
+example: Result.isErr (PgAuth.respond 100 "password" first "r=nonce X,s=YQ==,i=1")
+example: Result.isErr (PgAuth.verify {
+  message = "",
+  serverProof = Bytes.fromList (List.map (fun _ -> 0) (List.range 0 32))
+} "v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=,e=failed")
+example: Result.isErr (PgConfig.validate { PgConfig.defaults with port = 0 })
+example: Result.isErr (PgConfig.validate { PgConfig.defaults with cleanupTimeoutMs = 0 })
+example: Result.isErr (PgConfig.validate { PgConfig.defaults with
+  channelBinding = PgConfig.RequireBinding,
+  tls = PgConfig.Disabled
+})
+example: Result.isOk (PgConfig.validate { PgConfig.defaults with
+  connectTimeoutMs = None,
+  operationTimeoutMs = None
+})
+example: Result.map (fun config ->
+  (config.user, config.password, config.database)) (PgConfig.fromUri "postgres://a%40b:p%3Aq@localhost/db%20name") = Ok ("a@b", "p:q", "db name")
+example: Result.isErr (PgConfig.fromUri "https://localhost/db")
+example: Result.isErr (PgConfig.fromUri "postgres://localhost/db?sslmode=prefer")
+example: Result.isErr (PgPool.validate { PgPool.defaults with maxConnections = 0 })
+example: Result.isErr (PgPool.validate { PgPool.defaults with minConnections = 11 })
+example: Result.isOk (PgPool.validate { PgPool.defaults with
+  acquireTimeoutMs = None,
+  idleTimeoutMs = None,
+  maxLifetimeMs = None
+})

@@ -3,8 +3,18 @@ module Postgres
 /// Explicit connection configuration, including every protocol timeout and limit.
 public type Options = PgConfig.Options
 
+/// Limits, expiry policy and acquisition deadlines for a scoped pool.
+public type PoolOptions = PgPool.Options
+
+/// A pool whose physical connections live only within withPool's callback.
+public type Pool = PgPool.Pool
+
 public options : Options
 let options = PgConfig.defaults
+
+/// Default bounded pool settings; every duration is configurable.
+public poolOptions : PoolOptions
+let poolOptions = PgPool.defaults
 
 /// Parse postgres:// or postgresql:// without ambient environment reads.
 public fromUri : String -> Result Options Sql.Error
@@ -46,3 +56,14 @@ let withConnection env options work =
         | Ok _ -> work (PgSession.session handle 1 0)
       let closed = PgControl.cleanup env (fun _ -> PgSession.destroy handle)
       result
+
+/// Own a bounded pool for one scope. All idle and active physical connections
+/// are closed when the callback finishes; maintenance is cancelled and joined.
+public withPool : { clock : Clock, concurrency : Concurrency, entropy : Crypto.Entropy, net : Net, tls : Tls | 'r } -> Options -> PoolOptions -> (Pool -> Result 'a Sql.Error / 'e) -> Result 'a Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls | 'e }
+let withPool env options poolOptions work =
+  PgPool.withPool (capabilities env) options poolOptions work
+
+/// Acquire an exclusive generation-checked session, reset it after use, and
+/// return it to the pool only when reset succeeds.
+public withSession : Pool -> (Sql.Session { Clock, Concurrency, Net, Tls | 'e } -> Result 'a Sql.Error / { Clock, Concurrency, Net, Tls | 'e }) -> Result 'a Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls | 'e }
+let withSession pool work = PgPool.withSession pool work

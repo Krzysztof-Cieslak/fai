@@ -49,3 +49,40 @@ not a deadline on an entire cursor or transaction. Cancellation uses a separate
 connection to the original numeric peer and then discards the original connection.
 It never reuses an uncertain protocol state or permits a late cancel to target a
 later borrower. SQL commands are never automatically replayed.
+
+## Pooling
+
+`Postgres.withPool runtime options poolOptions callback` owns a bounded pool.
+Inside it, `Postgres.withSession pool callback` acquires an exclusive session.
+FIFO admission prevents later waiters from taking a connection ahead of the queue
+head. Acquisition is cancellable and bounded by both waiter count and deadline.
+Dead idle connections are checked before exposing a lease; only this validation
+may reconnect. An application command is never retried.
+
+Returned connections run `ROLLBACK` when needed, then `DISCARD ALL`. Reset must
+succeed before reuse. Escaped sessions, transaction children, and cursors retain
+their original generation and cannot access another borrower's connection.
+Idle expiry closes idle connections; maximum lifetime never interrupts a lease
+or transaction and retires the connection on return. Minimum capacity is warmed
+on entry and replenished by maintenance. Scope exit closes the pool, wakes
+waiters, closes active connections, and joins maintenance.
+
+| Connection option | Default |
+| --- | --- |
+| `connectTimeoutMs`, `operationTimeoutMs` | `Some 30000` |
+| `cleanupTimeoutMs` | `5000` |
+| `fetchRows` | `128` |
+| `maxFrameBytes`, `maxColumnBytes`, `maxBatchBytes` | 64 MiB, 16 MiB, 32 MiB |
+| `maxScramIterations` | 1,000,000 |
+| `tls`, `channelBinding` | verified TLS, prefer channel binding |
+
+| Pool option | Default |
+| --- | --- |
+| `minConnections`, `maxConnections`, `maxWaiters` | `0`, `10`, `128` |
+| `acquireTimeoutMs` | `Some 30000` |
+| `idleTimeoutMs`, `maxLifetimeMs` | `Some 300000`, `Some 1800000` |
+| `validationTimeoutMs`, `maintenanceIntervalMs` | `5000`, `1000` |
+
+Optional durations accept `None` to disable them. Cleanup/validation/maintenance
+durations must remain positive. Connection options also contain host, port, user,
+password, database, and application name; no ambient credentials are read.
