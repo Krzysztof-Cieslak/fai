@@ -4780,7 +4780,15 @@ impl<M: Module> Translator<'_, M> {
             match bop {
                 FloatBinop::Add => self.builder.ins().fadd(a, b),
                 FloatBinop::Sub => self.builder.ins().fsub(a, b),
-                FloatBinop::Mul => self.builder.ins().fmul(a, b),
+                FloatBinop::Mul => {
+                    if self.float_literal_bits(a) == Some(2.0f64.to_bits()) {
+                        self.builder.ins().fadd(b, b)
+                    } else if self.float_literal_bits(b) == Some(2.0f64.to_bits()) {
+                        self.builder.ins().fadd(a, a)
+                    } else {
+                        self.builder.ins().fmul(a, b)
+                    }
+                }
                 FloatBinop::Div => self.builder.ins().fdiv(a, b),
             }
         } else {
@@ -4808,12 +4816,50 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().bxor(bits, mask)
     }
 
+    fn float_literal_bits(&self, value: Value) -> Option<u64> {
+        use cranelift_codegen::ir::{InstructionData, Opcode};
+        let mut value = value;
+        let mut sign = 0;
+        for _ in 0..8 {
+            let value_id = self.builder.func.dfg.resolve_aliases(value);
+            let inst = self.builder.func.dfg.value_def(value_id).inst()?;
+            match self.builder.func.dfg.insts[inst] {
+                InstructionData::UnaryIeee64 { imm, .. } => return Some(imm.bits() ^ sign),
+                InstructionData::Unary { opcode: Opcode::Fneg, arg } => {
+                    sign ^= 1u64 << 63;
+                    value = arg;
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     /// `< <= > >=` on `Float`: the structural total order, including signed zeros
     /// and NaN sign/payload bits, in both raw and boxed representations.
     fn float_compare_op(&mut self, op: Prim, args: &[CExpr], cc: IntCC) -> Value {
         let a = self.expr(&args[0]);
         let b = self.expr(&args[1]);
         if self.is_f64(a) && self.is_f64(b) {
+            if let Some(bits) = self.float_literal_bits(a).or_else(|| self.float_literal_bits(b)) {
+                // Against a nonnegative constant, signed bit order is totalOrder.
+                // Against a negative one, reversed unsigned bit order is totalOrder.
+                let cc = if bits >> 63 == 0 {
+                    cc
+                } else {
+                    match cc {
+                        IntCC::SignedLessThan => IntCC::UnsignedGreaterThan,
+                        IntCC::SignedLessThanOrEqual => IntCC::UnsignedGreaterThanOrEqual,
+                        IntCC::SignedGreaterThan => IntCC::UnsignedLessThan,
+                        IntCC::SignedGreaterThanOrEqual => IntCC::UnsignedLessThanOrEqual,
+                        other => other,
+                    }
+                };
+                let a = self.f64_to_i64(a);
+                let b = self.f64_to_i64(b);
+                let c = self.builder.ins().icmp(cc, a, b);
+                return self.tag_bool(c);
+            }
             let a = self.float_order_key(a);
             let b = self.float_order_key(b);
             let c = self.builder.ins().icmp(cc, a, b);

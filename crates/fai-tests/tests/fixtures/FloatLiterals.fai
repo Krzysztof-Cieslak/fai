@@ -1,0 +1,14 @@
+module Main
+
+double : Float -> Float
+let double x = 2.0 * x
+
+below : Float -> Bool
+let below x = x < 4.0 && -4.0 < x
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let nan = Float.fromBits 0x7ff0000000002345
+  let negativeNan = Float.fromBits 0xfff0000000002345
+  let ok = Float.toBits (double nan) = 0x7ff8000000002345 && Float.toBits (double negativeNan) = 0xfff8000000002345 && Float.toBits (double (-0.0)) = 0x8000000000000000 && below 0.0 && not (below nan) && not (below negativeNan)
+  runtime.console.writeLine (if ok then "yes" else "no")

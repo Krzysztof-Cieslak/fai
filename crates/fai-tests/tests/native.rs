@@ -630,6 +630,14 @@ fn borrowed_scalar_list_scans_preserve_retained_values() {
 }
 
 #[test]
+fn float_literal_shortcuts_preserve_native_special_values() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/FloatLiterals.fai")),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

@@ -383,3 +383,16 @@ fn borrowed_list_scan_edits_update_the_callers_ownership() {
         },
     );
 }
+
+#[test]
+fn float_literal_sign_edits_match_clean_native_objects() {
+    let source = "module M\nlet below x = x < 4.0\n";
+    let edited = source.replace("4.0", "-4.0");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("below"), false))
+                .clone()
+        },
+    );
+}

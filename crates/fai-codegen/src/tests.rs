@@ -2472,6 +2472,18 @@ fn empty_numeric_array_loop_keeps_its_input_value() {
 }
 
 #[test]
+fn literal_doubling_evaluates_its_operand_once() {
+    let source = "module M\nvalue : Runtime -> Float / { Console }\nlet value r =\n  let _ = r.console.writeLine \"once\"\n  1.25\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (2.0 * value r))\n";
+    assert_eq!(run(source), (0, "once\n2.5\n".into()));
+}
+
+#[test]
+fn positive_float_literal_order_needs_no_sign_normalization() {
+    let ir = function_ir("module M\nlet below x = x < 4.0\n", "below");
+    assert!(!ir[0].contains("bxor") && !ir[0].contains("ushr"), "{}", ir[0]);
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.
