@@ -890,6 +890,10 @@ Reuse & in-place update:
     exactly one immediate and one boxed constructor. Boxed tag bounds alone do
     not constrain additional immediate alternatives. Facts are restored at
     control-flow joins and cleared when entering a new loop.
+    Equality against a known alternative can test the original value's immediate
+    bit directly instead of materializing its logical tag. SSA provenance keeps
+    this tied to the value that produced the tag, even after its owner is released
+    or a loop local changes. Numeric tag users retain the ordinary computation.
     A projected uniform field used only by borrowing readers can itself be
     borrowed. The bounded proof follows borrowed array slots and fields to their
     ultimate owner and requires that owner to survive the field's last use and
