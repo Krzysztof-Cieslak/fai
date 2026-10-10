@@ -222,6 +222,20 @@ fn bulk_repeat_bound_edits_match_clean_native_objects() {
 }
 
 #[test]
+fn literal_string_loop_eligibility_edits_match_clean_native_objects() {
+    let literal =
+        "module M\nlet build n text = if n <= 0 then text else build (n - 1) (text ++ \"ab\")\n";
+    let computed = literal.replace("\"ab\"", "Int.toString n");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", literal)], &[("M.fai", &computed)], &[("M.fai", literal)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("build"), false))
+                .clone()
+        },
+    );
+}
+
+#[test]
 fn unrelated_body_edits_preserve_data_layout_cutoff() {
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);

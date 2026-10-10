@@ -38,6 +38,13 @@ let initBuffers n total =
     initBuffers (n - 1) (total + String.length (Array.unsafeGet 63 values))
 public reservedInitLoop : Int -> Int
 let reservedInitLoop n = initBuffers n 0
+let append n text = if n <= 0 then text else append (n - 1) (text ++ "ab")
+let stringLoops n total =
+  if n <= 0 then total else
+    let text = append 8 (Int.toString (n % 10))
+    stringLoops (n - 1) (total + String.length text)
+public stringLoop : Int -> Int
+let stringLoop n = stringLoops n 0
 let churn n total =
   if n <= 0 then total else
     let size = if n % 3 = 0 then 8 else if n % 3 = 1 then 128 else 4096
@@ -119,6 +126,11 @@ fn reference_free_buffers_release_their_mapping_each_iteration() {
 #[test]
 fn reserved_boxed_builders_keep_initialized_storage_bounded() {
     bounded("reservedInitLoop", |n| n);
+}
+
+#[test]
+fn literal_string_loops_keep_fixed_state_storage_bounded() {
+    bounded("stringLoop", |n| n * 17);
 }
 
 #[test]

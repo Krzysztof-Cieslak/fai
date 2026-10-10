@@ -400,6 +400,10 @@ rehash work at the cost of additional spare capacity. `HashSet` grows twofold.
 String concatenation prefers appending into a fitting unique left buffer. When
 that cannot fit, a unique inline right buffer with enough capacity can absorb the
 prefix in place. Shared operands and borrowing slices retain their contents.
+A bounded scalar-only literal-append loop can check its incoming String's unique,
+nonempty inline form once. Its fast body retains capacity checks and normal
+growth; every carried String must derive from that owner through short literals.
+Shared, empty, sliced, captured or uncertain inputs retain ordinary appends.
 `String.join` and `String.joinArray` size their result with checked arithmetic,
 then copy into one final buffer without an intermediate growable string.
 Character-indexed string slicing validates ASCII prefixes in wide byte chunks;
