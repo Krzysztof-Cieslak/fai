@@ -727,6 +727,14 @@ fn integer_state_returns_preserve_native_tuple_boundaries() {
 }
 
 #[test]
+fn reuse_entry_calls_preserve_option_result_representation() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/ReuseOptionReturn.fai")),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }
