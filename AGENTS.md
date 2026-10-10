@@ -1591,9 +1591,13 @@ test; under-testing a phase is a defect, not a shortcut.
   cover it with the incremental-vs-clean **verifier** and an edit-churn
   (early-cutoff) test.
 - **Preserve Perceus space behavior.** Ownership/reuse changes must keep bounded
-  auxiliary memory for fixed-size state as iteration counts increase. Run
-  `perceus_space` alongside affected reuse tests; it checks peak live objects and
-  bytes, allocation reuse, buffer copies, and complete release with debug counters.
+  auxiliary memory for fixed-size state and fixed concurrency as iteration counts
+  increase. Run `perceus_space` and `perceus_storage` alongside affected reuse
+  tests: they check peak live objects and bytes, retained slabs and mappings,
+  allocation reuse, buffer copies, and complete release with debug counters.
+  Runtime-owned storage must remain bounded even after values die; large buffers
+  keep prompt final-drop release. These counters exclude OS page rounding and the
+  host allocator's own arenas, so measure process RSS separately too.
 - **Every bug fix ships with a regression test** that fails before the fix and
   passes after.
 - **Tests are deterministic and reviewed.** No reliance on `HashMap` iteration

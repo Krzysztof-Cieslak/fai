@@ -802,8 +802,13 @@ Reuse & in-place update:
     the consumed head cell when merging lists.
     Fixed-state space guards compare short and long iteration counts using peak
     live object and byte counters, including native inline allocation paths.
-    The counters are debug-only and exclude dead recycling-cache storage; tests
-    also check allocation reuse, buffer copies and release of the final state.
+    Separate debug allocator counters include whole retained slabs, requested
+    large mappings (including their alignment prefix), and unpooled system
+    allocations. The guards require bounded storage for fixed-size live state
+    and fixed concurrency, including after values die, and prompt final-drop
+    release of large buffers. They also check allocation reuse, buffer copies
+    and release of the final state. OS rounding and the host allocator's arenas
+    remain outside these counters and need separate process RSS measurements.
     Native list tag tests need only the immediate bit (`[]` is immediate, a cons
     is boxed). Cons slots are always uniform, so even generic/Float list heads
     skip scalar-descriptor checks while retaining their ordinary owned result.

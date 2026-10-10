@@ -504,6 +504,16 @@ is closest to the pure size factor.
 
 ### How to read the numbers
 
+Ownership optimizations must preserve bounded storage for fixed-size live state
+and fixed concurrency as iteration counts increase. `perceus_space` checks live
+objects, bytes, reuse and copies; `perceus_storage` additionally checks retained
+slabs, large mappings, unpooled allocation requests and complete thread-pool
+release. Debug `fai_runtime::allocation_stats` counts whole owned slabs even when
+their cells are dead or not yet issued. Large mappings include their alignment
+prefix. These counters exclude OS page rounding and the host allocator's own
+arenas, so RSS remains a separate process-footprint measurement. Large buffers
+retain prompt final-drop release; a throughput win does not waive the space gates.
+
 - A Rust (or OCaml) row is a **baseline within its own bench**, paired against the
   Fai row measured the same way in that bench. The summary's ratio table pairs them
   per-group for exactly this reason, reporting `fai/rust` and (in the
