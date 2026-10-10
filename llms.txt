@@ -605,7 +605,7 @@ match Dict.get key table with
 
 Full-screen terminal applications explicitly supply `TerminalHost.native` as a
 `TerminalHost.Terminal` capability. A session owns raw mode and the alternate
-screen until close/drop; `poll session timeoutMs` reports typed input/resize
+screen until close/drop; `poll session timeoutMs` takes a positive timeout and reports typed input/resize
 events and has a configurable wait. `TextCells.graphemes` and `TextCells.width`
 are pure helpers for grapheme-aware editing and display-cell layout.
 
@@ -1114,7 +1114,8 @@ value and focus commands. `Form.view` or individual `Form.field`s create the UI.
 to `Ui.transcript`, and reflow via `resize` when the viewport changes.
 
 `TerminalHost.Terminal` supplies `open : Bool -> Result Session String` (mouse
-capture flag), `close`, `size`, raw `write`, and `poll` with a millisecond timeout.
+capture flag), `close`, `size`, raw `write`, and `poll` with a timeout in
+1..2147483647 milliseconds.
 Every operation carries `{ TerminalHost.Terminal }`. Only one session owns the
 terminal at a time; closed aliases fail. `TextCells.graphemes : String -> Array
 String` returns extended grapheme clusters. `TextCells.width : Bool -> String ->

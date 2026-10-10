@@ -11,5 +11,6 @@ let main env =
   | Ok session ->
     let displayed =
       env.terminal.write session (Bytes.fromString "\u{1b}[2J\u{1b}[HHello, terminal!")
+    let event = env.terminal.poll session 1
     let restored = env.terminal.close session
     ()

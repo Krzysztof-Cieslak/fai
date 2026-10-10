@@ -274,7 +274,16 @@ fn event_value(event: Event) -> Option<Value> {
         Event::FocusLost => data(4, &[crate::from_bool(false)]),
     })
 }
-/// Poll input on the blocking pool. The timeout bounds cancellation observation.
+fn poll_duration(milliseconds: i64) -> Result<Duration, String> {
+    if !(1..=i64::from(i32::MAX)).contains(&milliseconds) {
+        return Err("terminal poll timeout must be in 1..2147483647 milliseconds".into());
+    }
+    let duration = Duration::from_millis(milliseconds as u64);
+    Instant::now().checked_add(duration).ok_or("terminal poll timeout exceeds clock range")?;
+    Ok(duration)
+}
+
+/// Poll input on the blocking pool with a positive, platform-representable timeout.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_terminal_poll(value: Value, timeout: Value) -> Value {
     let owned = session(value);
@@ -283,10 +292,7 @@ pub extern "C" fn fai_terminal_poll(value: Value, timeout: Value) -> Value {
     crate::fai_drop(timeout);
     let probe = crate::scheduler::cancellation_probe();
     let polled = blocking(move || {
-        let duration = Duration::from_millis(
-            u64::try_from(milliseconds).map_err(|_| "negative terminal poll timeout")?,
-        );
-        Instant::now().checked_add(duration).ok_or("terminal poll timeout exceeds clock range")?;
+        let duration = poll_duration(milliseconds)?;
         let _reader =
             owned.reader.try_lock().map_err(|_| "terminal already has an input reader")?;
         owned.live()?;
@@ -339,6 +345,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zero_poll_timeout_is_rejected() {
+        assert!(poll_duration(0).is_err());
+    }
+
+    #[test]
+    fn oversized_poll_timeout_is_rejected_before_narrowing() {
+        assert!(poll_duration(i64::MAX).is_err());
+    }
+
+    #[test]
+    fn positive_poll_timeout_keeps_its_duration() {
+        assert_eq!(poll_duration(25), Ok(Duration::from_millis(25)));
+    }
+
+    #[test]
     fn redirected_terminal_reports_a_normal_error() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "terminal::tests::terminal_worker", "--nocapture"])
@@ -365,6 +386,10 @@ mod tests {
             crate::fai_panic("terminal fault test");
         }
         assert!(open(false).is_err(), "a second owner must not disturb the first");
+        #[cfg(unix)]
+        if case == "resize-input" {
+            simultaneous_resize_input();
+        }
         if case == "closing" {
             let output = session.output.lock().unwrap();
             session.closed.store(true, Ordering::Release);
@@ -430,6 +455,49 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn pipe() -> (std::fs::File, std::fs::File) {
+        use std::os::fd::FromRawFd;
+        let mut fds = [-1; 2];
+        // SAFETY: fds is writable storage for two descriptors. The child inherits
+        // them deliberately for a test-only handshake independent of the PTY.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: each fresh descriptor is transferred to exactly one File owner.
+        unsafe { (std::fs::File::from_raw_fd(fds[0]), std::fs::File::from_raw_fd(fds[1])) }
+    }
+
+    #[cfg(unix)]
+    fn simultaneous_resize_input() {
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+        let ready: i32 = std::env::var("FAI_TERMINAL_READY").unwrap().parse().unwrap();
+        let go: i32 = std::env::var("FAI_TERMINAL_GO").unwrap().parse().unwrap();
+        // SAFETY: these are the inherited test-only pipe ends, transferred once.
+        let (mut ready, mut go) =
+            unsafe { (std::fs::File::from_raw_fd(ready), std::fs::File::from_raw_fd(go)) };
+        assert!(!event::poll(Duration::ZERO).unwrap());
+        // SAFETY: this raises SIGWINCH only in the isolated worker process, after
+        // the terminal reader has installed its resize handler.
+        assert_eq!(unsafe { libc::raise(libc::SIGWINCH) }, 0);
+        ready.write_all(&[1]).unwrap();
+        go.read_exact(&mut [0]).unwrap();
+        let mut resized = false;
+        let mut typed = false;
+        for _ in 0..4 {
+            if event::poll(Duration::from_millis(50)).unwrap() {
+                match event::read().unwrap() {
+                    Event::Resize(..) => resized = true,
+                    Event::Key(key) if key.code == KeyCode::Char('x') => typed = true,
+                    _ => (),
+                }
+            }
+        }
+        assert!(
+            resized && typed,
+            "co-ready events must both survive: resize={resized}, key={typed}"
+        );
+    }
+
+    #[cfg(unix)]
     fn drain_pty(master: &mut std::fs::File, output: &mut Vec<u8>) {
         use std::io::Read;
         let mut buffer = [0; 4096];
@@ -451,11 +519,13 @@ mod tests {
 
     #[cfg(unix)]
     fn assert_pty_restored(case: &str) {
+        use std::io::Read;
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::process::CommandExt;
         eprintln!("terminal fixture {case}: allocating PTY");
         let mut master = -1;
         let mut slave = -1;
+        let mut size = libc::winsize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 };
         // SAFETY: both output pointers are valid and unused optional arguments are null.
         assert_eq!(
             unsafe {
@@ -464,7 +534,7 @@ mod tests {
                     &mut slave,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    std::ptr::null_mut(),
+                    &raw mut size,
                 )
             },
             0
@@ -479,6 +549,16 @@ mod tests {
             .stdin(slave.try_clone().unwrap())
             .stdout(slave.try_clone().unwrap())
             .stderr(slave.try_clone().unwrap());
+        let handshake = if case == "resize-input" {
+            let (ready_read, ready_write) = pipe();
+            let (go_read, go_write) = pipe();
+            command
+                .env("FAI_TERMINAL_READY", ready_write.as_raw_fd().to_string())
+                .env("FAI_TERMINAL_GO", go_read.as_raw_fd().to_string());
+            Some((ready_read, ready_write, go_read, go_write))
+        } else {
+            None
+        };
         // SAFETY: the child-only hook uses async-signal-safe syscalls and does not
         // touch shared Rust state. stdin is already the cloned slave terminal.
         unsafe {
@@ -493,6 +573,16 @@ mod tests {
         }
         eprintln!("terminal fixture {case}: spawning worker");
         let mut child = command.spawn().unwrap();
+        let producer = handshake.map(|(mut ready, ready_write, go_read, mut go)| {
+            drop(ready_write);
+            drop(go_read);
+            let mut input = master.try_clone().unwrap();
+            std::thread::spawn(move || {
+                ready.read_exact(&mut [0])?;
+                input.write_all(b"x")?;
+                go.write_all(&[1])
+            })
+        });
         eprintln!("terminal fixture {case}: waiting for worker");
         // SAFETY: fcntl only changes this owned descriptor's nonblocking flag.
         assert_ne!(unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) }, -1);
@@ -513,6 +603,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         };
         eprintln!("terminal fixture {case}: worker status {result:?}");
+        if let Some(producer) = producer {
+            producer.join().unwrap().unwrap();
+        }
         eprintln!("terminal fixture {case}: draining output");
         drain_pty(&mut master, &mut output);
         eprintln!("terminal fixture {case}: checking restoration");
@@ -551,6 +644,12 @@ mod tests {
     #[cfg(unix)]
     fn reopening_waits_for_complete_terminal_restoration() {
         assert_pty_restored("closing");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn co_ready_resize_and_keyboard_events_are_both_delivered() {
+        assert_pty_restored("resize-input");
     }
     #[test]
     fn key_mapping_retains_unicode_and_control_modifiers() {
