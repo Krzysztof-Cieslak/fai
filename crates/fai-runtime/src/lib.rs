@@ -1412,15 +1412,45 @@ unsafe fn release_dead(p: *mut u8) {
     // and `free_obj` matches the original allocation.
     unsafe {
         let mut work = DropWork::new();
-        let kind = scan_push(p, &mut work);
-        // A stack-allocated closure or partial application lives in its creating
-        // frame, not the heap: release its children but never free the cell (its
-        // pointer was never returned by `alloc_obj`, so it must not reach
-        // `free_obj`/the pool). The frame reclaims the slot on return.
-        if kind != KIND_STACK_CLOSURE && kind != KIND_STACK_PAP {
-            free_obj(p);
+        if !release_compact(p, &mut work) {
+            let kind = scan_push(p, &mut work);
+            // A stack closure or partial application belongs to its creating
+            // frame. Release its captures without returning that cell to a pool.
+            if kind != KIND_STACK_CLOSURE && kind != KIND_STACK_PAP {
+                free_obj(p);
+            }
         }
         drain(&mut work);
+    }
+}
+
+/// Scans and recycles a dead compact data cell, returning false for other kinds.
+///
+/// # Safety
+/// `p` is a live allocation whose reference count reached zero.
+#[inline]
+unsafe fn release_compact(p: *mut u8, work: &mut DropWork) -> bool {
+    // SAFETY: compact metadata describes the initialized field region. Its size
+    // is at most 128 bytes, so the corresponding eight-byte pool class exists.
+    unsafe {
+        let header = header_word(p);
+        if header & COMPACT_DATA == 0 {
+            return false;
+        }
+        let fields = ((header >> COMPACT_FIELDS_SHIFT) & 15) as usize;
+        let scalars = (header >> COMPACT_SCALARS_SHIFT) & 255;
+        for index in 0..fields {
+            if scalars & (1 << index) == 0 {
+                let value = read_i64(p, COMPACT_FIELDS_OFFSET + index * 8);
+                if is_boxed(value) {
+                    work.push(value);
+                }
+            }
+        }
+        let size = COMPACT_FIELDS_OFFSET + fields * 8;
+        pool_push(size / SIZE_STEP, p);
+        note_free(size);
+        true
     }
 }
 
@@ -1582,7 +1612,7 @@ fn drain(work: &mut DropWork) {
         let q = as_obj(w);
         // SAFETY: `q` is a live object pointer.
         unsafe {
-            if rc_dec_is_dead(q) {
+            if rc_dec_is_dead(q) && !release_compact(q, work) {
                 scan_push(q, work);
                 free_obj(q);
             }

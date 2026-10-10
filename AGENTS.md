@@ -591,8 +591,9 @@ buffer allocation as well as in-place reuse.
 Compact data headers reduce a two-field cell from 48 to 24 bytes. Non-data buffer
 and handle layouts remain descriptor-based, and compact/extended data values
 interoperate through the same structural and ownership operations.
-Iterative destruction decodes compact shape metadata once per scan and once per
-storage release, retaining the same child order and resource-finalization paths.
+Iterative destruction scans and recycles compact data through one inline path,
+decoding its shape once. Child order and extended/resource finalization paths
+remain the same.
 Structural equality, ordering and hashing likewise share one shape snapshot per
 data operand when walking its fields, including mixed raw/boxed Float layouts.
 Generic local drops test the uniform immediate tag before calling the runtime,

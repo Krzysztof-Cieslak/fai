@@ -371,6 +371,48 @@ mod tests {
     }
 
     #[test]
+    fn compact_destruction_recycles_root_and_descendant_cells() {
+        let _guard = lock();
+        let baseline = (live_count(), live_bytes());
+        let child = data(1, &[imm_int(10), imm_int(20)]);
+        let root = data(2, &[child, imm_int(30)]);
+        fai_drop(root);
+        assert_eq!((live_count(), live_bytes()), baseline);
+        let next_child = data(3, &[imm_int(40), imm_int(50)]);
+        let next_root = data(4, &[next_child, imm_int(60)]);
+        assert_eq!(next_child, child);
+        assert_eq!(next_root, root);
+        fai_drop(next_root);
+        assert_eq!((live_count(), live_bytes()), baseline);
+    }
+
+    #[test]
+    fn compact_destruction_skips_float_slots_and_retains_shared_children() {
+        let _guard = lock();
+        let baseline = (live_count(), live_bytes());
+        let child = make_str("retained");
+        let fields = [(-0.0f64).to_bits() as i64, fai_dup(child)];
+        let descriptor = intern_data_descriptor(1);
+        // SAFETY: the first field is raw Float bits; the second transfers one
+        // owned reference to the string, matching the descriptor bitmap.
+        let root = unsafe { fai_make_data_scalar(descriptor, 0, 2, fields.as_ptr()) };
+        fai_drop(root);
+        assert_eq!(read_string(child), b"retained");
+        fai_drop(child);
+        assert_eq!((live_count(), live_bytes()), baseline);
+    }
+
+    #[test]
+    fn extended_parent_drains_shared_compact_children() {
+        let _guard = lock();
+        let baseline = (live_count(), live_bytes());
+        let child = data(1, &[imm_int(10), imm_int(20)]);
+        let root = data(2048, &[child, fai_dup(child)]);
+        fai_drop(root);
+        assert_eq!((live_count(), live_bytes()), baseline);
+    }
+
+    #[test]
     fn unused_scalar_bits_do_not_prevent_compaction() {
         let _guard = lock();
         let baseline = live_count();
