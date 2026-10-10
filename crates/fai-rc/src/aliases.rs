@@ -3,12 +3,12 @@
 use fai_core::ir::{CExpr, ExprKind as K, FieldIndex};
 use fai_db::Db;
 use fai_resolve::LocalId;
-use fai_types::Ty;
+use fai_types::{Con, Ty};
 use rustc_hash::FxHashMap;
 
 use crate::{is_boxed_data_ty, reuse_sig::e_children};
 
-/// Coalesces data aliases without changing the already inferred call ownership
+/// Coalesces uniform aliases without changing the already inferred call ownership
 /// ABI. Conflicting type uses and niche/scalar conversions retain their binding.
 pub(crate) fn coalesce(db: &dyn Db, body: CExpr) -> CExpr {
     let mut types = FxHashMap::default();
@@ -25,11 +25,21 @@ fn note(types: &mut FxHashMap<LocalId, Option<Ty>>, local: LocalId, ty: &Ty) {
     types
         .entry(local)
         .and_modify(|old| {
-            if old.as_ref() != Some(ty) {
+            if !old.as_ref().is_some_and(|old| same_representation_type(old, ty)) {
                 *old = None;
             }
         })
         .or_insert_with(|| Some(ty.clone()));
+}
+
+fn same_representation_type(a: &Ty, b: &Ty) -> bool {
+    a == b || matches!((a, b), (Ty::Var(_), Ty::Var(_)))
+}
+
+fn uniform_alias(ty: &Ty) -> bool {
+    is_boxed_data_ty(ty)
+        || matches!(ty, Ty::Var(_) | Ty::Con(Con::String | Con::Bytes))
+        || matches!(ty, Ty::App(head, _) if matches!(head.as_ref(), Ty::Con(Con::Array)))
 }
 
 fn collect_types(body: &CExpr, types: &mut FxHashMap<LocalId, Option<Ty>>) {
@@ -68,10 +78,18 @@ impl Aliases<'_> {
             K::Let { local, value, body } => {
                 let value = self.rewrite(*value);
                 if let K::Local(original) = value.kind
-                    && is_boxed_data_ty(&value.ty)
+                    && uniform_alias(&value.ty)
                     && fai_core::niche_scheme(self.db, &value.ty).is_none()
-                    && self.types.get(&local).and_then(Option::as_ref) == Some(&value.ty)
-                    && self.types.get(&original).and_then(Option::as_ref) == Some(&value.ty)
+                    && self
+                        .types
+                        .get(&local)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|ty| same_representation_type(ty, &value.ty))
+                    && self
+                        .types
+                        .get(&original)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|ty| same_representation_type(ty, &value.ty))
                 {
                     let original = self.local(original);
                     self.locals.insert(local, original);
@@ -221,5 +239,45 @@ mod tests {
         let out = coalesce(&fai_db::FaiDatabase::new(), body);
         let K::MakeClosure { captures, .. } = out.kind else { panic!("{out:?}") };
         assert_eq!(captures, [LocalId::from_index(0)]);
+    }
+
+    #[test]
+    fn generic_aliases_share_their_uniform_representation() {
+        let first = Ty::Var(fai_types::TyVarId(0));
+        let second = Ty::Var(fai_types::TyVarId(1));
+        let body = CExpr::new(
+            K::Let {
+                local: LocalId::from_index(1),
+                value: Box::new(CExpr::new(K::Local(LocalId::from_index(0)), first)),
+                body: Box::new(CExpr::new(K::Local(LocalId::from_index(1)), second)),
+            },
+            Ty::Error,
+        );
+        let result = coalesce(&fai_db::FaiDatabase::new(), body);
+        assert!(matches!(result.kind, K::Local(local) if local == LocalId::from_index(0)));
+    }
+
+    #[test]
+    fn scalar_to_generic_aliases_keep_their_conversion() {
+        let body = CExpr::new(
+            K::Let {
+                local: LocalId::from_index(1),
+                value: Box::new(CExpr::new(K::Local(LocalId::from_index(0)), Ty::int())),
+                body: Box::new(CExpr::new(
+                    K::Local(LocalId::from_index(1)),
+                    Ty::Var(fai_types::TyVarId(0)),
+                )),
+            },
+            Ty::Error,
+        );
+        assert!(matches!(coalesce(&fai_db::FaiDatabase::new(), body).kind, K::Let { .. }));
+    }
+
+    #[test]
+    fn generic_aliases_preserve_the_number_of_owned_results() {
+        let source = "module M\npublic pair : 'a -> ('a * 'a)\nlet pair value =\n  let alias = value\n  (value, alias)\n";
+        crate::tests::check_program(source, "pair").unwrap();
+        let body = crate::tests::rc_checked(source, "pair");
+        assert_eq!(body.matches("dup ").count(), 1, "{body}");
     }
 }
