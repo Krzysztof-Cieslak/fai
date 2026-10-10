@@ -24,7 +24,7 @@ def main():
         shutil.copy2(source_root / "TuiStyle.fai", root)
 
         def check(source, expected):
-            (root / "Main.fai").write_text(source, encoding="utf-8")
+            (root / "Main.fai").write_bytes(source.encode("utf-8"))
             result = subprocess.run([compiler, "check", "--no-daemon", "--no-examples",
                                      "--message-format=json", "-C", str(root), "Main.fai"],
                                     capture_output=True, text=True, encoding="utf-8", timeout=60)
