@@ -629,6 +629,10 @@ entire changing state reaches a bitwise fixed point. The proof requires an
 invariant bound, a non-wrapping unit-step counter, and counter-independent state
 and internal control. The original terminal branch still runs at the exact final
 counter; effects, calls, and counter-dependent traps prevent the shortcut.
+Equality-only differences against a uniformly stepping Int loop counter can use
+auxiliary affine counters. An unchanged operand is combined with the counter at
+entry, then advanced by the same wrapping step. Comparisons retain their order
+and full-width modular arithmetic; varying steps or invariants keep ordinary code.
 
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names

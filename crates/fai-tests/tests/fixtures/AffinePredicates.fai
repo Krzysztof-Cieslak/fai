@@ -1,0 +1,46 @@
+module Main
+
+let scan fixed distance xs =
+  match xs with
+  | [] -> true
+  | x :: rest ->
+    if x - fixed = distance then
+      false
+    else if fixed - x = distance then false else scan fixed (distance + 1) rest
+
+let down fixed distance xs =
+  match xs with
+  | [] -> true
+  | x :: rest ->
+    if x - fixed = distance then
+      false
+    else if fixed - x = distance then false else down fixed (distance - 7) rest
+
+let changing fixed distance xs =
+  match xs with
+  | [] -> true
+  | x :: rest ->
+    if x - fixed = distance then
+      false
+    else if fixed - x = distance then false else changing (fixed + 3) (distance + 1) rest
+
+public run : Int -> Int -> Array Int -> Bool
+let run fixed distance xs = scan fixed distance (Array.toList xs)
+
+public backward : Int -> Int -> Array Int -> Bool
+let backward fixed distance xs = down fixed distance (Array.toList xs)
+
+public dynamic : Int -> Int -> Array Int -> Bool
+let dynamic fixed distance xs = changing fixed distance (Array.toList xs)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let first = run 9223372036854775807 1 [| -9223372036854775808 |]
+  let later = run 9223372036854775807 (-9223372036854775808) [| 0, 0 |]
+  let reversed = backward (-9223372036854775808) 9223372036854775807 [| 0, -8 |]
+  let wrappedUp = run 0 9223372036854775807 [| 0, -9223372036854775808 |]
+  let wrappedDown = backward 0 (-9223372036854775808) [| 0, 9223372036854775801 |]
+  runtime.console.writeLine (if first || later || reversed || wrappedUp || wrappedDown then
+    "no"
+  else
+    "yes")

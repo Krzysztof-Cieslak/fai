@@ -750,6 +750,14 @@ fn an_unused_constructor_field_still_traps() {
 }
 
 #[test]
+fn affine_predicates_keep_wrapping_native_results() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/AffinePredicates.fai")),
+        ("yes\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }
