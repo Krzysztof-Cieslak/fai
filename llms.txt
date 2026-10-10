@@ -1426,6 +1426,10 @@ joinArray  : String -> Array String -> String
 `join` and `joinArray` copy directly into one checked, pre-sized result buffer.
 Character-indexed slicing has an ASCII-prefix fast path and preserves Unicode
 scalar boundaries for mixed text.
+Known-ASCII strings and views of their bases use stored byte counts for length
+and boundary lookup. This evidence adds no per-string storage; Unicode appends
+clear it. Indices still count Unicode scalars, and the slice retention policy is
+unchanged.
 
 ### Bytes — `Bytes` (an immutable binary byte buffer)
 

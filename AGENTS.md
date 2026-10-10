@@ -406,8 +406,11 @@ growth; every carried String must derive from that owner through short literals.
 Shared, empty, sliced, captured or uncertain inputs retain ordinary appends.
 `String.join` and `String.joinArray` size their result with checked arithmetic,
 then copy into one final buffer without an intermediate growable string.
-Character-indexed string slicing validates ASCII prefixes in wide byte chunks;
-non-ASCII prefixes retain Unicode-scalar indexing and all indices stay clamped.
+Known-ASCII Strings carry descriptor evidence without adding per-value fields.
+Their lengths and character-to-byte boundaries use the byte count directly;
+views inherit the evidence from their retained base. Construction and joins
+establish the fact, concatenation propagates it, and Unicode appends clear it.
+Other strings retain Unicode-scalar indexing and all indices stay clamped.
 String slicing releases owned full-width index/count boxes after decoding them,
 including negative and oversized arguments that are clamped to the string.
 

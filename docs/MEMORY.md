@@ -3041,6 +3041,12 @@ Editor integration:
     Character-indexed slicing resolves an ASCII prefix by its byte count after a
     wide-byte ASCII check. Non-ASCII prefixes keep the Unicode-scalar walk; negative
     and oversized indices remain clamped without narrowing a full-width Int.
+    A second immutable descriptor of the same String kind records proven ASCII
+    contents without adding per-object fields. Constructors and completed joins
+    establish it, concatenation propagates it in constant work, and a Unicode
+    append clears it, including inline native appends. Views inherit only their
+    retained base's evidence. Known-ASCII lengths and boundary lookup use byte
+    counts directly; unknown descriptors retain the existing scalar scans.
     The consumed substring/take/drop index operands are released after decoding,
     including boxed full-width counts and shared start/length boxes.
     Concatenating the empty string returns the other operand without copying. Leaf

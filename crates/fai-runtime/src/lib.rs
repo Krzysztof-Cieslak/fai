@@ -330,6 +330,11 @@ pub extern "C" fn fai_none_value() -> Value {
 #[unsafe(no_mangle)]
 pub static FAI_STRING_DESC: Descriptor = descriptor(KIND_STRING, "String");
 
+/// Inline String whose initialized bytes are proven ASCII. It has the same kind
+/// and layout as any String; the distinct immutable descriptor carries the fact.
+#[unsafe(no_mangle)]
+pub static FAI_ASCII_STRING_DESC: Descriptor = descriptor(KIND_STRING, "AsciiString");
+
 /// Descriptor for string slices — a borrowing substring view (one child: the
 /// inline base `String` it views).
 #[unsafe(no_mangle)]
@@ -3044,7 +3049,42 @@ fn make_string(bytes: &[u8]) -> Value {
     let p = alloc_string(len, len);
     // SAFETY: `p` has room for `len` content bytes.
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p.add(STRING_BYTES_OFFSET), len) };
+    // SAFETY: the fresh buffer contains exactly the initialized input bytes.
+    unsafe { set_string_ascii(p, bytes.is_ascii()) };
     from_obj(p)
+}
+
+/// Updates the ASCII fact of a private or uniquely owned inline String.
+///
+/// # Safety
+/// `p` is a writable inline String; `ascii` implies all its live bytes are ASCII.
+#[inline]
+unsafe fn set_string_ascii(p: *mut u8, ascii: bool) {
+    let descriptor =
+        if ascii { &raw const FAI_ASCII_STRING_DESC } else { &raw const FAI_STRING_DESC };
+    // SAFETY: both descriptors describe the same inline layout and String kind.
+    unsafe { write_ptr(p, DESC_OFFSET, descriptor.cast()) };
+}
+
+/// Reads a String's conservative ASCII fact, following at most one slice base.
+///
+/// # Safety
+/// `value` is a live String. A slice's base is an inline String retained by it.
+#[inline]
+unsafe fn string_is_ascii(value: Value) -> bool {
+    // SAFETY: String and slice descriptors/fields are initialized and live.
+    unsafe {
+        let p = as_obj(value);
+        let descriptor = obj_descriptor(p);
+        if std::ptr::eq(descriptor, &raw const FAI_ASCII_STRING_DESC) {
+            true
+        } else if desc_kind(descriptor) == KIND_STRING_SLICE {
+            let base = as_obj(read_i64(p, SLICE_BASE_OFFSET));
+            std::ptr::eq(obj_descriptor(base), &raw const FAI_ASCII_STRING_DESC)
+        } else {
+            false
+        }
+    }
 }
 
 /// Whether `kind` is one of the two `String` representations — an inline string or
@@ -3120,6 +3160,7 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
             fai_drop(a);
             return b;
         }
+        let ascii = string_is_ascii(a) && string_is_ascii(b);
 
         // Both operands' bytes, resolved uniformly (either may be a slice view).
         let (a_ptr, b_ptr) = (string_bytes(a).as_ptr(), string_bytes(b).as_ptr());
@@ -3133,6 +3174,7 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
             // `a`'s bytes not re-copied.
             std::ptr::copy_nonoverlapping(b_ptr, pa.add(STRING_BYTES_OFFSET + la), lb);
             write_u64(pa, STRING_LEN_OFFSET, need as u64);
+            set_string_ascii(pa, ascii);
             fai_drop(b);
             return a;
         }
@@ -3145,6 +3187,7 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
             std::ptr::copy(bytes, bytes.add(la), lb);
             std::ptr::copy_nonoverlapping(a_ptr, bytes, la);
             write_u64(pb, STRING_LEN_OFFSET, need as u64);
+            set_string_ascii(pb, ascii);
             fai_drop(a);
             return b;
         }
@@ -3164,6 +3207,7 @@ pub extern "C" fn fai_string_concat(a: Value, b: Value) -> Value {
         };
         std::ptr::copy_nonoverlapping(a_ptr, q.add(STRING_BYTES_OFFSET), la);
         std::ptr::copy_nonoverlapping(b_ptr, q.add(STRING_BYTES_OFFSET + la), lb);
+        set_string_ascii(q, ascii);
         if inline_unique {
             // Ownership of `a`'s bytes moved into `q`; reclaim its old memory
             // directly (no child scan — an inline string is a leaf).
@@ -3208,6 +3252,22 @@ fn char_byte_offset(s: &str, char_idx: i64) -> usize {
     }
     // `nth(k)` yields the k-th char's byte index, or `None` once exhausted.
     s.char_indices().nth(index).map_or(s.len(), |(i, _)| i)
+}
+
+/// Resolves a clamped scalar index, using the stored ASCII fact when available.
+///
+/// # Safety
+/// `value` is a live String with valid UTF-8 bytes.
+unsafe fn string_char_offset(value: Value, index: i64) -> usize {
+    // SAFETY: the fact applies to the complete live String or slice window.
+    unsafe {
+        if string_is_ascii(value) {
+            let length = read_u64(as_obj(value), STRING_LEN_OFFSET) as usize;
+            usize::try_from(index.max(0)).unwrap_or(usize::MAX).min(length)
+        } else {
+            char_byte_offset(string_str(value), index)
+        }
+    }
 }
 
 /// Builds a borrowing slice viewing `byte_len` bytes of `base` from byte offset
@@ -3270,10 +3330,9 @@ pub extern "C" fn fai_string_substring(start: Value, len: Value, s: Value) -> Va
     fai_drop(len);
     // SAFETY: `s` is a boxed string-like value of valid UTF-8.
     unsafe {
-        let str = string_str(s);
-        let total = str.len();
-        let b0 = char_byte_offset(str, cstart);
-        let b1 = if clen <= 0 { b0 } else { char_byte_offset(str, cstart.saturating_add(clen)) };
+        let total = read_u64(as_obj(s), STRING_LEN_OFFSET) as usize;
+        let b0 = string_char_offset(s, cstart);
+        let b1 = if clen <= 0 { b0 } else { string_char_offset(s, cstart.saturating_add(clen)) };
         if b0 == 0 && b1 == total {
             return s; // the whole string: hand the operand back
         }
@@ -3291,7 +3350,7 @@ pub extern "C" fn fai_string_take(n: Value, s: Value) -> Value {
     fai_drop(n);
     // SAFETY: `s` is a boxed string-like value of valid UTF-8.
     unsafe {
-        let end = char_byte_offset(string_str(s), count);
+        let end = string_char_offset(s, count);
         if end >= string_bytes(s).len() {
             return s; // n >= length: the whole string
         }
@@ -3310,7 +3369,7 @@ pub extern "C" fn fai_string_drop(n: Value, s: Value) -> Value {
     // SAFETY: `s` is a boxed string-like value of valid UTF-8.
     unsafe {
         let total = string_bytes(s).len();
-        let start = char_byte_offset(string_str(s), count);
+        let start = string_char_offset(s, count);
         if start == 0 {
             return s; // n <= 0: drop nothing
         }
@@ -3341,18 +3400,23 @@ unsafe fn string_str<'a>(v: Value) -> &'a str {
 /// The number of Unicode scalar values in a `String` (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_length(s: Value) -> Value {
-    // SAFETY: `s` is a boxed `String`.
-    let n = unsafe { string_str(s) }.chars().count();
+    let n = fai_string_length_borrowed(s);
     fai_drop(s);
-    imm_int(i64::try_from(n).unwrap_or(i64::MAX))
+    n
 }
 
 /// The number of Unicode scalar values in a `String`, *borrowing* the operand
 /// (the caller releases it at its last use).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_string_length_borrowed(s: Value) -> Value {
-    // SAFETY: `s` is a boxed `String`.
-    let n = unsafe { string_str(s) }.chars().count();
+    // SAFETY: the descriptor's ASCII fact implies scalar count equals byte count.
+    let n = unsafe {
+        if string_is_ascii(s) {
+            read_u64(as_obj(s), STRING_LEN_OFFSET) as usize
+        } else {
+            string_str(s).chars().count()
+        }
+    };
     imm_int(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
@@ -3599,6 +3663,8 @@ unsafe fn join_string_bytes<'a>(
             std::ptr::copy_nonoverlapping(part.as_ptr(), output, part.len());
             output = output.add(part.len());
         }
+        let bytes = std::slice::from_raw_parts(result.add(STRING_BYTES_OFFSET), len);
+        set_string_ascii(result, bytes.is_ascii());
     }
     from_obj(result)
 }
@@ -5218,6 +5284,8 @@ mod array_drop_tests;
 mod array_repeat_tests;
 #[cfg(test)]
 mod array_tests;
+#[cfg(test)]
+mod ascii_strings;
 #[cfg(test)]
 mod drop_work_tests;
 #[cfg(test)]
