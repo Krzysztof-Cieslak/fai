@@ -6,7 +6,7 @@ use fai_syntax::Symbol;
 use std::sync::Mutex;
 
 static LOCK: Mutex<()> = Mutex::new(());
-const SOURCE: &str = "module Main\npublic pair : Int -> (Int * Int)\nlet pair x = (x + 1, x + 1)\npublic choose : Bool -> Int -> (Int * Int)\nlet choose yes x = if yes then (x + 1, x + 1) else (0, 0)\npublic captured : Int -> Int\nlet captured x =\n  let first = x + 1\n  let second = x + 1\n  let read _ = second\n  first + read ()\npublic makeInput : Int -> (Int * String)\nlet makeInput value = (value, \"label\")\npublic forward : (Int * String) -> (Int * String)\nlet forward pair =\n  let (value, label) = pair\n  (value, label)\npublic makeSome : Int -> Option Int\nlet makeSome value = Some value\npublic forwardSome : Option Int -> (Int * Int)\nlet forwardSome value = match value with | None -> (0, 0) | Some number -> (number, number)\npublic main : Runtime -> Unit\nlet main _ = ()\n";
+const SOURCE: &str = "module Main\npublic pair : Int -> (Int * Int)\nlet pair x = (x + 1, x + 1)\npublic choose : Bool -> Int -> (Int * Int)\nlet choose yes x = if yes then (x + 1, x + 1) else (0, 0)\npublic captured : Int -> Int\nlet captured x =\n  let first = x + 1\n  let second = x + 1\n  let read _ = second\n  first + read ()\npublic makeInput : Int -> (Int * String)\nlet makeInput value = (value, \"label\")\npublic forward : (Int * String) -> (Int * String * Bool)\nlet forward pair =\n  let (value, label) = pair\n  (value, label, true)\npublic forwardPair : (Int * String) -> (Int * String)\nlet forwardPair pair = pair\npublic makeSome : Int -> Option Int\nlet makeSome value = Some value\npublic forwardSome : Option Int -> (Int * Int)\nlet forwardSome value = match value with | None -> (0, 0) | Some number -> (number, number)\npublic main : Runtime -> Unit\nlet main _ = ()\n";
 
 fn program() -> fai_driver::CompiledProgram {
     let mut db = FaiDatabase::new();
@@ -60,6 +60,8 @@ fn captured_arithmetic_values_keep_valid_bindings() {
 
 #[test]
 fn forwarding_a_tuple_field_keeps_its_original_integer_box() {
+    // A triple stays boxed, so this remains a uniform-field forwarding test.
+    // A two-field Int/state result instead crosses the raw scalar return ABI.
     let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut program = program();
     let baseline = rt::live_count();
@@ -79,6 +81,33 @@ fn forwarding_a_tuple_field_keeps_its_original_integer_box() {
     rt::fai_drop(integer);
     rt::fai_drop(retained);
     rt::fai_drop(result);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
+fn first_class_integer_state_results_bridge_the_raw_return() {
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut program = program();
+    let baseline = rt::live_count();
+    let input = rt::apply(
+        program.function(Symbol::intern("makeInput")).unwrap(),
+        &[rt::make_int(i64::MAX)],
+    );
+    let retained = rt::fai_dup(input);
+    rt::reset_allocations();
+    let result = rt::apply(program.function(Symbol::intern("forwardPair")).unwrap(), &[input]);
+    let split =
+        cfg!(any(target_arch = "aarch64", all(target_arch = "x86_64", not(target_os = "windows"))));
+    assert_eq!(
+        rt::allocations(),
+        if split { 2 } else { 0 },
+        "the split return rebuilds its uniform pair and full-width Int box"
+    );
+    let value = rt::fai_data_field(result, 0);
+    assert_eq!(rt::read_int(value), i64::MAX);
+    rt::fai_drop(value);
+    rt::fai_drop(result);
+    rt::fai_drop(retained);
     assert_eq!(rt::live_count(), baseline);
 }
 
