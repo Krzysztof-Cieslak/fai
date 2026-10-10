@@ -2532,6 +2532,18 @@ fn noncanonical_comparator_predicates_preserve_effectful_calls() {
 }
 
 #[test]
+fn power_two_divisibility_tests_the_original_dividend_bits() {
+    let ir = entry_ir(
+        "module M\npublic divides : Int -> Bool\nlet divides value = value % 8 = 0\n",
+        "divides",
+    );
+    assert!(
+        ir.lines().any(|line| line.contains("band_imm") && line.trim_end().ends_with(", 7")),
+        "{ir}"
+    );
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

@@ -1,0 +1,30 @@
+module Main
+
+public divisible : Int -> Bool
+let divisible value = value % 8 = 0
+
+public reversed : Int -> Bool
+let reversed value = 0 = value % 8
+
+public observed : Int -> Int
+let observed value =
+  let remainder = value % 8
+  if remainder = 0 then 41 else remainder
+
+public otherRemainder : Int -> Bool
+let otherRemainder value = value % 8 = 1
+
+let walk n value total =
+  if n <= 0 then total else walk (n - 1) (value + 1) (if value % 8 = 0 then total + 1 else total)
+
+public count : Int -> Int
+let count value = walk 32 value 0
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let good = divisible (-9223372036854775808) && reversed (-16) && not (divisible (-7))
+  let retained = observed (-7) = -7 && not (otherRemainder (-7))
+  runtime.console.writeLine (if good && retained && count 9223372036854775807 = 4 then
+    "yes"
+  else
+    "no")

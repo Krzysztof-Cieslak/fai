@@ -1035,6 +1035,7 @@ fn build_fn<M: Module>(
             standard_data_locals: FxHashSet::default(),
             niche_values: FxHashMap::default(),
             tag_bit_values: FxHashMap::default(),
+            remainder_masks: FxHashMap::default(),
             runtime: FxHashMap::default(),
             string_counter: 0,
             descriptors: FxHashMap::default(),
@@ -1523,6 +1524,8 @@ struct Translator<'a, M: Module> {
     niche_values: FxHashMap<Value, NicheKind>,
     /// Numeric tag values derived from one immutable SSA word and its two tags.
     tag_bit_values: FxHashMap<Value, (Value, u32, u32)>,
+    /// A raw power-of-two remainder and its immutable dividend/mask.
+    remainder_masks: FxHashMap<Value, (Value, i64)>,
     /// Runtime-function import cache, keyed by symbol name. An owned `String` key
     /// (rather than `&'static str`) so an interned foreign symbol — a host
     /// capability or a user `foreign` function — caches alongside the fixed `fai_*`
@@ -5545,6 +5548,9 @@ impl<M: Module> Translator<'_, M> {
             let qk = self.builder.ins().ishl_imm(q, k);
             self.builder.ins().isub(x, qk)
         };
+        if !is_div {
+            self.remainder_masks.insert(r, (x, (1i64 << k) - 1));
+        }
         self.mark_raw(r)
     }
 
@@ -5762,6 +5768,12 @@ impl<M: Module> Translator<'_, M> {
             let b = self.expr(&args[1]);
             // Raw operands: a bare `icmp eq` (raw word equality is value equality).
             if self.is_raw_int(a) && self.is_raw_int(b) {
+                if let Some(result) = self
+                    .remainder_is_zero(a, &args[1])
+                    .or_else(|| self.remainder_is_zero(b, &args[0]))
+                {
+                    return Some(result);
+                }
                 if let [
                     CExpr { kind: ExprKind::Local(left), .. },
                     CExpr { kind: ExprKind::Local(right), .. },
@@ -5870,6 +5882,19 @@ impl<M: Module> Translator<'_, M> {
         let bit = self.builder.ins().band_imm(word, 1);
         let test = self.builder.ins().icmp_imm(condition, bit, 0);
         Some(self.tag_bool(test))
+    }
+
+    /// Divisibility by a power of two is independent of the signed remainder's
+    /// truncation rule. Other observations still use the original remainder.
+    fn remainder_is_zero(&mut self, remainder: Value, other: &CExpr) -> Option<Value> {
+        if !matches!(other.kind, ExprKind::Lit(Lit::Int(0))) {
+            return None;
+        }
+        let remainder = self.builder.func.dfg.resolve_aliases(remainder);
+        let (dividend, mask) = self.remainder_masks.get(&remainder).copied()?;
+        let low = self.builder.ins().band_imm(dividend, mask);
+        let predicate = self.builder.ins().icmp_imm(IntCC::Equal, low, 0);
+        Some(self.tag_bool(predicate))
     }
 
     /// Inlines structural ordering when the operands are immediate-representable,
