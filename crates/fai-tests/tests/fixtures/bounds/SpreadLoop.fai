@@ -1,0 +1,16 @@
+module Main
+
+type State = { value : Float }
+
+loop : Int -> Array Float -> State -> State
+let loop i values state =
+  if i >= 3 then
+    state
+  else
+    let value = Array.unsafeGet i values
+    loop (i + 1) values { value = state.value + value }
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let result = loop 0 [| 1.0, 2.0 |] { value = 0.0 }
+  runtime.console.writeLine (Float.toString result.value)

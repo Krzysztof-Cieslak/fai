@@ -29,6 +29,9 @@
 //! generic call result, a CAF, a boxed parameter/capture, a field of a larger
 //! cell) is left boxed and **exploded** with field loads only where a spread
 //! boundary needs its components.
+//!
+//! Native lowering can loop an exactly returned self-call in a spread-result
+//! entry by rebinding these component locals, without changing this ABI.
 
 use std::sync::Arc;
 

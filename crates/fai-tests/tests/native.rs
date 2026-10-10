@@ -627,6 +627,14 @@ fn borrowed_uniform_fields_run_natively() {
 }
 
 #[test]
+fn spread_self_recursion_runs_in_constant_native_stack() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/SpreadLoop.fai")),
+        ("1000000\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn const_preserves_native_effect_order() {
     let source = indoc! {r#"
         module Main

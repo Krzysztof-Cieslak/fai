@@ -1,0 +1,11 @@
+module Main
+
+type State = { value : Float }
+
+let loop n state =
+  if n <= 0 then state else loop (n - 1) { value = state.value + 1.0 }
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let result = loop 1000000 { value = 0.0 }
+  runtime.console.writeLine (Int.toString (Float.toInt result.value))

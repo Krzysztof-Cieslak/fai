@@ -307,3 +307,19 @@ fn borrowed_field_lifetime_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn spread_self_tail_edits_match_clean_native_objects() {
+    let source = "module M\ntype State = { value : Float }\nlet loop n state = if n <= 0 then state else loop (n - 1) { value = state.value + 1.0 }\n";
+    let edited = source.replace(
+        "else loop (n - 1) { value = state.value + 1.0 }",
+        "else\n  let prior = loop (n - 1) state\n  { value = prior.value + 1.0 }",
+    );
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("loop"), false))
+                .clone()
+        },
+    );
+}

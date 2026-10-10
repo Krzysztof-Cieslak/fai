@@ -884,6 +884,44 @@ fn direct_signature<M: Module>(module: &M, abi: &FnAbi) -> cranelift_codegen::ir
     signature
 }
 
+/// Finds an exactly returned spread self-call without unbounded tree analysis.
+fn has_spread_self_tail(
+    e: &CExpr,
+    def: DefId,
+    arity: usize,
+    count: usize,
+    budget: &mut usize,
+) -> bool {
+    if *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    if let ExprKind::LetMany { locals, value, body } = &e.kind
+        && locals.len() == count
+        && let ExprKind::Spread { components } = &body.kind
+        && components.len() == count
+        && components.iter().zip(locals).all(|(component, local)| matches!(component.kind, ExprKind::Local(value) if value == *local))
+        && let ExprKind::App { func, args, reuse, .. } = &value.kind
+        && matches!(func.kind, ExprKind::Global(target) if target == def)
+        && args.len() == arity && reuse.is_empty()
+    {
+        return true;
+    }
+    match &e.kind {
+        ExprKind::If { then, els, .. } => {
+            has_spread_self_tail(then, def, arity, count, budget)
+                || has_spread_self_tail(els, def, arity, count, budget)
+        }
+        ExprKind::Let { body, .. }
+        | ExprKind::LetMany { body, .. }
+        | ExprKind::Reset { body, .. }
+        | ExprKind::FreeReuse { body, .. }
+        | ExprKind::Dup { body, .. }
+        | ExprKind::Drop { body, .. } => has_spread_self_tail(body, def, arity, count, budget),
+        _ => false,
+    }
+}
+
 /// A uniform leaf can keep its once-used Int parameters tagged through one op.
 fn tagged_int_leaf(function: &CoreFn) -> bool {
     if !function.captures.is_empty() || !(1..=2).contains(&function.params.len()) {
@@ -985,6 +1023,8 @@ fn build_fn<M: Module>(
             borrowed_cursors: FxHashSet::default(),
             borrowed_projections: FxHashSet::default(),
             invariant_callback: None,
+            spread_loop: None,
+            frame_dependent: false,
             loop_ctx: None,
             result_slot: None,
             bounds: Bounds::new(),
@@ -1207,7 +1247,29 @@ fn build_fn<M: Module>(
         // heap cell (each tail of an `if` returns independently — no merge).
         if let Some(reprs) = abi.spread_return().filter(|_| register_entry) {
             let n = reprs.len();
+            let header = if !tr.concurrent
+                && core_fn.params == lowered.entry().params
+                && has_spread_self_tail(
+                    &core_fn.body,
+                    lowered.def,
+                    core_fn.params.len(),
+                    n,
+                    &mut 1024,
+                ) {
+                let header = tr.builder.create_block();
+                tr.builder.ins().jump(header, &[]);
+                tr.builder.switch_to_block(header);
+                tr.spread_loop = Some(header);
+                tr.array_float_tag.clear();
+                tr.array_tag_cacheable = false;
+                Some(header)
+            } else {
+                None
+            };
             tr.spread_return_body(&core_fn.body, n);
+            if let Some(header) = header {
+                tr.builder.seal_block(header);
+            }
             tr.builder.finalize();
             return ctx;
         }
@@ -1454,6 +1516,10 @@ struct Translator<'a, M: Module> {
     borrowed_projections: FxHashSet<(LocalId, u32)>,
     /// A guarded immortal entry for a loop-invariant callback parameter.
     invariant_callback: Option<(LocalId, usize, Value)>,
+    /// A spread-result entry's local self-tail-call back-edge.
+    spread_loop: Option<Block>,
+    /// A stack closure or PAP can keep references into the current activation.
+    frame_dependent: bool,
     /// The enclosing tail-call loop, while translating a `Join` body: where
     /// `Recur` jumps back and where the loop's result exits.
     loop_ctx: Option<LoopCtx>,
@@ -6282,11 +6348,15 @@ impl<M: Module> Translator<'_, M> {
                 let then_b = self.builder.create_block();
                 let else_b = self.builder.create_block();
                 self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
+                let saved_bounds = self.bounds.clone();
                 self.builder.switch_to_block(then_b);
                 self.builder.seal_block(then_b);
+                self.bounds.refine(cond, true);
                 self.spread_return_body(then, n);
                 self.builder.switch_to_block(else_b);
                 self.builder.seal_block(else_b);
+                self.bounds = saved_bounds;
+                self.bounds.refine(cond, false);
                 self.spread_return_body(els, n);
             }
             ExprKind::Let { local, value, body } => {
@@ -6296,6 +6366,9 @@ impl<M: Module> Translator<'_, M> {
                 self.spread_return_body(body, n);
             }
             ExprKind::LetMany { locals, value, body } => {
+                if self.spread_self_tail(locals, value, body, n) {
+                    return;
+                }
                 self.bind_letmany(locals, value);
                 self.spread_return_body(body, n);
             }
@@ -6327,6 +6400,58 @@ impl<M: Module> Translator<'_, M> {
                 self.builder.ins().return_(&vals);
             }
         }
+    }
+
+    /// An immediately returned self-call can carry its components in loop locals.
+    /// Marshal first so borrowed scalar temporaries retain the ordinary call path.
+    fn spread_self_tail(
+        &mut self,
+        locals: &[LocalId],
+        call: &CExpr,
+        body: &CExpr,
+        n: usize,
+    ) -> bool {
+        let Some(header) = self.spread_loop else { return false };
+        let ExprKind::Spread { components } = &body.kind else { return false };
+        if locals.len() != n || components.len() != n || !components.iter().zip(locals).all(|(component, local)| matches!(component.kind, ExprKind::Local(value) if value == *local)) {
+            return false;
+        }
+        let ExprKind::App { func, args, reuse, .. } = &call.kind else { return false };
+        if !matches!(func.kind, ExprKind::Global(def) if def == self.lowered.def)
+            || args.len() != self.lowered.entry().params.len()
+            || !reuse.is_empty()
+        {
+            return false;
+        }
+        let abi = (self.signature_of)(self.lowered.def);
+        let borrowed = (self.borrows_of)(self.lowered.def);
+        let null = self.builder.ins().iconst(types::I64, 0);
+        let mut values = vec![null];
+        let mut lent = Vec::new();
+        self.marshal_args(&abi, &borrowed, args, &mut values, &mut lent);
+        if self.frame_dependent || !lent.is_empty() {
+            let result = self.direct_call_n(self.lowered.def, args.len(), &abi, &values, n);
+            for value in lent {
+                self.call_drop(value);
+            }
+            self.builder.ins().return_(&result);
+            return true;
+        }
+        let params = self.lowered.entry().params.clone();
+        let spread = self.lowered.entry_spread_params.clone();
+        let mut values = values.into_iter().skip(1);
+        for (position, param) in params.into_iter().enumerate() {
+            if let Some(Some(components)) = spread.get(position) {
+                for &component in components {
+                    self.define_var(component, values.next().expect("spread argument"));
+                }
+            } else {
+                self.define_var(param, values.next().expect("scalar argument"));
+            }
+        }
+        debug_assert!(values.next().is_none());
+        self.builder.ins().jump(header, &[]);
+        true
     }
 
     /// Evaluates `e` to an `f64` (a component value is a scalar float; a boxed
@@ -6511,6 +6636,7 @@ impl<M: Module> Translator<'_, M> {
     /// (the frame reclaims the slot on return). Escape analysis guarantees no
     /// reference outlives the frame, so the stack pointer never dangles.
     fn stack_closure(&mut self, func: FnId, captures: &[LocalId]) -> Value {
+        self.frame_dependent = true;
         let arity = self.lowered.fns[func.index()].params.len() as i64;
         let n = captures.len();
         let size = rt::CLOSURE_ENV_OFFSET + n * 8;
@@ -6605,6 +6731,7 @@ impl<M: Module> Translator<'_, M> {
     /// children without freeing the cell when it dies. The target is the callee's
     /// immortal static closure, the stored arguments are owned (uniform `i64`).
     fn stack_pap(&mut self, def: DefId, args: &[CExpr]) -> Value {
+        self.frame_dependent = true;
         let n = args.len();
         let size = rt::PAP_ARGS_OFFSET + n * 8;
         let ptr = self.ptr();
