@@ -4,12 +4,20 @@ fn main() {
     let module = std::env::args().nth(1).expect("usage: algo-worker <module>");
     use fai_tests::algorithms::{self as algorithms, Oracle};
     use fai_tests::benchmark_aot::serve;
+    use fai_tests::tail_components;
     let input = std::io::stdin();
     let output = std::io::stdout();
     macro_rules! dispatch {
         ($($name:literal => $kind:ident($function:ident)),* $(,)?) => {
             match module.as_str() {
                 $($name => serve(Oracle::$kind(algorithms::$function), input.lock(), output.lock()),)*
+                "TailBuildAscii" => serve(Oracle::Int(tail_components::build_ascii), input.lock(), output.lock()),
+                "TailBuildUnicode" => serve(Oracle::Int(tail_components::build_unicode), input.lock(), output.lock()),
+                "TailLengthAscii" => serve(Oracle::Int(tail_components::length_ascii), input.lock(), output.lock()),
+                "TailLengthUnicode" => serve(Oracle::Int(tail_components::length_unicode), input.lock(), output.lock()),
+                "TailViewsAscii" => serve(Oracle::Int(tail_components::views_ascii), input.lock(), output.lock()),
+                "TailViewsUnicode" => serve(Oracle::Int(tail_components::views_unicode), input.lock(), output.lock()),
+                "TailQuickSort" => serve(Oracle::Int(tail_components::quicksort), input.lock(), output.lock()),
                 _ => panic!("unknown benchmark module: {module}"),
             }
         };
