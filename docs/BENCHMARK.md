@@ -43,9 +43,10 @@ claims require additional input-dependent workloads on every side.
 
 Published results should also account for:
 
-- **Input and representation differences.** Fai's delivered examples bake their
-  size into `main`; Rust and OCaml read it from argv. Match input availability
-  before attributing a difference to code generation. Equal checksums establish
+- **Input and representation differences.** All delivered benchmark executables
+  read their size from argv. The Fai harness replaces the sample's entry point,
+  retaining its workload definitions. Earlier Fai measurements baked the size
+  into `main` and belong to the earlier methodology. Equal checksums establish
   result agreement, not identical intermediate work or data structures. The
   exceptions below are application comparisons, not matched kernel measurements.
 - **Startup and duration.** Delivered-binary timing includes spawn, runtime
@@ -293,8 +294,9 @@ targets a baseline ISA.)
 
 `crates/fai-tests/benches/algorithms_aot.rs` compares the *delivered artifacts*:
 
-- **Fai side**: built once with `build_native` (untimed), then **spawned** as a
-  subprocess in the timed loop.
+- **Fai side**: built once with `build_native` (untimed), using an argv-reading
+  wrapper around the workload, then **spawned** with the registered size as an
+  argument in the timed loop.
 - **Rust side**: spawns the `algo-baseline` release binary
   (`crates/fai-tests/src/bin/algo-baseline.rs`) as a subprocess.
 - **OCaml side**: spawns the `ocamlopt`-compiled baseline
@@ -307,6 +309,17 @@ Each timed iteration is a whole process: startup, the workload, print, exit.
 (Skipped on Windows, which needs the MSVC environment for the build/link + spawn
 path; it still compiles there so `--all-targets` keeps it from bitrotting, and the
 workflow runs on Linux.)
+
+Native worker fixtures use the same workload definitions with a persistent
+line protocol. Their first line supplies a window of 1–64 nonnegative sizes;
+after `ready`, `value i` returns the complete result for one input, `run n`
+checksums `n` cyclic invocations, and `floor n` performs the same input/checksum
+loop without the workload. Batch counts are bounded by 1,048,576. Integer
+checksums use a canonical modulus to preserve full-width signed results across
+OCaml's native `int` and `Int64` paths. Floating checksums retain left-to-right
+addition. Malformed requests return an error and terminate; EOF ends the worker.
+The Rust and generated Fai/OCaml worker tests compare varied inputs, full-width
+and Float results, zero batches, errors and repeated requests.
 
 ### `algorithms_mem` — delivered binaries, peak memory
 
@@ -465,8 +478,9 @@ is closest to the pure size factor.
   - **Contiguous** where access is index-, iterate-, or build-then-traverse-heavy
     (an `Array` is then also the better Fai structure): Fai's **`Array`** against
     Rust's `Vec`. `MapSum`/`MapSumShared` build-map-fold an `Array`; `MergeSort`
-    uses the standard `Array.sort`; `QuickSort` also uses `Array.sort` on scrambled
-    input; `MatrixMultiply`/`Levenshtein` use array-of-array and array-row DP;
+    uses the standard `Array.sort`; `QuickSort` is a hand-written Lomuto quicksort
+    on scrambled input, compared with the peers' library sorts;
+    `MatrixMultiply`/`Levenshtein` use array-of-array and array-row DP;
     `SpectralNorm` and `FloatMatrixMultiply` use unboxed `Array Float` (raw inline
     `f64` slots); `NBody`/`Particles` hold their bodies in an
     `Array`; `WordCount` splits and joins through `Array String`
@@ -558,12 +572,13 @@ workload version.
 
 Each `aot_size` must equal the literal the matching sample's `main` passes to
 `run`/`runF`; the sample-validation tests (`crates/fai-tests/tests/algorithms.rs`)
-assert this by comparing the program's output to the oracle, so the AOT bench
-compares the same workload on all sides. To add an algorithm: add the Rust
+assert this by comparing the example program's output to the oracle. The AOT
+benchmark wrappers supply that registered size at runtime on every side. To add an algorithm: add the Rust
 reference and a registry entry in `algorithms.rs`, add the `samples/algorithms/`
 module with the matching baked size, add a match arm in `ocaml/baseline.ml`, add a
-`validate` test in `tests/algorithms.rs`, and list it in both `algorithm_benches!`
-macros. The `algorithms_mem` bench and the `algo-baseline` binary iterate the
+`validate` test in `tests/algorithms.rs`, list it in both `algorithm_benches!`
+macros, and add its native-worker dispatch and `aot_benchmarks` case. The
+`algorithms_mem` bench and the `algo-baseline` binary iterate the
 registry directly, so they pick up the new algorithm automatically; the
 `registry_is_fully_covered` test guards the hand-maintained lists — it fails if a
 registered algorithm is missing from either runtime bench, from the OCaml

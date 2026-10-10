@@ -842,59 +842,62 @@ let sort_pattern pattern n =
   Array.iteri (fun i x -> answer := !answer + i * x) values;
   !answer
 
+type workload = WInt of (int -> int) | WInt64 of (int -> Int64.t) | WFloat of (int -> float)
+
+let workload = function
+  | "Fib" -> WInt fib
+  | "Collatz" -> WInt collatz_sum
+  | "MapSum" -> WInt map_sum
+  | "MergeSort" -> WInt merge_sort_sum
+  | "SortAscending" -> WInt (sort_pattern 0)
+  | "SortDescending" -> WInt (sort_pattern 1)
+  | "SortShuffled" -> WInt (sort_pattern 2)
+  | "SortEqual" -> WInt (sort_pattern 3)
+  | "SortFewKeys" -> WInt (sort_pattern 4)
+  | "SortRuns" -> WInt (sort_pattern 5)
+  | "BinaryTrees" -> WInt tree_count
+  | "Pi" -> WFloat pi
+  | "DictHistogram" -> WInt dict_histogram
+  | "WordCount" -> WInt word_count
+  | "MapSumShared" -> WInt map_sum_shared
+  | "SetDedup" -> WInt set_dedup
+  | "FoldPipeline" -> WInt fold_pipeline
+  | "InterfaceDispatch" -> WInt interface_dispatch
+  | "Particles" -> WFloat particles
+  | "VecMat" -> WFloat vec_mat
+  | "NQueens" -> WInt nqueens
+  | "MatrixMultiply" -> WInt matrix_multiply
+  | "FloatMatrixMultiply" -> WFloat float_matrix_multiply
+  | "Levenshtein" -> WInt levenshtein
+  | "GameOfLife" -> WInt game_of_life
+  | "SpectralNorm" -> WFloat spectral_norm
+  | "Mandelbrot" -> WFloat mandelbrot
+  | "Ackermann" -> WInt ackermann
+  | "PrngXorshift" -> WInt64 prng_xorshift
+  | "ExprEval" -> WInt expr_eval
+  | "GraphBFS" -> WInt graph_bfs
+  | "CoinChange" -> WInt coin_change
+  | "FibMemo" -> WInt64 fib_memo
+  | "QuickSort" -> WInt quicksort_sum
+  | "Sieve" -> WInt sieve
+  | "NBody" -> WFloat nbody
+  | "Fannkuch" -> WInt fannkuch
+  | "UnionFind" -> WInt union_find
+  | "JsonSerialize" -> WInt json_serialize
+  | "StringBuild" -> WInt string_build
+  | "StringSlice" -> WInt string_slice
+  | "OptionEval" -> WInt option_eval
+  | "IntEval" -> WInt int_eval
+  | "OptionPath" -> WInt option_path
+  | "OptionTreeFind" -> WInt option_tree_find
+  | "ListSort" -> WInt list_sort_sum
+  | other -> failwith ("unknown algorithm module: " ^ other)
+
+let evaluate selected n =
+  match selected with WInt f -> I (f n) | WInt64 f -> I64 (f n) | WFloat f -> F (f n)
+
 let () =
-  let module_name = Sys.argv.(1) in
-  let n = int_of_string Sys.argv.(2) in
-  let result =
-    match module_name with
-    | "Fib" -> I (fib n)
-    | "Collatz" -> I (collatz_sum n)
-    | "MapSum" -> I (map_sum n)
-    | "MergeSort" -> I (merge_sort_sum n)
-    | "SortAscending" -> I (sort_pattern 0 n)
-    | "SortDescending" -> I (sort_pattern 1 n)
-    | "SortShuffled" -> I (sort_pattern 2 n)
-    | "SortEqual" -> I (sort_pattern 3 n)
-    | "SortFewKeys" -> I (sort_pattern 4 n)
-    | "SortRuns" -> I (sort_pattern 5 n)
-    | "BinaryTrees" -> I (tree_count n)
-    | "Pi" -> F (pi n)
-    | "DictHistogram" -> I (dict_histogram n)
-    | "WordCount" -> I (word_count n)
-    | "MapSumShared" -> I (map_sum_shared n)
-    | "SetDedup" -> I (set_dedup n)
-    | "FoldPipeline" -> I (fold_pipeline n)
-    | "InterfaceDispatch" -> I (interface_dispatch n)
-    | "Particles" -> F (particles n)
-    | "VecMat" -> F (vec_mat n)
-    | "NQueens" -> I (nqueens n)
-    | "MatrixMultiply" -> I (matrix_multiply n)
-    | "FloatMatrixMultiply" -> F (float_matrix_multiply n)
-    | "Levenshtein" -> I (levenshtein n)
-    | "GameOfLife" -> I (game_of_life n)
-    | "SpectralNorm" -> F (spectral_norm n)
-    | "Mandelbrot" -> F (mandelbrot n)
-    | "Ackermann" -> I (ackermann n)
-    | "PrngXorshift" -> I64 (prng_xorshift n)
-    | "ExprEval" -> I (expr_eval n)
-    | "GraphBFS" -> I (graph_bfs n)
-    | "CoinChange" -> I (coin_change n)
-    | "FibMemo" -> I64 (fib_memo n)
-    | "QuickSort" -> I (quicksort_sum n)
-    | "Sieve" -> I (sieve n)
-    | "NBody" -> F (nbody n)
-    | "Fannkuch" -> I (fannkuch n)
-    | "UnionFind" -> I (union_find n)
-    | "JsonSerialize" -> I (json_serialize n)
-    | "StringBuild" -> I (string_build n)
-    | "StringSlice" -> I (string_slice n)
-    | "OptionEval" -> I (option_eval n)
-    | "IntEval" -> I (int_eval n)
-    | "OptionPath" -> I (option_path n)
-    | "OptionTreeFind" -> I (option_tree_find n)
-    | "ListSort" -> I (list_sort_sum n)
-    | other -> failwith ("unknown algorithm module: " ^ other)
-  in
+  let result = evaluate (workload Sys.argv.(1)) (int_of_string Sys.argv.(2)) in
   (match result with
   | I v -> Printf.printf "%d\n" v
   | I64 v -> Printf.printf "%Ld\n" v

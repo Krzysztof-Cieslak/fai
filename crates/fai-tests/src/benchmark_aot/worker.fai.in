@@ -1,0 +1,68 @@
+let benchmarkHarnessWords line = List.filter (fun word -> word <> "") (String.split " " (String.trim line))
+
+let benchmarkHarnessNumbers words values =
+  match words with
+  | [] -> Some (Array.fromList (List.reverse values))
+  | word :: rest ->
+    match Int.fromString word with
+    | Some value ->
+      if value >= 0 && value <= HARNESS_MAX_SIZE then benchmarkHarnessNumbers rest (value :: values)
+      else None
+    | None -> None
+
+benchmarkHarnessAdd : HARNESS_TYPE -> HARNESS_TYPE -> HARNESS_TYPE
+let benchmarkHarnessAdd total value =
+  HARNESS_ADD
+
+benchmarkHarnessRun : Array Int -> Int -> Int -> HARNESS_TYPE -> HARNESS_TYPE
+let benchmarkHarnessRun inputs remaining index total =
+  if remaining <= 0 then total
+  else
+    let value = HARNESS_ENTRY (Array.unsafeGet index inputs)
+    let next = if index + 1 = Array.length inputs then 0 else index + 1
+    benchmarkHarnessRun inputs (remaining - 1) next (benchmarkHarnessAdd total value)
+
+benchmarkHarnessFloor : Array Int -> Int -> Int -> HARNESS_TYPE -> HARNESS_TYPE
+let benchmarkHarnessFloor inputs remaining index total =
+  if remaining <= 0 then total
+  else
+    let value = Array.unsafeGet index inputs
+    let converted = HARNESS_FLOOR
+    let next = if index + 1 = Array.length inputs then 0 else index + 1
+    benchmarkHarnessFloor inputs (remaining - 1) next (benchmarkHarnessAdd total converted)
+
+benchmarkHarnessServe : Console -> Array Int -> Unit / { Console }
+let benchmarkHarnessServe console inputs =
+  match console.readLine () with
+  | Ok None -> ()
+  | Err _ -> console.writeLine "error: input"
+  | Ok (Some line) ->
+    match benchmarkHarnessWords line with
+    | [mode, argument] ->
+      match Int.fromString argument with
+      | Some count ->
+        if mode = "value" && count >= 0 && count < Array.length inputs then
+          let result = HARNESS_ENTRY (Array.unsafeGet count inputs)
+          let _ = console.writeLine (HARNESS_RENDER result)
+          benchmarkHarnessServe console inputs
+        else if (mode = "run" || mode = "floor") && count >= 0 && count <= HARNESS_MAX_BATCH then
+          let result = if mode = "run" then benchmarkHarnessRun inputs count 0 HARNESS_ZERO else benchmarkHarnessFloor inputs count 0 HARNESS_ZERO
+          let _ = console.writeLine (HARNESS_RENDER result)
+          benchmarkHarnessServe console inputs
+        else console.writeLine "error: request"
+      | None -> console.writeLine "error: request"
+    | _ -> console.writeLine "error: request"
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  match runtime.console.readLine () with
+  | Ok (Some line) ->
+    let words = benchmarkHarnessWords line
+    if List.length words < 1 || List.length words > HARNESS_MAX_INPUTS then runtime.console.writeLine "error: inputs"
+    else
+      match benchmarkHarnessNumbers words [] with
+      | Some inputs ->
+        let _ = runtime.console.writeLine "ready"
+        benchmarkHarnessServe runtime.console inputs
+      | None -> runtime.console.writeLine "error: inputs"
+  | _ -> runtime.console.writeLine "error: inputs"

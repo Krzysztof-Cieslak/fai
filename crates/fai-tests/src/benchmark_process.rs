@@ -18,9 +18,35 @@ impl ExpectedAnswer {
     /// Computes the registered oracle at the delivered binary's workload size.
     #[must_use]
     pub fn for_algorithm(algorithm: &Algorithm) -> Self {
+        Self::at_size(algorithm, algorithm.aot_size)
+    }
+
+    /// Computes a reference answer for a runtime-supplied workload size.
+    #[must_use]
+    pub fn at_size(algorithm: &Algorithm, size: i64) -> Self {
         match algorithm.oracle {
-            Oracle::Int(f) => Self::Int(f(algorithm.aot_size)),
-            Oracle::Float(f) => Self::Float(f(algorithm.aot_size)),
+            Oracle::Int(f) => Self::Int(f(size)),
+            Oracle::Float(f) => Self::Float(f(size)),
+        }
+    }
+
+    /// Checks one worker response, retaining the same numeric rules as a process.
+    pub fn verify_line(self, label: &str, printed: &str) -> Result<(), Failure> {
+        if self.matches(printed.trim()) {
+            Ok(())
+        } else {
+            Err(Failure(format!("{label}: expected {self:?}, received {printed:?}")))
+        }
+    }
+
+    fn matches(self, printed: &str) -> bool {
+        match self {
+            Self::Int(expected) => printed.parse::<i64>() == Ok(expected),
+            Self::Float(expected) => printed.parse::<f64>().is_ok_and(|value| {
+                value.is_finite()
+                    && expected.is_finite()
+                    && (value - expected).abs() < 1e-6 * expected.abs().max(1.0)
+            }),
         }
     }
 
@@ -28,14 +54,7 @@ impl ExpectedAnswer {
     /// malformed output, and extra non-whitespace output are never valid answers.
     pub fn verify(self, label: &str, output: &Output) -> Result<(), Failure> {
         let printed = std::str::from_utf8(&output.stdout).ok().map(str::trim);
-        let matches = printed.is_some_and(|printed| match self {
-            Self::Int(expected) => printed.parse::<i64>() == Ok(expected),
-            Self::Float(expected) => printed.parse::<f64>().is_ok_and(|value| {
-                value.is_finite()
-                    && expected.is_finite()
-                    && (value - expected).abs() < 1e-6 * expected.abs().max(1.0)
-            }),
-        });
+        let matches = printed.is_some_and(|printed| self.matches(printed));
         if output.status.success() && matches {
             Ok(())
         } else {

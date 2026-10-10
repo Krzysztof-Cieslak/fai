@@ -333,6 +333,8 @@ fn registry_is_fully_covered() {
     let jit = include_str!("../benches/algorithms_jit.rs");
     let aot = include_str!("../benches/algorithms_aot.rs");
     let ocaml = include_str!("../ocaml/baseline.ml");
+    let worker = include_str!("../src/bin/algo-worker.rs");
+    let native = include_str!("aot_benchmarks.rs");
     let here = include_str!("algorithms.rs");
     for algo in ALGORITHMS {
         let benched = format!("\"{}\"", algo.module);
@@ -351,6 +353,8 @@ fn registry_is_fully_covered() {
             "{} is registered but not dispatched in ocaml/baseline.ml",
             algo.module
         );
+        assert!(worker.contains(&benched), "{} is missing from the native worker", algo.module);
+        assert!(native.contains(&benched), "{} has no native worker validation", algo.module);
         let validated = format!("validate(\"{}\")", algo.module);
         assert!(
             here.contains(&validated),

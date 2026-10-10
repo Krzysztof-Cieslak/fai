@@ -1,11 +1,9 @@
 module MapSum
 
-// Build an array, map over it, and sum the result: an allocation- and
-// reference-counting-light workload on contiguous storage. `Array.range` fills one
-// buffer in place, `Array.map` builds a second, and `Array.sum` folds with no
-// allocation — no per-element cons cell. The matched representation against Rust's
-// `Vec`, so the ratio reflects the compiler/runtime, not a linked-vs-array
-// difference. Used by the Rust-vs-Fai runtime benchmark.
+// Map and sum a range through the Array API. The directly nested pipeline can
+// fuse without materializing a buffer. A compiler may also reduce this arithmetic
+// series to a closed form; this is an optimization case, not sustained array
+// traversal throughput. Used by the Rust-vs-Fai runtime benchmark.
 /// The benchmark workload: sum of doubling every element of [0, n).
 public run : Int -> Int
 let run n = Array.sum (Array.map (fun x -> x * 2) (Array.range 0 n))

@@ -37,6 +37,7 @@ mod measure {
     use fai_db::{Db, FaiDatabase};
     use fai_driver::build_native;
     use fai_tests::algorithms::{ALGORITHMS, Algorithm};
+    use fai_tests::benchmark_aot::{Entry, fai_program};
     use fai_tests::benchmark_process::{ExpectedAnswer, spawn_checked};
 
     /// How many times each binary runs. Peak RSS is a deterministic high-water
@@ -60,10 +61,14 @@ mod measure {
         for algo in ALGORITHMS {
             let expected = ExpectedAnswer::for_algorithm(algo);
             let exe = build_fai_binary(algo);
-            let fai = peak_rss(algo.module, "fai", expected, || Command::new(&exe));
+            let size = algo.aot_size.to_string();
+            let fai = peak_rss(algo.module, "fai", expected, || {
+                let mut command = Command::new(&exe);
+                command.arg(&size);
+                command
+            });
             let _ = std::fs::remove_file(&exe);
 
-            let size = algo.aot_size.to_string();
             let rust = peak_rss(algo.module, "rust", expected, || {
                 let mut cmd = Command::new(baseline);
                 cmd.args([algo.module, size.as_str()]);
@@ -135,12 +140,12 @@ mod measure {
         ))
     }
 
-    /// Links the algorithm's sample (with its baked workload size) into a native
-    /// executable, returning the path actually produced.
+    /// Links the workload with the same runtime-input entry as the timing suite.
     fn build_fai_binary(algo: &Algorithm) -> Utf8PathBuf {
         let mut db = FaiDatabase::new();
         fai_types::std_lib::load_std(&mut db);
-        let id = db.add_source(format!("{}.fai", algo.module).into(), algo.source().to_owned());
+        let id =
+            db.add_source(format!("{}.fai", algo.module).into(), fai_program(algo, Entry::Once));
         let file = db.source_file(id).expect("sample source registered");
         let outcome = build_native(&db, file, &unique_exe(algo.module));
         outcome

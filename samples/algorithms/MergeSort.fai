@@ -1,12 +1,9 @@
 module MergeSort
 
-// Sort a descending array into ascending order with the standard library's sort,
-// then sum it. `Array.sort` is an in-place median-of-three quicksort, so the
-// descending input (quicksort's classic worst case) stays O(n log n). Matched
-// against Rust's `Vec::sort`, so the ratio reflects the compiler/runtime rather
-// than a linked-vs-array difference. (The module name refers to the workload and
-// the Rust oracle's merge sort; the Fai side is the standard array sort.) Used by
-// the Rust-vs-Fai runtime benchmark.
+// Sort a descending array with the standard library's sort, then checksum it.
+// `Array.sort` recognizes the descending run and reverses it in linear work.
+// Rust's `Vec::sort` is the contiguous-library-sort peer. The module's name is
+// historical; the sort-pattern benchmark also covers general distributions.
 // Position-weighted checksum: omitting the sort changes the answer.
 let checksum i acc xs =
   if i >= Array.length xs then acc else checksum (i + 1) (acc + i * Array.unsafeGet i xs) xs

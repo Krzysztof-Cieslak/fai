@@ -5,11 +5,9 @@
 //! Each Fai binary is built once with [`fai_driver::build_native`] in untimed
 //! setup, then spawned in the timed loop; the Rust side spawns the
 //! `algo-baseline` binary (built by Cargo at the bench profile's `-O3`). Both run
-//! a single, large baked workload so process startup is amortized — the Fai
-//! sample's `main` passes the size to `run`/`runF`, and the Rust binary takes the
-//! matching size as an argument (kept in lockstep by the sample validation
-//! tests). See the `algorithms_jit` bench for the in-process compute comparison
-//! and the fairness caveats.
+//! a single, large workload with the size supplied through argv on every side.
+//! The Fai wrapper replaces only the sample's entry point. See the warm AOT
+//! comparison for repeated execution without process startup.
 //!
 //! Not run on Windows (the build/link + spawn path mirrors the daemon e2e benches
 //! and would need the MSVC environment); the bench still compiles there, so
@@ -24,6 +22,7 @@ use divan::Bencher;
 use fai_db::{Db, FaiDatabase};
 use fai_driver::build_native;
 use fai_tests::algorithms::{Algorithm, by_module};
+use fai_tests::benchmark_aot::{Entry, fai_program};
 use fai_tests::benchmark_process::{ExpectedAnswer, spawn_checked};
 
 fn main() {
@@ -44,12 +43,11 @@ fn unique_exe(module: &str) -> Utf8PathBuf {
     ))
 }
 
-/// Links the algorithm's sample (with its baked workload size) into a native
-/// executable, returning the path actually produced.
+/// Links the workload with an argv-reading native entry point.
 fn build_fai_binary(algo: &Algorithm) -> Utf8PathBuf {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
-    let id = db.add_source(format!("{}.fai", algo.module).into(), algo.source().to_owned());
+    let id = db.add_source(format!("{}.fai", algo.module).into(), fai_program(algo, Entry::Once));
     let file = db.source_file(id).expect("sample source registered");
     let outcome = build_native(&db, file, &unique_exe(algo.module));
     outcome
@@ -63,15 +61,16 @@ fn spawn(command: &mut Command) -> std::process::Output {
     spawn_checked(command).unwrap_or_else(|error| panic!("{error}"))
 }
 
-/// Times the delivered Fai binary running its baked workload.
+/// Times the delivered Fai binary running its runtime-supplied workload.
 fn bench_fai_binary(bencher: Bencher, module: &str) {
     let algo = by_module(module).expect("registered algorithm");
     let exe = build_fai_binary(algo);
+    let size = algo.aot_size.to_string();
     // Validate the exact delivered binary and workload, with oracle computation
     // outside timing. Every later timed process still has its exit checked.
-    let first = spawn(&mut Command::new(&exe));
+    let first = spawn(Command::new(&exe).arg(&size));
     verify(algo, "fai", &first);
-    bencher.bench(|| divan::black_box(spawn(&mut Command::new(&exe))));
+    bencher.bench(|| divan::black_box(spawn(Command::new(&exe).arg(&size))));
     let _ = std::fs::remove_file(&exe);
 }
 
