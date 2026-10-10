@@ -15,6 +15,7 @@ pub mod benchmark_process;
 mod checker;
 pub mod ocaml;
 pub mod sorting;
+pub mod tail_components;
 pub mod tree_lookup;
 
 pub use checker::{

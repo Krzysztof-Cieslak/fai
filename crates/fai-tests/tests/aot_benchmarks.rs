@@ -59,7 +59,8 @@ fn verify(output: &Output, expected: &[ExpectedAnswer]) {
 
 #[track_caller]
 fn check_worker(module: &str) {
-    let algorithm = by_module(module).unwrap();
+    let algorithm =
+        by_module(module).or_else(|| fai_tests::tail_components::by_module(module)).unwrap();
     let expected = [ExpectedAnswer::at_size(algorithm, 2), ExpectedAnswer::at_size(algorithm, 3)];
     let floor = match algorithm.oracle {
         Oracle::Int(_) => [ExpectedAnswer::Int(2), ExpectedAnswer::Int(3)],
@@ -104,6 +105,26 @@ workers! {
     string_build => "StringBuild", string_slice => "StringSlice", option_eval => "OptionEval",
     int_eval => "IntEval", option_path => "OptionPath", option_tree_find => "OptionTreeFind",
     list_sort => "ListSort",
+    tail_build_ascii => "TailBuildAscii", tail_build_unicode => "TailBuildUnicode",
+    tail_length_ascii => "TailLengthAscii", tail_length_unicode => "TailLengthUnicode",
+    tail_views_ascii => "TailViewsAscii", tail_views_unicode => "TailViewsUnicode",
+    tail_quicksort => "TailQuickSort",
+}
+
+#[test]
+fn tail_unicode_prefixes_cover_empty_short_and_supplementary_inputs() {
+    let algorithm = fai_tests::tail_components::by_module("TailViewsUnicode").unwrap();
+    let input = "0 1 7\nvalue 0\nvalue 1\nvalue 2\nrun 5\n";
+    let values = [ExpectedAnswer::Int(0), ExpectedAnswer::Int(599), ExpectedAnswer::Int(2999)];
+    let replies = [values[0], values[1], values[2], aot::checksum(&values, 5)];
+    let program = build(algorithm, Entry::Worker);
+    verify(&exchange(Command::new(program.path), input), &replies);
+    let mut rust = Command::new(env!("CARGO_BIN_EXE_algo-worker"));
+    rust.arg(algorithm.module);
+    verify(&exchange(rust, input), &replies);
+    if let Some(ocaml) = fai_tests::ocaml::worker_baseline(algorithm) {
+        verify(&exchange(Command::new(ocaml), input), &replies);
+    }
 }
 
 #[test]

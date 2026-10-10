@@ -1563,6 +1563,7 @@ pub fn source(module: &str) -> &'static str {
         "OptionPath" => include_str!("../../../samples/algorithms/OptionPath.fai"),
         "OptionTreeFind" => include_str!("../../../samples/algorithms/OptionTreeFind.fai"),
         "ListSort" => include_str!("../../../samples/algorithms/ListSort.fai"),
-        other => panic!("unknown algorithm module: {other}"),
+        other => crate::tail_components::source(other)
+            .unwrap_or_else(|| panic!("unknown algorithm module: {other}")),
     }
 }

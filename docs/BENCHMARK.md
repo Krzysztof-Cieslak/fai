@@ -504,6 +504,22 @@ is closest to the pure size factor.
 
 ### How to read the numbers
 
+`algorithms_aot_warm --components` selects the separate `tail-components-v1`
+workloads, with distinct `Tail*` measurement names. The normal 40-workload
+registry and its historical results are unchanged. The supplemental string cases
+incrementally construct the same ASCII or mixed-width UTF-8 base on every peer.
+They then observe scalar length once, observe it 200 times, or retain an array of
+200 varying scalar-indexed prefixes before consuming their scalar lengths.
+Construction is included in each case; do not subtract independent timings.
+Rust may borrow prefixes, Fai may use borrowing views, and OCaml copies them;
+these representation choices remain visible. Every peer counts Unicode scalars,
+including supplementary characters. Normal optimization is unrestricted.
+`TailQuickSort` runs the sample's Lomuto partition and smaller-side-first
+recursion on all three peers; the existing `QuickSort` remains the application
+comparison against the peer library sorts. The supplemental cases use the same
+runtime input windows, calibrated batches, checked replies and floor qualification
+as the primary suite, but their results are not included in its aggregates.
+
 Ownership optimizations must preserve bounded storage for fixed-size live state
 and fixed concurrency as iteration counts increase. `perceus_space` checks live
 objects, bytes, reuse and copies; `perceus_storage` additionally checks retained

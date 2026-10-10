@@ -21,6 +21,7 @@ mod native {
     use fai_tests::bench_summary::WarmSample;
     use fai_tests::benchmark_aot::{self as aot, Entry};
     use fai_tests::benchmark_process::{ExpectedAnswer, Worker};
+    use fai_tests::tail_components;
 
     const INPUT_WINDOW: usize = 32;
     const TARGET_BATCH: Duration = Duration::from_millis(5);
@@ -33,6 +34,7 @@ mod native {
         sizes: String,
         test: bool,
         list: bool,
+        components: bool,
     }
 
     impl Config {
@@ -44,12 +46,14 @@ mod native {
                 sizes: "both".into(),
                 test: false,
                 list: false,
+                components: false,
             };
             let mut args = std::env::args().skip(1);
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--bench" => {}
                     "--list" => result.list = true,
+                    "--components" => result.components = true,
                     "--test" => {
                         result.test = true;
                         result.samples = 1;
@@ -72,7 +76,7 @@ mod native {
                     "--size" => result.sizes = args.next().expect("small, large or both"),
                     "--help" | "-h" => {
                         println!(
-                            "algorithms_aot_warm [--samples N] [--passes N] [--module NAME] [--size small|large|both] [--list] [--test]"
+                            "algorithms_aot_warm [--samples N] [--passes N] [--module NAME] [--size small|large|both] [--components] [--list] [--test]"
                         );
                         std::process::exit(0);
                     }
@@ -82,10 +86,10 @@ mod native {
             assert!(result.samples > 0 && result.passes > 0);
             assert!(matches!(result.sizes.as_str(), "small" | "large" | "both"));
             assert!(
-                result
-                    .modules
+                result.modules.iter().all(|name| result
+                    .algorithms()
                     .iter()
-                    .all(|name| ALGORITHMS.iter().any(|algorithm| algorithm.module == name)),
+                    .any(|algorithm| algorithm.module == name)),
                 "unknown workload"
             );
             result
@@ -97,6 +101,10 @@ mod native {
                 "large" => BTreeSet::from([algorithm.aot_size]),
                 _ => BTreeSet::from([algorithm.jit_size, algorithm.aot_size]),
             }
+        }
+
+        fn algorithms(&self) -> &'static [Algorithm] {
+            if self.components { tail_components::COMPONENTS } else { ALGORITHMS }
         }
     }
 
@@ -223,6 +231,7 @@ mod native {
                 "slowBatchMs": SLOW_BATCH.as_millis(), "debugAssertions": cfg!(debug_assertions),
                 "samplesPerPass": config.samples, "passes": config.passes,
                 "scope": "warm AOT batch round trip; floor measured without subtraction",
+                "workloadSet": if config.components { tail_components::VERSION } else { "algorithms" },
             })
         );
         for peer in &mut peers {
@@ -275,7 +284,8 @@ mod native {
 
     pub(super) fn run() {
         let config = Config::read();
-        let selected: Vec<_> = ALGORITHMS
+        let selected: Vec<_> = config
+            .algorithms()
             .iter()
             .filter(|algorithm| {
                 config.modules.is_empty() || config.modules.contains(algorithm.module)
@@ -313,12 +323,20 @@ mod native {
             "encodedRustflags": std::env::var("CARGO_ENCODED_RUSTFLAGS").ok(),
             "ocamlCompiler": std::env::var("FAI_BENCH_OCAMLOPT").ok(),
             "inputWindow": INPUT_WINDOW, "samplesPerPass": config.samples, "passes": config.passes,
+            "workloadSet": if config.components { tail_components::VERSION } else { "algorithms" },
         });
         std::fs::write(
             directory.join("metadata.json"),
             serde_json::to_vec_pretty(&metadata).unwrap(),
         )
         .unwrap();
+        if config.components {
+            std::fs::write(
+                directory.join("rust-tail-components.rs"),
+                include_str!("../src/tail_components.rs"),
+            )
+            .unwrap();
+        }
         for algorithm in selected {
             let folder = directory.join(algorithm.module);
             std::fs::create_dir_all(&folder).unwrap();
