@@ -7,6 +7,14 @@ let frame value = TuiLayout.render (TuiLayout.context 8 2) TuiState.empty (field
 let key code modifiers = TerminalHost.Key { code = code, modifiers = modifiers, repeat = false }
 
 let send event frame = TuiInput.step TuiInput.defaults event frame
+
+copyPaste : TuiLayout.Frame String -> List String
+let copyPaste frame =
+  let copied = send (key "c" 2) { frame with
+    state = TuiState.select (Ui.id "text") 0 2 frame.state
+  }
+  (send (key "v" 2) { frame with state = TuiState.select (Ui.id "text") 3 3 copied.state }).messages
+example: Result.map copyPaste (frame "abc") = Ok ["abcab"]
 example: Result.map (fun frame ->
   (send (key "Backspace" 0) frame).messages) (frame "a\u{301}👩‍💻z") = Ok ["a\u{301}👩‍💻"]
 example: Result.map (fun frame ->

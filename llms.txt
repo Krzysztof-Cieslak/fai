@@ -1101,6 +1101,12 @@ incremental ANSI output. Run its pure contracts directly with `fai test -C packa
 into `Ui.Element Msg`. Interactive widgets take a stable `Ui.id`/`Ui.childId`.
 Use `Ui.map` for child message types. `TuiLayout.render` and `TuiInput.step` are
 pure; application values are controlled while `TuiState` owns focus/caret/scroll.
+`Tui.program init update view` creates a pure MVU application; init receives the
+initial viewport context. `Tui.run` takes explicit terminal/clock/concurrency
+capabilities and configurable options. `TuiCmd` provides effectful thunks, keyed
+replacement/cancellation and focus/scroll/quit controls; `TuiSub` provides timers
+and keyed, revisioned streams. Use `combine` to union differing command effects.
+`Tui.runWith` accepts an owned backend for deterministic integration tests.
 
 `TerminalHost.Terminal` supplies `open : Bool -> Result Session String` (mouse
 capture flag), `close`, `size`, raw `write`, and `poll` with a millisecond timeout.

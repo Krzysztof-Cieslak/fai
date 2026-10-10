@@ -65,3 +65,57 @@ return `None` to leave a key for the application's global handler. Default editi
 supports grapheme movement/deletion, selection, Home/End, paste, and Ctrl+A/C/X.
 The composer submits on Enter, inserts a newline on Shift+Enter, and uses Ctrl+P/N
 for submitted history. Password inputs mask graphemes and omit copying/history.
+
+## MVU runner and effects
+
+`Tui.program init update view` constructs an application with no subscriptions or
+global event handler. `init` receives the initial `TuiLayout.Context`, including
+the real viewport size. `update : Msg -> Model -> Model * TuiCmd.Cmd Msg 'e` and
+`view : TuiLayout.Context -> Model -> Ui.Element Msg` are pure. Capability values
+can be captured by command thunks; their execution effects remain in `'e`.
+
+`Tui.run runtime options program` requires explicit `terminal`, `clock`, and
+`concurrency` capabilities and returns `Result Model Tui.Error`. The final model
+is available after exit. A `Tui.Error` preserves the primary message and an optional
+cleanup error. `Tui.runWith` accepts an owned backend of `size`, `poll`, `write`,
+and `close` functions, useful for scripted integration tests.
+
+Commands include `TuiCmd.perform`, `latest key`, `cancel key`, `focus`, `scrollTo`,
+`select`, and `quit`. `batch` groups commands with one shared effect row;
+`combine first second` unions differing effect rows through argument subsumption.
+`TuiCmd.map` lifts child command messages. Keyed replacement ignores obsolete
+results, including results already queued before cancellation. Cancelled jobs
+continue to occupy their concurrency slot until they finish, keeping actual
+task counts bounded. Excess work waits in the bounded pending queue.
+
+Set `program.subscriptions` to return `TuiSub.every` or `TuiSub.stream` values.
+A stream has a key and an explicit revision: unchanged revisions keep their
+existing source, including a completed source. Change the revision when captured
+inputs change. Removing a subscription cancels it. Stream errors map to messages.
+Timers and streams share the task limits; incoming messages use a bounded FIFO
+with producer backpressure and atomic batch draining.
+
+The runner applies messages serially and coalesces redraws between batches.
+`program.onEvent` handles unconsumed terminal events. Ctrl+C exits by default when
+neither a widget nor the application handles it. Native close, cancellation, and
+located runtime failures restore the terminal. On normal runner shutdown, queues
+close and tasks are cancelled, then the backend restores the terminal before
+structured task joining. Cancellation of application work remains cooperative.
+
+| Option | Default |
+| --- | --- |
+| `inputPollMs` | 25 ms; bounds native input cancellation latency |
+| `maxFps` | `Some 60`; `None` removes the refresh cap |
+| `mailboxCapacity` | 256 messages |
+| `tasks.active`, `tasks.pending` | 32 running, 1024 queued |
+| `maxFeedback` | 32 visible-range reconciliation passes |
+| `layout.maxCells`, `maxNodes`, `maxDepth` | 1,048,576 cells, 100,000 nodes, 128 levels |
+| `input.historyLimit`, `wheelLines` | 100 entries, 3 lines |
+| `mouse`, `clipboard` | enabled |
+| `maxClipboardBytes` | 1 MiB |
+
+All durations and workload limits are configurable; structural tree depth has a
+hard maximum of 128. Clipboard actions retain a local copy for Ctrl+V and can also
+emit OSC 52 to supporting terminals; `clipboard = false` disables that external
+write. System paste arrives through the terminal's normal paste/bracketed-paste
+support. Copy and cut never expose password input text.

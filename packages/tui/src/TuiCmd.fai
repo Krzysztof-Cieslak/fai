@@ -1,0 +1,62 @@
+module TuiCmd
+
+public type Operation 'msg 'e =
+  | Perform (Option String) (Unit -> 'msg / 'e)
+  | Cancel String
+  | Focus Ui.Id
+  | ScrollTo Ui.Id Int
+  | Select Ui.Id Int Int
+  | Quit
+
+public opaque type Cmd 'msg 'e =
+  | Cmd (List (Operation 'msg 'e))
+
+public none : Cmd 'msg 'e
+let none = Cmd []
+
+/// One-shot work. Constructing a command is pure; the runner performs its effects.
+public perform : (Unit -> 'msg / 'e) -> Cmd 'msg 'e
+let perform work = Cmd [Perform None work]
+
+/// Replace active or queued work under a stable key. Late results are ignored.
+public latest : String -> (Unit -> 'msg / 'e) -> Cmd 'msg 'e
+let latest key work = Cmd [Perform (Some key) work]
+
+public cancel : String -> Cmd 'msg 'e
+let cancel key = Cmd [Cancel key]
+
+public focus : Ui.Id -> Cmd 'msg 'e
+let focus id = Cmd [Focus id]
+
+public scrollTo : Ui.Id -> Int -> Cmd 'msg 'e
+let scrollTo id offset = Cmd [ScrollTo id offset]
+
+public select : Ui.Id -> Int -> Int -> Cmd 'msg 'e
+let select id anchor caret = Cmd [Select id anchor caret]
+
+public quit : Cmd 'msg 'e
+let quit = Cmd [Quit]
+
+public operations : Cmd 'msg 'e -> List (Operation 'msg 'e)
+let operations command =
+  match command with
+  | Cmd operations -> operations
+
+public batch : List (Cmd 'msg 'e) -> Cmd 'msg 'e
+let batch commands = Cmd (List.concat (List.map operations commands))
+
+/// Combine command groups. Argument effect subsumption unions different effects;
+/// unlike a homogeneous list literal, this also accepts pure and effectful groups.
+public combine : Cmd 'msg 'e -> Cmd 'msg 'e -> Cmd 'msg 'e
+let combine first second = batch [first, second]
+
+public map : ('a -> 'b) -> Cmd 'a 'e -> Cmd 'b 'e
+let map f command =
+  Cmd (List.map (fun operation ->
+    match operation with
+    | Perform key work -> Perform key (work >> f)
+    | Cancel key -> Cancel key
+    | Focus id -> Focus id
+    | ScrollTo id offset -> ScrollTo id offset
+    | Select id anchor caret -> Select id anchor caret
+    | Quit -> Quit) (operations command))

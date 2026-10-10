@@ -14,6 +14,7 @@ public type Widget = {
 }
 
 public type State = {
+  clipboard : String,
   focus : Option Ui.Id,
   focusHistory : List Ui.Id,
   revealed : Option Ui.Id,
@@ -21,7 +22,13 @@ public type State = {
 }
 
 public empty : State
-let empty = { focus = None, focusHistory = [], revealed = None, widgets = Dict.empty }
+let empty = {
+  clipboard = "",
+  focus = None,
+  focusHistory = [],
+  revealed = None,
+  widgets = Dict.empty
+}
 
 public fresh : Widget
 let fresh = {
