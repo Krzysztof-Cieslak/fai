@@ -584,6 +584,21 @@ fn deeper_scalar_peeling_survives_worker_transport() {
 }
 
 #[test]
+fn ordered_literal_folds_survive_worker_transport() {
+    let dir = workspace(&[("Main.fai", include_str!("fixtures/OrderedLiteralFold.fai"))]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+    let decoded = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    assert_eq!(jit_run_bundle(&decoded), 0);
+    assert_eq!(
+        fai_runtime::capture_take(),
+        "callback\ninitial\none\ntwo\nstep1\nstep2\n12\nright3\nright2\nright1\n321\n"
+    );
+}
+
+#[test]
 fn jit_run_bundle_executes_a_cross_module_program() {
     let main = indoc! {r#"
         module Main

@@ -3272,6 +3272,14 @@ Editor integration:
     Unsafe literal elements, fold initializers, member targets, and producer
     arguments retain eager evaluation. Ordinary finite-allocation resource
     exhaustion is outside the totality classification.
+  - **Strict literal folds.** A small directly consumed List literal can unroll
+    even when its callback is effectful or not proven total. Callback and initial
+    accumulator evaluation precede the producer prefix and every strict element
+    initializer; only then do calls run in fold order. A bounded non-recursive
+    same-file producer can expose its literal through a separate eligibility
+    query, preserving early cutoff for rejected bodies. Shared sources, dynamic
+    tails and resource-bearing or unknown element types stay materialized.
+    Resource-bearing producer arguments retain their original call boundary.
   - **Single-operation Array lowering** shares the typed loop generator without
     relaxing cross-stage safety. Standalone `range`/`repeat`/`init` build their
     arrays directly; individual maps, folds, filters, and searches walk an already

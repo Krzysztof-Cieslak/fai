@@ -47,6 +47,7 @@ use crate::ir::{
     CExpr, ClosureAlloc, CoreFn, ExprKind as K, FnAbi, FnId, Lit, LoweredDef, Prim, Repr,
 };
 
+mod literal_fold;
 mod local_constructors;
 mod repeated_map;
 mod reverse_prefix;
@@ -403,6 +404,10 @@ impl Fuser<'_> {
             return result;
         }
         if let Some(result) = self.staged_concat(e, base_fns) {
+            self.changed = true;
+            return result;
+        }
+        if let Some(result) = self.ordered_literal_fold(e, base_fns) {
             self.changed = true;
             return result;
         }

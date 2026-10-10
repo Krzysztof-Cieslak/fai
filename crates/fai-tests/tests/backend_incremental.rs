@@ -556,3 +556,43 @@ fn nonnegative_division_guard_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn bounded_literal_producer_edits_match_clean_fold_lowering() {
+    let items = (1..=16).map(|n| format!("n + {n}")).collect::<Vec<_>>().join(", ");
+    let source = format!(
+        "module M\nlet items n = [{items}]\nlet divide acc item = acc / item\npublic run : Int -> Int\nlet run n = List.foldl divide 100 (items n)\n"
+    );
+    let edited = source.replacen("n + 1,", "n + 2,", 1);
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", &source)], &[("M.fai", &edited)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("run");
+            (
+                (*fai_core::fuse_def(db, file, name)).clone(),
+                (*object_code(db, file, name, false)).clone(),
+            )
+        },
+    );
+}
+
+#[test]
+fn rejected_literal_producer_edits_stop_at_the_eligibility_query() {
+    let mut db = fai_db::FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let items = (1..=17).map(|n| format!("n + {n}")).collect::<Vec<_>>().join(", ");
+    let source = format!(
+        "module M\nlet items n = [{items}]\nlet divide acc item = acc / item\npublic run : Int -> Int\nlet run n = List.foldl divide 100 (items n)\n"
+    );
+    let id = db.add_source("M.fai".into(), source.clone());
+    let file = db.source_file(id).unwrap();
+    let name = Symbol::intern("run");
+    let before = fai_core::fuse_def(&db, file, name);
+    db.add_source("M.fai".into(), source.replacen("n + 1,", "n + 2,", 1));
+    let after = fai_core::fuse_def(&db, file, name);
+    assert!(
+        std::sync::Arc::ptr_eq(&before, &after),
+        "a rejected producer body must not invalidate its consumer"
+    );
+}
