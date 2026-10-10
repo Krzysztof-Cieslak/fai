@@ -2018,17 +2018,12 @@ impl<M: Module> Translator<'_, M> {
     /// Reads an `Int` field/slot word as a raw `i64` **without** releasing it (a
     /// borrow — the owning cell is dropped later): an immediate (low bit set) is
     /// untagged; a boxed (large) `Int` is read from its value field. Mirrors
-    /// [`Self::borrowing_unbox`] for floats.
+    /// [`Self::borrowing_unbox`] for floats. Keep the full-width fallback out of
+    /// the common immediate scan's instruction path.
     fn borrow_unbox_int_to_raw(&mut self, v: Value) -> Value {
-        self.borrow_unbox_int(v, false)
-    }
-
-    fn borrow_unbox_int(&mut self, v: Value, cold_box: bool) -> Value {
         let imm_b = self.builder.create_block();
         let box_b = self.builder.create_block();
-        if cold_box {
-            self.builder.set_cold_block(box_b);
-        }
+        self.builder.set_cold_block(box_b);
         let merge_b = self.builder.create_block();
         self.builder.append_block_param(merge_b, types::I64);
         let bit = self.builder.ins().band_imm(v, 1);
@@ -4567,7 +4562,7 @@ impl<M: Module> Translator<'_, M> {
             Ty::Con(Con::Int) => {
                 // Keep the usual immediate-element scan contiguous. Full-width
                 // Int boxes remain supported on the out-of-line branch.
-                let raw = self.borrow_unbox_int(word, true);
+                let raw = self.borrow_unbox_int_to_raw(word);
                 self.mark_raw(raw)
             }
             // A concrete float array: the slot word *is* the `f64` bits.
