@@ -17,6 +17,7 @@ mod array_loop;
 mod callback_plan;
 mod data_cursor;
 mod emit;
+mod fixed_point;
 mod jit;
 
 pub use aot::{main_object, object_for_def, reuse_object_for_def};

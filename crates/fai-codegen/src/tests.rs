@@ -2484,6 +2484,12 @@ fn positive_float_literal_order_needs_no_sign_normalization() {
 }
 
 #[test]
+fn scalar_fixed_state_does_not_skip_effects() {
+    let source = "module M\nlet loop i n x = if i >= n then x else\n  let _ = stdConsole.writeLine \"step\"\n  loop (i + 1) n (x * 0.5)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (Float.toInt (loop 0 3 0.0)))\n";
+    assert_eq!(run(source), (0, "step\nstep\nstep\n0\n".into()));
+}
+
+#[test]
 fn generic_equality_on_an_enum_takes_the_immediate_path() {
     // Every constructor is nullary, so every value is an immediate: the guard's
     // fast arm always runs.

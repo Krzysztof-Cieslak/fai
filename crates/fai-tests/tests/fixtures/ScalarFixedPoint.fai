@@ -1,0 +1,8 @@
+module Main
+
+let terminal i n x =
+  if i >= n then i else terminal (i + 1) n (x * 0.5)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  runtime.console.writeLine (Int.toString (terminal 0 9223372036854775807 0.0))

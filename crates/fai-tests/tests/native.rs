@@ -638,6 +638,23 @@ fn float_literal_shortcuts_preserve_native_special_values() {
 }
 
 #[test]
+fn exact_scalar_fixed_points_finish_at_the_proven_bound() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/ScalarFixedPoint.fai")),
+        ("9223372036854775807\n".into(), Some(0))
+    );
+}
+
+#[test]
+fn scalar_fixed_state_does_not_skip_a_counter_dependent_trap() {
+    let source = "module Main\nlet loop i n x = if i >= n then x else\n  let _ = 1 / (1 - i)\n  loop (i + 1) n (x * 0.5)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Float.toString (loop 0 3 0.0))\n";
+    let (stdout, stderr, code) = build_and_run_captured(source);
+    assert!(stdout.is_empty());
+    assert_ne!(code, Some(0));
+    assert!(stderr.contains("division by zero"), "{stderr}");
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }
