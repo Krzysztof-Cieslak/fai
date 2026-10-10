@@ -1341,6 +1341,15 @@ Miri/property jobs are disabled; Benchmarks, Editors, Fuzz, and deep properties
 are disabled workflows with manual-only triggers. Run affected property tests
 locally when changing their implementation or invariants.
 
+Those four check names have dependency-aware lanes. Package-only diffs restore
+an exact cached compiler and run native `fai fmt`/`check`/`test` for changed
+packages and transitive dependents, without Rust commands on a cache hit.
+Compiler/runtime/std/infrastructure or unknown changes retain the full checks;
+root documentation-only changes receive lightweight validation. The selector
+uses the actual PR base and both dependency catalogs, including renames/deletions.
+Failed selection fails the required gates. `docs/DEVELOPMENT.md` documents the
+bundle cache, native local workflow, and CI rules.
+
 A change is done when:
 
 1. `cargo build` is clean and `cargo clippy --all-targets -- -D warnings` passes.

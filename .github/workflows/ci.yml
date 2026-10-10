@@ -5,277 +5,296 @@ on:
     branches: [main]
   pull_request:
 
-# Cancel superseded runs on the same ref.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  actions: read
+
 env:
   CARGO_TERM_COLOR: always
-
-# Automatic CI runs only the branch-protection-required jobs: lint, Linux
-# unit/e2e tests, and platform tests on macOS/Windows. Optional Miri and deep
-# property jobs are disabled to reserve the shared runner capacity. The named
-# unit/proptest profiles remain complementary and their partition is checked.
-#
-# Each OS uses its native default shell (bash on Linux/macOS, PowerShell on
-# Windows). Forcing bash on Windows puts Git's `usr/bin/link.exe` ahead of the
-# MSVC linker on PATH, which breaks all linking — so it is deliberately avoided.
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
-  lint:
-    name: fmt + clippy
+  changes:
+    name: Select affected checks
     runs-on: ubuntu-latest
+    outputs:
+      compiler: ${{ steps.scope.outputs.compiler }}
+      packages: ${{ steps.scope.outputs.packages }}
+      package_names: ${{ steps.scope.outputs.package_names }}
+      mode: ${{ steps.scope.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Compare with the actual base, including stacked PRs
+        id: scope
+        env:
+          CHANGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python scripts/ci.py scope --github-output
 
-      # The first cargo invocation makes rustup install the toolchain pinned by
-      # rust-toolchain.toml, together with its rustfmt and clippy components.
-      - name: Select pinned toolchain
-        run: |
-          cargo --version
-          cargo clippy --version
-          cargo fmt --version
-
+  # Keep the four branch-protection check names. Each runs even when selection
+  # fails, so a failed classifier cannot turn required checks into skipped greens.
+  lint:
+    name: fmt + clippy
+    needs: changes
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    env:
+      SCOPE_RESULT: ${{ needs.changes.result }}
+      CI_MODE: ${{ needs.changes.outputs.mode }}
+      CI_COMPILER: ${{ needs.changes.outputs.compiler }}
+      CI_PACKAGES: ${{ needs.changes.outputs.packages }}
+      PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Require successful change classification
+        run: python scripts/ci.py require
+      - name: Tooling tests
+        if: needs.changes.outputs.compiler == 'true'
+        run: python -m unittest discover -s scripts/tests -v
       - uses: Swatinem/rust-cache@v2
-
-      - name: Format
+        if: needs.changes.outputs.compiler == 'true'
+      - name: Rust format
+        if: needs.changes.outputs.compiler == 'true'
         run: cargo fmt --all -- --check
-
       - name: Clippy
+        if: needs.changes.outputs.compiler == 'true'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - uses: ./.github/actions/compiler
+        if: needs.changes.outputs.compiler != 'true' && needs.changes.outputs.packages != '[]'
+      - name: Package formatting
+        if: needs.changes.outputs.compiler != 'true' && needs.changes.outputs.packages != '[]'
+        run: |
+          for package in $PACKAGE_NAMES; do
+            fai fmt --check -C packages "$package"
+          done
 
   unit:
     name: unit + e2e tests (linux)
+    needs: changes
+    if: ${{ always() }}
     runs-on: ubuntu-latest
+    env:
+      SCOPE_RESULT: ${{ needs.changes.result }}
+      CI_MODE: ${{ needs.changes.outputs.mode }}
+      CI_COMPILER: ${{ needs.changes.outputs.compiler }}
+      CI_PACKAGES: ${{ needs.changes.outputs.packages }}
+      PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
     steps:
       - uses: actions/checkout@v4
-
-      # Guarantee a `python`/`python3` on PATH for the test summary and the
-      # lane-partition guard.
-      - name: Set up Python
-        uses: actions/setup-python@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-
-      - name: Select pinned toolchain
-        run: |
-          cargo --version
-          rustc --version
-
+      - name: Require successful change classification
+        run: python scripts/ci.py require
       - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.compiler == 'true'
         with:
-          # Retain the shared test cache key across CI configurations.
           shared-key: linux-tests
-
       - name: Install nextest
+        if: needs.changes.outputs.compiler == 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
-
-      - name: Test (everything except property tests)
+      - name: Rust unit and integration tests
+        if: needs.changes.outputs.compiler == 'true'
         run: cargo nextest run --workspace --locked --profile unit
-
       - name: Doctests
-        # nextest does not run doctests, so cover them separately (reusing the
-        # libraries just compiled for the test run).
+        if: needs.changes.outputs.compiler == 'true'
         run: cargo test --workspace --locked --doc
-
       - name: Optimized task migration regression
+        if: needs.changes.outputs.compiler == 'true'
         run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
-
-      - name: Build compiler for source tests
-        run: cargo build --locked -p fai-cli
-
-      - name: Tooling tests
-        run: python -m unittest discover -s scripts/tests -v
-
-      - name: Package formatting
-        run: target/debug/fai fmt --check -C packages
-
-      - name: Package type checking
-        run: target/debug/fai check --no-examples -C packages
-
-      - name: Package contracts
-        run: target/debug/fai test -C packages --seed 42 --count 128
-
-      - name: Relocated compiler smoke test
-        run: python scripts/tests/smoke_compiler.py --fai target/debug/fai
-
-      - name: JSON compiler fixtures
-        run: python scripts/tests/json_toolchain.py --fai target/debug/fai
-
-      - name: HTTP compiler fixtures
-        run: python scripts/tests/web_toolchain.py --fai target/debug/fai
-
-      - name: Verify the unit/proptest lanes partition the suite
-        # A name-based guard: the two profiles must together select every
-        # test exactly once. Fails the build if a new test ever escapes both lanes
-        # (or the property-test selection breaks). Reuses the warm build above.
+      - name: Verify nextest partition
+        if: needs.changes.outputs.compiler == 'true'
         run: ./scripts/check-nextest-partition.sh
-
-      - name: Test summary
-        if: always()
+      - uses: ./.github/actions/compiler
+        id: compiler
+        if: needs.changes.outputs.packages != '[]'
+      - name: Native package checks
+        if: needs.changes.outputs.packages != '[]'
+        run: |
+          for package in $PACKAGE_NAMES; do
+            fai fmt --check -C packages "$package"
+            fai check --no-examples -C packages "$package"
+            fai test -C packages "$package" --seed 42 --count 128
+          done
+      - name: Compiler relocation and execution fixtures
+        if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
+        run: |
+          python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}'
+          python scripts/tests/json_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
+          python scripts/tests/web_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
+      - name: Package verified compiler bundle
+        if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
+        run: python scripts/compiler.py pack --offline --no-build --output "$RUNNER_TEMP/compiler.zip"
+      - uses: actions/upload-artifact@v4
+        if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
+        with:
+          name: ${{ steps.compiler.outputs.artifact }}
+          path: ${{ runner.temp }}/compiler.zip
+          retention-days: 30
+          if-no-files-found: error
+      - name: Rust test summary
+        if: always() && needs.changes.outputs.compiler == 'true'
         run: python scripts/junit-summary.py target/nextest/unit/junit.xml
-
-      - name: Upload JUnit report
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
+        if: always() && needs.changes.outputs.compiler == 'true'
         with:
           name: junit-report-unit
           path: target/nextest/unit/junit.xml
           if-no-files-found: ignore
 
-  shared-rc-miri:
-    if: ${{ vars.FAI_ENABLE_OPTIONAL_CI == 'true' }}
-    name: shared RC (Miri)
-    runs-on: ubuntu-latest
-    env:
-      RUSTUP_TOOLCHAIN: nightly-2026-10-08
-      # The value representation round-trips pointers through integer slots.
-      # Permissive provenance supports that model; race detection remains active.
-      MIRIFLAGS: -Zmiri-permissive-provenance
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Miri toolchain
-        run: rustup toolchain install nightly-2026-10-08 --profile minimal --component miri,rust-src
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: shared-rc-miri
-
-      - name: Prepare Miri
-        run: cargo miri setup
-
-      - name: Check shared reference-count races
-        run: cargo miri test -p fai-runtime --locked --lib shared_rc_tests -- --test-threads=1
-
-  proptest:
-    if: ${{ vars.FAI_ENABLE_OPTIONAL_CI == 'true' }}
-    name: property tests (linux)
-    runs-on: ubuntu-latest
-    env:
-      # Property tests run isolated in this lane, so they can run harder than the
-      # inline default without slowing the unit lane. Committed
-      # `proptest-regressions/` seeds always replay first. The scheduled
-      # `proptest-nightly` workflow raises this much further for deep runs.
-      PROPTEST_CASES: "4096"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Select pinned toolchain
-        run: |
-          cargo --version
-          rustc --version
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Share the build with the `unit` lane (same test binaries).
-          shared-key: linux-tests
-
-      - name: Install nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-
-      - name: Property tests
-        run: cargo nextest run --workspace --locked --profile proptest
-
-      - name: Test summary
-        if: always()
-        run: python scripts/junit-summary.py target/nextest/proptest/junit.xml
-
-      - name: Upload JUnit report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: junit-report-proptest
-          path: target/nextest/proptest/junit.xml
-          if-no-files-found: ignore
-
   cross-os:
     name: platform tests
+    needs: changes
+    if: ${{ always() }}
     strategy:
-      # Report each OS's result instead of cancelling on the first failure.
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      SCOPE_RESULT: ${{ needs.changes.result }}
+      CI_MODE: ${{ needs.changes.outputs.mode }}
+      CI_COMPILER: ${{ needs.changes.outputs.compiler }}
+      CI_PACKAGES: ${{ needs.changes.outputs.packages }}
+      PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
     steps:
       - uses: actions/checkout@v4
-
-      # The AOT linker (`fai build`) shells out to the host's system linker. On
-      # Windows that is MSVC `link.exe`, which needs the Visual Studio
-      # environment (PATH/LIB/INCLUDE) — export it for the build/test steps.
-      - name: Set up MSVC environment
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-
-      - name: Select pinned toolchain
-        run: |
-          cargo --version
-          rustc --version
-
+      - name: Require successful change classification
+        run: python scripts/ci.py require
+      - name: Set up native Windows linker
+        if: runner.os == 'Windows' && (needs.changes.outputs.compiler == 'true' || needs.changes.outputs.packages != '[]')
+        uses: ilammy/msvc-dev-cmd@v1
       - uses: Swatinem/rust-cache@v2
-
-      - name: Install nextest
-        uses: taiki-e/install-action@v2
+        if: needs.changes.outputs.compiler == 'true'
+      - uses: taiki-e/install-action@v2
+        if: needs.changes.outputs.compiler == 'true'
         with:
           tool: nextest
-
-      - name: Platform-sensitive tests
-        # The OS-relevant subset (native linker path + process-control FFI), with
-        # property tests excluded — those run on Linux only. See the `cross-os`
-        # profile in .config/nextest.toml.
+      - name: Rust platform tests
+        if: needs.changes.outputs.compiler == 'true'
         run: cargo nextest run --workspace --locked --profile cross-os
-
       - name: Optimized task migration regression
+        if: needs.changes.outputs.compiler == 'true'
         run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
-
-      - name: Build compiler for source tests
-        run: cargo build --locked -p fai-cli
-
-      - name: Tooling tests
-        run: python -m unittest discover -s scripts/tests -v
-
-      - name: Package formatting
-        run: target/debug/fai fmt --check -C packages
-
-      - name: Package type checking
-        run: target/debug/fai check --no-examples -C packages
-
-      - name: Package contracts
-        run: target/debug/fai test -C packages --seed 42 --count 128
-
-      - name: Relocated compiler smoke test
-        run: python scripts/tests/smoke_compiler.py --fai target/debug/fai
-
+      - uses: ./.github/actions/compiler
+        id: compiler
+        if: needs.changes.outputs.packages != '[]'
+      - name: Native package checks (macOS)
+        if: runner.os != 'Windows' && needs.changes.outputs.packages != '[]'
+        run: |
+          for package in $PACKAGE_NAMES; do
+            fai fmt --check -C packages "$package"
+            fai check --no-examples -C packages "$package"
+            fai test -C packages "$package" --seed 42 --count 128
+          done
+      - name: Native package checks (Windows)
+        if: runner.os == 'Windows' && needs.changes.outputs.packages != '[]'
+        run: |
+          foreach ($package in $env:PACKAGE_NAMES.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)) {
+            fai fmt --check -C packages $package
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            fai check --no-examples -C packages $package
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            fai test -C packages $package --seed 42 --count 128
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Compiler relocation fixture
+        if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
+        run: python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}'
       - name: JSON compiler fixtures
-        run: python scripts/tests/json_toolchain.py --fai target/debug/fai
-
+        if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
+        run: python scripts/tests/json_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
       - name: HTTP compiler fixtures
-        run: python scripts/tests/web_toolchain.py --fai target/debug/fai
-
-      - name: Test summary
-        if: always()
-        run: python scripts/junit-summary.py target/nextest/cross-os/junit.xml
-
-      - name: Upload JUnit report
-        if: always()
-        uses: actions/upload-artifact@v4
+        if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
+        run: python scripts/tests/web_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
+      - name: Package verified compiler bundle
+        if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
+        shell: python
+        run: |
+          import os, subprocess, sys
+          from pathlib import Path
+          subprocess.run([sys.executable, "scripts/compiler.py", "pack", "--offline", "--no-build", "--output", str(Path(os.environ["RUNNER_TEMP"]) / "compiler.zip")], check=True)
+      - uses: actions/upload-artifact@v4
+        if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
         with:
-          # Artifact names must be unique across matrix jobs in a run.
+          name: ${{ steps.compiler.outputs.artifact }}
+          path: ${{ runner.temp }}/compiler.zip
+          retention-days: 30
+          if-no-files-found: error
+      - name: Rust test summary
+        if: always() && needs.changes.outputs.compiler == 'true'
+        run: python scripts/junit-summary.py target/nextest/cross-os/junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always() && needs.changes.outputs.compiler == 'true'
+        with:
           name: junit-report-${{ matrix.os }}
           path: target/nextest/cross-os/junit.xml
+          if-no-files-found: ignore
+
+  shared-rc-miri:
+    name: shared RC (Miri)
+    needs: changes
+    if: vars.FAI_ENABLE_OPTIONAL_CI == 'true' && needs.changes.outputs.compiler == 'true'
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-10-08
+      MIRIFLAGS: -Zmiri-permissive-provenance
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install nightly-2026-10-08 --profile minimal --component miri,rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: shared-rc-miri
+      - run: cargo miri setup
+      - run: cargo miri test -p fai-runtime --locked --lib shared_rc_tests -- --test-threads=1
+
+  proptest:
+    name: property tests (linux)
+    needs: changes
+    if: vars.FAI_ENABLE_OPTIONAL_CI == 'true' && needs.changes.outputs.compiler == 'true'
+    runs-on: ubuntu-latest
+    env:
+      PROPTEST_CASES: '4096'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-tests
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - run: cargo nextest run --workspace --locked --profile proptest
+      - name: Test summary
+        if: always()
+        run: python scripts/junit-summary.py target/nextest/proptest/junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-report-proptest
+          path: target/nextest/proptest/junit.xml
           if-no-files-found: ignore

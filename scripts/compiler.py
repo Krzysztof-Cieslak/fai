@@ -65,6 +65,14 @@ def host():
     system = platform.system()
     if system == "Linux":
         libc, version = platform.libc_ver()
+        # libc_ver may describe the Python binary's minimum symbol version.
+        # The compiler links against the running host's libc instead.
+        try:
+            running = os.confstr("CS_GNU_LIBC_VERSION")
+            if running:
+                libc, version = running.split()
+        except (AttributeError, OSError, ValueError):
+            pass
         if libc != "glibc":
             raise BundleError("automatic compiler bundles currently require glibc on Linux")
         return f"{arch}-unknown-linux-gnu", f"linux-{arch}-{libc}-{version}"
@@ -83,7 +91,7 @@ def build_environment(environ=None):
              "CARGO_BUILD_RUSTFLAGS"}
     prefixes = ("CARGO_PROFILE_", "CARGO_TARGET_", "CC_", "CFLAGS_", "AR_", "CXX_", "CXXFLAGS_")
     return {key: value for key, value in sorted(environ.items())
-            if key in exact or key.startswith(prefixes)}
+            if key != "CARGO_TARGET_DIR" and (key in exact or key.startswith(prefixes))}
 
 
 def identity(root=ROOT, environ=None, host_info=None):

@@ -1,0 +1,82 @@
+name: Cached Fai compiler
+description: Restore an exact compiler bundle, or build just the compiler on a miss.
+outputs:
+  binary:
+    description: Absolute path of the compiler executable.
+    value: ${{ steps.identity.outputs.binary }}
+  key:
+    description: Content-addressed compiler key.
+    value: ${{ steps.identity.outputs.key }}
+  artifact:
+    description: Name for publishing this compiler bundle.
+    value: ${{ steps.identity.outputs.artifactName }}
+  source:
+    description: cache, artifact, or build.
+    value: ${{ steps.expose.outputs.source }}
+runs:
+  using: composite
+  steps:
+    - name: Fingerprint compiler inputs
+      id: identity
+      shell: python
+      run: |
+        import subprocess, sys
+        subprocess.run([sys.executable, "scripts/compiler.py", "key", "--github-output"], check=True)
+
+    - name: Restore exact compiler cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.identity.outputs.cacheDir }}
+        key: fai-compiler-v1-${{ runner.os }}-${{ steps.identity.outputs.key }}
+
+    - name: Validate cache or restore a published bundle
+      id: available
+      shell: python
+      run: |
+        import os, sys
+        sys.path.insert(0, "scripts")
+        import compiler
+        try:
+            compiler.ensure(no_build=True)
+            available = "true"
+        except compiler.BundleError:
+            available = "false"
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            print(f"available={available}", file=output)
+
+    - name: Restore Rust build cache only on a compiler miss
+      if: steps.available.outputs.available != 'true'
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: compiler-package-dev
+
+    - name: Build compiler only on a miss
+      if: steps.available.outputs.available != 'true'
+      shell: python
+      run: |
+        import subprocess, sys
+        subprocess.run([sys.executable, "scripts/compiler.py", "ensure", "--offline"], check=True)
+
+    - name: Activate the compiler
+      id: expose
+      shell: python
+      env:
+        EXPECTED_KEY: ${{ steps.identity.outputs.key }}
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        AVAILABLE: ${{ steps.available.outputs.available }}
+      run: |
+        import os, sys
+        sys.path.insert(0, "scripts")
+        import compiler
+        expected = compiler.identity()
+        if expected["key"] != os.environ["EXPECTED_KEY"]:
+            raise RuntimeError("compiler configuration changed during preparation")
+        binary = compiler.validate(compiler.cache_root() / expected["key"], expected)
+        source = "build" if os.environ["AVAILABLE"] != "true" else "cache" if os.environ["CACHE_HIT"] == "true" else "artifact"
+        with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as output:
+            print(binary.parent, file=output)
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            print(f"source={source}", file=output)
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
+            print(f"### Compiler bundle\nSource: **{source}**\n\nKey: `{expected['key']}`\n\nTarget: `{expected['target']}`", file=output)
