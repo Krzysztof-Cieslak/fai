@@ -4828,5 +4828,12 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   command/argv location for diagnostics. The option terminator persists through
   descent, and help displays the active scope with ancestor-first inherited options.
 
+- **D152 Scoped HTTP exchanges.** Additional TLS roots belong to a pool, not an
+  individual checkout. Scoped response consumption retains a read gate until the
+  callback finishes; only a completed, reusable body is returned to the pool.
+  Early return and cancellation close the transport. Closing the gate before
+  checkin prevents retained stream closures from reading a reused connection.
+  The scoped exchange performs one request without redirects or implicit replay.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

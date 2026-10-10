@@ -1663,6 +1663,12 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    final response and reject unsupported upgrades/tunnels. To **stream** a body
    chunked (no buffering, one frame per stream element), use `chunkedResponse` (server)
    or set `Transfer-Encoding: chunked` in a request's headers. **Connection pooling:**
+   `withClientWith runtime extraRoots callback` fixes optional additional PEM trust
+   roots for a pool. `withResponseOn runtime client request callback` consumes one
+   response in a scope, without redirects or retries. Read the body within the
+   callback: full consumption permits reuse when it returns; an early return or
+   cancellation closes the connection. Retained closures cannot read a reused
+   transport after the response scope ends.
    `withClient runtime (fun client -> …)` opens a structured scope holding a pool of
    keep-alive connections; inside it `getOn`/`requestOn`/`postOn client …` reuse an idle
    connection to the request's origin (or open a fresh one) and need

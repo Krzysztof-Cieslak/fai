@@ -846,6 +846,12 @@ Each phase crate (`fai-syntax`, `fai-resolve`, `fai-types`, `fai-core`,
 `fai-rc`, `fai-codegen`) defines its phase as **salsa query groups** plugged into
 `fai-db`; see §9.
 
+`Http.withClientWith` fixes additional trusted PEM roots for one pool's lifetime.
+`Http.withResponseOn` consumes a single response in a callback: completion permits
+reuse only after the callback returns, while early return or cancellation closes
+the connection. A closed read gate prevents retained body closures from accessing
+a connection reused by another request. It neither follows redirects nor retries.
+
 The optional `packages/web` library preserves middleware headers when a terminal
 `Web` responder supplies the status/body. `Web.setHeader` replaces same-name fields
 case-insensitively; `Web.addHeader` preserves duplicates such as `Set-Cookie`.
