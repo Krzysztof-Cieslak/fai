@@ -1,0 +1,233 @@
+module Sql
+
+/// The common SQL value domain. Drivers document additional native-type mappings.
+public type Value =
+  | Null
+  | Integer Int
+  | Real Float
+  | Text String
+  | Blob Bytes
+
+/// SQL remains dialect-specific. Values are bound separately, never interpolated.
+public type Statement = { parameters : Array Value, text : String }
+
+/// Result metadata is retained in ordinal order, including duplicate names.
+public type Column = { declaredType : Option String, name : String }
+
+/// An immutable row snapshot; columns and values have matching lengths.
+public opaque type Row =
+  | MkRow (Array Column) (Array Value)
+
+/// Portable error categories; backend details remain available on each failure.
+public type ErrorKind =
+  | InvalidInput
+  | DecodeFailure
+  | Constraint
+  | Busy
+  | Cancelled
+  | Closed
+  | TransactionState
+  | Unsupported
+  | BackendFailure
+
+/// Structured operation errors, including both failures when cleanup also fails.
+public type Error =
+  | Failure { backend : Option String, code : Option Int, column : Option Int, kind : ErrorKind, message : String, operation : String, row : Option Int }
+  | CleanupFailed Error Error
+
+/// Number of rows directly changed by a command. Generated IDs use RETURNING or
+/// a documented driver-specific query instead of a stale connection-wide value.
+public type Execution = { affectedRows : Int }
+
+/// Requested transaction isolation. A driver rejects unsupported levels.
+public type Isolation =
+  | Default
+  | ReadCommitted
+  | RepeatableRead
+  | Serializable
+
+/// A typed, effect-carrying row cursor. Pull each state once; close ends every
+/// alias of a native cursor. The owner remains alive until the cursor is released.
+public opaque type Rows 'e =
+  | MkRows (Array Column) (Unit -> Result (Option (Row * Rows 'e)) Error / 'e) (Unit -> Result Unit Error / 'e)
+
+/// Driver-independent operations. A transaction returns a pinned child session;
+/// commit/rollback act on that child, never on an unrelated connection.
+public opaque type Session 'e =
+  | MkSession (Statement -> Result Execution Error / 'e) (Statement -> Result (Rows 'e) Error / 'e) (Isolation -> Result (Session 'e) Error / 'e) (Unit -> Result Unit Error / 'e) (Unit -> Result Unit Error / 'e)
+
+/// Build a session from driver operations, or pure functions for application tests.
+public session : { begin : Isolation -> Result (Session 'e) Error / 'e, commit : Unit -> Result Unit Error / 'e, execute : Statement -> Result Execution Error / 'e, query : Statement -> Result (Rows 'e) Error / 'e, rollback : Unit -> Result Unit Error / 'e } -> Session 'e
+let session operations =
+  MkSession operations.execute operations.query operations.begin operations.commit operations.rollback
+
+let openRows session statement =
+  match session with
+  | MkSession _ query _ _ _ -> query statement
+
+let begin session isolation =
+  match session with
+  | MkSession _ _ begin _ _ -> begin isolation
+
+let commit session =
+  match session with
+  | MkSession _ _ _ commit _ -> commit ()
+
+let rollback session =
+  match session with
+  | MkSession _ _ _ _ rollback -> rollback ()
+
+/// Build an operation failure without backend details.
+public error : ErrorKind -> String -> String -> Error
+let error kind operation message = Failure {
+  backend = None,
+  code = None,
+  column = None,
+  kind = kind,
+  message = message,
+  operation = operation,
+  row = None
+}
+
+/// A statement with positional bindings in the driver's documented convention.
+public statement : String -> Array Value -> Statement
+let statement text parameters = { parameters = parameters, text = text }
+
+/// SQL without parameters.
+public text : String -> Statement
+let text sql = statement sql Array.empty
+
+/// Construct a checked row, suitable for native adapters and pure application tests.
+public row : Array Column -> Array Value -> Result Row Error
+let row columns values =
+  if Array.length columns <> Array.length values then
+    Err (error InvalidInput "row" "column and value counts differ")
+  else
+    Ok (MkRow columns values)
+
+/// Column metadata in ordinal order.
+public columns : Row -> Array Column
+let columns row =
+  match row with
+  | MkRow columns _ -> columns
+
+/// Immutable cell values in ordinal order.
+public values : Row -> Array Value
+let values row =
+  match row with
+  | MkRow _ values -> values
+
+/// Attach a zero-based result-row number without losing backend/column details.
+public atRow : Int -> Error -> Error
+let atRow index error =
+  match error with
+  | Failure info -> Failure { info with row = Some index }
+  | CleanupFailed primary cleanup -> CleanupFailed (atRow index primary) cleanup
+
+/// Attach a zero-based result-column number to a decoding error.
+public atColumn : Int -> Error -> Error
+let atColumn index error =
+  match error with
+  | Failure info -> Failure { info with column = Some index }
+  | CleanupFailed primary cleanup -> CleanupFailed (atColumn index primary) cleanup
+
+/// Construct a row source. Drivers supply pull/close functions with matching effects.
+public rows : Array Column -> (Unit -> Result (Option (Row * Rows 'e)) Error / 'e) -> (Unit -> Result Unit Error / 'e) -> Rows 'e
+let rows columns next close = MkRows columns next close
+
+/// Metadata is available even for an empty result set.
+public rowColumns : Rows 'e -> Array Column
+let rowColumns source =
+  match source with
+  | MkRows columns _ _ -> columns
+
+/// Pull the next row; None marks exhaustion.
+public next : Rows 'e -> Result (Option (Row * Rows 'e)) Error / 'e
+let next source =
+  match source with
+  | MkRows _ next _ -> next ()
+
+/// Release a cursor. Native drivers make repeated close calls harmless.
+public close : Rows 'e -> Result Unit Error / 'e
+let close source =
+  match source with
+  | MkRows _ _ close -> close ()
+
+let listStep columns input unit =
+  match input with
+  | [] -> Ok None
+  | first :: rest -> Ok (Some (first, fromList columns rest))
+
+/// A pure finite row source, useful for fake Session implementations.
+public fromList : Array Column -> List Row -> Rows 'e
+let fromList columns input = rows columns (listStep columns input) (fun _ -> Ok ())
+
+/// Retain both an operation error and a cleanup error, if both occur.
+public cleanup : Result 'a Error -> Result Unit Error -> Result 'a Error
+let cleanup result released =
+  match result with
+  | Ok value -> Result.map (fun _ -> value) released
+  | Err primary ->
+    match released with
+    | Ok _ -> Err primary
+    | Err secondary -> Err (CleanupFailed primary secondary)
+
+/// Consume a cursor within its lifetime; it closes on success or failure.
+public withRows : Session 'e -> Statement -> (Rows 'e -> Result 'a Error / 'e) -> Result 'a Error / 'e
+let withRows session statement consume =
+  match openRows session statement with
+  | Err error -> Err error
+  | Ok source ->
+    let result = consume source
+    cleanup result (close source)
+
+let foldFrom action state source index =
+  match next source with
+  | Err error -> Err (atRow index error)
+  | Ok None -> Ok state
+  | Ok (Some (row, rest)) ->
+    match action state row with
+    | Err error -> Err (atRow index error)
+    | Ok state -> foldFrom action state rest (index + 1)
+
+/// Fold a cursor without buffering the result set. The surrounding owner closes it.
+public fold : ('s -> Row -> Result 's Error / 'e) -> 's -> Rows 'e -> Result 's Error / 'e
+let fold action state source = foldFrom action state source 0
+
+/// Buffer raw row snapshots, closing the cursor before returning.
+public query : Session 'e -> Statement -> Result (Array Row) Error / 'e
+let query session statement =
+  withRows session statement (fold (fun rows row -> Ok (Array.push row rows)) Array.empty)
+
+/// Execute a command using the driver's parameter binding.
+public execute : Session 'e -> Statement -> Result Execution Error / 'e
+let execute session statement =
+  match session with
+  | MkSession execute _ _ _ _ -> execute statement
+
+/// Commit successful work; roll back failed work and failed commits. Nested
+/// transactions use the driver's pinned child-session semantics.
+public transaction : Isolation -> Session 'e -> (Session 'e -> Result 'a Error / 'e) -> Result 'a Error / 'e
+let transaction isolation session work =
+  match begin session isolation with
+  | Err error -> Err error
+  | Ok child ->
+    match work child with
+    | Err error -> cleanup (Err error) (rollback child)
+    | Ok value ->
+      match commit child with
+      | Ok _ -> Ok value
+      | Err error -> cleanup (Err error) (rollback child)
+
+/// Render an error while retaining its structured fields for application handling.
+public errorToString : Error -> String
+let errorToString error =
+  match error with
+  | CleanupFailed primary secondary ->
+    errorToString primary ++ "; cleanup: " ++ errorToString secondary
+  | Failure info ->
+    info.operation ++ ": " ++ info.message ++ (match info.row with
+    | None -> ""
+    | Some row -> " (row " ++ Int.toString row ++ ")") ++ (match info.column with
+    | None -> ""
+    | Some column -> " (column " ++ Int.toString column ++ ")")

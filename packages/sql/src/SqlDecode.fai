@@ -1,0 +1,163 @@
+module SqlDecode
+
+/// A pure SQL cell decoder; NULL requires explicit handling.
+public opaque type Value 'a =
+  | Value (Sql.Value -> Result 'a Sql.Error)
+
+/// A pure typed row decoder.
+public opaque type Decoder 'a =
+  | Decoder (Sql.Row -> Result 'a Sql.Error)
+
+let failure message = Err (Sql.error Sql.DecodeFailure "decode" message)
+
+/// Define an application-specific SQL cell conversion.
+public custom : (Sql.Value -> Result 'a Sql.Error) -> Value 'a
+let custom decode = Value decode
+
+/// Retain the raw SQL value.
+public value : Value Sql.Value
+let value = Value (fun value -> Ok value)
+
+/// Read an exact signed 64-bit integer.
+public int : Value Int
+let int =
+  Value (fun value ->
+    match value with
+    | Sql.Integer n -> Ok n
+    | _ -> failure "expected SQL integer")
+
+/// Read a REAL without silently rounding an integer.
+public float : Value Float
+let float =
+  Value (fun value ->
+    match value with
+    | Sql.Real n -> Ok n
+    | _ -> failure "expected SQL real")
+
+/// Read text without converting other SQL types.
+public string : Value String
+let string =
+  Value (fun value ->
+    match value with
+    | Sql.Text text -> Ok text
+    | _ -> failure "expected SQL text")
+
+/// Read a binary blob, including an empty blob.
+public bytes : Value Bytes
+let bytes =
+  Value (fun value ->
+    match value with
+    | Sql.Blob bytes -> Ok bytes
+    | _ -> failure "expected SQL blob")
+
+/// Boolean mapping for the common SQL integer representation: exactly 0 or 1.
+public bool : Value Bool
+let bool =
+  Value (fun value ->
+    match value with
+    | Sql.Integer 0 -> Ok false
+    | Sql.Integer 1 -> Ok true
+    | _ -> failure "expected SQL integer 0 or 1")
+
+/// Run a cell decoder directly.
+public decodeValue : Value 'a -> Sql.Value -> Result 'a Sql.Error
+let decodeValue decoder input =
+  match decoder with
+  | Value decode -> decode input
+
+/// Map NULL to None and decode every non-NULL value normally.
+public nullable : Value 'a -> Value (Option 'a)
+let nullable decoder =
+  Value (fun value ->
+    match value with
+    | Sql.Null -> Ok None
+    | _ -> Result.map (fun x -> Some x) (decodeValue decoder value))
+
+/// Transform a decoded cell.
+public mapValue : ('a -> 'b) -> Value 'a -> Value 'b
+let mapValue transform decoder =
+  Value (fun input -> Result.map transform (decodeValue decoder input))
+
+/// Define a custom whole-row decoder.
+public fromFunction : (Sql.Row -> Result 'a Sql.Error) -> Decoder 'a
+let fromFunction decode = Decoder decode
+
+/// Decode one immutable row snapshot.
+public decode : Decoder 'a -> Sql.Row -> Result 'a Sql.Error
+let decode decoder row =
+  match decoder with
+  | Decoder read -> read row
+
+/// Decode a zero-based column. Missing columns and NULL remain distinct errors.
+public index : Int -> Value 'a -> Decoder 'a
+let index position decoder =
+  Decoder (fun row ->
+    match Array.get position (Sql.values row) with
+    | None ->
+      Err (Sql.atColumn position (Sql.error Sql.DecodeFailure "decode" "column index is out of bounds"))
+    | Some value -> Result.mapError (Sql.atColumn position) (decodeValue decoder value))
+
+let findName name columns position found =
+  if position >= Array.length columns then
+    Ok found
+  else
+    if (Array.unsafeGet position columns).name <> name then
+      findName name columns (position + 1) found
+    else
+      match found with
+      | Some _ -> failure ("ambiguous column name " ++ name)
+      | None -> findName name columns (position + 1) (Some position)
+
+/// Column names match exactly; duplicate names are rejected rather than guessed.
+public field : String -> Value 'a -> Decoder 'a
+let field name decoder =
+  Decoder (fun row ->
+    match findName name (Sql.columns row) 0 None with
+    | Err error -> Err error
+    | Ok None -> failure ("missing column " ++ name)
+    | Ok (Some position) -> decode (index position decoder) row)
+
+/// A missing column is None; a present NULL still needs nullable explicitly.
+public optionalField : String -> Value 'a -> Decoder (Option 'a)
+let optionalField name decoder =
+  Decoder (fun row ->
+    match findName name (Sql.columns row) 0 None with
+    | Err error -> Err error
+    | Ok None -> Ok None
+    | Ok (Some position) ->
+      Result.map (fun value -> Some value) (decode (index position decoder) row))
+
+/// Succeed without inspecting the row.
+public succeed : 'a -> Decoder 'a
+let succeed value = Decoder (fun _ -> Ok value)
+
+/// Transform a decoded row value.
+public map : ('a -> 'b) -> Decoder 'a -> Decoder 'b
+let map transform decoder = Decoder (fun row -> Result.map transform (decode decoder row))
+
+let both combine first second row =
+  match decode first row with
+  | Err error -> Err error
+  | Ok value -> Result.map (combine value) (decode second row)
+
+/// Combine row decoders in left-to-right error order.
+public map2 : ('a -> 'b -> 'c) -> Decoder 'a -> Decoder 'b -> Decoder 'c
+let map2 combine first second = Decoder (both combine first second)
+
+/// Apply another decoded argument in a constructor pipeline.
+public andMap : Decoder 'a -> Decoder ('a -> 'b) -> Decoder 'b
+let andMap value function = map2 (fun f value -> f value) function value
+
+/// Validate or refine a decoded value.
+public validateWith : ('a -> Result 'b Sql.Error) -> Decoder 'a -> Decoder 'b
+let validateWith validate decoder =
+  Decoder (fun row ->
+    match decode decoder row with
+    | Err error -> Err error
+    | Ok value -> validate value)
+
+/// Decode every row, retaining its ordinal on a failure and closing the cursor.
+public query : Decoder 'a -> Sql.Session 'e -> Sql.Statement -> Result (Array 'a) Sql.Error / 'e
+let query decoder session statement =
+  Sql.withRows session statement (Sql.fold (fun values row ->
+    Result.map (fun value -> Array.push value values) (decode decoder row)) Array.empty)

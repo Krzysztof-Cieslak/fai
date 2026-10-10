@@ -974,6 +974,12 @@ errors terminate. Last-Event-ID follows committed observations and origin-aware
 redirects. Initial delay, optional delay bounds, every timeout, and reconnect
 count are configuration; no fixed subscription or heartbeat deadline is imposed.
 
+The optional `packages/sql` library supplies `Sql` and `SqlDecode`: explicit SQL
+values, immutable row snapshots, effect-parameterized sessions, scoped cursors and
+transactions, and composable pure row decoders. Names match exactly and ambiguous
+column names fail; ordinals remain available. Operation and cleanup errors are
+both retained. SQL syntax and placeholder conventions belong to each driver.
+
 ## 6. Compiler pipeline
 
 ```
