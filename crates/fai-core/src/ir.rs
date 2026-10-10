@@ -741,6 +741,16 @@ pub enum Prim {
     BytesToString,
     /// Whether a `Bytes` value is valid UTF-8.
     BytesIsUtf8,
+    /// SHA-256 over a byte buffer.
+    CryptoSha256,
+    /// HMAC-SHA-256 over key and message buffers.
+    CryptoHmacSha256,
+    /// PBKDF2-HMAC-SHA-256; the standard wrapper validates iterations.
+    CryptoPbkdf2Sha256,
+    /// Constant-time equality for equal-length byte buffers.
+    CryptoEqual,
+    /// PostgreSQL SCRAM password normalization with its specified fallback.
+    CryptoScramPassword,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -901,6 +911,11 @@ impl Prim {
             Prim::BytesLength => "fai_bytes_length",
             Prim::BytesGet => "fai_bytes_get",
             Prim::BytesConcat => "fai_bytes_concat",
+            Prim::CryptoSha256 => "fai_crypto_sha256",
+            Prim::CryptoHmacSha256 => "fai_crypto_hmac_sha256",
+            Prim::CryptoPbkdf2Sha256 => "fai_crypto_pbkdf2_sha256",
+            Prim::CryptoEqual => "fai_crypto_equal",
+            Prim::CryptoScramPassword => "fai_crypto_scram_password",
             Prim::BytesSlice => "fai_bytes_slice",
             Prim::BytesFromList => "fai_bytes_from_list",
             Prim::BytesToList => "fai_bytes_to_list",
@@ -942,12 +957,15 @@ impl Prim {
             | Prim::BytesToList
             | Prim::BytesFromString
             | Prim::BytesToString
-            | Prim::BytesIsUtf8 => 1,
+            | Prim::BytesIsUtf8
+            | Prim::CryptoSha256
+            | Prim::CryptoScramPassword => 1,
             Prim::RecordUpdate
             | Prim::ArraySet
             | Prim::ArrayPut
             | Prim::StringSubstring
-            | Prim::BytesSlice => 3,
+            | Prim::BytesSlice
+            | Prim::CryptoPbkdf2Sha256 => 3,
             _ => 2,
         }
     }
@@ -1001,6 +1019,11 @@ impl Prim {
             "bytesLength" => Prim::BytesLength,
             "bytesGet" => Prim::BytesGet,
             "bytesConcat" => Prim::BytesConcat,
+            "cryptoSha256" => Prim::CryptoSha256,
+            "cryptoHmacSha256" => Prim::CryptoHmacSha256,
+            "cryptoPbkdf2Sha256" => Prim::CryptoPbkdf2Sha256,
+            "cryptoEqual" => Prim::CryptoEqual,
+            "cryptoScramPassword" => Prim::CryptoScramPassword,
             "bytesSlice" => Prim::BytesSlice,
             "bytesFromList" => Prim::BytesFromList,
             "bytesToList" => Prim::BytesToList,

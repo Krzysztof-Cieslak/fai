@@ -25,7 +25,7 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
 
@@ -72,6 +72,7 @@ struct Task {
     /// failing, so the task unwinds (freeing its resources by reference counting)
     /// rather than resuming its work.
     cancelled: AtomicBool,
+    cleanup_depth: AtomicUsize,
     /// The tasks this one spawned (weakly held, pruned on use), forming the
     /// cancellation tree: cancelling a task cancels its whole descendant subtree, so
     /// a timeout or a server shutdown tears down everything the cancelled work
@@ -192,7 +193,11 @@ pub const CANCELLED_MESSAGE: &str = "operation cancelled";
 pub fn is_cancelled() -> bool {
     let p = current_task_ptr();
     // SAFETY: `p`, when non-null, is the live current `Task`.
-    !p.is_null() && unsafe { (*p).cancelled.load(Ordering::Acquire) }
+    !p.is_null()
+        && unsafe {
+            (*p).cancelled.load(Ordering::Acquire)
+                && (*p).cleanup_depth.load(Ordering::Acquire) == 0
+        }
 }
 
 /// A task cancellation observation that can safely travel to a blocking worker.
@@ -203,7 +208,10 @@ pub(crate) struct CancellationProbe(Option<Arc<Task>>);
 impl CancellationProbe {
     /// Observe the original task, including from its off-worker blocking operation.
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.0.as_ref().is_some_and(|task| task.cancelled.load(Ordering::Acquire))
+        self.0.as_ref().is_some_and(|task| {
+            task.cancelled.load(Ordering::Acquire)
+                && task.cleanup_depth.load(Ordering::Acquire) == 0
+        })
     }
 }
 
@@ -220,6 +228,14 @@ fn cancel_task(task: &Arc<Task>) {
     if task.cancelled.swap(true, Ordering::AcqRel) {
         return; // already cancelled (and its subtree already visited)
     }
+    if task.cleanup_depth.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    cancel_children(task);
+    schedule(Arc::clone(task));
+}
+
+fn cancel_children(task: &Arc<Task>) {
     // Snapshot live children (pruning dead weak refs), then cancel them outside the
     // lock so the recursion never holds a `children` lock across another task's.
     let kids: Vec<Arc<Task>> = {
@@ -233,7 +249,6 @@ fn cancel_task(task: &Arc<Task>) {
     // Wake the task (if parked) so its retry loop re-checks the flag. A racing
     // legitimate wake is harmless: the task is queued, runs once, and a stale extra
     // schedule finds a finished or re-parking task.
-    schedule(Arc::clone(task));
 }
 
 /// Registers `child` under the current task (if any) for the cancellation tree, and
@@ -246,7 +261,9 @@ fn register_child(child: &Arc<Task>) {
             children.retain(|w| w.strong_count() > 0);
             children.push(Arc::downgrade(child));
         }
-        if parent.cancelled.load(Ordering::Acquire) {
+        if parent.cancelled.load(Ordering::Acquire)
+            && parent.cleanup_depth.load(Ordering::Acquire) == 0
+        {
             cancel_task(child);
         }
     }
@@ -447,6 +464,7 @@ fn make_task(
         coro: Mutex::new(Some(SendCoro(coro))),
         yielder: AtomicPtr::new(std::ptr::null_mut()),
         cancelled: AtomicBool::new(false),
+        cleanup_depth: AtomicUsize::new(0),
         children: Mutex::new(Vec::new()),
     })
 }
@@ -807,7 +825,8 @@ impl ChanState {
 fn take_channel_waiter(waiters: &mut Vec<Arc<ChannelWaiter>>) -> Option<Arc<Task>> {
     while let Some(waiter) = waiters.pop() {
         if waiter.active.swap(false, Ordering::AcqRel)
-            && !waiter.task.cancelled.load(Ordering::Acquire)
+            && !(waiter.task.cancelled.load(Ordering::Acquire)
+                && waiter.task.cleanup_depth.load(Ordering::Acquire) == 0)
         {
             return Some(Arc::clone(&waiter.task));
         }
@@ -1046,6 +1065,38 @@ pub extern "C" fn fai_scope(body: Value) -> Value {
     }))
 }
 
+struct CleanupGuard(Option<Arc<Task>>);
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if let Some(task) = &self.0
+            && task.cleanup_depth.fetch_sub(1, Ordering::AcqRel) == 1
+            && task.cancelled.load(Ordering::Acquire)
+        {
+            cancel_children(task);
+        }
+    }
+}
+
+fn cleanup<T>(body: impl FnOnce() -> T) -> T {
+    let task = current_task_opt();
+    if let Some(task) = &task {
+        task.cleanup_depth.fetch_add(1, Ordering::AcqRel);
+    }
+    let _guard = CleanupGuard(task);
+    body()
+}
+
+/// Run bounded resource cleanup with cancellation temporarily masked. The sticky
+/// flag is retained, and new cleanup children are cancelled when the mask ends.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_cleanup(body: Value) -> Value {
+    cleanup(|| {
+        // SAFETY: the standard wrapper supplies an owned Unit -> value closure.
+        unsafe { crate::fai_apply_n(body, 1, [crate::FAI_UNIT].as_ptr()) }
+    })
+}
+
 /// Spawns `thunk` (a `Unit -> 'a` closure) into `nursery`, returning its `Task`
 /// handle. The thunk's captured graph is marked shared (it runs on another worker)
 /// and so is the result (it returns to the awaiter's worker). Consumes `nursery`
@@ -1148,6 +1199,52 @@ pub extern "C" fn fai_block_on(main_thunk: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_masks_and_restores_sticky_cancellation() {
+        let _guard = crate::tests::lock();
+        block_on(Box::new(|| {
+            cancel_task(&current_task());
+            assert!(is_cancelled());
+            cleanup(|| {
+                assert!(!is_cancelled());
+                assert!(!cancellation_probe().is_cancelled());
+                let child = spawn(Box::new(|| {
+                    assert!(!is_cancelled());
+                    crate::FAI_UNIT
+                }));
+                assert_eq!(await_handle(&child), crate::FAI_UNIT);
+            });
+            assert!(is_cancelled());
+            crate::FAI_UNIT
+        }));
+    }
+
+    #[test]
+    fn cleanup_channel_waiters_receive_notifications_after_cancellation() {
+        let _guard = crate::tests::lock();
+        block_on(Box::new(|| {
+            cancel_task(&current_task());
+            cleanup(|| {
+                let values = channel(1);
+                let sender = Arc::clone(&values);
+                let child = spawn(Box::new(move || {
+                    let observed = Arc::clone(&sender);
+                    run_blocking(Box::new(move || {
+                        while observed.state.lock().unwrap().recv_waiters.is_empty() {
+                            std::thread::yield_now();
+                        }
+                    }));
+                    chan_send(&sender, crate::FAI_UNIT);
+                    crate::FAI_UNIT
+                }));
+                assert_eq!(chan_recv(&values), Some(crate::FAI_UNIT));
+                await_handle(&child);
+            });
+            assert!(is_cancelled());
+            crate::FAI_UNIT
+        }));
+    }
 
     #[test]
     fn resource_wrappers_share_equality_ordering_and_hash_identity() {

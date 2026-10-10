@@ -1,0 +1,43 @@
+module Crypto
+
+/// SHA-256 digest bytes.
+public sha256 : Bytes -> Bytes
+let sha256 value = Prim.cryptoSha256 value
+example: Bytes.length (sha256 Bytes.empty) = 32
+
+/// HMAC-SHA-256 with an explicit key and message.
+public hmacSha256 : Bytes -> Bytes -> Bytes
+let hmacSha256 key message = Prim.cryptoHmacSha256 key message
+example: Bytes.length (hmacSha256 Bytes.empty Bytes.empty) = 32
+
+/// A 32-byte PBKDF2-HMAC-SHA-256 key. Iterations must fit a positive u32.
+public pbkdf2Sha256 : Bytes -> Bytes -> Int -> Result Bytes String
+let pbkdf2Sha256 password salt iterations =
+  if iterations <= 0 || iterations > 4294967295 then
+    Err "PBKDF2 iterations must be in 1..4294967295"
+  else
+    Ok (Prim.cryptoPbkdf2Sha256 password salt iterations)
+example: Result.isErr (pbkdf2Sha256 Bytes.empty Bytes.empty 0)
+example: Result.map Bytes.length (pbkdf2Sha256 Bytes.empty Bytes.empty 1) = Ok 32
+
+/// Constant-time comparison of equal-length byte buffers. Length is public.
+public equal : Bytes -> Bytes -> Bool
+let equal a b = Prim.cryptoEqual a b
+example: equal (Bytes.fromList [1, 2]) (Bytes.fromList [1, 2])
+example: not (equal (Bytes.fromList [1]) Bytes.empty)
+
+/// SASLprep for PostgreSQL SCRAM, preserving the original string on prohibited
+/// input as PostgreSQL specifies. This does not change authentication framing.
+public scramPassword : String -> String
+let scramPassword text = Prim.cryptoScramPassword text
+example: scramPassword "I\u{AD}X" = "IX"
+
+/// Cryptographically secure entropy is an explicit effectful capability.
+public interface Entropy =
+  bytes : Int -> Result Bytes String / { Entropy }
+
+foreign "fai_crypto_random" randomRaw : Int -> Result Bytes String / { Entropy }
+
+/// OS-backed secure entropy. Requests are bounded to 1 MiB.
+public systemEntropy : Entropy
+let systemEntropy = { Entropy with bytes = randomRaw }

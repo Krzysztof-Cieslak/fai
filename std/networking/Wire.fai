@@ -1,0 +1,21 @@
+module Wire
+
+foreign "fai_net_peer" peerRaw : Connection -> Result (String * Int) String / { Net }
+
+foreign "fai_tls_server_endpoint" bindingRaw : TlsSession -> Result Bytes String / { Tls }
+
+foreign "fai_cleanup" cleanupRaw : (Unit -> 'a / 'e) -> 'a / { Concurrency | 'e }
+
+/// The actual connected numeric peer, suitable for a protocol's cancellation
+/// side channel. Keep the original hostname separately for TLS verification.
+public peer : Net -> Connection -> Result (String * Int) String / { Net }
+let peer capability connection = peerRaw connection
+
+/// RFC 5929 tls-server-end-point channel binding for the peer certificate.
+public serverEndPoint : Tls -> TlsSession -> Result Bytes String / { Tls }
+let serverEndPoint capability session = bindingRaw session
+
+/// Run bounded resource cleanup despite sticky caller cancellation. The original
+/// cancellation state returns afterwards. Cleanup should own and join its tasks.
+public cleanup : Concurrency -> (Unit -> 'a / 'e) -> 'a / { Concurrency | 'e }
+let cleanup capability body = cleanupRaw body

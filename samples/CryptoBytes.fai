@@ -1,0 +1,11 @@
+module CryptoBytes
+
+public type Runtime = { console : Console, entropy : Crypto.Entropy }
+
+let runtime = { console = stdConsole, entropy = Crypto.systemEntropy }
+
+public main : Runtime -> Unit / { Console, Crypto.Entropy }
+let main env =
+  match env.entropy.bytes 32 with
+  | Err error -> env.console.writeLine error
+  | Ok nonce -> env.console.writeLine (Int.toString (Bytes.length (Crypto.sha256 nonce)))

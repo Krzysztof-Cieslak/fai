@@ -30,6 +30,10 @@ rustls.workspace = true
 webpki-roots.workspace = true
 rustls-pemfile.workspace = true
 libsqlite3-sys.workspace = true
+ring.workspace = true
+subtle.workspace = true
+stringprep.workspace = true
+x509-parser.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Memory"] }

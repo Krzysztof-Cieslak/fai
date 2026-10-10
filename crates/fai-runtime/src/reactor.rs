@@ -443,6 +443,29 @@ fn err_result(msg: &str) -> Value {
     unsafe { crate::fai_make_data(1, 1, [s].as_ptr()) }
 }
 
+/// Report the actual numeric peer for protocol cancellation side channels.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_net_peer(value: Value) -> Value {
+    let result = match &**net_of(value) {
+        NetObject::Conn { sock, .. } => {
+            sock.lock().expect("socket lock").peer_addr().map_err(|e| e.to_string())
+        }
+        _ => Err("expected a TCP connection".into()),
+    };
+    crate::fai_drop(value);
+    match result {
+        Err(error) => err_result(&error),
+        Ok(peer) => {
+            let fields = [
+                crate::make_string(peer.ip().to_string().as_bytes()),
+                crate::fai_box_int(i64::from(peer.port())),
+            ];
+            // SAFETY: the owned address and port fields move into the tuple.
+            ok_result(unsafe { crate::fai_make_data(0, 2, fields.as_ptr()) })
+        }
+    }
+}
+
 /// Decodes and consumes a uniform Int port before any network operation.
 fn take_port(port: Value) -> Result<u16, &'static str> {
     let value = crate::unbox_int(port);
