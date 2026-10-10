@@ -625,6 +625,9 @@ depends on nesting depth rather than array width; shared arrays retain their
 contents until the last owner releases them, and raw Float arrays remain leaves.
 Structural equality, ordering and hashing likewise share one shape snapshot per
 data operand when walking its fields, including mixed raw/boxed Float layouts.
+Compact tag-zero pairs of immediate fields have guarded runtime equality and
+hash fast paths. Boxed fields, raw Float slots and other shapes retain the general
+traversal; hash values stay bit-identical across both paths and header forms.
 Generic local drops test the uniform immediate tag before calling the runtime,
 so discarding an immediate value in shared generic code needs no call.
 Structural comparisons and hashes also borrow polymorphic operands. Borrow
