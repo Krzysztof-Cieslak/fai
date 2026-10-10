@@ -29,6 +29,7 @@ libc.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 rustls-pemfile.workspace = true
+libsqlite3-sys.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
@@ -46,6 +47,7 @@ proptest.workspace = true
 wait-timeout.workspace = true
 # Mint ephemeral self-signed certs for the in-process TLS handshake tests.
 rcgen.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

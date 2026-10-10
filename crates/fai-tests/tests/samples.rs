@@ -135,6 +135,7 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "RecordMatch.fai",
     "Rows.fai",
     "Shapes.fai",
+    "SqliteNative.fai",
     "Status.fai",
     "Streams.fai",
     "TailLoops.fai",

@@ -195,6 +195,23 @@ pub fn is_cancelled() -> bool {
     !p.is_null() && unsafe { (*p).cancelled.load(Ordering::Acquire) }
 }
 
+/// A task cancellation observation that can safely travel to a blocking worker.
+/// It retains the task rather than a worker-local cell across suspension.
+#[derive(Clone)]
+pub(crate) struct CancellationProbe(Option<Arc<Task>>);
+
+impl CancellationProbe {
+    /// Observe the original task, including from its off-worker blocking operation.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.as_ref().is_some_and(|task| task.cancelled.load(Ordering::Acquire))
+    }
+}
+
+/// Capture the current task's cancellation state without retaining TLS addresses.
+pub(crate) fn cancellation_probe() -> CancellationProbe {
+    CancellationProbe(current_task_opt())
+}
+
 /// Cancels `task` and its whole descendant subtree: sets the sticky cancelled flag
 /// and re-queues the task so it observes the flag at its next park point and
 /// unwinds. Idempotent (a task is cancelled at most once). Propagating to children

@@ -1,0 +1,34 @@
+module SqliteNative
+
+// The low-level capability is available to an application's explicit runtime.
+// Most applications use the optional Sql/SqlDecode/Sqlite source packages.
+public type Runtime = { console : Console, sqlite : SqliteHost.Sqlite }
+
+let runtime = { console = stdConsole, sqlite = SqliteHost.native }
+
+query : Runtime -> SqliteHost.Session -> String / { SqliteHost.Sqlite }
+let query env session =
+  match env.sqlite.query session "select ? + ?" [|
+    SqliteHost.Integer 20,
+    SqliteHost.Integer 22
+  |] with
+  | Err error -> error.message
+  | Ok cursor ->
+    let next = env.sqlite.next cursor
+    let closed = env.sqlite.finish cursor
+    match next with
+    | Ok (Some values) ->
+      match Array.get 0 values with
+      | Some (SqliteHost.Integer value) -> Int.toString value
+      | _ -> "unexpected value"
+    | Err error -> error.message
+    | _ -> "no row"
+
+public main : Runtime -> Unit / { Console, SqliteHost.Sqlite }
+let main env =
+  match env.sqlite.open ":memory:" false 5000 with
+  | Err error -> env.console.writeLine error.message
+  | Ok session ->
+    let answer = query env session
+    let closed = env.sqlite.close session
+    env.console.writeLine answer

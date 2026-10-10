@@ -1,0 +1,72 @@
+module SqliteHost
+
+/// An owned native database session. Child sessions are transaction leases.
+public opaque type Session =
+  | SessionCell Int
+
+/// An owned prepared statement, invalidated when its session scope ends.
+public opaque type Cursor =
+  | CursorCell Int
+
+/// Uniform wire values. Real numbers cross the boundary as exact IEEE bits.
+public type Value =
+  | Null
+  | Integer Int
+  | RealBits Int
+  | Text String
+  | Blob Bytes
+
+/// Extended SQLite error code and its message; negative codes describe handle state.
+public type Error = { code : Int, message : String }
+
+/// Prepared result metadata in ordinal order.
+public type Column = { declaredType : Option String, name : String }
+
+/// The native SQLite capability. open's arguments are path, read-only flag and
+/// busy timeout in milliseconds. begin modes are 0 deferred, 1 immediate, 2 exclusive.
+public interface Sqlite =
+  begin : Session -> Int -> Result Session Error / { Sqlite }
+  close : Session -> Result Unit Error / { Sqlite }
+  columns : Cursor -> Array Column / { Sqlite }
+  commit : Session -> Result Unit Error / { Sqlite }
+  execute : Session -> String -> Array Value -> Result Int Error / { Sqlite }
+  finish : Cursor -> Result Unit Error / { Sqlite }
+  next : Cursor -> Result (Option (Array Value)) Error / { Sqlite }
+  open : String -> Bool -> Int -> Result Session Error / { Sqlite }
+  query : Session -> String -> Array Value -> Result Cursor Error / { Sqlite }
+  rollback : Session -> Result Unit Error / { Sqlite }
+
+foreign "fai_sqlite_open" openRaw : String -> Bool -> Int -> Result Session Error / { Sqlite }
+
+foreign "fai_sqlite_close" closeRaw : Session -> Result Unit Error / { Sqlite }
+
+foreign "fai_sqlite_execute" executeRaw : Session -> String -> Array Value -> Result Int Error / { Sqlite }
+
+foreign "fai_sqlite_query" queryRaw : Session -> String -> Array Value -> Result Cursor Error / { Sqlite }
+
+foreign "fai_sqlite_columns" columnsRaw : Cursor -> Array Column / { Sqlite }
+
+foreign "fai_sqlite_next" nextRaw : Cursor -> Result (Option (Array Value)) Error / { Sqlite }
+
+foreign "fai_sqlite_finish" finishRaw : Cursor -> Result Unit Error / { Sqlite }
+
+foreign "fai_sqlite_begin" beginRaw : Session -> Int -> Result Session Error / { Sqlite }
+
+foreign "fai_sqlite_commit" commitRaw : Session -> Result Unit Error / { Sqlite }
+
+foreign "fai_sqlite_rollback" rollbackRaw : Session -> Result Unit Error / { Sqlite }
+
+/// Standard native implementation; include it in an application's runtime record.
+public native : Sqlite
+let native = { Sqlite with
+  begin = beginRaw,
+  close = closeRaw,
+  columns = columnsRaw,
+  commit = commitRaw,
+  execute = executeRaw,
+  finish = finishRaw,
+  next = nextRaw,
+  open = openRaw,
+  query = queryRaw,
+  rollback = rollbackRaw
+}

@@ -1,0 +1,20 @@
+module FileDatabase
+
+public type Runtime = { console : Console, env : Env, sqlite : SqliteHost.Sqlite }
+
+let runtime = { console = stdConsole, env = stdEnv, sqlite = SqliteHost.native }
+
+let visit session =
+  match Sql.execute session (Sql.text "create table if not exists visits(id integer primary key)") with
+  | Err error -> Err error
+  | Ok _ ->
+    SqlDecode.query (SqlDecode.index 0 SqlDecode.int) session (Sql.text "insert into visits default values returning id")
+
+public main : Runtime -> Unit / { Console, Env, SqliteHost.Sqlite }
+let main env =
+  match env.env.args () with
+  | path :: [] ->
+    match Sqlite.withConnection env Sqlite.defaults path visit with
+    | Err error -> env.console.writeError (Sql.errorToString error ++ "\n")
+    | Ok rows -> env.console.writeLine (Int.toString (Option.withDefault 0 (Array.get 0 rows)))
+  | _ -> env.console.writeError "usage: FileDatabase DATABASE_PATH\n"

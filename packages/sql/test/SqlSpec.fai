@@ -119,3 +119,7 @@ let located =
       info.row = Some 0 && info.column = Some 0 && info.kind = Sql.DecodeFailure
     | _ -> false
 example: located
+
+let nullableRow = Sql.row [| { declaredType = None, name = "x" } |] [| Sql.Null |]
+example: read (SqlDecode.optionalField "x" (SqlDecode.nullable SqlDecode.int)) nullableRow = Ok (Some None)
+example: Result.isErr (read (SqlDecode.optionalField "x" SqlDecode.int) nullableRow)

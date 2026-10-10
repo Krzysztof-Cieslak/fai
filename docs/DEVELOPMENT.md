@@ -9,6 +9,8 @@ declarations, including those in each package's `test/` directory:
 fai check -C packages json
 fai test -C packages json
 fai test -C packages web
+fai test -C packages sql
+fai test -C packages sqlite
 fai test -C packages json/test/CodecSpec.fai --match treeRoundTrip
 fai fmt -C packages json
 ```
@@ -116,6 +118,8 @@ predecessor, not unconditionally with `main`.
 |---|---|
 | `packages/json/**` | JSON and Web formatting, type checks, and Fai contracts |
 | `packages/web/**` | Web formatting, type checks, and Fai contracts |
+| `packages/sql/**` | SQL and SQLite formatting, type checks, and Fai contracts |
+| `packages/sqlite/**` | SQLite formatting, type checks, and Fai contracts |
 | Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures |
 | Root documentation and `docs/*.md` / `docs/*.txt` only | Change/catalog validation |
 

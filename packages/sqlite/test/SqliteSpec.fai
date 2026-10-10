@@ -1,0 +1,5 @@
+module SqliteSpec
+
+example: Sqlite.validateOptions Sqlite.defaults = Ok ()
+example: Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = 0 } = Ok ()
+example: Result.isErr (Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = (-1) })

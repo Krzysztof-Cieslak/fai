@@ -50,6 +50,8 @@ transaction. Nested transaction behavior is documented by the driver.
 row/column positions. `CleanupFailed` retains both the primary error and a failed
 cleanup rather than replacing the original failure. Generated IDs are read with
 RETURNING or driver-specific SQL, not an implicit connection-wide convention.
+Backend codes are strings, accommodating both numeric SQLite codes and SQLSTATE
+codes from other database drivers.
 
 ```sh
 fai test -C packages sql

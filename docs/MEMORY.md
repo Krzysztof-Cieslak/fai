@@ -4927,6 +4927,14 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   Scoped cursors close on all result paths; transactions pass a pinned child
   session and retain both operation and cleanup failures. Name-based decoding
   rejects duplicate names, while ordinal decoding remains unambiguous.
+  SQLite is the first driver, backed by an embedded native capability. Native
+  sessions serialize a connection, while transaction leases reject parent aliases
+  until the child commits or rolls back; nested leases use savepoints. Cursor and
+  connection scopes invalidate escaped handles. Blocking work carries a task
+  cancellation probe to SQLite busy/progress handlers; cleanup ignores cancellation.
+  Bound SQL is one statement with an exact parameter count. Transaction-control
+  SQL and attachment bypasses are rejected. Values and row data are copied at the
+  native boundary; no SQLite-owned pointer escapes a step.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

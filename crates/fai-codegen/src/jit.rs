@@ -203,6 +203,16 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_tls_write_plaintext", rt::fai_tls_write_plaintext);
     sym!("fai_tls_state", rt::fai_tls_state);
     sym!("fai_tls_close", rt::fai_tls_close);
+    sym!("fai_sqlite_open", rt::fai_sqlite_open);
+    sym!("fai_sqlite_close", rt::fai_sqlite_close);
+    sym!("fai_sqlite_execute", rt::fai_sqlite_execute);
+    sym!("fai_sqlite_query", rt::fai_sqlite_query);
+    sym!("fai_sqlite_columns", rt::fai_sqlite_columns);
+    sym!("fai_sqlite_next", rt::fai_sqlite_next);
+    sym!("fai_sqlite_finish", rt::fai_sqlite_finish);
+    sym!("fai_sqlite_begin", rt::fai_sqlite_begin);
+    sym!("fai_sqlite_commit", rt::fai_sqlite_commit);
+    sym!("fai_sqlite_rollback", rt::fai_sqlite_rollback);
     builder.symbol("FAI_NONE_VALUE", (&raw const rt::FAI_NONE_VALUE).cast());
     builder.symbol("FAI_STRING_DESC", (&raw const rt::FAI_STRING_DESC).cast());
     builder.symbol("FAI_INT_DESC", (&raw const rt::FAI_INT_DESC).cast());
