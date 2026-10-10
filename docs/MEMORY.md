@@ -3453,6 +3453,11 @@ Editor integration:
     unrepresentable facts are discarded. A cost cap bails to no-facts on a
     pathological definition. Sort bounds should come from the actual array length,
     including when a negative requested size creates an empty array.
+    A successful checked get/peek/set contributes its index postcondition only
+    after evaluation. This can justify later same-array accesses and caller facts,
+    while the initial required check remains. Proven unique, in-bounds writes
+    emit their store directly rather than retaining an always-taken guard and
+    unreachable shared-copy fallback.
   - **Interprocedural, file-local.** A loop index passed a literal `0` start is
     non-negative only because of its caller, so entry facts are inferred caller-
     directed. A `private` definition's whole caller set is in its own file

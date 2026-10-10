@@ -1,0 +1,9 @@
+module Main
+
+let readBoth i first second =
+  let value = Array.unsafeGet i first
+  value + Array.unsafeGet i second
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  runtime.console.writeLine (Int.toString (readBoth 1 [| 1, 2 |] [| 3 |]))

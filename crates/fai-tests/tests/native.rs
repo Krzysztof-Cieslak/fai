@@ -617,6 +617,11 @@ fn generated_callers_keep_the_native_bounds_check() {
 }
 
 #[test]
+fn a_checked_array_does_not_remove_another_arrays_native_check() {
+    assert_native_bounds_trap(include_str!("fixtures/bounds/CheckedThenOther.fai"));
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }
