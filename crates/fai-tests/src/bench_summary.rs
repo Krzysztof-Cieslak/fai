@@ -15,7 +15,11 @@
 //! emits tab-separated `MEMSTAT\t<algorithm>\t<side>\t<kib>` lines (peak resident
 //! set size, in KiB, of each delivered binary). They are parsed alongside the
 //! timing rows into a "Fai vs Rust — peak RSS" table; divan's own parser ignores
-//! them, so they ride safely in the shared output stream.
+//! them, so they ride safely in the shared output stream. `WARMSTAT` records
+//! retain checked native-worker batches and their harness-floor observations.
+
+mod warm;
+pub use warm::WarmSample;
 
 /// One parsed benchmark measurement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +58,8 @@ pub struct Report {
     pub rows: Vec<Row>,
     /// Every peak-memory sample, in output order.
     pub mem: Vec<MemSample>,
+    /// Raw paired warm-AOT observations, including their harness floors.
+    pub warm: Vec<WarmSample>,
 }
 
 /// The base URL for source links (`<server>/<repo>/blob/<sha>`), if known.
@@ -96,10 +102,15 @@ impl Report {
     pub fn parse(text: &str) -> Self {
         let mut rows = Vec::new();
         let mut mem = Vec::new();
+        let mut warm = Vec::new();
         let mut group = String::new();
         let mut stack: Vec<String> = Vec::new();
 
         for line in text.lines() {
+            if let Some(sample) = WarmSample::parse(line) {
+                warm.push(sample);
+                continue;
+            }
             if let Some(sample) = parse_memstat(line) {
                 mem.push(sample);
                 continue;
@@ -138,7 +149,7 @@ impl Report {
             });
         }
 
-        Self { rows, mem }
+        Self { rows, mem, warm }
     }
 
     /// Renders the report as Markdown: one collapsible table per bench group,
@@ -148,10 +159,11 @@ impl Report {
     pub fn to_markdown(&self, links: &LinkBase) -> String {
         use std::fmt::Write as _;
         let mut out = String::from("## Benchmark results\n\n");
-        if self.rows.is_empty() && self.mem.is_empty() {
+        if self.rows.is_empty() && self.mem.is_empty() && self.warm.is_empty() {
             out.push_str("_No benchmark results were parsed from the divan output._\n");
             return out;
         }
+        out.push_str(&warm::render(&self.warm));
 
         let mut groups: Vec<&str> = Vec::new();
         for row in &self.rows {
@@ -162,6 +174,11 @@ impl Report {
 
         for group in groups {
             let _ = write!(out, "<details><summary><b>{}</b></summary>\n\n", escape(group));
+            if group == "algorithms_jit" {
+                out.push_str("Fai JIT regression/diagnostic coverage. Historical Rust control rows are AOT functions; this is not the primary AOT comparison.\n\n");
+            } else if group == "algorithms_aot" {
+                out.push_str("End-to-end AOT, including process startup and shutdown.\n\n");
+            }
             out.push_str("| Benchmark | Case | Median | Mean | Samples |\n");
             out.push_str("| --- | --- | --: | --: | --: |\n");
             for row in self.rows.iter().filter(|r| r.group == group) {
@@ -350,7 +367,8 @@ impl Report {
 
     /// Renders the report as compact JSON (hand-rolled: the crate's non-dev
     /// dependencies do not include a serializer). The shape is an object with a
-    /// `benchmarks` array of timing rows and a `memory` array of peak-RSS samples.
+    /// `benchmarks` array of timing rows, a `memory` array of peak-RSS samples,
+    /// and raw `warmAot` observations with batch/pass metadata.
     #[must_use]
     pub fn to_json(&self) -> String {
         let mut out = String::from("{\"benchmarks\":[");
@@ -379,6 +397,13 @@ impl Report {
                 json_str(&sample.side),
                 sample.kib,
             ));
+        }
+        out.push_str("],\"warmAot\":[");
+        for (index, sample) in self.warm.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(&sample.json());
         }
         out.push_str("]}");
         out
@@ -643,7 +668,7 @@ lsp            fastest       │ slowest       │ median        │ mean       
         assert!(report.rows.is_empty());
         assert!(report.mem.is_empty());
         assert!(report.to_markdown(&LinkBase::default()).contains("No benchmark results"));
-        assert_eq!(report.to_json(), "{\"benchmarks\":[],\"memory\":[]}");
+        assert_eq!(report.to_json(), "{\"benchmarks\":[],\"memory\":[],\"warmAot\":[]}");
     }
 
     #[test]

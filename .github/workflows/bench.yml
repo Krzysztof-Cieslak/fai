@@ -21,7 +21,7 @@ env:
 
 jobs:
   bench:
-    name: divan benchmarks
+    name: performance benchmarks
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -63,6 +63,8 @@ jobs:
         # capturing the output rendered below.
         env:
           DIVAN_MAX_TIME: '120'
+          # The warm AOT sampler retains its own paired raw batches and floors.
+          FAI_BENCH_ARTIFACT_DIR: target/bench-native
         run: |
           set -o pipefail
           mkdir -p target
@@ -87,4 +89,5 @@ jobs:
             target/ocaml-command.txt
             target/ocaml-environment.txt
             target/rustc-version.txt
+            target/bench-native/
           if-no-files-found: ignore

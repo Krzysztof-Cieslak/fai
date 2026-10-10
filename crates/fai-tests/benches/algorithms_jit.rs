@@ -1,18 +1,13 @@
-//! Runtime comparison: well-known algorithms executed in process, Fai vs Rust.
+//! Fai JIT execution regression coverage, separate from AOT language comparisons.
 //!
 //! For each algorithm this times the *execution* of the compiled code, not its
 //! compilation: the Fai side compiles the sample's reachable closure once (via
 //! [`fai_driver::jit_compile`], in untimed setup) and then applies the benched
-//! function in the timed loop; the Rust side calls the idiomatic reference
-//! ([`fai_tests::algorithms`]). The companion `algorithms_aot` bench compares the
-//! delivered binaries (`fai build` vs a Rust release binary) end to end.
+//! function in the timed loop. Rust references are used for untimed correctness
+//! checks. The native comparison suites measure warm and end-to-end AOT execution.
 //!
-//! Ratios include compiler, representation and algorithm choices. Fai combines
-//! uniform values with scalar representations, reference counting and Cranelift;
-//! Rust uses LLVM at the bench profile's `-O3`. Some application baselines also
-//! choose different containers: `OptionTreeFind` uses Rust's BTreeMap against a
-//! Fai binary tree. The focused `tree_lookup` suite provides matched node shapes
-//! and separates construction from lookup for that workload.
+//! These timings track the execution route used by `fai run` and contracts.
+//! Historical Rust rows in this suite measured real AOT functions, not Rust JIT.
 //!
 //! Run with `cargo bench -p fai-tests --bench algorithms_jit`.
 
@@ -71,17 +66,6 @@ fn verify(algo: &Algorithm, closure: i64) {
     rt::fai_drop(got);
 }
 
-/// Times the idiomatic Rust reference at the algorithm's JIT size.
-fn bench_rust(bencher: Bencher, module: &str) {
-    let algo = by_module(module).expect("registered algorithm");
-    let n = algo.jit_size;
-    match algo.oracle {
-        Oracle::Int(f) => bencher.bench(|| divan::black_box(f(divan::black_box(n)))),
-        // Bench requires one output type, so map the float result to its bits.
-        Oracle::Float(f) => bencher.bench(|| divan::black_box(f(divan::black_box(n)).to_bits())),
-    }
-}
-
 /// Times applying the compiled Fai function at the algorithm's JIT size. The
 /// image is built once (untimed); each iteration dups the immortal static closure
 /// (so the repeated application stays reference-count balanced), applies it, and
@@ -99,18 +83,12 @@ fn bench_fai(bencher: Bencher, module: &str) {
     });
 }
 
-/// Declares a `mod <name> { rust; fai }` for each algorithm so divan renders the
-/// rows as `<name> / rust` and `<name> / fai`, ready for the summary's pairing.
+/// Declares one Fai execution measurement per registered workload.
 macro_rules! algorithm_benches {
     ($($name:ident => $module:literal),* $(,)?) => {
         $(
             mod $name {
                 use divan::Bencher;
-
-                #[divan::bench]
-                fn rust(bencher: Bencher) {
-                    super::bench_rust(bencher, $module);
-                }
 
                 #[divan::bench]
                 fn fai(bencher: Bencher) {

@@ -1293,14 +1293,16 @@ cache plus a fast linker (mold/lld).
   Fai-vs-Rust result diverges from its oracle** (a bug, not a perf regression),
   never on a timing. The manual run keeps the long settle time for steady
   medians. It never fails the build on timings; the deterministic guards remain the
-  sole performance gate. The runtime/memory
-   comparison spans **runtime** (the `algorithms_jit`/`algorithms_aot` benches) and
-   **peak memory** (the `algorithms_mem` bench: each delivered binary self-reports
-   its peak resident set size). The in-process JIT bench compares Fai against an
-   idiomatic **Rust** oracle; the two delivered-binary benches add a third side, an
-   **`ocamlopt`-compiled OCaml** baseline (`crates/fai-tests/ocaml/baseline.ml`, the
-   native, strict, ML-family peer — skipped, not failed, when `ocamlopt` is absent),
-   so their tables read "Fai vs Rust + OCaml". The
+   sole performance gate. Cross-language comparisons use **AOT on all three
+    sides**: `algorithms_aot_warm` measures checked batches in persistent native
+    workers, `algorithms_aot` includes process startup and shutdown, and
+    `algorithms_mem` records peak process RSS. Inputs arrive at runtime. Warm
+    measurements report the harness floor without subtracting it; floor-limited
+    or incomplete comparisons cannot establish compute parity. The separate
+    `algorithms_jit` suite is **Fai regression coverage**, using Rust only for
+    untimed answer validation. The OCaml baseline uses **5.5.1 with upstream
+    Flambda and `-O3`** in the manual workflow; an absent default compiler remains
+    optional locally, while an explicit invalid selection fails. The
    benchmarked algorithms (the `ALGORITHMS` registry in
    `crates/fai-tests/src/algorithms.rs`, each a Rust oracle paired with a
    `samples/algorithms/` module and an OCaml dispatch arm) deliberately span a wide
