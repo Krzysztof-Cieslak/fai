@@ -1,0 +1,215 @@
+module SubscriptionChecks
+
+type Scenario = {
+  cancel : Bool,
+  options : HttpClient.SubscriptionOptions,
+  reject : Bool,
+  responses : Array (Int * String * String),
+  stallBody : Bool,
+  stallHead : Bool,
+  stop : Bool
+}
+
+let quick = { HttpClient.subscriptionOptions with
+  maxReconnectDelayMs = Some 0,
+  maxReconnects = Some 4,
+  reconnectDelayMs = 0
+}
+
+let normal = {
+  cancel = false,
+  options = { quick with initialLastEventId = "seed" },
+  reject = false,
+  responses = [|
+    (200, "text/event-stream", "id:first\n\ndata:one\n\nretry:7\n\nid:uncommitted\ndata:partial"),
+    (200, "text/event-stream", "id\n\ndata:two\n\n"),
+    (204, "", "")
+  |],
+  stallBody = false,
+  stallHead = false,
+  stop = false
+}
+
+blocked : Runtime -> Channel Unit -> Stream Bytes { Concurrency } / { Concurrency }
+let blocked r gate =
+  let wait = r.concurrency.recv gate
+  Stream.empty
+
+handle : Runtime -> Scenario -> Channel Int -> Channel (List (Option String)) -> Channel Unit -> Http.Request 'e -> Result (Http.Response { Concurrency }) String / { Concurrency }
+let handle r scenario index headers gate request =
+  let n = Option.withDefault 0 (r.concurrency.recv index)
+  let advanced = r.concurrency.send index (n + 1)
+  let old = Option.withDefault [] (r.concurrency.recv headers)
+  let recorded = r.concurrency.send headers (Headers.get "Last-Event-ID" request.headers :: old)
+  let wait = if scenario.stallHead && n = 0 then r.concurrency.recv gate else Some ()
+  let (status, media, body) = Option.withDefault (204, "", "") (Array.get n scenario.responses)
+  let stream =
+    if scenario.stallBody && n = 0 then
+      Stream.defer (fun _ -> blocked r gate)
+    else
+      Http.stringBody body
+  Ok (Http.chunkedResponse status (Headers.fromList [("Content-Type", media)]) stream)
+
+observe : Runtime -> Scenario -> Channel (List String) -> Channel Unit -> HttpClient.SubscriptionNotice -> Result Unit HttpClient.Error / { Concurrency }
+let observe r scenario notices ready notice =
+  let name =
+    match notice with
+    | HttpClient.EventOpening _ -> "opening"
+    | HttpClient.EventConnected _ -> "connected"
+    | HttpClient.EventReconnecting _ -> "reconnecting"
+  let old = Option.withDefault [] (r.concurrency.recv notices)
+  let recorded = r.concurrency.send notices (name :: old)
+  let signalled =
+    match notice with
+    | HttpClient.EventConnected _ -> if scenario.cancel then r.concurrency.send ready () else ()
+    | _ -> ()
+  Ok ()
+
+consume : Runtime -> Scenario -> Channel (List String) -> Sse.Event -> Result HttpClient.EventDecision HttpClient.Error / { Concurrency }
+let consume r scenario events event =
+  let old = Option.withDefault [] (r.concurrency.recv events)
+  let recorded = r.concurrency.send events (event.data :: old)
+  if scenario.reject then
+    Err (HttpClient.Transport "consumer failure")
+  else
+    Ok (if scenario.stop then HttpClient.StopEvents else HttpClient.ContinueEvents)
+
+subscribe : Runtime -> Scenario -> Channel (List String) -> Channel (List String) -> Channel Unit -> HttpClient.Client -> Result HttpClient.EventResult HttpClient.Error / { Clock, Concurrency, Net, Tls }
+let subscribe r scenario notices events ready client =
+  HttpClient.subscribeEventsWith client scenario.options (observe r scenario notices ready) (consume r scenario events) ""
+
+cancelSubscription : Runtime -> Scenario -> Channel (List String) -> Channel (List String) -> Channel Unit -> HttpClient.Client -> Nursery -> Result HttpClient.EventResult HttpClient.Error / { Clock, Concurrency, Net, Tls }
+let cancelSubscription r scenario notices events ready client nursery =
+  let worker =
+    r.concurrency.spawn nursery (fun _ -> subscribe r scenario notices events ready client)
+  let started = r.concurrency.recv ready
+  let stopped = r.concurrency.cancel worker
+  r.concurrency.await worker
+
+clientRun : Runtime -> Scenario -> Channel (List String) -> Channel (List String) -> Channel Unit -> HttpClient.Client -> Result HttpClient.EventResult HttpClient.Error / { Clock, Concurrency, Net, Tls }
+let clientRun r scenario notices events ready client =
+  if scenario.cancel then
+    r.concurrency.scope (cancelSubscription r scenario notices events ready client)
+  else
+    subscribe r scenario notices events ready client
+
+session : Runtime -> Scenario -> Listener -> Nursery -> (Result HttpClient.EventResult HttpClient.Error * List (Option String) * List String * List String) / { Clock, Concurrency, Net, Tls }
+let session r scenario listener nursery =
+  let index = r.concurrency.channel 1
+  let headers = r.concurrency.channel 1
+  let notices = r.concurrency.channel 1
+  let events = r.concurrency.channel 1
+  let gate = r.concurrency.channel 1
+  let ready = r.concurrency.channel 1
+  let seedIndex = r.concurrency.send index 0
+  let seedHeaders = r.concurrency.send headers []
+  let seedNotices = r.concurrency.send notices []
+  let seedEvents = r.concurrency.send events []
+  let server =
+    r.concurrency.spawn nursery (fun _ ->
+      Http.serveListener r listener (handle r scenario index headers gate))
+  let cfg =
+    HttpClient.config ("http://127.0.0.1:" ++ Int.toString (r.net.localPort listener) ++ "/")
+  let result =
+    HttpClient.withClient r { cfg with
+      retry = HttpClient.retryTransient
+    } (clientRun r scenario notices events ready)
+  let stopped = r.concurrency.cancel server
+  (result, List.reverse (Option.withDefault [] (r.concurrency.recv headers)), List.reverse (Option.withDefault [] (r.concurrency.recv notices)), List.reverse (Option.withDefault [] (r.concurrency.recv events)))
+
+run : Runtime -> Scenario -> (Result HttpClient.EventResult HttpClient.Error * List (Option String) * List String * List String) / { Clock, Concurrency, Net, Tls }
+let run r scenario =
+  match r.net.listen 0 with
+  | Err error -> (Err (HttpClient.Transport error), [], [], [])
+  | Ok listener -> r.concurrency.scope (session r scenario listener)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main r =
+  let (result, headers, notices, events) = run r normal
+  let resumed =
+    result = Ok {
+      reason = HttpClient.EventNoContent,
+      state = { lastEventId = "", received = 2, retryDelayMs = Some 7 }
+    } && headers = [
+      Some "seed",
+      Some "first",
+      None
+    ] && events = [
+      "one",
+      "two"
+    ] && notices = [
+      "opening",
+      "connected",
+      "reconnecting",
+      "opening",
+      "connected",
+      "reconnecting",
+      "opening"
+    ]
+  let (stop, stopHeaders, stopNotices, stopEvents) = run r { normal with stop = true }
+  let stopped =
+    (match stop with
+    | Ok outcome -> outcome.reason = HttpClient.EventStopped
+    | _ -> false) && List.length stopHeaders = 1
+  let (rejected, rejectedHeaders, rejectedNotices, rejectedEvents) = run r { normal with
+    reject = true
+  }
+  let noReplay =
+    rejected = Err (HttpClient.Transport "consumer failure") && List.length rejectedHeaders = 1
+  let (limited, limitHeaders, limitNotices, limitEvents) = run r { normal with
+    options = { quick with maxReconnects = Some 0 }
+  }
+  let bounded = limited = Err (HttpClient.EventReconnectLimit 0) && List.length limitHeaders = 1
+  let (retained, retainedHeaders, retainedNotices, retainedEvents) = run r { normal with
+    responses = [|
+      (200, "text/event-stream", "id:retained\ndata:first\n\n"),
+      (200, "text/event-stream", ": heartbeat\n\ndata:second\n\n"),
+      (204, "", "")
+    |]
+  }
+  let inherited =
+    Result.isOk retained && retainedHeaders = [Some "seed", Some "retained", Some "retained"]
+  let (wrongStatus, statusHeaders, statusNotices, statusEvents) = run r { normal with
+    responses = [| (503, "text/event-stream", "") |]
+  }
+  let terminalStatus =
+    (match wrongStatus with
+    | Err (HttpClient.EventStatus head) -> head.status = 503
+    | _ -> false) && List.length statusHeaders = 1
+  let (wrongMedia, mediaHeaders, mediaNotices, mediaEvents) = run r { normal with
+    responses = [| (200, "text/plain", "data: ignored\n\n") |]
+  }
+  let terminalMedia =
+    (match wrongMedia with
+    | Err (HttpClient.EventMediaType _ _) -> true
+    | _ -> false) && List.length mediaHeaders = 1 && mediaEvents = []
+  let (idle, idleHeaders, idleNotices, idleEvents) = run r { normal with
+    options = { quick with events = { quick.events with readIdleTimeoutMs = Some 50 } },
+    responses = [| (200, "text/event-stream", ""), (204, "", "") |],
+    stallBody = true
+  }
+  let idleReconnect = Result.isOk idle && List.length idleHeaders = 2
+  let (connecting, connectHeaders, connectNotices, connectEvents) = run r { normal with
+    options = { quick with events = { quick.events with connectTimeoutMs = Some 50 } },
+    responses = [| (200, "text/event-stream", ""), (204, "", "") |],
+    stallHead = true
+  }
+  let connectReconnect = Result.isOk connecting && List.length connectHeaders = 2
+  let (timeout, timeoutHeaders, timeoutNotices, timeoutEvents) = run r { normal with
+    options = { quick with
+      events = { quick.events with subscriptionTimeoutMs = Some 100 },
+      maxReconnectDelayMs = None,
+      minReconnectDelayMs = 10000,
+      reconnectDelayMs = 10000
+    }
+  }
+  let timedOut = timeout = Err HttpClient.DeadlineExceeded && List.length timeoutHeaders = 1
+  let (cancelled, cancelHeaders, cancelNotices, cancelEvents) = run r { normal with
+    cancel = true,
+    stallBody = true
+  }
+  let cancellation = cancelled = Err HttpClient.Cancelled && List.length cancelHeaders = 1
+  r.console.writeLine (if resumed && stopped && noReplay && bounded && inherited && terminalStatus && terminalMedia && idleReconnect && connectReconnect && timedOut && cancellation then
+    "subscription checks passed"
+  else
+    "subscription checks failed")

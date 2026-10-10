@@ -20,7 +20,9 @@ For typed errors and exact consumption boundaries, create `Sse.decoder limits`
 and call `Sse.next decoder chunk index`. Its `Progress` contains the new decoder,
 the next byte index, and at most one update. Continue with that index and chunk;
 when no update is returned the chunk is exhausted. Discard an unfinished decoder
-at EOF. Processing stops at each update, preserving events before a later error
+at EOF. `decoderFrom limits lastId` starts fresh connection framing while retaining
+a subscription's committed ID; only an explicit empty ID clears it. Processing
+stops at each update, preserving events before a later error
 and letting a consumer stop without advancing its cursor into later chunk data.
 
 The codec follows the WHATWG event-stream rules: UTF-8 replacement decoding, one

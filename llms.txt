@@ -974,6 +974,12 @@ before retrying an unconsumed suffix. Feed empty bytes only to report TCP EOF.
 `readPlaintext` returns `Result (Option Bytes) String`; `None` means pending,
 `Some Bytes.empty` means authenticated TLS EOF, and truncation returns `Err`.
 
+HTTP servers can own scoped producers with `Http.produced` and managed listeners:
+the producer receives a lifetime-checked chunk writer after headers are sent.
+This supports structured source/timer tasks through an entire response. The
+optional `sse` package uses it for automatic heartbeat comments; `Web.sseWith`
+forwards producer effects and joins its tasks when sending ends.
+
 ---
 
 ## 11. Interfaces and instances
@@ -1700,6 +1706,12 @@ Http.serve runtime 8080 (fun req -> Ok (Http.textResponse 200 (Url.path req.url)
 Http.withClient runtime (fun client -> Http.getOn runtime client "https://example.test/a")
 ```
 
+`Http.serveManagedListener`/`serveManagedListenerTls` accept `Http.ServerResponse`:
+`Ready response` or `Http.produced status headers producer`. A producer receives a
+scoped chunk writer and returns `Result Unit String`; headers are sent first,
+successful completion ends the chunked body, and failures close the connection.
+HEAD/bodyless statuses do not run producers. Writers cannot outlive production.
+
 ### Test — property testing (used by `forall`)
 
 You rarely call this directly, but a custom generator overrides synthesis for a
@@ -1722,7 +1734,7 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ---
 
-### Optional web framework
+### Optional source packages
 
 Including `packages/sse/src` supplies the shared `Sse` codec. `Sse.events limits
 byteStream` yields records with `data`, `eventType`, and `lastEventId`; `Sse.updates`
@@ -1732,11 +1744,6 @@ located errors and stop at one observation per step. `Sse.event data`, `comment`
 metadata, and `encode`/`encodeStream` serialize it. The codec handles UTF-8/BOM and
 LF/CRLF/CR, and discards incomplete events at EOF. All byte limits are configurable.
 Run `fai test -C packages sse`.
-`Http.serveManagedListener`/`serveManagedListenerTls` accept `Http.ServerResponse`:
-`Ready response` or `Http.produced status headers producer`. A producer receives a
-scoped chunk writer and returns `Result Unit String`; headers are sent first,
-successful completion ends the chunked body, and failures close the connection.
-HEAD/bodyless statuses do not run producers. Writers cannot outlive production.
 `Web.sse frames` streams `Sse.Frame` values. `Web.sseWith runtime options frames`
 adds optional automatic idle comments, using `SseServer.Options` with configurable
 `heartbeatIntervalMs` (`None` by default, or a positive millisecond count).
@@ -1750,6 +1757,16 @@ consumer (`ContinueEvents` or `StopEvents`). `HttpClient.eventOptions` defaults 
 30,000 ms connection and 60,000 ms read-idle timeouts and no overall timeout.
 All durations accept configuration (`None` disables them). The result includes
 the final reason and committed ID/retry/event-count state; 204 stops successfully.
+`HttpClient.subscribeEvents client options consume target` reconnects a GET until
+stopped; `subscribeEventsWith` also accepts a lifecycle observer. Use
+`subscriptionOptions`, whose `events` field holds the event timeout/limit options,
+plus configurable `reconnectDelayMs`, `minReconnectDelayMs`, optional
+`maxReconnectDelayMs`/`maxReconnects`, and `initialLastEventId`. Server retry hints
+obey those bounds. EOF and transport/idle/connect failures reconnect; 204 stops,
+and callback/codec/status/media errors terminate. Empty IDs clear Last-Event-ID;
+incomplete blocks do not commit a cursor. `Sse.decoderFrom` seeds fresh connection
+framing with the retained ID. Cross-origin redirects strip old IDs
+and credentials. Every timeout/heartbeat/reconnect duration is configurable.
 
 Including `packages/http-client/src` and `packages/json/src` supplies `HttpClient`.
 `withClient runtime (config baseUrl) callback` opens a scoped pool. Pure `get`,

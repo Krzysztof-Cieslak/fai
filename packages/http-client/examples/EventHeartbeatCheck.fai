@@ -1,0 +1,57 @@
+module EventHeartbeatCheck
+
+blockedFrames : Runtime -> Channel Unit -> Stream Sse.Frame { Clock, Concurrency } / { Concurrency }
+let blockedFrames r gate =
+  let waited = r.concurrency.recv gate
+  Stream.empty
+
+delayed : Runtime -> Channel Unit -> Stream Sse.Frame { Clock, Concurrency } / { Clock }
+let delayed r gate =
+  let waited = r.clock.sleep 250
+  Stream.cons (Sse.event "ready") (Stream.defer (fun _ -> blockedFrames r gate))
+
+produce : Runtime -> Channel Unit -> Stream Sse.Frame { Clock, Concurrency } -> Http.BodyProducer { Clock, Concurrency }
+let produce r cleaned frames write =
+  let result = SseServer.produce r { heartbeatIntervalMs = Some 10 } frames write
+  let finished = r.concurrency.send cleaned ()
+  result
+
+session : Runtime -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let session r listener nursery =
+  let gate = r.concurrency.channel 1
+  let cleaned = r.concurrency.channel 1
+  let frames = Stream.defer (fun _ -> delayed r gate)
+  let producer = produce r cleaned frames
+  let server =
+    r.concurrency.spawn nursery (fun _ ->
+      Http.serveManagedListener r listener (fun _ ->
+        Ok (Http.produced 200 (Headers.fromList [("Content-Type", "text/event-stream")]) producer)))
+  let cfg =
+    HttpClient.config ("http://127.0.0.1:" ++ Int.toString (r.net.localPort listener) ++ "/")
+  let options = { HttpClient.eventOptions with
+    readIdleTimeoutMs = Some 100,
+    subscriptionTimeoutMs = Some 3000
+  }
+  let result =
+    HttpClient.withClient r cfg (fun client ->
+      HttpClient.withEvents client options (fun event ->
+        if event.data = "ready" then
+          Ok HttpClient.StopEvents
+        else
+          Err (HttpClient.ConsumerFailure "wrong event")) (HttpClient.get ""))
+  let cleanup = Async.timeout r.concurrency r.clock 1000 (fun _ -> r.concurrency.recv cleaned)
+  let stopped = r.concurrency.cancel server
+  let passed =
+    match result with
+    | Ok result -> result.reason = HttpClient.EventStopped && result.state.received = 1
+    | Err _ -> false
+  r.console.writeLine (if passed && cleanup = Some (Some ()) then
+    "heartbeat idle check passed"
+  else
+    "heartbeat idle check failed")
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main r =
+  match r.net.listen 0 with
+  | Err error -> r.console.writeLine error
+  | Ok listener -> r.concurrency.scope (session r listener)

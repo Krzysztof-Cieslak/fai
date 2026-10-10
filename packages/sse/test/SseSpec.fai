@@ -86,6 +86,23 @@ let stopBeforeLaterError =
     | Ok step -> step.update = Some (Sse.Dispatch (message "a")) && step.nextIndex = 8
 example: stopBeforeLaterError
 
+let inheritedId =
+  match Sse.decoderFrom Sse.defaults "previous" with
+  | Err _ -> false
+  | Ok decoder ->
+    match Sse.next decoder (Bytes.fromString ": heartbeat\n\ndata:next\n\n") 0 with
+    | Err _ -> false
+    | Ok first ->
+      match Sse.next first.decoder (Bytes.fromString ": heartbeat\n\ndata:next\n\n") first.nextIndex with
+      | Err _ -> false
+      | Ok second ->
+        first.update = Some (Sse.Checkpoint "previous") && second.update = Some (Sse.Dispatch {
+          data = "next",
+          eventType = "message",
+          lastEventId = "previous"
+        })
+example: inheritedId
+
 let splitUpdates bytes split =
   Stream.toList (Sse.updates Sse.defaults (Stream.fromList [
     Bytes.slice 0 split bytes,

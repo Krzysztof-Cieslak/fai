@@ -19,8 +19,8 @@ packages/web/
 
 ## Using it today
 
-This library depends on the sibling `packages/json` and `packages/sse` source libraries. There is no
-package manager yet, so a consuming app and both libraries must live
+This library depends on the sibling `packages/json` and `packages/sse` source
+libraries. There is no package manager yet, so a consuming app and its libraries must live
 under one workspace root (every `.fai` file beneath the root is compiled, and
 modules find each other by their `module` header — there are no imports). Point
 `fai` at that root:
@@ -47,17 +47,16 @@ type HttpContext 'e = { params : List (String * String), request : Http.Request 
 type HttpHandler 'e = HttpContext 'e -> Outcome 'e / 'e
 ```
 
-These three outcomes are Giraffe's "Continue / Return / Skip" made explicit
-(Fai is direct-style with typed effects, so there is no `Task` and no
-continuation-passing — composition is a plain value transformation). The effect
-variable `'e` forwards whatever capabilities a handler uses.
+These outcomes make continuation, response production, alternatives, and failure
+explicit. Composition is a plain value transformation. The effect variable `'e`
+forwards whatever capabilities a handler uses.
 
 ### Combinators
 
 - `compose a b` — run `a`; if it asks to `Continue`, run `b` on the updated
   context.
 - `chain handlers` — run handlers left to right while each asks to `Continue`
-  (middleware pipeline). Stops at the first `Halt`/`Skip`/`Fail`.
+  (middleware pipeline). Stops at the first `Halt`/`Produce`/`Skip`/`Fail`.
 - `choose handlers` — try handlers until one does not `Skip`.
 
 Cross-module symbolic operators are not available in Fai, so the API is

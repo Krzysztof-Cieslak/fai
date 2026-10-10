@@ -956,6 +956,12 @@ and calls a sequential event consumer until EOF, 204, explicit stop, or failure.
 SSE-specific connect/read-idle/overall durations are all configurable and override
 the ordinary request timeout only for that operation. Callback time is excluded
 from read-idle time; ID-only blocks and retry hints update returned progress.
+`subscribeEvents` adds bodyless-GET reconnection, with optional sequential
+lifecycle notices through `subscribeEventsWith`. EOF and transport/connect/idle
+failures reconnect; 204 and explicit stop finish, and callback/codec/media/status
+errors terminate. Last-Event-ID follows committed observations and origin-aware
+redirects. Initial delay, optional delay bounds, every timeout, and reconnect
+count are configuration; no fixed subscription or heartbeat deadline is imposed.
 
 ## 6. Compiler pipeline
 

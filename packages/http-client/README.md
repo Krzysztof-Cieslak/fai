@@ -206,6 +206,54 @@ caller cancellation and consumer errors remain distinguishable.
 fai run -C packages http-client/examples/EventReaderChecks.fai
 ```
 
+## Reconnecting SSE subscriptions
+
+`subscribeEvents client options consume target` makes a bodyless GET subscription.
+`subscribeEventsWith client options observe consume target` additionally reports
+`EventOpening`, `EventConnected`, and `EventReconnecting` notices, including the
+next connection number, chosen delay, committed state and any transport failure.
+Notices and event callbacks run sequentially. Either can stop with an error;
+an event callback can finish successfully with `StopEvents`.
+
+`subscriptionOptions` defaults to reconnecting until stopped. EOF, connection
+loss, connect timeout and read-idle timeout reconnect; 204 stops successfully.
+Other statuses, wrong Content-Type, codec-limit failures and callback errors are
+terminal. The subscription owns reconnection rather than stacking HTTP retries.
+It never retries a POST. Use `withEvents` for a single POST response.
+
+All timings are configurable:
+
+| Option | Default |
+|---|---|
+| `events.connectTimeoutMs` | `Some 30000` |
+| `events.readIdleTimeoutMs` | `Some 60000` |
+| `events.subscriptionTimeoutMs` | `None` |
+| `reconnectDelayMs` | `3000` |
+| `minReconnectDelayMs` | `0` |
+| `maxReconnectDelayMs` | `None` |
+| `maxReconnects` | `None` |
+| `initialLastEventId` | `""` |
+
+Enabled timeouts must be positive. Reconnect delays/bounds/counts must be
+nonnegative and ordered. A server's valid `retry:` hint replaces the initial
+delay, subject to configured bounds. The optional overall deadline includes every
+connection, callback and sleep; heartbeat bytes reset the read-idle wait.
+
+The client commits ID-only blocks and sends Last-Event-ID when the current cursor
+is nonempty. Empty IDs remove the header. Incomplete final blocks do not advance
+it. Each connection gets fresh wire framing seeded with the committed ID, so a
+heartbeat or an event without an ID retains that cursor. Only completed
+observations update progress. Resume values that cannot be represented as HTTP header
+values return an error rather than being altered. Redirected subscriptions resume
+at the final URL, stripping origin-scoped headers and preventing an old origin's
+cursor from being sent to a new origin.
+
+```sh
+fai run -C packages http-client/examples/SubscriptionChecks.fai
+fai run -C packages http-client/examples/EventHeartbeatCheck.fai
+fai run -C packages http-client/examples/EventRedirectCheck.fai
+```
+
 ## Native contracts
 
 ```sh
