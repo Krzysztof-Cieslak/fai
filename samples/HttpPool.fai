@@ -1,12 +1,12 @@
 module HttpPool
 
-// getOn may retry an empty-response EOF once because its GET body is known empty.
-// requestOn/postOn preserve one-use body streams by returning failures without replay.
+// withResponseOn consumes a body in a scope and never replays the request.
+// Completing the body permits reuse; early return closes the connection.
 // Connection pooling with `Http.withClient` (std/networking/Http.fai). A pool keeps idle
 // keep-alive connections and reuses them across requests to the same origin, so a
 // burst of requests to one host avoids reconnecting each time. `withClient` opens the
 // pool in a structured scope and closes every connection when the callback returns;
-// inside it, `getOn`/`requestOn`/`postOn` take the `Client` and need
+// inside it, `withResponseOn` takes the `Client` and needs
 // `{ Concurrency, Net, Tls }`.
 //
 // To show real reuse, a small loopback server answers two requests on a *single*
@@ -28,12 +28,14 @@ let serveTwo runtime listener =
 // One pooled GET to the loopback server, rendered as its body text.
 fetchOne : Runtime -> Http.Client -> Int -> String / { Concurrency, Net, Tls }
 let fetchOne runtime client port =
-  match Http.getOn runtime client ("http://127.0.0.1:" ++ Int.toString port ++ "/data") with
-  | Err e -> "request failed: " ++ e
-  | Ok resp ->
-    match Http.bodyText resp.body with
-    | Err e -> "body failed: " ++ e
-    | Ok text -> text
+  match Url.parse ("http://127.0.0.1:" ++ Int.toString port ++ "/data") with
+  | Err e -> e
+  | Ok url ->
+    let request = { body = Http.emptyBody, headers = Headers.empty, method = Http.GET, url = url }
+    match Http.withResponseOn runtime client request (fun response ->
+      Http.bodyText response.body) with
+    | Err e -> "request failed: " ++ e
+    | Ok result -> Result.withDefault "body failed" result
 
 // Two requests to the same origin: the first opens a connection, the second reuses it.
 twoRequests : Runtime -> Http.Client -> Int -> String / { Concurrency, Net, Tls }

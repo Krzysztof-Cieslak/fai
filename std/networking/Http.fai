@@ -33,7 +33,7 @@ public type Response 'e = {
 }
 
 /// A bidirectional byte transport the framing is written against (a plain TCP
-/// connection, or — later — a TLS session). Mock it to unit-test framing without a
+/// connection or a TLS session). Mock it to unit-test framing without a
 /// socket.
 public interface Transport 'e =
   close : Unit -> Unit / 'e
@@ -1213,7 +1213,11 @@ type Command =
 /// An opaque handle to a connection pool, from `withClient`, passed to `getOn`/
 /// `requestOn`/`postOn`. It is valid only inside the `withClient` scope.
 public opaque type Client =
-  | MkClient (Channel Command)
+  | MkClient (Channel Command) (Option Bytes)
+
+let clientRoots client =
+  match client with
+  | MkClient _ roots -> roots
 
 // The reuse key for a connection: its origin (scheme, host, and port).
 originKey : Url -> String
@@ -1252,7 +1256,7 @@ let poolLoop env commands idle =
 poolCheckout : { concurrency : Concurrency | 'r } -> Client -> String -> Option Idle / { Concurrency }
 let poolCheckout env client origin =
   match client with
-  | MkClient commands ->
+  | MkClient commands _ ->
     let reply = env.concurrency.channel 1
     let sent = env.concurrency.send commands (Checkout origin reply)
     match env.concurrency.recv reply with
@@ -1264,7 +1268,7 @@ let poolCheckout env client origin =
 releaseToPool : { concurrency : Concurrency | 'r } -> Client -> String -> Bool -> Transport { Net, Tls } -> Bytes -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }
 let releaseToPool env client origin reusable t buffered =
   match client with
-  | MkClient commands ->
+  | MkClient commands _ ->
     let sent = env.concurrency.send commands (Checkin origin reusable (t, buffered))
     Stream.empty
 
@@ -1368,10 +1372,9 @@ let buildPooledResponse env client origin method version code reason headers lef
       status = code
     }
 
-// Open a fresh connection (TLS for an https URL) for a request, trusting the bundled
-// roots.
-connectFresh : { net : Net, tls : Tls | 'r } -> Url -> Result (Transport { Net, Tls }) String / { Net, Tls }
-let connectFresh env url =
+// Open a fresh connection (TLS for an https URL) with this pool's trust roots.
+connectFresh : { net : Net, tls : Tls | 'r } -> Option Bytes -> Url -> Result (Transport { Net, Tls }) String / { Net, Tls }
+let connectFresh env roots url =
   match connectionHost url with
   | Err e -> Err e
   | Ok h ->
@@ -1380,7 +1383,7 @@ let connectFresh env url =
     | Some p ->
       match env.net.connect h p with
       | Err e -> Err e
-      | Ok conn -> makeTransport env None conn url h
+      | Ok conn -> makeTransport env roots conn url h
 
 // Send the request over `t` and parse the response, returning its connection to the
 // pool when the body is read. A reused connection that fails before the response head
@@ -1406,7 +1409,7 @@ let attemptPooled env client origin t buffered req reused =
 
 retryFresh : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> String -> Request 'e -> Result (Response { Concurrency, Net, Tls }) String / { Concurrency, Net, Tls | 'e }
 let retryFresh env client origin req =
-  match connectFresh env req.url with
+  match connectFresh env (clientRoots client) req.url with
   | Err e -> Err e
   | Ok t -> attemptPooled env client origin t Bytes.empty req false
 
@@ -1425,7 +1428,7 @@ let requestOnPolicy env client req replayable =
   match poolCheckout env client origin with
   | Some (t, buffered) -> attemptPooled env client origin t buffered req replayable
   | None ->
-    match connectFresh env req.url with
+    match connectFresh env (clientRoots client) req.url with
     | Err e -> Err e
     | Ok t -> attemptPooled env client origin t Bytes.empty req false
 
@@ -1452,11 +1455,11 @@ let postOn env client urlStr headers body =
 
 // Run the pool actor in `nursery` and hand the callback a `Client`; close the command
 // channel when the callback returns so the actor exits and the scope joins it.
-runPool : { concurrency : Concurrency | 'r } -> Nursery -> (Client -> 'a / 'e) -> 'a / { Concurrency | 'e }
-let runPool env nursery callback =
+runPool : { concurrency : Concurrency | 'r } -> Option Bytes -> Nursery -> (Client -> 'a / 'e) -> 'a / { Concurrency | 'e }
+let runPool env roots nursery callback =
   let commands = env.concurrency.channel 64
   let actor = env.concurrency.spawn nursery (fun u -> poolLoop env commands HashDict.empty)
-  let result = callback (MkClient commands)
+  let result = callback (MkClient commands roots)
   let closed = env.concurrency.close commands
   result
 
@@ -1466,7 +1469,88 @@ let runPool env nursery callback =
 /// `postOn` must be consumed within the callback (its body holds a pooled connection
 /// until fully read or dropped).
 public withClient : { concurrency : Concurrency | 'r } -> (Client -> 'a / 'e) -> 'a / { Concurrency | 'e }
-let withClient env callback = env.concurrency.scope (fun nursery -> runPool env nursery callback)
+let withClient env callback = withClientWith env None callback
+
+/// Open a connection pool with additional trusted PEM roots. Trust settings are
+/// fixed for the pool's lifetime; connections never cross between pools.
+public withClientWith : { concurrency : Concurrency | 'r } -> Option Bytes -> (Client -> 'a / 'e) -> 'a / { Concurrency | 'e }
+let withClientWith env roots callback =
+  env.concurrency.scope (fun nursery -> runPool env roots nursery callback)
+
+// The gate serializes reads and records EOF. It is closed before a connection
+// returns to the pool, so retained body closures cannot read a later response.
+scopedRead : Concurrency -> Channel (Option Bytes) -> Transport { Net, Tls } -> Int -> Result Bytes String / { Concurrency, Net, Tls }
+let scopedRead c gate transport count =
+  match c.recv gate with
+  | None -> Err "response scope has ended"
+  | Some completed ->
+    match completed with
+    | Some _ ->
+      let restored = c.send gate completed
+      Err "response body has already completed"
+    | None ->
+      let result = transport.recv count
+      let restored = c.send gate None
+      result
+
+scopedFinish : Concurrency -> Channel (Option Bytes) -> Bytes -> Stream Bytes { Concurrency, Net, Tls } / { Concurrency }
+let scopedFinish c gate buffered =
+  match c.recv gate with
+  | None -> Stream.failed "response scope has ended"
+  | Some completed ->
+    let restored = c.send gate (Some (Option.withDefault buffered completed))
+    Stream.empty
+
+scopedExchange : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> Request 'e -> Transport { Net, Tls } -> Bytes -> (Response { Concurrency, Net, Tls } -> 'a / 'e) -> Result 'a String / { Concurrency, Net, Tls | 'e }
+let scopedExchange env client req transport buffered consume =
+  match sendRequest false transport req with
+  | Err e ->
+    let closed = transport.close ()
+    Err e
+  | Ok _ ->
+    match readHead transport buffered with
+    | Err e ->
+      let closed = transport.close ()
+      Err e
+    | Ok (version, status, reason, headers, leftover) ->
+      match responseFraming req.method status headers with
+      | Err e ->
+        let closed = transport.close ()
+        Err e
+      | Ok framing ->
+        let gate = env.concurrency.channel 1
+        let seeded = env.concurrency.send gate None
+        let guarded = { Transport with
+          close = fun _ -> transport.close (),
+          recv = scopedRead env.concurrency gate transport,
+          send = fun bytes -> transport.send bytes
+        }
+        let body = pooledBody (scopedFinish env.concurrency gate) guarded leftover framing
+        let value = consume { body = body, headers = headers, reason = reason, status = status }
+        let completed = env.concurrency.recv gate
+        let ended = env.concurrency.close gate
+        let released =
+          match completed with
+          | Some (Some bytes) ->
+            if isReusable version headers framing then
+              let tail = releaseToPool env client (originKey req.url) true transport bytes
+              ()
+            else
+              transport.close ()
+          | _ -> transport.close ()
+        Ok value
+
+/// Consume one response inside a scope. Full consumption permits pool reuse;
+/// early return or cancellation closes the connection. The body is valid only
+/// during the callback. No redirect or automatic replay is performed.
+public withResponseOn : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Client -> Request 'e -> (Response { Concurrency, Net, Tls } -> 'a / 'e) -> Result 'a String / { Concurrency, Net, Tls | 'e }
+let withResponseOn env client req consume =
+  match poolCheckout env client (originKey req.url) with
+  | Some (transport, buffered) -> scopedExchange env client req transport buffered consume
+  | None ->
+    match connectFresh env (clientRoots client) req.url with
+    | Err e -> Err e
+    | Ok transport -> scopedExchange env client req transport Bytes.empty consume
 
 // --- Response builders -----------------------------------------------------
 // The reason phrase for a few common status codes (a generic one otherwise).

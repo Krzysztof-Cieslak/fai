@@ -19,7 +19,7 @@ fn original_error(send: &str, recv: &str, body: &str, expected: &str) {
         r#"{}
 testRetry : Runtime -> Bool / {{ Concurrency, Net, Tls }}
 let testRetry r =
-  let client = MkClient (r.concurrency.channel 1)
+  let client = MkClient (r.concurrency.channel 1) None
   let t = {{ Transport with close u = (), recv n = {recv}, send bytes = {send} }}
   match Url.parse "http://127.0.0.1:0/" with
   | Err e -> false
