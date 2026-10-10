@@ -1,5 +1,29 @@
 module LayoutSpec
 
+let red = { TuiStyle.normal with foreground = TuiStyle.Indexed 1 }
+
+let themed =
+  TuiLayout.render { TuiLayout.context 5 1 with
+    theme = { TuiStyle.defaultTheme with normal = red }
+  } TuiState.empty (Ui.text [] "hello")
+example: Result.map (fun frame ->
+  Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) themed = Ok (Some red)
+
+let inherited =
+  TuiLayout.render (TuiLayout.context 5 1) TuiState.empty (Ui.column [
+    Ui.style red
+  ] [Ui.text [] "hello"])
+example: Result.map (fun frame ->
+  Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) inherited = Ok (Some red)
+
+let reset =
+  TuiLayout.render (TuiLayout.context 5 1) TuiState.empty (Ui.column [
+    Ui.style red
+  ] [Ui.text [Ui.style TuiStyle.normal] "hello"])
+example: Result.map (fun frame ->
+  Option.map (fun cell ->
+    cell.style) (TuiScreen.cell 0 0 frame.screen)) reset = Ok (Some TuiStyle.normal)
+
 let scrollTree =
   Ui.scroll (Ui.id "scroll") [] (Ui.column [] [
     Ui.text [] "a\nb\nc\nd",
