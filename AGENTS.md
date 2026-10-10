@@ -633,6 +633,9 @@ Equality-only differences against a uniformly stepping Int loop counter can use
 auxiliary affine counters. An unchanged operand is combined with the counter at
 entry, then advanced by the same wrapping step. Comparisons retain their order
 and full-width modular arithmetic; varying steps or invariants keep ordinary code.
+Testing a raw Int remainder by a positive power of two for zero can inspect the
+original dividend's low bits directly. Negative dividends obey the same test;
+other remainder observations retain signed truncation and zero divisors still trap.
 
 Opaque aliases retain their nominal type in cross-file value, constructor, and
 interface-method signatures, including through transparent re-exports. Names

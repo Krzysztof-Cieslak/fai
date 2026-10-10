@@ -3706,6 +3706,10 @@ Editor integration:
     wrapping arithmetic, so the equality is exact for all signed Int values.
     Facts are scoped to the loop, comparisons retain their order, and differing
     steps, invariants or representations keep the original computation.
+    A raw positive-power-of-two remainder retains its dividend's SSA provenance
+    for a following equality with zero. Divisibility uses a low-bit mask for
+    positive and negative dividends alike, while nonzero comparisons and other
+    uses retain the signed remainder. Divisor-zero faults keep their normal path.
     Native Float ordering against a literal uses signed bit order for a
     nonnegative constant and reversed unsigned order for a negative constant.
     This preserves totalOrder, including NaN signs/payloads and signed zeros.
