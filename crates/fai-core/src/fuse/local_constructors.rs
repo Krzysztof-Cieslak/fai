@@ -63,7 +63,7 @@ fn children(e: &mut CExpr, f: &mut impl FnMut(&mut CExpr)) {
     }
 }
 
-fn resource_free(
+pub(super) fn resource_free(
     db: &dyn Db,
     ty: &Ty,
     visiting: &mut FxHashSet<AdtRef>,

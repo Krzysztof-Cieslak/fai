@@ -136,6 +136,9 @@ let affineScan fixed distance values =
 let affineLoop n values total = if n <= 0 then total else affineLoop (n - 1) values (if affineScan 1000 1 values then total + 1 else total)
 public affineScans : Int -> Int
 let affineScans n = affineLoop n (List.range 0 32) 0
+let literalFoldLoop n total = if n <= 0 then total else literalFoldLoop (n - 1) (List.foldl (fun acc item -> acc + 12 / item) total [1, 2, 3])
+public literalFolds : Int -> Int
+let literalFolds n = literalFoldLoop n 0
 public main : Runtime -> Unit
 let main r = ()
 "#;
@@ -378,4 +381,14 @@ fn local_constructor_matches_need_no_iteration_storage() {
 #[test]
 fn affine_scan_bounds_keep_constant_storage() {
     bounded_reuse("affineScans", |n| n);
+}
+
+#[test]
+fn ordered_literal_folds_need_no_temporary_spine_storage() {
+    let mut harness = Harness::new();
+    let short = harness.measure("literalFolds", 8, 8 * 22);
+    let long = harness.measure("literalFolds", 4096, 4096 * 22);
+    assert_eq!(short, long);
+    assert_eq!(long.allocations, 0);
+    assert_eq!(long.peak_bytes, 0);
 }

@@ -42,6 +42,32 @@ fn deeper_scalar_peeling_preserves_both_full_width_branches() {
 }
 
 #[test]
+fn ordered_literal_folds_preserve_all_argument_and_callback_effects() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/OrderedLiteralFold.fai")),
+        (
+            "callback\ninitial\none\ntwo\nstep1\nstep2\n12\nright3\nright2\nright1\n321\n".into(),
+            Some(0)
+        )
+    );
+}
+
+#[test]
+fn literal_element_traps_are_not_skipped_by_an_ignoring_fold() {
+    let source = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (List.foldl (fun acc item -> acc) 0 [1 / 0, 2]))\n";
+    let (_, code) = build_and_run(source);
+    assert_ne!(code, Some(0));
+}
+
+#[test]
+fn all_literal_elements_precede_a_trapping_first_callback() {
+    let source = "module Main\nelement : Console -> Int -> Int / { Console }\nlet element console value =\n  let _ = console.writeLine \"element\"\n  value\nlet step acc item = acc + 1 / (item - 1)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (List.foldl step 0 [1, element r.console 2]))\n";
+    let (output, code) = build_and_run(source);
+    assert_eq!(output, "element\n");
+    assert_ne!(code, Some(0));
+}
+
+#[test]
 fn wide_float_return_crosses_the_native_first_class_wrapper() {
     let library = "module Wide\npublic type V = { x : Float, y : Float, z : Float }\npublic shift : V -> V\nlet shift v = { x = v.x + 1.0, y = v.y + 2.0, z = v.z + 3.0 }\n";
     let main = "module Main\nlet apply n f x = if n = 0 then f x else apply (n - 1) f x\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let v = apply 1 Wide.shift { x = 1.0, y = 2.0, z = 3.0 }\n  r.console.writeLine (Int.toString (Float.toInt (v.x + v.y + v.z)))\n";
