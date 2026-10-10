@@ -209,6 +209,13 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_crypto_equal", rt::fai_crypto_equal);
     sym!("fai_crypto_scram_password", rt::fai_crypto_scram_password);
     sym!("fai_crypto_random", rt::fai_crypto_random);
+    sym!("fai_terminal_open", rt::fai_terminal_open);
+    sym!("fai_terminal_close", rt::fai_terminal_close);
+    sym!("fai_terminal_poll", rt::fai_terminal_poll);
+    sym!("fai_terminal_write", rt::fai_terminal_write);
+    sym!("fai_terminal_size", rt::fai_terminal_size);
+    sym!("fai_text_graphemes", rt::fai_text_graphemes);
+    sym!("fai_text_width", rt::fai_text_width);
     sym!("fai_cleanup", rt::fai_cleanup);
     sym!("fai_net_peer", rt::fai_net_peer);
     sym!("fai_tls_server_endpoint", rt::fai_tls_server_endpoint);

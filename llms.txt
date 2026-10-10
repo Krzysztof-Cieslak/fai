@@ -603,6 +603,12 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+Full-screen terminal applications explicitly supply `TerminalHost.native` as a
+`TerminalHost.Terminal` capability. A session owns raw mode and the alternate
+screen until close/drop; `poll session timeoutMs` reports typed input/resize
+events and has a configurable wait. `TextCells.graphemes` and `TextCells.width`
+are pure helpers for grapheme-aware editing and display-cell layout.
+
 This is the part most unlike other languages — read it carefully.
 
 Fai has **no ambient side effects**. The console, clock, randomness, file system,
@@ -1084,6 +1090,15 @@ forall xs: mirror (mirror xs) = xs
 ---
 
 ## 13. Standard library reference
+
+### Terminal and Unicode cells
+
+`TerminalHost.Terminal` supplies `open : Bool -> Result Session String` (mouse
+capture flag), `close`, `size`, raw `write`, and `poll` with a millisecond timeout.
+Every operation carries `{ TerminalHost.Terminal }`. Only one session owns the
+terminal at a time; closed aliases fail. `TextCells.graphemes : String -> Array
+String` returns extended grapheme clusters. `TextCells.width : Bool -> String ->
+Int` measures terminal cells; the flag selects wide East Asian ambiguous glyphs.
 
 The compiler loads these modules as embedded sources with a distinct origin.
 Workspace files cannot replace them by matching their display paths, and only

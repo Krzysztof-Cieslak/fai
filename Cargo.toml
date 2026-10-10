@@ -72,6 +72,9 @@ ring = "0.17"
 subtle = "2.6"
 stringprep = "0.1.5"
 x509-parser = { version = "0.18.1", default-features = false }
+crossterm = "0.29"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
 # String interning for identifiers (the non-salsa `Symbol`).
 lasso = { version = "0.7", features = ["multi-threaded"] }
 # UTF-8 paths (clean JSON, no lossy conversion). `serde1` for wire params.

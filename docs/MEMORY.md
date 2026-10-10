@@ -4971,5 +4971,14 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   with rollback/`DISCARD ALL`, and retire expired leases only on return. All
   durations are configurable; optional deadlines/expiry accept `None`.
 
+- **D159 Full-screen terminal applications.** Terminal ownership is an explicit
+  capability with exclusive, alias-invalidating sessions. The native backend
+  handles raw mode, terminal events and restoration; Unicode segmentation and
+  display width use dedicated native primitives. Layout, rendering, widgets and
+  MVU application policy belong to an optional Fai source package. The UI uses
+  typed attribute lists and stable widget IDs, with application-owned domain
+  data and framework-owned focus/caret/scroll state. Forms retain explicit draft
+  state and produce typed validated application values.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
