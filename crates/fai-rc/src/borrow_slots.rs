@@ -1,8 +1,10 @@
 //! Borrows nonescaping array data slots when their owner's lifetime is proven.
 
-use fai_core::ir::{CExpr, ExprKind as K, Prim};
+use fai_core::ir::{CExpr, DataShape, ExprKind as K, FieldIndex, Lit, Prim};
 use fai_db::Db;
 use fai_resolve::LocalId;
+use fai_types::{Con, Ty};
+use rustc_hash::FxHashMap;
 
 use crate::is_boxed_data_ty;
 
@@ -14,7 +16,7 @@ pub(crate) fn rewrite(db: &dyn Db, body: &mut CExpr) {
     if !is_boxed_data_ty(&value.ty) || fai_core::niche_scheme(db, &value.ty).is_some() {
         return;
     }
-    let mut state = State { parent_alive: true, slot_live: true };
+    let mut state = State { parent_alive: true, slot_live: true, strict: false };
     if inspect(body, *local, *parent, &mut state, &mut 1024) {
         let K::Prim { op, .. } = &mut value.kind else { unreachable!() };
         *op = Prim::ArrayPeek;
@@ -36,10 +38,58 @@ pub(crate) fn remove_discarded_projections(e: &mut CExpr) {
     }
 }
 
+/// Borrows statically uniform fields when every use fits within the containing
+/// value's lifetime, following borrowed array slots back to their true owner.
+pub(crate) fn borrow_fields(body: &mut CExpr, shapes: &[(LocalId, DataShape)]) {
+    fn walk(
+        e: &mut CExpr,
+        shapes: &[(LocalId, DataShape)],
+        owners: &mut FxHashMap<LocalId, LocalId>,
+    ) {
+        let K::Let { local, value, body } = &mut e.kind else {
+            children(e, &mut |child| walk(child, shapes, owners));
+            return;
+        };
+        walk(value, shapes, owners);
+        if let K::Prim { op: Prim::ArrayPeek | Prim::DataPeek, args } = &value.kind
+            && let Some(K::Local(parent)) = args.first().map(|arg| &arg.kind)
+        {
+            owners.insert(*local, owners.get(parent).copied().unwrap_or(*parent));
+        }
+        if let K::DataField { base, index: FieldIndex::Const(index), scalar: false, niche: None } =
+            &value.kind
+            && let K::Local(parent) = base.kind
+            && !matches!(
+                value.ty,
+                Ty::Unit | Ty::Con(Con::Int | Con::Float | Con::Bool | Con::Char)
+            )
+            && let Ok(shape) = shapes.binary_search_by_key(&parent.index(), |(id, _)| id.index())
+            && (*index >= 64 || shapes[shape].1.scalars & (1u64 << index) == 0)
+        {
+            let owner = owners.get(&parent).copied().unwrap_or(parent);
+            let mut state = State { parent_alive: true, slot_live: true, strict: true };
+            if inspect(body, *local, owner, &mut state, &mut 1024) {
+                let args = vec![
+                    (**base).clone(),
+                    CExpr::new(K::Lit(Lit::Int(i64::from(*index))), Ty::int()),
+                ];
+                value.kind = K::Prim { op: Prim::DataPeek, args };
+                remove_drops(body, *local);
+                owners.insert(*local, owner);
+            }
+        }
+        walk(body, shapes, owners);
+    }
+    walk(body, shapes, &mut FxHashMap::default());
+}
+
 #[derive(Clone, Copy)]
 struct State {
     parent_alive: bool,
     slot_live: bool,
+    /// A field can contain resources: retain its exact release order relative to
+    /// siblings by requiring the owner to survive even its final drop.
+    strict: bool,
 }
 
 /// Checks evaluation order, including both arms. A consumed owner invalidates
@@ -56,7 +106,8 @@ fn inspect(
         return false;
     }
     *budget -= 1;
-    if !state.parent_alive && state.slot_live && !matches!(e.kind, K::Drop { .. }) {
+    if !state.parent_alive && state.slot_live && (state.strict || !matches!(e.kind, K::Drop { .. }))
+    {
         return false;
     }
     match &e.kind {
@@ -114,6 +165,8 @@ fn inspect(
             args.iter().all(|arg| {
                 if borrowed && matches!(arg.kind, K::Local(local) if local == parent) {
                     true
+                } else if borrowed && matches!(arg.kind, K::Local(local) if local == slot) {
+                    state.parent_alive && state.slot_live
                 } else {
                     inspect(arg, slot, parent, state, budget)
                 }
@@ -266,6 +319,51 @@ mod tests {
         assert!(out.contains("(field 1"), "{out}");
     }
 
+    #[test]
+    fn compared_uniform_field_borrows_its_arrays_owner() {
+        let out = lowered(
+            "module M\ntype Slot 'a = | Full 'a String\nlet probe key i xs = match Array.unsafeGet i xs with | Full stored _ -> if stored = key then Array.length xs else 0\n",
+            "probe",
+        );
+        assert!(out.contains("arrayPeek") && out.contains("dataPeek"), "{out}");
+    }
+
+    #[test]
+    fn field_used_after_array_update_keeps_ownership() {
+        let out = lowered(
+            "module M\ntype Slot 'a = | Full 'a String\nlet probe key xs =\n  let Full stored _ = Array.unsafeGet 0 xs\n  let changed = Array.unsafeSet 0 (Full key \"new\") xs\n  (stored = key, changed)\n",
+            "probe",
+        );
+        assert!(!out.contains("dataPeek"), "{out}");
+    }
+
+    #[test]
+    fn captured_field_keeps_ownership() {
+        let out = lowered(
+            "module M\ntype Slot 'a = | Full 'a\nlet probe xs =\n  let Full stored = Array.unsafeGet 0 xs\n  (fun key -> stored = key, xs)\n",
+            "probe",
+        );
+        assert!(!out.contains("dataPeek"), "{out}");
+    }
+
+    #[test]
+    fn generic_tuple_fields_keep_their_possible_scalar_conversion() {
+        let out = lowered(
+            "module M\nlet probe key pair = match pair with | (stored, _) -> (stored = key, pair)\n",
+            "probe",
+        );
+        assert!(!out.contains("dataPeek"), "{out}");
+    }
+
+    #[test]
+    fn nested_borrowed_fields_follow_the_ultimate_array_owner() {
+        let out = lowered(
+            "module M\ntype Key 'a = | Key 'a\ntype Slot 'a = | Full (Key 'a)\nlet probe key xs =\n  let Full (Key stored) = Array.unsafeGet 0 xs\n  let changed = Array.unsafeSet 0 (Full (Key key)) xs\n  (stored = key, changed)\n",
+            "probe",
+        );
+        assert!(out.contains("(field 0"), "{out}");
+    }
+
     fn invalid_peek(body: CExpr) -> LoweredDef {
         let array = LocalId::from_index(0);
         let slot = LocalId::from_index(1);
@@ -320,5 +418,42 @@ mod tests {
         let body = CExpr::new(K::Local(LocalId::from_index(1)), Ty::Error);
         let error = crate::check_rc(&invalid_peek(body), &|_, _| Vec::new()).unwrap_err();
         assert!(error.contains("consumption of borrowed slot"), "{error}");
+    }
+
+    #[test]
+    fn verifier_tracks_borrowed_fields_through_their_borrowed_parent() {
+        let field = LocalId::from_index(2);
+        let peek = CExpr::new(
+            K::Prim {
+                op: Prim::DataPeek,
+                args: vec![
+                    CExpr::new(K::Local(LocalId::from_index(1)), Ty::Error),
+                    CExpr::new(K::Lit(Lit::Int(0)), Ty::int()),
+                ],
+            },
+            Ty::Con(Con::String),
+        );
+        let body = CExpr::new(
+            K::Let {
+                local: field,
+                value: Box::new(peek),
+                body: Box::new(CExpr::new(
+                    K::Drop {
+                        local: LocalId::from_index(0),
+                        body: Box::new(CExpr::new(
+                            K::Prim {
+                                op: Prim::StringLength,
+                                args: vec![CExpr::new(K::Local(field), Ty::Con(Con::String))],
+                            },
+                            Ty::int(),
+                        )),
+                    },
+                    Ty::int(),
+                )),
+            },
+            Ty::int(),
+        );
+        let error = crate::check_rc(&invalid_peek(body), &|_, _| Vec::new()).unwrap_err();
+        assert!(error.contains("borrow of released"), "{error}");
     }
 }

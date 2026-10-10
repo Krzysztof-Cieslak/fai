@@ -1937,6 +1937,16 @@ pub extern "C" fn fai_data_field(v: Value, index: i64) -> Value {
     }
 }
 
+/// Borrows a compiler-proven uniform field without acquiring a reference.
+/// The caller keeps the field's ultimate owner live through every borrowed use.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_data_peek(v: Value, index: Value) -> Value {
+    let index = unbox_int(index) as usize;
+    // SAFETY: the compiler proves a valid uniform slot and preserves the base's
+    // owner. No raw scalar bits are exposed as a reference-counted value.
+    unsafe { read_i64(as_obj(v), data_offset(as_obj(v)) + index * 8) }
+}
+
 /// Row-polymorphic record update with the field at `index` (an immediate `Int`
 /// slot) replaced by `value`. When `record` is the unique owner, the field is
 /// overwritten **in place** (no allocation, no copying); otherwise a fresh copy is

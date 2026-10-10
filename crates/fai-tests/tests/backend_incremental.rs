@@ -293,3 +293,17 @@ fn unique_constructor_tag_edits_match_clean_native_objects() {
         },
     );
 }
+
+#[test]
+fn borrowed_field_lifetime_edits_match_clean_native_objects() {
+    let source = "module M\ntype Slot 'a = | Full 'a String\nlet probe key i xs = match Array.unsafeGet i xs with | Full stored _ -> if stored = key then Array.length xs else 0\n";
+    let edited = source.replace("if stored = key then Array.length xs else 0", "(stored, xs)");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            let file = db.source_file(files[0]).unwrap();
+            let name = Symbol::intern("probe");
+            ((*rc(db, file, name)).clone(), (*object_code(db, file, name, false)).clone())
+        },
+    );
+}

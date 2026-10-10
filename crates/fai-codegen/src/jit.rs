@@ -84,6 +84,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_free_reuse", rt::fai_free_reuse);
     sym!("fai_data_tag", rt::fai_data_tag);
     sym!("fai_data_field", rt::fai_data_field);
+    sym!("fai_data_peek", rt::fai_data_peek);
     sym!("fai_string_concat", rt::fai_string_concat);
     sym!("fai_int_to_string", rt::fai_int_to_string);
     sym!("fai_string_length", rt::fai_string_length);

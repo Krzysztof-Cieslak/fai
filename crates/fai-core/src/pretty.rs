@@ -90,6 +90,7 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::ArrayLength => "arrayLength",
         Prim::ArrayGet => "arrayGet",
         Prim::ArrayPeek => "arrayPeek",
+        Prim::DataPeek => "dataPeek",
         Prim::ListReversePrefix => "listReversePrefix",
         Prim::ArraySet => "arraySet",
         Prim::ArrayUnique => "arrayUnique",

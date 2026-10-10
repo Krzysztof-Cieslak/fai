@@ -90,7 +90,7 @@ struct Checker<'a> {
     captures: &'a std::collections::HashSet<LocalId>,
     fn_index: usize,
     arg_borrows: &'a dyn Fn(DefId, usize) -> Vec<bool>,
-    /// Borrowed array slots remain valid only while their owning array is live.
+    /// Borrowed slots remain valid only while their ultimate owner is live.
     projections: HashMap<LocalId, LocalId>,
 }
 
@@ -219,7 +219,10 @@ impl Checker<'_> {
             }
             ExprKind::Let { local, value, body } => {
                 self.eval(value, refs)?;
-                if let ExprKind::Prim { op: fai_core::Prim::ArrayPeek, args } = &value.kind
+                if let ExprKind::Prim {
+                    op: fai_core::Prim::ArrayPeek | fai_core::Prim::DataPeek,
+                    args,
+                } = &value.kind
                     && let Some(ExprKind::Local(parent)) = args.first().map(|a| &a.kind)
                 {
                     if self.projections.insert(*local, *parent).is_some()
