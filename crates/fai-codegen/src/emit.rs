@@ -1052,6 +1052,8 @@ fn build_fn<M: Module>(
             frame_dependent: false,
             unique_array_versioned: false,
             unique_array_locals: FxHashSet::default(),
+            unique_string_versioned: false,
+            unique_string_locals: FxHashSet::default(),
             borrowed_array_params: FxHashSet::default(),
             loop_ctx: None,
             result_slot: None,
@@ -1575,6 +1577,10 @@ struct Translator<'a, M: Module> {
     unique_array_versioned: bool,
     /// Array aliases proven to preserve the entry guard's unique ownership.
     unique_array_locals: FxHashSet<LocalId>,
+    /// A bounded literal-append loop gets at most one guarded fast version.
+    unique_string_versioned: bool,
+    /// String aliases preserving a unique, nonempty inline buffer through appends.
+    unique_string_locals: FxHashSet<LocalId>,
     /// Arrays whose existing borrowed ABI retains a caller owner for this call.
     /// A consuming alias must acquire a reference, so updates cannot change the
     /// borrowed array's length. This evidence never extends a value's lifetime.
@@ -3816,25 +3822,38 @@ impl<M: Module> Translator<'_, M> {
     /// Shared buffers, slice views, growth, and concurrent programs keep the
     /// runtime path. The literal is immortal, so the fast path owes it no drop.
     fn append_literal(&mut self, args: &[CExpr]) -> Option<Value> {
-        const MAX_INLINE_BYTES: usize = 16;
         if self.concurrent || args.len() != 2 {
             return None;
         }
         let ExprKind::Lit(Lit::Str(bytes)) = &args[1].kind else { return None };
-        if bytes.len() > MAX_INLINE_BYTES {
+        if bytes.len() > crate::string_loop::MAX_LITERAL_BYTES {
             return None;
         }
         let left = self.expr_boxed(&args[0]);
         if bytes.is_empty() {
             return Some(left);
         }
-        let rc =
-            self.builder.ins().load(types::I64, MemFlags::trusted(), left, rt::RC_OFFSET as i32);
-        let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
-        let desc =
-            self.builder.ins().load(types::I64, MemFlags::trusted(), left, rt::DESC_OFFSET as i32);
-        let string_desc = self.runtime_data_addr("FAI_STRING_DESC");
-        let inline = self.builder.ins().icmp(IntCC::Equal, desc, string_desc);
+        let owned_inline = if matches!(args[0].kind, ExprKind::Local(local) if self.unique_string_locals.contains(&local))
+        {
+            None
+        } else {
+            let rc = self.builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                left,
+                rt::RC_OFFSET as i32,
+            );
+            let unique = self.builder.ins().icmp_imm(IntCC::Equal, rc, 1);
+            let desc = self.builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                left,
+                rt::DESC_OFFSET as i32,
+            );
+            let string_desc = self.runtime_data_addr("FAI_STRING_DESC");
+            let inline = self.builder.ins().icmp(IntCC::Equal, desc, string_desc);
+            Some(self.builder.ins().band(unique, inline))
+        };
         let len = self.builder.ins().load(
             types::I64,
             MemFlags::trusted(),
@@ -3848,8 +3867,10 @@ impl<M: Module> Translator<'_, M> {
         // adding at most sixteen cannot wrap the unsigned machine word.
         let need = self.builder.ins().iadd_imm(len, bytes.len() as i64);
         let room = self.builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, need, capacity);
-        let owned_inline = self.builder.ins().band(unique, inline);
-        let fast = self.builder.ins().band(owned_inline, room);
+        let fast = match owned_inline {
+            Some(owned_inline) => self.builder.ins().band(owned_inline, room),
+            None => room,
+        };
         let fast_b = self.builder.create_block();
         let slow_b = self.builder.create_block();
         let done = self.builder.create_block();
@@ -7617,6 +7638,62 @@ impl<M: Module> Translator<'_, M> {
     /// actual value's representation (as the `if`-merge does) keeps an unboxed
     /// `f64` loop result from being mistaken for a boxed word.
     fn join(&mut self, params: &[LocalId], body: &CExpr, result_ty: &Ty) -> Value {
+        if !self.concurrent
+            && !self.unique_string_versioned
+            && let Some(plan) = crate::string_loop::plan(params, body, &self.var_tys)
+        {
+            self.unique_string_versioned = true;
+            let string = self.use_var(plan.root);
+            let count = self.builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                string,
+                rt::RC_OFFSET as i32,
+            );
+            let descriptor = self.builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                string,
+                rt::DESC_OFFSET as i32,
+            );
+            let length = self.builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                string,
+                rt::STRING_LEN_OFFSET as i32,
+            );
+            let inline_descriptor = self.runtime_data_addr("FAI_STRING_DESC");
+            let unique = self.builder.ins().icmp_imm(IntCC::Equal, count, 1);
+            let inline = self.builder.ins().icmp(IntCC::Equal, descriptor, inline_descriptor);
+            let nonempty = self.builder.ins().icmp_imm(IntCC::NotEqual, length, 0);
+            let eligible = self.builder.ins().band(unique, inline);
+            let eligible = self.builder.ins().band(eligible, nonempty);
+            let fast = self.builder.create_block();
+            let ordinary = self.builder.create_block();
+            let done = self.builder.create_block();
+            self.builder.append_block_param(done, types::I64);
+            self.builder.ins().brif(eligible, fast, &[], ordinary, &[]);
+            let bounds = self.bounds.clone();
+            let array_tags = self.array_float_tag.clone();
+            self.builder.switch_to_block(fast);
+            self.builder.seal_block(fast);
+            self.unique_string_locals = plan.aliases;
+            let result = self.join_plain(params, body, result_ty);
+            self.builder.ins().jump(done, &[result.into()]);
+            self.unique_string_locals.clear();
+            self.bounds = bounds.clone();
+            self.array_float_tag = array_tags.clone();
+            self.builder.switch_to_block(ordinary);
+            self.builder.seal_block(ordinary);
+            let result = self.join_plain(params, body, result_ty);
+            self.builder.ins().jump(done, &[result.into()]);
+            self.builder.switch_to_block(done);
+            self.builder.seal_block(done);
+            self.bounds = bounds;
+            self.array_float_tag = array_tags;
+            self.unique_string_versioned = false;
+            return self.builder.block_params(done)[0];
+        }
         if !self.concurrent
             && !self.unique_array_versioned
             && let Some(plan) = crate::array_loop::plan(params, body, &self.var_tys)

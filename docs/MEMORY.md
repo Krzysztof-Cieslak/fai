@@ -3047,6 +3047,11 @@ Editor integration:
     while a builder amortizes. A new `string_copies()` debug counter (the peer of
     `array_copies()`) records uniqueness-loss forks; a unique builder forks zero
     times.
+    A bounded scalar-only loop of short literal appends can check its incoming
+    unique, nonempty inline String once. Every carried String derives from that
+    owner, so successful growth preserves the proof and each fast iteration only
+    checks capacity. Shared, empty, sliced and uncertain inputs use ordinary
+    appends. This changes no owner lifetime or allocation-retention policy.
   - **`++` chains are left-reassociated before reference counting.** `++` is
     right-associative, so a source chain `a ++ b ++ c` is a right-leaning tree of
     `StrConcat` nodes (after the prim/helper inliners), whose left operand at each

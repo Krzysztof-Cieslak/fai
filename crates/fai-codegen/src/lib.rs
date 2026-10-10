@@ -21,6 +21,7 @@ mod emit;
 mod fixed_point;
 mod jit;
 mod scalar_select;
+mod string_loop;
 mod take_fields;
 
 pub use aot::{main_object, object_for_def, reuse_object_for_def};
