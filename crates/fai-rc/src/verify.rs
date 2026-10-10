@@ -97,6 +97,7 @@ struct Checker<'a> {
     fn_index: usize,
     arg_borrows: &'a dyn Fn(DefId, usize) -> Vec<bool>,
     /// Borrowed slots remain valid only while their ultimate owner is live.
+    /// Their `refs` entry counts extra owners acquired by explicit duplicates.
     projections: HashMap<LocalId, LocalId>,
     /// Borrowing modes of the innermost loop's carried parameters.
     loop_borrowed: Option<Vec<bool>>,
@@ -108,13 +109,19 @@ impl Checker<'_> {
     }
 
     /// Consumes one owned reference of `x` (no-op for a borrowed capture).
+    /// A borrowed slot must first acquire an extra owner with `Dup`.
     fn consume(&self, x: LocalId, refs: &mut HashMap<LocalId, i64>) -> Result<(), String> {
         if self.projections.contains_key(&x) {
-            return Err(format!(
-                "fn{}: consumption of borrowed slot %{}",
-                self.fn_index,
-                x.index()
-            ));
+            let count = refs.get_mut(&x).expect("borrowed slot has an acquired-reference count");
+            if *count == 0 {
+                return Err(format!(
+                    "fn{}: consumption of borrowed slot %{}",
+                    self.fn_index,
+                    x.index()
+                ));
+            }
+            *count -= 1;
+            return Ok(());
         }
         if !self.owned(x) {
             return Ok(());
@@ -146,6 +153,9 @@ impl Checker<'_> {
     /// Reads `x` without consuming it (borrow); the value must still be alive.
     fn borrow(&self, x: LocalId, refs: &HashMap<LocalId, i64>) -> Result<(), String> {
         if let Some(&parent) = self.projections.get(&x) {
+            if refs.get(&x).is_some_and(|count| *count > 0) {
+                return Ok(());
+            }
             return self.borrow(parent, refs);
         }
         if !self.owned(x) {
@@ -242,8 +252,17 @@ impl Checker<'_> {
                             local.index()
                         ));
                     }
+                    refs.insert(*local, 0);
                     self.eval(body, refs)?;
                     self.projections.remove(local);
+                    let remaining = refs.remove(local).unwrap_or(0);
+                    if remaining != 0 {
+                        return Err(format!(
+                            "fn{}: borrowed slot %{} left with {remaining} acquired refs",
+                            self.fn_index,
+                            local.index()
+                        ));
+                    }
                     return Ok(());
                 }
                 if refs.insert(*local, 1).is_some() {
@@ -261,13 +280,9 @@ impl Checker<'_> {
             }
             ExprKind::Dup { local, body } => {
                 if self.projections.contains_key(local) {
-                    return Err(format!(
-                        "fn{}: unexpected dup of borrowed slot %{}",
-                        self.fn_index,
-                        local.index()
-                    ));
-                }
-                if self.owned(*local) {
+                    self.borrow(*local, refs)?;
+                    *refs.get_mut(local).expect("borrowed slot counter") += 1;
+                } else if self.owned(*local) {
                     let Some(n) = refs.get_mut(local) else {
                         return Err(format!(
                             "fn{}: dup of unbound %{}",

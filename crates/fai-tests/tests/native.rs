@@ -702,6 +702,12 @@ fn dying_field_transfers_preserve_shared_and_scalar_slot_values() {
 }
 
 #[test]
+fn borrowed_lookup_results_outlive_their_source_dictionary() {
+    let source = "module Main\nlet make suffix = HashDict.singleton \"key\" (fun value -> suffix ++ Int.toString value)\npublic main : Runtime -> Unit / { Console }\nlet main r =\n  let selected = HashDict.get \"key\" (make (Int.toString 42))\n  r.console.writeLine (match selected with | None -> \"missing\" | Some f -> f 8)\n";
+    assert_eq!(build_and_run(source), ("428\n".into(), Some(0)));
+}
+
+#[test]
 fn unique_constructor_tags_run_natively() {
     assert_eq!(build_and_run(include_str!("fixtures/UniqueTags.fai")), ("39\n".into(), Some(0)));
 }

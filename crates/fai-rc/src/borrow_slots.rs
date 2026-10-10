@@ -17,7 +17,7 @@ pub(crate) fn rewrite(db: &dyn Db, body: &mut CExpr) {
         return;
     }
     let mut state = State { parent_alive: true, slot_live: true, strict: false };
-    if inspect(body, *local, *parent, &mut state, &mut 1024) {
+    if inspect(db, body, *local, *parent, &mut state, &mut 1024) {
         let K::Prim { op, .. } = &mut value.kind else { unreachable!() };
         *op = Prim::ArrayPeek;
         remove_drops(body, *local);
@@ -73,7 +73,7 @@ pub(crate) fn borrow_fields(db: &dyn Db, body: &mut CExpr, shapes: &[(LocalId, D
         {
             let owner = owners.get(&parent).copied().unwrap_or(parent);
             let mut state = State { parent_alive: true, slot_live: true, strict: true };
-            if inspect(body, *local, owner, &mut state, &mut 1024) {
+            if inspect(db, body, *local, owner, &mut state, &mut 1024) {
                 let args = vec![
                     (**base).clone(),
                     CExpr::new(K::Lit(Lit::Int(i64::from(*index))), Ty::int()),
@@ -101,6 +101,7 @@ struct State {
 /// later slot inspections. A trailing drop chain has no intervening operation
 /// that can observe the redundant reference's lifetime.
 fn inspect(
+    db: &dyn Db,
     e: &CExpr,
     slot: LocalId,
     parent: LocalId,
@@ -128,7 +129,7 @@ fn inspect(
         K::DataTag { base, .. } | K::DataField { base, .. } if matches!(base.kind, K::Local(local) if local == slot) => {
             state.parent_alive && state.slot_live
         }
-        K::Dup { local, body } => *local != slot && inspect(body, slot, parent, state, budget),
+        K::Dup { local, body } => *local != slot && inspect(db, body, slot, parent, state, budget),
         K::Drop { local, body } => {
             if *local == slot {
                 state.slot_live = false;
@@ -136,22 +137,22 @@ fn inspect(
             if *local == parent {
                 state.parent_alive = false;
             }
-            inspect(body, slot, parent, state, budget)
+            inspect(db, body, slot, parent, state, budget)
         }
         K::Let { value, body, .. }
         | K::Reset { value, body, .. }
         | K::LetMany { value, body, .. } => {
-            inspect(value, slot, parent, state, budget)
-                && inspect(body, slot, parent, state, budget)
+            inspect(db, value, slot, parent, state, budget)
+                && inspect(db, body, slot, parent, state, budget)
         }
         K::If { cond, then, els } => {
-            if !inspect(cond, slot, parent, state, budget) {
+            if !inspect(db, cond, slot, parent, state, budget) {
                 return false;
             }
             let mut left = *state;
             let mut right = *state;
-            let ok = inspect(then, slot, parent, &mut left, budget)
-                && inspect(els, slot, parent, &mut right, budget);
+            let ok = inspect(db, then, slot, parent, &mut left, budget)
+                && inspect(db, els, slot, parent, &mut right, budget);
             state.parent_alive = left.parent_alive && right.parent_alive;
             state.slot_live = left.slot_live || right.slot_live;
             ok
@@ -173,27 +174,47 @@ fn inspect(
                 } else if borrowed && matches!(arg.kind, K::Local(local) if local == slot) {
                     state.parent_alive && state.slot_live
                 } else {
-                    inspect(arg, slot, parent, state, budget)
+                    inspect(db, arg, slot, parent, state, budget)
                 }
             })
         }
         K::App { func, args, .. } => {
-            inspect(func, slot, parent, state, budget)
-                && args.iter().all(|arg| inspect(arg, slot, parent, state, budget))
+            let borrowed = if let K::Global(def) = func.kind {
+                db.source_file(def.file)
+                    .map(|file| crate::borrow_signature(db, file, def.name))
+                    .filter(|sig| sig.exploitable_at(args.len()))
+            } else {
+                None
+            };
+            let mut lends_slot = false;
+            let valid = inspect(db, func, slot, parent, state, budget)
+                && args.iter().enumerate().all(|(index, arg)| {
+                    if borrowed.as_ref().is_some_and(|sig| sig.is_borrowed(index)) {
+                        if matches!(arg.kind, K::Local(local) if local == slot) {
+                            lends_slot = true;
+                            return state.parent_alive && state.slot_live;
+                        }
+                        if matches!(arg.kind, K::Local(local) if local == parent) {
+                            return true;
+                        }
+                    }
+                    inspect(db, arg, slot, parent, state, budget)
+                });
+            valid && (!lends_slot || state.parent_alive)
         }
         K::MakeData { args, .. }
         | K::Foreign { args, .. }
         | K::Recur { args }
         | K::Spread { components: args } => {
-            args.iter().all(|arg| inspect(arg, slot, parent, state, budget))
+            args.iter().all(|arg| inspect(db, arg, slot, parent, state, budget))
         }
         K::DataTag { base, .. } | K::DataField { base, .. } | K::HoleClose { base, .. } => {
-            inspect(base, slot, parent, state, budget)
+            inspect(db, base, slot, parent, state, budget)
         }
         K::FreeReuse { body, .. } | K::HoleStart { body, .. } => {
-            inspect(body, slot, parent, state, budget)
+            inspect(db, body, slot, parent, state, budget)
         }
-        K::HoleFill { cell, .. } => inspect(cell, slot, parent, state, budget),
+        K::HoleFill { cell, .. } => inspect(db, cell, slot, parent, state, budget),
         K::Join { .. } => false,
         K::Lit(_) | K::Global(_) | K::Error => true,
     }
@@ -332,6 +353,33 @@ mod tests {
             "probe",
         );
         assert!(out.contains("arrayPeek") && out.contains("dataPeek"), "{out}");
+    }
+
+    #[test]
+    fn a_field_can_be_lent_to_a_known_borrowing_call() {
+        let out = lowered(
+            "module M\nlet read n text = if n <= 0 then String.length text else read (n - 1) text\npublic use : (String * Int) -> (Int * (String * Int))\nlet use pair =\n  let (text, _) = pair\n  let size = read 0 text\n  (size, pair)\n",
+            "use",
+        );
+        assert!(out.contains("dataPeek"), "{out}");
+    }
+
+    #[test]
+    fn an_owned_argument_after_a_borrowed_field_keeps_the_field_owned() {
+        let out = lowered(
+            "module M\nlet useBoth n text pair = if n <= 0 then (String.length text, pair) else useBoth (n - 1) text pair\npublic use : (String * Int) -> (Int * (String * Int))\nlet use pair =\n  let (text, _) = pair\n  useBoth 0 text pair\n",
+            "use",
+        );
+        assert!(!out.contains("dataPeek"), "{out}");
+    }
+
+    #[test]
+    fn an_owned_argument_before_a_borrowed_field_keeps_the_field_owned() {
+        let out = lowered(
+            "module M\nlet useBoth n pair text = if n <= 0 then (String.length text, pair) else useBoth (n - 1) pair text\npublic use : (String * Int) -> (Int * (String * Int))\nlet use pair =\n  let (text, _) = pair\n  useBoth 0 pair text\n",
+            "use",
+        );
+        assert!(!out.contains("dataPeek"), "{out}");
     }
 
     #[test]

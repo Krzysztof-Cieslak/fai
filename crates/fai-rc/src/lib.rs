@@ -65,6 +65,7 @@ mod escape;
 mod forward;
 mod length;
 mod mutual;
+mod parameter_loans;
 mod purity;
 mod reuse_candidates;
 mod reuse_sig;
@@ -203,7 +204,8 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         if i == 0 {
             entry_spread_params = spread_params;
         }
-        let body = shared_boxes::rewrite(db, body, &mut next);
+        let mut body = shared_boxes::rewrite(db, body, &mut next);
+        parameter_loans::rewrite(db, &mut body, &mut borrowed);
         let used = fv_owned(&body, &borrowed);
         let mut cx = Rc { captures: &borrowed, next, call_borrows: &arg_borrows };
         let body = cx.owned(body, &Locals::default());
@@ -1039,7 +1041,9 @@ fn dropify(mut drops: Vec<LocalId>, e: CExpr) -> CExpr {
 fn is_projection(e: &CExpr) -> bool {
     matches!(
         e.kind,
-        K::DataField { .. } | K::DataTag { .. } | K::Prim { op: fai_core::Prim::DataPeek, .. }
+        K::DataField { .. }
+            | K::DataTag { .. }
+            | K::Prim { op: fai_core::Prim::DataPeek | fai_core::Prim::ArrayPeek, .. }
     )
 }
 
@@ -1420,7 +1424,7 @@ pub(crate) fn free_reuse_(token: LocalId, body: CExpr) -> CExpr {
 fn projection_borrows(e: &CExpr) -> Vec<LocalId> {
     let mut out = Vec::new();
     match &e.kind {
-        K::Prim { op: fai_core::Prim::DataPeek, args } => {
+        K::Prim { op: fai_core::Prim::DataPeek | fai_core::Prim::ArrayPeek, args } => {
             for arg in args {
                 if let K::Local(local) = arg.kind {
                     out.push(local);

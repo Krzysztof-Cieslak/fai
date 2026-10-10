@@ -14,6 +14,8 @@ public toArray : List 'a -> Array 'a
 let toArray xs = Array.fromList xs
 public sum : Int -> List Int -> Int
 let sum acc xs = match xs with | [] -> acc | x :: rest -> sum (acc + x) rest
+public recursiveSum : List Int -> Int
+let recursiveSum xs = match xs with | [] -> 0 | x :: rest -> x + recursiveSum rest
 public floats : Float -> List Float -> Float
 let floats acc xs = match xs with | [] -> acc | x :: rest -> floats (acc + x) rest
 public find : Int -> List Int -> Bool
@@ -62,6 +64,19 @@ fn unique_long_scan_allocates_no_cells_and_releases_the_root() {
     assert_eq!(rt::read_int(result), 4_999_950_000);
     assert_eq!(rt::allocations(), 0);
     assert_eq!(rt::peak_live_bytes(), input_bytes);
+    rt::fai_drop(result);
+    assert_eq!((rt::live_count(), rt::live_bytes()), baseline);
+}
+
+#[test]
+fn borrowed_non_tail_sum_becomes_an_allocation_free_accumulator_loop() {
+    let mut h = Harness::new();
+    let baseline = (rt::live_count(), rt::live_bytes());
+    let list = h.list((0..100_000).map(rt::make_int));
+    rt::reset_allocations();
+    let result = h.call("recursiveSum", &[list]);
+    assert_eq!(rt::read_int(result), 4_999_950_000);
+    assert_eq!(rt::allocations(), 0);
     rt::fai_drop(result);
     assert_eq!((rt::live_count(), rt::live_bytes()), baseline);
 }
