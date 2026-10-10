@@ -103,6 +103,23 @@ class CompilerTests(unittest.TestCase):
     def test_cache_location_does_not_change_compiler_key(self):
         self.assertEqual(self.identity(), self.identity({"FAI_COMPILER_CACHE": "/elsewhere"}))
 
+    def test_cargo_output_directory_does_not_change_compiler_key(self):
+        self.assertEqual(self.identity(), self.identity({"CARGO_TARGET_DIR": "/shared/build-output"}))
+
+    def test_host_target_changes_compiler_key(self):
+        other = compiler.identity(self.root, {}, ("aarch64-apple-darwin", "macos-aarch64-26.5"))
+        self.assertEqual(self.identity()["sourceId"], other["sourceId"])
+        self.assertNotEqual(self.identity()["key"], other["key"])
+
+    def test_linux_compatibility_uses_running_libc_not_python_baseline(self):
+        with patch.object(compiler.platform, "system", return_value="Linux"), patch.object(compiler.platform, "machine", return_value="x86_64"), patch.object(compiler.platform, "libc_ver", return_value=("glibc", "2.17")), patch.object(compiler.os, "confstr", return_value="glibc 2.39", create=True):
+            self.assertEqual(compiler.host(), ("x86_64-unknown-linux-gnu", "linux-x86_64-glibc-2.39"))
+
+    def test_no_build_does_not_invoke_cargo_on_a_miss(self):
+        with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), patch.object(compiler, "build", side_effect=AssertionError("unexpected build")):
+            with self.assertRaisesRegex(compiler.BundleError, "no compiler bundle"):
+                compiler.ensure(self.root, self.cache, offline=True, no_build=True)
+
     def test_same_checkout_at_another_path_has_same_key(self):
         import shutil
         destination = Path(self.temporary.name) / "another"

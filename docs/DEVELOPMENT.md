@@ -105,3 +105,45 @@ Compiler maintainers can additionally run `scripts/tests/json_toolchain.py` and
 `scripts/tests/web_toolchain.py` with `--fai /path/to/fai`. These check native
 execution, numeric agreement with Python, HTTP transport and effect forwarding;
 they are compiler/toolchain checks, separate from the direct package contracts.
+
+## CI selection and compiler reuse
+
+The workflow always starts and classifies the diff against the actual PR base
+(or the previous commit for a push). A stacked PR is compared with its immediate
+predecessor, not unconditionally with `main`.
+
+| Changes | Work performed |
+|---|---|
+| `packages/json/**` | JSON and Web formatting, type checks, and Fai contracts |
+| `packages/web/**` | Web formatting, type checks, and Fai contracts |
+| Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures |
+| Root documentation and `docs/*.md` / `docs/*.txt` only | Change/catalog validation |
+
+Dependency impact uses both the base and head catalogs, so deleting or changing
+an edge does not hide an affected dependent. Renames include both old and new
+paths. New source-package directories must include `ci.json`; malformed catalogs
+and missing dependencies fail classification. An unavailable comparison base
+selects the full lane conservatively.
+
+The four protected check names remain unchanged. They explicitly require a
+successful classification, so a failed selector cannot pass through skipped
+jobs. On package-only changes their source checks are direct commands:
+
+```sh
+fai fmt --check -C packages PACKAGE
+fai check --no-examples -C packages PACKAGE
+fai test -C packages PACKAGE --seed 42 --count 128
+```
+
+Linux, macOS, and Windows each restore an exact compiler bundle and put its
+directory on PATH. On a valid cache hit there are no Cargo, rustup, nextest,
+Rust tests, Clippy, or compiler-fixture invocations. A miss first tries a published
+matching bundle, then builds only `fai-cli`. Source/package tests still run on a
+miss; it does not trigger the full Rust suite.
+
+Compiler/default-branch runs (and successful cold-cache package runs) publish `compiler.zip`
+artifacts named by the compiler fingerprint, with 30-day retention. The local
+bootstrap and later stacked PRs can reuse them. Exact Actions caches provide the
+faster common path; there is no loose restore-key fallback to an older compiler.
+Workflow summaries record the selected lane, affected packages, compiler key,
+target, and whether the bundle came from cache, an artifact, or a new build.

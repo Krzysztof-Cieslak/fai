@@ -4793,6 +4793,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   native `fai check`/`test`/`fmt` commands with a stable workspace root. The daemon
   remains warm; there is no extra test wrapper. Per-package `ci.json` files carry
   the repository CI dependency graph, independently of the Fai contract runner.
+  CI compares a PR with its actual base and classifies package-only work separately
+  from compiler/runtime/std/infrastructure edits. Package diffs select transitive
+  dependents using both old and new graphs. They run direct Fai commands on Linux,
+  macOS and Windows with exact compiler bundles, invoking no Rust tools on a hit;
+  a miss builds just the compiler. The four protected check names remain stable
+  and explicitly reject a failed classifier. Compiler CI retains the full Rust
+  suite and execution fixtures and publishes reusable fingerprinted bundles.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

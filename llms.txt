@@ -1775,6 +1775,10 @@ After activating that compiler on PATH, use `fai check`, `fai test`, and `fai fm
 directly. For repository packages, keep `-C packages` stable and select `json`,
 `web`, or a package-local test file; omit `--no-daemon` for warm feedback. Python
 is used for compiler setup and CI infrastructure, not as the package test runner.
+Repository CI uses each package's `ci.json` dependency list: a JSON-only edit runs
+JSON and Web contracts, while a Web-only edit runs Web contracts. Cached compiler
+bundles keep package-only Linux/macOS/Windows jobs free of Rust builds on cache
+hits. Compiler, embedded std, or CI infrastructure edits retain full validation.
 
 The `fai` binary is a thin client to a per-workspace daemon that keeps the
 incremental database warm, so repeated commands are near-instant.
