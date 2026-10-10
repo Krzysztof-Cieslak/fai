@@ -9,3 +9,9 @@ let safeDivide a b = if b = 0 then None else Some (a / b)
 /// Double the value inside an `Option`, if present.
 public doubled : Option Int -> Option Int
 let doubled opt = Option.map (fun x -> x * 2) opt
+
+/// Wrap any value, including another option.
+public present : 'a -> Option 'a
+let present value = Some value
+example: present (Some 7) = Some (Some 7)
+example: Option.withDefault 1.25 (present 2.5) = 2.5

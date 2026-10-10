@@ -3051,6 +3051,15 @@ Editor integration:
     and it never trips the leak counter.) The `fai_none_value` accessor remains for
     the niche/standard conversions.
 
+  Scheme B also applies to `Option 'a` with a type-variable payload. That payload
+  reaches the generic boundary in standardized uniform form and cannot itself be
+  the internal None sentinel. This removes Some cells from generic lookup returns
+  without specializing their bodies. A switch between schemes changes only the
+  None sentinel, preserving the owned payload. Unannotated data inspections stay
+  standard, including generic results instantiated at concrete Float or nested
+  Option types; first-class, captured and data-slot values retain their ordinary
+  boundary conversions.
+
   The scheme is carried on the IR's data nodes (`MakeData`/`DataTag`/`DataField`
   gain a `niche` field), so it **survives the object cache's wire form** and is
   part of the content-addressed fingerprint (a niche and a standard def must not

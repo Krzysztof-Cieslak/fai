@@ -1,6 +1,6 @@
 //! Niche representation of the standard-library `Option`.
 //!
-//! A monomorphic `Option P` whose payload `P` occupies a single runtime tag-class
+//! An eligible `Option P` whose payload `P` occupies a known runtime tag-class
 //! is represented **without** a `Some` wrapper cell: `Some x` is the payload `x`
 //! itself, and `None` is a sentinel drawn from the tag-class the payload leaves
 //! free. Which sentinel — and so which payloads qualify — is the [`NicheKind`]:
@@ -10,12 +10,13 @@
 //!   no nullary constructor). `None` is the immediate `1`; a boxed `Some p` is
 //!   distinguishable from it by the low tag bit.
 //! * [`NicheKind::B`] — any other monomorphic payload (`Int`, `Bool`, `Char`,
-//!   `List`, a nullary-bearing ADT, …). `None` is a single global boxed sentinel,
+//!   `List`, a nullary-bearing ADT, …), or a type-variable payload that is
+//!   standardized at its generic boundary. `None` is a global boxed sentinel,
 //!   distinct from every `Some` value (immediate or boxed).
 //!
 //! Excluded (kept as a standard boxed ADT): a `Float` payload (a `Some Float`
-//! boxes the `f64` either way, no saving), a non-monomorphic payload (a type
-//! variable), and a payload that is itself a niche `Option` (nesting — the single
+//! boxes the `f64` either way, no saving), and a payload that is itself a niche
+//! `Option` (nesting — the single
 //! global sentinel would alias `Some None`).
 //!
 //! The decision is type-directed and made once, at lowering (which has the
@@ -40,7 +41,7 @@ pub enum NicheKind {
     B,
 }
 
-/// The niche scheme for `ty` if it is a niche-eligible monomorphic prelude
+/// The niche scheme for `ty` if it is a niche-eligible prelude
 /// `Option`, else `None` (a standard boxed `Option`, or not an `Option` at all).
 #[must_use]
 pub fn niche_scheme(db: &dyn Db, ty: &Ty) -> Option<NicheKind> {
@@ -69,13 +70,14 @@ fn option_application(ty: &Ty) -> Option<(&AdtRef, &Ty)> {
 }
 
 /// The scheme for a niche `Option` carrying `payload`, or `None` if `payload`
-/// disqualifies it (a `Float`, a non-monomorphic type, or a nested niche
+/// disqualifies it (a `Float`, an unknown representation, or a nested niche
 /// `Option`).
 fn payload_scheme(db: &dyn Db, payload: &Ty, prelude: Option<SourceId>) -> Option<NicheKind> {
     match payload {
-        // A `Some Float` boxes the `f64` either way (no wrapper saving), and a type
-        // variable / error / effect is not a known monomorphic representation.
-        Ty::Con(Con::Float) | Ty::Var(_) | Ty::Error | Ty::EffectArg(_) => None,
+        // A type-variable payload crosses its generic boundary in standard
+        // uniform representation, so it cannot equal the internal None sentinel.
+        Ty::Var(_) => Some(NicheKind::B),
+        Ty::Con(Con::Float) | Ty::Error | Ty::EffectArg(_) => None,
         _ => {
             // Nesting: a niche `Option` payload would let `Some None` alias the
             // outer `None`, so it stays standard.
@@ -256,10 +258,10 @@ mod tests {
     }
 
     #[test]
-    fn type_variable_payload_is_excluded() {
+    fn type_variable_payload_uses_the_standardized_payload_sentinel() {
         let db = db();
         let var = Ty::Var(fai_types::TyVarId(0));
-        assert_eq!(niche_scheme(&db, &option_of(&db, var)), None, "not monomorphic");
+        assert_eq!(niche_scheme(&db, &option_of(&db, var)), Some(NicheKind::B));
     }
 
     #[test]

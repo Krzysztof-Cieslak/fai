@@ -1017,6 +1017,7 @@ fn build_fn<M: Module>(
             tag_tests: FxHashMap::default(),
             known_tags: FxHashMap::default(),
             niche_locals: FxHashMap::default(),
+            standard_data_locals: FxHashSet::default(),
             niche_values: FxHashMap::default(),
             runtime: FxHashMap::default(),
             string_counter: 0,
@@ -1496,6 +1497,8 @@ struct Translator<'a, M: Module> {
     /// binding (uniform slots want the standard representation), so this set need
     /// only capture the match scrutinees.
     niche_locals: FxHashMap<usize, NicheKind>,
+    /// Unannotated data inspections require the ordinary boxed representation.
+    standard_data_locals: FxHashSet<usize>,
     /// The Cranelift values currently known to hold a niche `Option` (the analogue
     /// of [`Self::raw_int_values`]; a niche word is indistinguishable from a
     /// standard one by Cranelift type). Boundary sites query [`Self::niche_of`] to
@@ -1722,23 +1725,29 @@ impl<M: Module> Translator<'_, M> {
     /// Classification is **liberal**: keeping a niche value wrapper-free across
     /// every local, branch merge, and loop carry avoids the niche→standard→niche
     /// round trip (whose niche→standard half heap-allocates a `Some` cell). Both
-    /// schemes are propagated; over-classifying a local is sound because
-    /// [`Self::define_var`] (and the entry) reconcile a standard source to the niche
-    /// encoding with a non-allocating conversion.
+    /// schemes are propagated. Locals inspected without a niche annotation must
+    /// remain standard, including a generic result instantiated at `Option Float`
+    /// or a nested Option. Other sources are reconciled at their binding.
     fn collect_niche_locals(&mut self, body: &CExpr, param_niche: &[(usize, NicheKind)]) {
-        let mut map: FxHashMap<usize, NicheKind> = FxHashMap::default();
+        let mut uses: FxHashMap<usize, Option<NicheKind>> = FxHashMap::default();
         // Mandatory: the base of every niche-annotated tag test / projection.
-        self.collect_niche_uses(body, &mut map);
+        self.collect_niche_uses(body, &mut uses);
+        self.standard_data_locals =
+            uses.iter().filter_map(|(local, kind)| kind.is_none().then_some(*local)).collect();
+        let mut map: FxHashMap<usize, NicheKind> =
+            uses.into_iter().filter_map(|(local, kind)| kind.map(|kind| (local, kind))).collect();
         // Seed parameters the entry ABI passes already in the niche encoding, so a
         // niche parameter forwarded or merged in the body is not reverted to the
         // standard representation at the entry.
         for &(p, k) in param_niche {
-            map.entry(p).or_insert(k);
+            if !self.standard_data_locals.contains(&p) {
+                map.entry(p).or_insert(k);
+            }
         }
-        // Propagate niche-ness liberally to a fixpoint: a local bound to (aliasing,
+        // Propagate niche-ness to a fixpoint: a local bound to (aliasing,
         // branching to, or recurring with) a niche value is itself niche. Monotone
-        // (classifications are only added), so it converges; over-classifying a
-        // local is sound because `define_var`/the entry reconcile any standard
+        // (classifications are only added), so it converges. Unannotated data
+        // inspections remain standard; `define_var`/the entry reconcile other
         // source to the niche encoding (a non-allocating `ensure_niche`). This keeps
         // a niche `Option` wrapper-free across control-flow merges and loop carries
         // instead of round-tripping through the standard (heap-allocated) form.
@@ -1753,13 +1762,18 @@ impl<M: Module> Translator<'_, M> {
     }
 
     /// The use-based pass: a `Local` base of a niche `DataTag`/`DataField`.
-    fn collect_niche_uses(&self, e: &CExpr, out: &mut FxHashMap<usize, NicheKind>) {
-        let note =
-            |base: &CExpr, niche: Option<NicheKind>, out: &mut FxHashMap<usize, NicheKind>| {
-                if let (ExprKind::Local(l), Some(k)) = (&base.kind, niche) {
-                    out.insert(l.index(), k);
+    fn collect_niche_uses(&self, e: &CExpr, out: &mut FxHashMap<usize, Option<NicheKind>>) {
+        let note = |base: &CExpr,
+                    niche: Option<NicheKind>,
+                    out: &mut FxHashMap<usize, Option<NicheKind>>| {
+            if let ExprKind::Local(l) = &base.kind {
+                if niche.is_some() {
+                    out.insert(l.index(), niche);
+                } else {
+                    out.entry(l.index()).or_insert(None);
                 }
-            };
+            }
+        };
         match &e.kind {
             ExprKind::DataTag { base, niche } => {
                 note(base, *niche, out);
@@ -1820,6 +1834,9 @@ impl<M: Module> Translator<'_, M> {
         changed: &mut bool,
     ) {
         let note = |out: &mut FxHashMap<usize, NicheKind>, local: usize, k, changed: &mut bool| {
+            if self.standard_data_locals.contains(&local) {
+                return;
+            }
             if let std::collections::hash_map::Entry::Vacant(slot) = out.entry(local) {
                 slot.insert(k);
                 *changed = true;
@@ -1943,10 +1960,24 @@ impl<M: Module> Translator<'_, M> {
         self.mark_niche(r, k)
     }
 
-    /// Coerces `v` to the niche representation of scheme `k`: a value already niche
-    /// `k` passes through; a standard value is converted.
+    /// Coerces `v` to niche scheme `k`. Switching schemes changes only the None
+    /// sentinel; their owned Some payloads share the same uniform representation.
     fn ensure_niche(&mut self, v: Value, k: NicheKind) -> Value {
-        if self.niche_of(v) == Some(k) { v } else { self.std_to_niche(v, k) }
+        match self.niche_of(v) {
+            Some(current) if current == k => v,
+            Some(current) => {
+                let immediate = self.builder.ins().iconst(types::I64, 1);
+                let sentinel = self.runtime_data_addr("FAI_NONE_VALUE");
+                let (old_none, new_none) = match current {
+                    NicheKind::A => (immediate, sentinel),
+                    NicheKind::B => (sentinel, immediate),
+                };
+                let is_none = self.builder.ins().icmp(IntCC::Equal, v, old_none);
+                let result = self.builder.ins().select(is_none, new_none, v);
+                self.mark_niche(result, k)
+            }
+            None => self.std_to_niche(v, k),
+        }
     }
 
     /// Coerces an owned value to a raw, untagged `Int`: a value already known raw

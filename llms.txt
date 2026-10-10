@@ -1213,6 +1213,10 @@ sort         : Array 'a -> Array 'a
 
 ### Option — `Option 'a`
 
+Generic helpers preserve the same `Some`/`None` semantics, including nested
+options and Float or function payloads. The compiler may omit the wrapper in
+direct code and handles representation conversions at storage and call boundaries.
+
 ```
 map        : ('a -> 'b / 'e) -> Option 'a -> Option 'b / 'e
 withDefault: 'a -> Option 'a -> 'a
