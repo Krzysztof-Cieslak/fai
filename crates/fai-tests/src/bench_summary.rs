@@ -19,6 +19,7 @@
 //! retain checked native-worker batches and their harness-floor observations.
 
 mod memory;
+pub mod tracking;
 mod warm;
 pub use memory::{AllocationSample, FootprintSample};
 pub use warm::WarmSample;

@@ -220,10 +220,7 @@ pub(super) fn render_allocations(samples: &[AllocationSample]) -> String {
         "### Compiler allocation attribution\n\nPaired rows use the **same source, compiler and runtime input**, changing one compiler control. Optimized instrumented runs measure Fai object requests (including headers), peak live object bytes and allocator backing; they exclude host Rust temporaries and OS rounding. These counters are not cross-language GC-heap ratios. Timing belongs to separate uninstrumented runs.\n\n| Workload | Size | Repeats | Control | Allocations | Allocated bytes | Live bytes baseline / peak / final | Peak backing bytes | Array / string copies | Pair |\n|---|---:|---:|---|---:|---:|---|---:|---|---|\n",
     );
     for ((name, size, repeats, _, _), records) in groups {
-        let enabled = records.iter().filter(|row| row.control == "enabled").count();
-        let paired = enabled == 1
-            && records.len() == 2
-            && records.iter().any(|row| row.control != "enabled");
+        let paired = allocation_pair(&records);
         for row in records {
             let n = |field: &str| row.counters[field].as_u64().unwrap();
             let _ = writeln!(
@@ -245,6 +242,16 @@ pub(super) fn render_allocations(samples: &[AllocationSample]) -> String {
     }
     out.push('\n');
     out
+}
+
+pub(super) fn allocation_pair(records: &[&AllocationSample]) -> bool {
+    let [a, b] = records else { return false };
+    a.algorithm == b.algorithm
+        && a.size == b.size
+        && a.iterations == b.iterations
+        && a.source_hash == b.source_hash
+        && a.compiler_id == b.compiler_id
+        && ((a.control == "enabled") != (b.control == "enabled"))
 }
 
 #[cfg(test)]

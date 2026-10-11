@@ -136,6 +136,61 @@ pub fn hash(path: &Path) -> String {
     blake3::hash(&std::fs::read(path).expect("benchmark artifact")).to_hex().to_string()
 }
 
+/// Retains an end-to-end executable and its provenance when an artifact
+/// directory is configured. The returned path is the executable to measure.
+#[must_use]
+pub fn retain_once(
+    algorithm: &Algorithm,
+    side: &str,
+    executable: &Path,
+    details: serde_json::Value,
+) -> Utf8PathBuf {
+    let directory = std::env::var_os("FAI_BENCH_ARTIFACT_DIR");
+    retain_in(directory.as_deref().map(Path::new), algorithm, side, executable, details)
+}
+
+fn retain_in(
+    directory: Option<&Path>,
+    algorithm: &Algorithm,
+    side: &str,
+    executable: &Path,
+    details: serde_json::Value,
+) -> Utf8PathBuf {
+    let Some(directory) = directory else {
+        return Utf8PathBuf::from_path_buf(executable.to_path_buf())
+            .expect("UTF-8 executable path");
+    };
+    assert!(matches!(side, "fai" | "rust" | "ocaml"), "known benchmark side");
+    let folder = std::env::current_dir().unwrap().join(directory).join(algorithm.module);
+    std::fs::create_dir_all(&folder).unwrap();
+    let destination = folder.join(format!("{side}-once"));
+    std::fs::copy(executable, &destination).expect("retain measured executable");
+    let contract = benchmark_contracts::for_module(algorithm.module).expect("reviewed workload");
+    let metadata = serde_json::json!({"methodology": METHODOLOGY, "algorithm": algorithm.module,
+        "workloadVersion": contract.version, "comparison": contract.comparison.as_str(),
+        "side": side, "executableHash": hash(&destination), "details": details});
+    std::fs::write(
+        folder.join(format!("{side}-once.json")),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+    if side == "fai" {
+        std::fs::write(
+            folder.join("workload.fai"),
+            crate::benchmark_aot::fai_program(algorithm, Entry::Once),
+        )
+        .unwrap();
+    } else {
+        let name = if side == "rust" { "peer.rs" } else { "baseline.ml" };
+        std::fs::copy(
+            executable.with_file_name(name),
+            folder.join(if side == "rust" { "workload.rs" } else { "workload.ml" }),
+        )
+        .expect("retain peer source");
+    }
+    Utf8PathBuf::from_path_buf(destination).expect("UTF-8 artifact path")
+}
+
 /// Rejects compiler-linked peers before they can contribute measurements.
 pub fn verify_isolated(path: &Path) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
@@ -158,5 +213,37 @@ pub fn verify_isolated(path: &Path) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("compiler-linked native peer: {symbols:?}"))
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+
+    #[test]
+    fn retained_end_to_end_metadata_identifies_the_actual_executable() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("program");
+        std::fs::write(&original, b"fixture executable bytes").unwrap();
+        let output = directory.path().join("retained");
+        let algorithm = crate::algorithms::by_module("Fib").unwrap();
+        let retained = retain_in(
+            Some(&output),
+            algorithm,
+            "fai",
+            &original,
+            serde_json::json!({"compiler": "fixture"}),
+        );
+        assert_eq!(std::fs::read(&retained).unwrap(), std::fs::read(&original).unwrap());
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(output.join("Fib/fai-once.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["executableHash"], hash(retained.as_std_path()));
+        assert_eq!(metadata["side"], "fai");
+        assert_eq!(metadata["details"]["compiler"], "fixture");
+        assert_eq!(
+            std::fs::read_to_string(output.join("Fib/workload.fai")).unwrap(),
+            crate::benchmark_aot::fai_program(algorithm, Entry::Once)
+        );
     }
 }

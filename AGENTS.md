@@ -1466,6 +1466,14 @@ cache plus a fast linker (mold/lld).
    (including why the JIT and AOT benches' baselines are not comparable) — is
    **`docs/BENCHMARK.md`**.
 
+Current performance tracking uses three generated reports: Perceus allocation
+and space evidence, cross-language process memory, and cross-language runtime.
+`scripts/performance.py` pins a freshly fetched main revision and runs a complete
+checkpoint. The Rust `performance-report` tool strictly validates source/build
+identity, raw observations, coverage and accounting domains before rendering.
+Publication replaces the configured issue bodies and retains historical
+snapshots in versioned evidence archives. See `docs/PERFORMANCE_REPORTS.md`.
+
 The inference solver carries always-on thread-local **work counters** (variable
 resolution clones, occurs-check node visits, free-variable visits — see
 `fai-types/src/perf.rs`) so its asymptotic complexity is gated deterministically

@@ -64,20 +64,37 @@ fn spawn(command: &mut Command) -> std::process::Output {
 /// Times the delivered Fai binary running its runtime-supplied workload.
 fn bench_fai_binary(bencher: Bencher, module: &str) {
     let algo = by_module(module).expect("registered algorithm");
-    let exe = build_fai_binary(algo);
+    let original = build_fai_binary(algo);
+    let exe = fai_tests::native_peer::retain_once(
+        algo,
+        "fai",
+        original.as_std_path(),
+        serde_json::json!({"compiler": fai_driver::build_info()}),
+    );
+    if exe != original {
+        let _ = std::fs::remove_file(&original);
+    }
     let size = algo.aot_size.to_string();
     // Validate the exact delivered binary and workload, with oracle computation
     // outside timing. Every later timed process still has its exit checked.
     let first = spawn(Command::new(&exe).arg(&size));
     verify(algo, "fai", &first);
     bencher.bench(|| divan::black_box(spawn(Command::new(&exe).arg(&size))));
-    let _ = std::fs::remove_file(&exe);
+    if std::env::var_os("FAI_BENCH_ARTIFACT_DIR").is_none() {
+        let _ = std::fs::remove_file(&exe);
+    }
 }
 
 /// Times the Rust release binary running the same workload.
 fn bench_rust_binary(bencher: Bencher, module: &str) {
     let algo = by_module(module).expect("registered algorithm");
     let baseline = fai_tests::native_peer::rust(algo, Entry::Once);
+    let details = serde_json::from_slice(
+        &std::fs::read(baseline.with_file_name("compiler-info.json")).unwrap(),
+    )
+    .unwrap();
+    let baseline =
+        fai_tests::native_peer::retain_once(algo, "rust", baseline.as_std_path(), details);
     let size = algo.aot_size.to_string();
     let first = spawn(Command::new(&baseline).arg(&size));
     verify(algo, "rust", &first);
@@ -93,6 +110,8 @@ fn bench_ocaml_binary(bencher: Bencher, module: &str) {
     let Some(exe) = fai_tests::ocaml::isolated(algo, Entry::Once) else {
         return;
     };
+    let details = serde_json::json!({"compilerInfo": std::fs::read_to_string(exe.with_file_name("compiler-info.txt")).unwrap()});
+    let exe = fai_tests::native_peer::retain_once(algo, "ocaml", exe.as_std_path(), details);
     let size = algo.aot_size.to_string();
     // Confirm it runs cleanly and agrees with the Rust oracle once (untimed), so a
     // wrong OCaml implementation fails the bench rather than reporting a

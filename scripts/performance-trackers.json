@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "repository": "Krzysztof-Cieslak/fai",
+  "ocamlVersion": "5.5.1",
+  "archivePublic": true,
+  "labels": ["performance", "benchmarks"],
+  "trackers": {
+    "perceus": {"issue": null, "title": "Perceus: memory guarantees and allocation evidence", "report": "perceus-memory.md"},
+    "memory": {"issue": null, "title": "Native process memory: Fai / Rust / OCaml", "report": "language-memory.md"},
+    "runtime": {"issue": null, "title": "Native runtime: Fai / Rust / OCaml", "report": "language-runtime.md"}
+  },
+  "settings": {"warmPasses": 3, "warmSamples": 21, "aotPasses": 3, "aotSamples": 100, "memorySamples": 5, "memoryRepeats": [1, 16]},
+  "notes": {
+    "perceus": [
+      "Extend fixed-state, sharing, concurrency and post-burst retention coverage as memory primitives evolve.",
+      "Keep balanced ownership, last-use/resource release, uniqueness-based reuse, copy-on-share and shared-value immutability. Fixed state/concurrency must retain bounded live and allocator storage; large buffers must release their mappings at final drop.",
+      "Track fixed-state Particles/NBody (#147, #156) independently from per-step compute; preserve strict fallback work in OptionEval/IntEval (#155, #191). Hash-container folds (#544) and standalone list folds (#545) remain focused implementation issues.",
+      "Historical ownership-faithful ExprEval/JSON/ListSort/GraphBFS censuses and rejected boxed-RC/layout controls remain in the [investigation archive](https://gist.github.com/Krzysztof-Cieslak/7c1f666874369cacb6fd944ee56f5b96). Diagnostic proportions are not projected speedups."
+    ],
+    "memory": [
+      "Extend size and repetition curves around container-capacity thresholds and larger working sets. GraphBFS (#151) has capacity-sensitive jumps and stable post-run RSS at fixed inputs in prior controls; study graph storage separately from allocator retention.",
+      "Sieve (#141) uses eight-byte Bool slots versus Rust's one-byte elements. MapSumShared (#153) retains a dense Int array through two traversals. SetDedup (#146) retains only 1,000 distinct values and DictHistogram (#148) only 256 keys despite growing iteration counts.",
+      "Separate construction, output and destruction in WordCount (#167), StringBuild/StringSlice (#161, #169), ExprEval (#171) and JsonSerialize (#692); their representations and buffer policies differ across peers.",
+      "Establish compatible allocation/live/backing accounting before drawing cross-language live-heap conclusions.",
+      "Repeat on additional architectures and retain allocator, GC and host-environment configurations."
+    ],
+    "runtime": [
+      "Add independent workload and input holdouts, including varied distributions, Unicode and sharing.",
+      "Add matched kernels for application cases with different sorting, hashing, graph/JSON representation or evaluation staging.",
+      "Quantify uncertainty for narrow timing differences and expand hardware coverage.",
+      "Prioritize array/indexing and scalar costs in CoinChange, MatrixMultiply/FloatMatrixMultiply and Levenshtein (#143, #154, #190, #159); preserve the one-row DP algorithm. NQueens (#164) retains persistent backtracking/sharing, while Collatz/Pi (#165, #172) are mainly scalar work.",
+      "Use input-dependent holdouts for MapSum/FoldPipeline (#166, #145): closed-form or fixed-point work reduction and a floor-limited result do not measure sustained instruction throughput.",
+      "Continue controlled hashing/probe/growth studies for FibMemo, SetDedup, DictHistogram, UnionFind, GraphBFS and GameOfLife (#142, #146, #148, #157, #151, #160). The application ratios include library and representation differences.",
+      "ListSort (#149) merge-state/register-pressure work must preserve stability, comparator order and sharing. Broad layout hoisting and boxed-domain RC-guard controls were rejected; [retained experiments](https://gist.github.com/Krzysztof-Cieslak/7c1f666874369cacb6fd944ee56f5b96) must not be multiplied into the current results.",
+      "MergeSort/QuickSort (#144, #152), strings (#161, #167, #169), InterfaceDispatch (#150), OptionTreeFind (#163), ExprEval (#171) and JsonSerialize (#692) need matched components for compiler attribution. TailQuickSort and ASCII/Unicode components are measured separately; the older matched-node tree_lookup fixture remains a follow-up refresh.",
+      "Fannkuch (#697) remains staging- and scheduling-sensitive. Existing controls establish neither a sole cache cause nor a promoted fix; retain canonical interleaved observations alongside diagnostics.",
+      "Track behavioral implementation work separately, including proper tail calls (#90) and known-closure register calls (#131)."
+    ]
+  },
+  "supersededIssues": [136, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 159, 160, 161, 163, 164, 165, 166, 167, 169, 171, 172, 190, 191, 680, 692, 697]
+}

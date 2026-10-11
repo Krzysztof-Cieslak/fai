@@ -1,0 +1,45 @@
+---
+source: crates/fai-tests/src/bench_summary/tracking/tests.rs
+expression: "reports[\"perceus-memory.md\"]"
+---
+<!-- fai-performance-tracker:perceus -->
+# Perceus memory guarantees and allocation evidence
+
+**Snapshot:** `fixture-checkpoint` · **Completed:** 2026-10-12T00:00:01Z
+
+**Measured main revision:** [`aaaaaaaaaaaa`](https://github.com/example/fai/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · **Method:** `isolated-aot-v2`
+
+**Host:** fixture / fixture · **CPU:** fixture
+
+**Compiler:** fixture · optimized `allocation-stats` build
+
+[Raw data, identities and reproducibility record](https://example.test/evidence)
+
+## Current status
+
+**All required memory guards passed.** Reference counting remains active in every control. Each allocation pair uses identical Fai source, compiler and input; only the named optimization changes.
+
+| Guarantee suite | Passed | Scope |
+|---|---:|---|
+| Live-space / ownership | 2 | Reference balance, reuse, sharing, fixed-state and resource lifetimes |
+| Retained storage | 2 | Slabs, mappings, repeated work and prompt large-buffer release |
+
+## Source-identical allocation controls
+
+Arrows are **optimization disabled → enabled**. Values are counts or bytes, not percentages. Additional peak live bytes are measured above the same retained harness owner within each run. Every window finishes with its baseline live objects and bytes. Backing includes owned slabs, mappings and system allocations; retained backing is measured at window end.
+
+| Workload | Input | Disabled control | Allocation requests | Allocated bytes | Additional peak live bytes | Peak backing bytes | Retained backing bytes |
+|---|---:|---|---:|---:|---:|---:|---:|
+| Fusion | 4096 | no-fusion | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
+| Fusion | 100000 | no-fusion | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
+| Scalars | 8 | no-scalar-replacement | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
+| Scalars | 4096 | no-scalar-replacement | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
+| SharedList | 8 | no-reuse | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
+| SharedList | 4096 | no-reuse | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
+| UniqueList | 8 | no-reuse | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
+| UniqueList | 4096 | no-reuse | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
+
+**Accounting domain:** `fai-object-storage-v1`. Object requests include headers and pooled allocations; reset/reuse avoids a request. Live bytes exclude dead recycling cells, while backing bytes include owned slabs and mappings. Host-language temporaries, allocator arenas and OS rounding are outside these counters. Timing uses separate uninstrumented builds.
+
+---
+Generated report. Refresh history is linked from the issue comments.
