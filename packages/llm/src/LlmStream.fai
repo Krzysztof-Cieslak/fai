@@ -57,6 +57,13 @@ let textBlock reasoning pair =
 public failure : State -> LlmTypes.ErrorKind -> String -> LlmTypes.Error
 let failure state kind message = { LlmTypes.error kind message with partial = Some (partial state) }
 
+public attach : State -> LlmTypes.Error -> LlmTypes.Error
+let attach state error = { error with
+  partial = match error.partial with
+  | None -> Some (partial state)
+  | Some value -> Some value
+}
+
 public accept : LlmTypes.Limits -> State -> Result State LlmTypes.Error
 let accept limits state =
   if state.done then

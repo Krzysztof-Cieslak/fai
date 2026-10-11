@@ -1866,6 +1866,10 @@ with its response; `decodeStructured` performs the same final decoding purely.
 Retries are disabled by default; configured retries cover only selected HTTP
 rejections before event delivery. One optional deadline spans every attempt and
 callback. Failures retain partial response state and native request metadata.
+The `Assistant.fai` example adds an explicit model/tool loop, file and process
+tools, SQLite history and a full-screen TUI. Select provider/model and session
+explicitly; `--prompt` runs a headless turn. Pure contracts run with
+`fai test -C packages llm`; local-provider integration needs no external API key.
 
 Including `packages/process/src` supplies `Process` and `ProcessText`. Commands
 are pure descriptions (`command`, `arguments`, `workingDirectory`, environment

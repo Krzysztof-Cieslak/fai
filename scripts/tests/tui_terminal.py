@@ -54,7 +54,7 @@ def read_pty(fd):
         return b""  # A revoked/hung-up PTY is EOF on macOS and Linux.
 
 
-def exercise(command, title, keys, finish=None, expected=None, timeout=180):
+def exercise(command, title, keys, finish=None, expected=None, timeout=180, finish_when=None):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     supervised = [sys.executable, str(Path(__file__).resolve()), "--supervise", *command]
@@ -77,7 +77,8 @@ def exercise(command, title, keys, finish=None, expected=None, timeout=180):
                 os.write(master, keys)
                 entered = time.monotonic()
                 deadline = min(deadline, entered + 30)
-            if entered is not None and finish and not sent_finish and time.monotonic() - entered >= 1:
+            ready_to_finish = finish_when in plain if finish_when else entered is not None and time.monotonic() - entered >= 1
+            if entered is not None and finish and not sent_finish and ready_to_finish:
                 os.write(master, finish)
                 sent_finish = True
         if process.poll() is None:

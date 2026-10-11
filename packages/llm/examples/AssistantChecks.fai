@@ -1,0 +1,116 @@
+module LlmAssistantChecks
+
+public type R = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  env : Env,
+  fs : FileSystem,
+  net : Net,
+  process : ProcessHost.Process,
+  sqlite : SqliteHost.Sqlite,
+  tls : Tls
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  env = stdEnv,
+  fs = stdFs,
+  net = stdNet,
+  process = ProcessHost.native,
+  sqlite = SqliteHost.native,
+  tls = stdTls
+}
+
+toolCall : String -> Json.Value -> LlmTypes.ToolCall
+let toolCall name arguments = {
+  arguments = arguments,
+  id = name,
+  itemId = None,
+  name = name,
+  rawArguments = Json.toString arguments
+}
+
+check : R -> String -> String -> SqliteHost.Session -> Listener -> Nursery -> Bool / { Clock, Concurrency, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, Tls }
+let check env directory python database listener nursery =
+  let server =
+    env.concurrency.spawn nursery (fun _ -> Http.serveListener env listener LlmMockServer.handle)
+  let store = { host = env.sqlite, session = database }
+  let config = LlmOpenAI.config "secret-not-in-snapshot"
+  let config = { config with
+    http = { config.http with
+      baseUrl = "http://127.0.0.1:" ++ Int.toString (env.net.localPort listener) ++ "/"
+    }
+  }
+  let gate = env.concurrency.channel 1
+  let seeded = env.concurrency.send gate ()
+  let services = {
+    clock = env.clock,
+    concurrency = env.concurrency,
+    fs = env.fs,
+    gate = gate,
+    net = env.net,
+    process = env.process,
+    store = store,
+    tls = env.tls
+  }
+  let settings = {
+    config = config,
+    maxTurns = 4,
+    processOptions = { Process.defaults with timeoutMs = Some 10000 },
+    session = "checks",
+    toolBytes = 65536,
+    workspace = directory
+  }
+  let initialized = LlmAssistantStore.initialize store "checks"
+  let a = env.fs.writeFile (directory ++ "/a") "fixture-a"
+  let b = env.fs.writeFile (directory ++ "/b") "fixture-b"
+  let result =
+    LlmAssistantCore.run services settings (Llm.request "fixture") "read files" (fun _ -> ())
+  let loaded = LlmAssistantStore.load store "checks" config (Llm.request "fixture")
+  let saved =
+    match result with
+    | Err _ -> false
+    | Ok request ->
+      (match LlmAssistantStore.snapshot config request with
+      | Err _ -> false
+      | Ok json -> not (String.contains json "secret-not-in-snapshot"))
+  let tools = LlmAssistantCore.registry services settings
+  let wrote =
+    LlmTool.execute tools (toolCall "write_file" (LlmJson.object [
+      ("path", Json.String "written"),
+      ("text", Json.String "from-tool")
+    ]))
+  let read = env.fs.readFile (directory ++ "/written")
+  let ran =
+    LlmTool.execute tools (toolCall "run_command" (LlmJson.object [
+      ("executable", Json.String python),
+      ("arguments", LlmJson.array [Json.String "-c", Json.String "print('fixture-process')"]),
+      ("directory", Json.Null)
+    ]))
+  let cancelled = env.concurrency.cancel server
+  Result.isOk initialized && Result.isOk a && Result.isOk b && Result.isOk result && saved && (match loaded with
+  | Ok value -> not value.interrupted && value.request.history <> []
+  | Err _ -> false) && Result.isOk wrote && read = Ok "from-tool" && (match ran with
+  | Ok result -> String.contains (Json.toString result.value) "fixture-process"
+  | Err _ -> false)
+
+public main : R -> Unit / { Clock, Concurrency, Console, Env, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, Tls }
+let main env =
+  match env.env.args () with
+  | [directory, python] ->
+    match env.sqlite.open ":memory:" false 5000 with
+    | Err error -> env.console.writeLine error.message
+    | Ok database ->
+      let result =
+        match env.net.listen 0 with
+        | Err _ -> false
+        | Ok listener -> env.concurrency.scope (check env directory python database listener)
+      let closed = env.sqlite.close database
+      env.console.writeLine (if result then
+        "assistant checks passed"
+      else
+        "assistant checks FAILED")
+  | _ -> env.console.writeLine "expected a temporary directory and Python executable"

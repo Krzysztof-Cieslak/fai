@@ -1,0 +1,13 @@
+module LlmPersistenceSpec
+
+let config = LlmOpenAI.config "private-api-key"
+
+let request = Llm.request "fixture" |> Llm.userText "remember this"
+
+let saved = LlmAssistantStore.snapshot config request
+example: (saved |> Result.map (fun text -> String.contains text "private-api-key")) = Ok false
+example: (saved |> Result.map (fun text ->
+  LlmAssistantStore.restore config (Llm.request "fixture") text |> Result.isOk)) = Ok true
+example: (saved |> Result.map (fun text ->
+  LlmAssistantStore.restore (LlmAnthropic.config "key") (Llm.request "fixture") text |> Result.isErr)) = Ok true
+example: LlmAssistantStore.restore config request "{\"version\":99}" |> Result.isErr

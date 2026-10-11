@@ -1,0 +1,25 @@
+module LlmGenerate
+
+generate : Runtime -> String -> String -> String -> Unit / { Clock, Concurrency, Console, Env, Net, Tls }
+let generate env provider model prompt =
+  let variable = if provider = "anthropic" then "ANTHROPIC_API_KEY" else "OPENAI_API_KEY"
+  match env.env.get variable with
+  | None -> env.console.writeLine ("Set " ++ variable)
+  | Some key ->
+    let config = if provider = "anthropic" then LlmAnthropic.config key else LlmOpenAI.config key
+    let result =
+      Llm.withClient env config (fun client ->
+        Llm.generate client (Llm.request model |> Llm.userText prompt))
+    match result with
+    | Ok response -> env.console.writeLine (Llm.text response)
+    | Err error -> env.console.writeLine (Llm.errorToString error)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Env, Net, Tls }
+let main env =
+  match env.env.args () with
+  | [provider, model, prompt] ->
+    if provider = "openai" || provider = "anthropic" then
+      generate env provider model prompt
+    else
+      env.console.writeLine "unknown provider"
+  | _ -> env.console.writeLine "Usage: Generate <openai|anthropic> <model> <prompt>"

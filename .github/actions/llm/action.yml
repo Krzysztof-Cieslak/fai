@@ -1,0 +1,10 @@
+name: Native model-client integration
+description: Exercise both model protocols, tools and the assistant with deterministic local providers
+runs:
+  using: composite
+  steps:
+    - name: Model-client JIT AOT and effect checks
+      shell: python
+      run: |
+        import subprocess, sys
+        subprocess.run([sys.executable, "scripts/tests/llm_toolchain.py"], check=True)

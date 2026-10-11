@@ -65,7 +65,10 @@ let session env case listener nursery =
       Http.serveListener env listener (handle env case counter))
   let config = LlmOpenAI.config "test"
   let config = { config with
-    events = { config.events with readIdleTimeoutMs = Some 30, subscriptionTimeoutMs = case.total },
+    events = { config.events with
+      readIdleTimeoutMs = Some (if case.mode = "idle" then 30 else 5000),
+      subscriptionTimeoutMs = case.total
+    },
     http = { config.http with
       baseUrl = "http://127.0.0.1:" ++ Int.toString (env.net.localPort listener) ++ "/"
     },
@@ -91,6 +94,48 @@ let isError kind pair =
   | Err error -> error.kind = kind
   | Ok _ -> false
 
+cancelConsume : Concurrency -> Channel Unit -> Channel Unit -> Llm.Event -> Result LlmTypes.Decision Llm.Error / { Concurrency }
+let cancelConsume concurrency ready blocked event =
+  let sent = concurrency.send ready ()
+  let waited = concurrency.recv blocked
+  Ok LlmTypes.Continue
+
+cancelRequest : Runtime -> Llm.Config -> Channel Unit -> Channel Unit -> Unit -> Result LlmTypes.StreamResult Llm.Error / { Clock, Concurrency, Net, Tls }
+let cancelRequest env config ready blocked unit =
+  let result =
+    Llm.withClient env config (fun client ->
+      Llm.withStream client (Llm.request "fixture") (cancelConsume env.concurrency ready blocked))
+  let finished = Wire.cleanup env.concurrency (fun _ -> env.concurrency.send ready ())
+  result
+
+cancelSession : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let cancelSession env listener nursery =
+  let counter = env.concurrency.channel 1
+  let seed = env.concurrency.send counter 0
+  let server =
+    env.concurrency.spawn nursery (fun _ ->
+      Http.serveListener env listener (handle env basic counter))
+  let base = LlmOpenAI.config "test"
+  let config = { base with
+    http = { base.http with
+      baseUrl = "http://127.0.0.1:" ++ Int.toString (env.net.localPort listener) ++ "/"
+    }
+  }
+  let ready = env.concurrency.channel 1
+  let blocked = env.concurrency.channel 1
+  let task = env.concurrency.spawn nursery (cancelRequest env config ready blocked)
+  let started = env.concurrency.recv ready
+  let cancelled = env.concurrency.cancel task
+  let result = env.concurrency.await task
+  let stopped = env.concurrency.cancel server
+  let closed = env.concurrency.close blocked
+  match result with
+  | Err error ->
+    error.kind = LlmTypes.Cancelled && (match error.partial with
+    | Some response -> response.id = "answer"
+    | None -> false)
+  | _ -> false
+
 public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
 let main env =
   let (retried, attempts) = run env { basic with mode = "retry", retry = 2 }
@@ -112,7 +157,14 @@ let main env =
     count = 1 && (match consumer with
     | Err error -> error.message = "consumer failed" && error.eventsDelivered > 0
     | _ -> false)
-  let idle = isError LlmTypes.DeadlineExceeded (run env { basic with mode = "idle" })
+  let idleResult = run env { basic with mode = "idle" }
+  let idle =
+    isError LlmTypes.DeadlineExceeded idleResult && (match idleResult with
+    | (Err error, _) ->
+      (match error.partial with
+      | Some response -> response.id = "partial"
+      | None -> false)
+    | _ -> false)
   let deadline =
     isError LlmTypes.DeadlineExceeded (run env { basic with mode = "deadline", total = Some 50 })
   let backoff =
@@ -126,7 +178,11 @@ let main env =
     match stopped with
     | Ok (LlmTypes.Stopped _) -> true
     | _ -> false
-  env.console.writeLine (if retryGood && statusGood && eof && inband && consumerGood && idle && deadline && backoff && stopGood then
+  let cancelled =
+    match env.net.listen 0 with
+    | Err _ -> false
+    | Ok listener -> env.concurrency.scope (cancelSession env listener)
+  env.console.writeLine (if retryGood && statusGood && eof && inband && consumerGood && idle && deadline && backoff && stopGood && cancelled then
     "LLM failure checks passed"
   else
     "LLM failure checks FAILED")

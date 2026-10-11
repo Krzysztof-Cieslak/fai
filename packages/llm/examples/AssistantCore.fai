@@ -1,0 +1,193 @@
+module LlmAssistantCore
+
+public type Services = {
+  clock : Clock,
+  concurrency : Concurrency,
+  fs : FileSystem,
+  gate : Channel Unit,
+  net : Net,
+  process : ProcessHost.Process,
+  store : LlmAssistantStore.Store,
+  tls : Tls
+}
+
+public type Settings = {
+  config : Llm.Config,
+  maxTurns : Int,
+  processOptions : Process.Options,
+  session : String,
+  toolBytes : Int,
+  workspace : String
+}
+
+public type Observation =
+  | ModelEvent Llm.Event
+  | ToolStarted String
+  | ToolFinished String String
+
+type RunInput = { arguments : List String, directory : Option String, executable : String }
+
+path : Settings -> String -> String
+let path settings name =
+  if String.take 1 name = "/" || String.take 1 name = "\\" || String.substring 1 1 name = ":" then
+    name
+  else
+    settings.workspace ++ "/" ++ name
+
+readChunks : FileSystem -> Reader -> Int -> Bytes -> Result String String / { FileSystem }
+let readChunks fs reader limit bytes =
+  let remaining = limit - Bytes.length bytes
+  let count = if remaining >= 65536 then 65536 else remaining + 1
+  match fs.readChunk reader count with
+  | Err error -> Err error
+  | Ok chunk ->
+    if Bytes.length chunk > remaining then
+      Err "file exceeds tool output limit"
+    else if Bytes.isEmpty chunk then
+      (match Bytes.toString bytes with
+      | None -> Err "file is not UTF-8 text"
+      | Some text -> Ok text)
+    else
+      readChunks fs reader limit (Bytes.concat bytes chunk)
+
+readFile : Services -> Settings -> String -> Result String String / { FileSystem }
+let readFile env settings name =
+  match env.fs.openRead (path settings name) with
+  | Err error -> Err error
+  | Ok reader ->
+    let result = readChunks env.fs reader settings.toolBytes Bytes.empty
+    let closed = env.fs.closeReader reader
+    result
+
+writeFile : Services -> Settings -> (String * String) -> Result String String / { FileSystem }
+let writeFile env settings input =
+  let (name, text) = input
+  Result.map (fun _ -> "written") (env.fs.writeFile (path settings name) text)
+
+runCommand : Services -> Settings -> RunInput -> Result Json.Value String / { Concurrency, ProcessHost.Process }
+let runCommand env settings input =
+  let command = Process.command input.executable input.arguments
+  let command =
+    Process.workingDirectory (Option.withDefault settings.workspace input.directory) command
+  match Process.run env { settings.processOptions with
+    maxCaptureBytes = settings.toolBytes
+  } command with
+  | Err error -> Err (Process.errorToString error)
+  | Ok output ->
+    Ok (LlmJson.object [
+      ("stdout", Json.String (Option.withDefault "<binary output>" (Bytes.toString output.stdout))),
+      ("stderr", LlmJson.array (List.map (fun bytes ->
+        Json.String (Option.withDefault "<binary output>" (Bytes.toString bytes))) output.stderr)),
+      ("success", Json.Boolean (Result.isOk (Process.expectSuccess output)))
+    ])
+
+public registry : Services -> Settings -> LlmTool.Registry { Concurrency, FileSystem, ProcessHost.Process }
+let registry env settings =
+  let read =
+    LlmTool.singleton (LlmTool.define "read_file" "Read a UTF-8 file" (LlmSchema.field "path" LlmSchema.string) JsonEncode.string (readFile env settings))
+  let writeSchema =
+    LlmSchema.map2 (fun path text ->
+      (path, text)) (LlmSchema.field "path" LlmSchema.string) (LlmSchema.field "text" LlmSchema.string)
+  let write =
+    LlmTool.singleton (LlmTool.define "write_file" "Write a UTF-8 file" writeSchema JsonEncode.string (writeFile env settings))
+  let runSchema =
+    LlmSchema.object0 (fun executable arguments directory -> {
+      arguments = arguments,
+      directory = directory,
+      executable = executable
+    }) |> LlmSchema.andMap (LlmSchema.field "executable" LlmSchema.string) |> LlmSchema.andMap (LlmSchema.field "arguments" (LlmSchema.list LlmSchema.string)) |> LlmSchema.andMap (LlmSchema.field "directory" (LlmSchema.nullable LlmSchema.string))
+  let run =
+    LlmTool.singleton (LlmTool.define "run_command" "Run an executable with an argv list" runSchema JsonEncode.value (runCommand env settings))
+  LlmTool.combine (LlmTool.combine read write) run
+
+let localError message = LlmTypes.error LlmTypes.ConsumerError message
+
+modelEvent : (Observation -> Unit / 'e) -> Llm.Event -> Result LlmTypes.Decision Llm.Error / 'e
+let modelEvent observe event =
+  let sent = observe (ModelEvent event)
+  Ok LlmTypes.Continue
+
+executeTools : Services -> Settings -> LlmTool.Registry { Concurrency, FileSystem, ProcessHost.Process } -> (Observation -> Unit / 'e) -> List LlmTypes.ToolCall -> List LlmTypes.ToolResult -> Result (List LlmTypes.ToolResult) Llm.Error / { Concurrency, FileSystem, ProcessHost.Process, SqliteHost.Sqlite | 'e }
+let executeTools env settings tools observe calls results =
+  match calls with
+  | [] -> Ok (List.reverse results)
+  | call :: rest ->
+    match LlmAssistantStore.tool env.store settings.session call "started" "" with
+    | Err error -> Err (localError error)
+    | Ok _ ->
+      let sent = observe (ToolStarted call.name)
+      let result =
+        match LlmTool.execute tools call with
+        | Ok result -> result
+        | Err error -> LlmTool.failureResult call error
+      let text = Json.toString result.value
+      let sent = observe (ToolFinished call.name text)
+      match LlmAssistantStore.tool env.store settings.session call "completed" text with
+      | Err error -> Err (localError error)
+      | Ok _ -> executeTools env settings tools observe rest (result :: results)
+
+loop : Services -> Settings -> LlmTool.Registry { Concurrency, FileSystem, ProcessHost.Process } -> Llm.Client -> (Observation -> Unit / 'e) -> Int -> Llm.Request -> Result Llm.Request Llm.Error / { Clock, Concurrency, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, Tls | 'e }
+let loop env settings tools client observe turn request =
+  if turn >= settings.maxTurns then
+    Err (localError "agent turn limit reached")
+  else
+    match Llm.withStream client request (modelEvent observe) with
+    | Err error -> Err error
+    | Ok (LlmTypes.Stopped _) -> Err (localError "generation stopped")
+    | Ok (LlmTypes.Finished response) ->
+      match response.finish with
+      | LlmTypes.Incomplete reason -> Err (localError ("incomplete model response: " ++ reason))
+      | LlmTypes.InProgress -> Err (localError "unfinished model response")
+      | _ ->
+        match executeTools env settings tools observe response.toolCalls [] with
+        | Err error -> Err error
+        | Ok results ->
+          match LlmMessage.continueWith response results request with
+          | Err error -> Err error
+          | Ok next ->
+            let state = if response.toolCalls = [] then "idle" else "running"
+            match LlmAssistantStore.save env.store settings.session settings.config next state with
+            | Err error -> Err (localError error)
+            | Ok _ ->
+              if response.toolCalls = [] then
+                Ok next
+              else
+                loop env settings tools client observe (turn + 1) next
+
+runLocked : Services -> Settings -> Llm.Request -> String -> (Observation -> Unit / 'e) -> Result Llm.Request Llm.Error / { Clock, Concurrency, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, Tls | 'e }
+let runLocked env settings previous prompt observe =
+  if settings.maxTurns <= 0 || settings.toolBytes <= 0 || settings.toolBytes > 16777216 then
+    Err (localError "invalid agent limits")
+  else
+    let tools = registry env settings
+    match LlmTool.definitions tools with
+    | Err error -> Err error
+    | Ok definitions ->
+      let request = previous |> Llm.userText prompt |> Llm.tools definitions
+      match LlmAssistantStore.save env.store settings.session settings.config request "running" with
+      | Err error -> Err (localError error)
+      | Ok _ ->
+        let result =
+          Llm.withClient env settings.config (fun client ->
+            loop env settings tools client observe 0 request)
+        let marked =
+          Wire.cleanup env.concurrency (fun _ ->
+            LlmAssistantStore.mark env.store settings.session (if Result.isOk result then
+              "idle"
+            else
+              "interrupted"))
+        result
+
+/// Serialize a session's turns through cleanup, including replaced UI commands.
+/// The next turn reloads its committed context only after the old owner releases.
+public run : Services -> Settings -> Llm.Request -> String -> (Observation -> Unit / 'e) -> Result Llm.Request Llm.Error / { Clock, Concurrency, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, Tls | 'e }
+let run env settings previous prompt observe =
+  match env.concurrency.recv env.gate with
+  | None -> Err (LlmTypes.error LlmTypes.Cancelled "assistant operation cancelled")
+  | Some _ ->
+    let result =
+      match LlmAssistantStore.load env.store settings.session settings.config previous with
+      | Err error -> Err (localError error)
+      | Ok loaded -> runLocked env settings loaded.request prompt observe
+    let released = Wire.cleanup env.concurrency (fun _ -> env.concurrency.send env.gate ())
+    result

@@ -41,6 +41,17 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Kind inference does not inspect declarations for argument-free type references:
+  there are no parameter slots to classify. This avoids recursively rescanning
+  imported monomorphic alias graphs while preserving effect-kind propagation for
+  actual type applications and incremental cache cutoff for unrelated edits.
+
+- The coding-assistant example owns its model/tool loop and capability grants.
+  File and process tools are explicit typed handlers, conversations persist as
+  versioned provider-native data, and interrupted tool work is not automatically
+  replayed. CI exercises deterministic local providers and real application
+  resources through JIT and AOT rather than depending on live model responses.
+
 - LLM retry policy is explicit and conservative: selected rejected HTTP statuses
   can retry before event delivery; ambiguous transport failures and exposed
   streams are not replayed. The overall deadline encloses all attempts and delays,

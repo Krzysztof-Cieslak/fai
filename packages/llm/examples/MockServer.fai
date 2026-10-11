@@ -1,0 +1,24 @@
+module LlmMockServer
+
+public handle : Http.Request 'e -> Result (Http.Response { }) String / 'e
+let handle request =
+  match Stream.fold Bytes.concat Bytes.empty request.body with
+  | Err error -> Err error
+  | Ok bytes ->
+    let text = Option.withDefault "" (Bytes.toString bytes)
+    let anthropic = String.contains (Url.path request.url) "messages"
+    let after = String.contains text (if anthropic then "tool_use_id" else "function_call_output")
+    let body = if anthropic then LlmFixtures.anthropic after else LlmFixtures.openai after
+    Ok (Http.chunkedResponse 200 (Headers.fromList [
+      ("Content-Type", "text/event-stream"),
+      ("x-request-id", "mock-request")
+    ]) (Http.stringBody body))
+
+public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
+let main env =
+  match env.net.listen 0 with
+  | Err error -> env.console.writeLine error
+  | Ok listener ->
+    let printed = env.console.writeLine (Int.toString (env.net.localPort listener))
+    let result = Http.serveListener env listener handle
+    ()

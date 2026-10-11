@@ -15,6 +15,13 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+The LLM package runs its pure contracts with `fai test -C packages llm`.
+`scripts/tests/llm_toolchain.py --fai /path/to/fai` runs deterministic local-provider
+JIT/AOT checks, real file/process tools, SQLite persistence, effect-negative
+compiler fixtures and Unix terminal integration. `.github/actions/llm` uses the
+same exact compiler cache and dependency-aware package selection. Live provider
+smoke tests are opt-in through the Generate example and explicit environment keys.
+
 Process package contracts run directly with `fai test -C packages process`.
 `scripts/tests/process_toolchain.py --fai /path/to/fai` runs real binary-pipe,
 full-duplex, cancellation and pipeline fixtures through JIT and AOT and verifies
