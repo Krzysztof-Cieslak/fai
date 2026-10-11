@@ -997,6 +997,8 @@ thread_local! {
     /// recursing forever. Intra-file (mutual) recursion is handled by the
     /// fixpoint itself, not this guard.
     static KINDS_IN_PROGRESS: RefCell<FxHashSet<SourceId>> = RefCell::new(FxHashSet::default());
+    #[cfg(test)]
+    static KIND_FILE_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Each parameter's kind for a user `type`/alias `adt`, inferred exactly as for
@@ -1066,6 +1068,8 @@ fn file_type_param_usage_inner(
     db: &dyn Db,
     file: SourceFile,
 ) -> FxHashMap<Symbol, Vec<(bool, bool)>> {
+    #[cfg(test)]
+    KIND_FILE_SCANS.with(|count| count.set(count.get() + 1));
     let decls = type_decls(db, file);
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
@@ -1224,6 +1228,12 @@ fn slot_kinds_of(
     name: Symbol,
     arity: usize,
 ) -> Vec<SlotKind> {
+    // A bare type has no arguments whose variables need classification. Looking
+    // through its declaration would recursively rescan whole imported files,
+    // multiplying work at every edge in a graph of monomorphic record aliases.
+    if arity == 0 {
+        return Vec::new();
+    }
     if crate::ty::con_or_unit(name.as_str()).is_some() {
         return vec![SlotKind::Type; arity];
     }
@@ -1342,6 +1352,67 @@ mod tests {
     use fai_syntax::ast::ItemKind;
 
     use super::*;
+
+    #[test]
+    fn monomorphic_imports_do_not_recurse_during_kind_inference() {
+        let mut db = FaiDatabase::new();
+        db.add_source("Leaf.fai".into(), "module Leaf\npublic type Leaf = { n : Int }\n".into());
+        db.add_source(
+            "Middle.fai".into(),
+            "module Middle\npublic type Middle = Leaf.Leaf * Leaf.Leaf * Leaf.Leaf\n".into(),
+        );
+        db.add_source(
+            "Outer.fai".into(),
+            "module Outer\npublic type Outer = Middle.Middle * Middle.Middle * Middle.Middle\n"
+                .into(),
+        );
+        let id = db.add_source(
+            "Root.fai".into(),
+            "module Root\npublic type Root 'a = { value : 'a, metadata : Outer.Outer }\n".into(),
+        );
+        let file = db.source_file(id).unwrap();
+        KIND_FILE_SCANS.with(|count| count.set(0));
+        let kinds = adt_param_kinds(&db, AdtRef::new(file.source(&db), Symbol::intern("Root")));
+        assert_eq!(kinds, [ParamKind::Type]);
+        assert_eq!(KIND_FILE_SCANS.with(std::cell::Cell::get), 1);
+    }
+
+    #[test]
+    fn monomorphic_import_edits_keep_kind_results_cached_and_clean() {
+        let mut db = FaiDatabase::new();
+        db.add_source("Other.fai".into(), "module Other\npublic type Node = Int\n".into());
+        let source = "module Root\npublic type Root 'a = { value : 'a, node : Other.Node }\n";
+        let id = db.add_source("Root.fai".into(), source.into());
+        let file = db.source_file(id).unwrap();
+        let adt = AdtRef::new(file.source(&db), Symbol::intern("Root"));
+        let before = adt_param_kinds(&db, adt);
+        db.add_source("Other.fai".into(), "module Other\npublic type Node = String\n".into());
+        KIND_FILE_SCANS.with(|count| count.set(0));
+        let incremental = adt_param_kinds(&db, adt);
+        assert_eq!(incremental, before);
+        assert_eq!(KIND_FILE_SCANS.with(std::cell::Cell::get), 0);
+        let mut clean = FaiDatabase::new();
+        clean.add_source("Other.fai".into(), "module Other\npublic type Node = String\n".into());
+        let id = clean.add_source("Root.fai".into(), source.into());
+        assert_eq!(adt_param_kinds(&clean, AdtRef::new(id, Symbol::intern("Root"))), incremental);
+    }
+
+    #[test]
+    fn parameterized_imports_still_classify_effect_arguments() {
+        let mut db = FaiDatabase::new();
+        db.add_source(
+            "Other.fai".into(),
+            "module Other\npublic type Callback 'e = Unit -> Unit / 'e\n".into(),
+        );
+        let id = db.add_source(
+            "Root.fai".into(),
+            "module Root\npublic type Root 'e = Other.Callback 'e\n".into(),
+        );
+        assert_eq!(
+            adt_param_kinds(&db, AdtRef::new(id, Symbol::intern("Root"))),
+            [ParamKind::Effect]
+        );
+    }
 
     fn sig_scheme(src: &str) -> (FaiDatabase, Scheme) {
         let mut db = FaiDatabase::new();
