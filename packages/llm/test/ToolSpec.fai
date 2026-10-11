@@ -1,0 +1,33 @@
+module LlmToolSpec
+
+let schema = LlmSchema.field "x" LlmSchema.int
+
+let tool = LlmTool.define "double" "Double an integer" schema JsonEncode.int (fun x -> Ok (x * 2))
+
+let registry = LlmTool.singleton tool
+
+let call value = {
+  arguments = LlmJson.object [("x", value)],
+  id = "id-1",
+  itemId = None,
+  name = "double",
+  rawArguments = ""
+}
+example: (LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result ->
+  result.value)) = Ok (LlmJson.integer 14)
+example: (LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result ->
+  result.id)) = Ok "id-1"
+example: LlmTool.execute registry (call (Json.String "wrong")) |> Result.isErr
+example: LlmTool.definitions (LlmTool.combine registry registry) |> Result.isErr
+example: LlmTool.execute registry { call (LlmJson.integer 7) with name = "missing" } |> Result.isErr
+
+let trapped =
+  LlmTool.singleton (LlmTool.define "double" "must not execute" schema JsonEncode.int (fun x ->
+    Ok (x / 0)))
+example: LlmTool.execute trapped (call Json.Null) |> Result.isErr
+
+let failed =
+  LlmTool.singleton (LlmTool.define "double" "reports an error" schema JsonEncode.int (fun x ->
+    Err "tool failed"))
+example: (LlmTool.execute failed (call (LlmJson.integer 7)) |> Result.map (fun result ->
+  result.isError)) = Ok true

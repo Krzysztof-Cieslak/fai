@@ -41,6 +41,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Model tool definitions are pure wire data; executable handlers live in a
+  separate effect-carrying registry and run only on explicit application calls.
+  Arguments decode before invocation. Structured output parses complete answers
+  and retains non-answer outcomes and the original provider response.
+
 - Anthropic streaming retains indexed content blocks and thinking signatures.
   Usage updates replace cumulative counters. Tool JSON is validated after the
   terminal outcome is known, so truncated arguments never become executable calls.

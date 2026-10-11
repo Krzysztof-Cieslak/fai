@@ -52,6 +52,20 @@ HTTP response headers and request IDs. `LlmReplay.fromChunks` runs the same SSE 
 provider codecs purely, including arbitrary byte boundaries; `LlmReplay.model`
 creates a pure scripted model from a function of the request.
 
+`LlmTool.define name description inputSchema outputEncoder handler` builds a
+typed tool without executing it. Combine registries with `singleton` and
+`combine`, attach `definitions` to a request, and explicitly call `execute` after
+a completed tool turn. Decoding precedes the handler. A handler's reported error
+becomes a tool error result; argument and encoding failures remain typed local
+errors. `failureResult` explicitly converts a local error into a reply if desired.
+Registry combination forwards heterogeneous handler effects.
+
+`Llm.generateStructured client schema request` pairs the decoded value with its
+original response. `decodeStructured` is its pure counterpart. Refusals, tool
+turns and incomplete answers remain distinguishable in the failure's response;
+only complete answers are parsed as JSON. `LlmSchema.object0` and `andMap` build
+larger records while retaining a single wire schema and decoder.
+
 ```sh
 fai fmt --check -C packages llm
 fai check -C packages llm

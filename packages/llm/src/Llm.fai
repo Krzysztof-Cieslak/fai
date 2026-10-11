@@ -217,3 +217,34 @@ let generate client request =
 
 public model : Client -> { generate : LlmTypes.Request -> Result LlmTypes.Response LlmTypes.Error / { Clock, Concurrency, Net, Tls } }
 let model client = { generate = generate client }
+
+public type Structured 'a = { response : Response, value : 'a }
+
+/// Decode only a complete answer. Refusal, tool turns and truncation retain their
+/// original response as a typed failure, without attempting to parse partial JSON.
+public decodeStructured : LlmSchema.Schema 'a -> Response -> Result (Structured 'a) Error
+let decodeStructured schema response =
+  if response.finish <> LlmTypes.Completed || response.toolCalls <> [] then
+    Err { LlmTypes.error LlmTypes.SchemaError "structured output requires a completed answer" with
+      headers = response.headers,
+      partial = Some response,
+      requestId = response.requestId
+    }
+  else
+    match JsonDecode.fromString (LlmSchema.decoder schema) (text response) with
+    | Ok value -> Ok { response = response, value = value }
+    | Err detail -> Err { LlmTypes.error LlmTypes.SchemaError (JsonDecode.readErrorToString detail) with
+      detail = Some detail,
+      headers = response.headers,
+      partial = Some response,
+      requestId = response.requestId
+    }
+
+public generateStructured : Client -> LlmSchema.Schema 'a -> Request -> Result (Structured 'a) Error / { Clock, Concurrency, Net, Tls }
+let generateStructured client schema request =
+  match structured schema request with
+  | Err error -> Err error
+  | Ok request ->
+    match generate client request with
+    | Err error -> Err error
+    | Ok response -> decodeStructured schema response

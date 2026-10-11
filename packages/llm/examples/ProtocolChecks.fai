@@ -26,28 +26,29 @@ let request =
     }
   ]
 
+let registry =
+  LlmTool.singleton (LlmTool.define "read_file" "read a named file" (LlmSchema.field "path" LlmSchema.string) JsonEncode.string (fun path ->
+    Ok ("contents-" ++ path)))
+
 work : Llm.Client -> Result Bool Llm.Error / { Clock, Concurrency, Net, Tls }
 let work client =
   match Llm.generate client request with
   | Err error -> Err error
   | Ok first ->
-    let results =
-      List.map (fun call -> {
-        id = call.id,
-        isError = false,
-        value = Json.String ("contents-" ++ call.id)
-      }) first.toolCalls
-    match LlmMessage.continueWith first results request with
+    match LlmJson.traverse (LlmTool.execute registry) first.toolCalls with
     | Err error -> Err error
-    | Ok next ->
-      match Llm.generate client next with
+    | Ok results ->
+      match LlmMessage.continueWith first results request with
       | Err error -> Err error
-      | Ok second ->
-        Ok (List.map (fun call ->
-          call.id) first.toolCalls = [
-          "a",
-          "b"
-        ] && Llm.text second = "tools completed" && second.requestId = Some "fixture-request")
+      | Ok next ->
+        match Llm.generate client next with
+        | Err error -> Err error
+        | Ok second ->
+          Ok (List.map (fun call ->
+            call.id) first.toolCalls = [
+            "a",
+            "b"
+          ] && Llm.text second = "tools completed" && second.requestId = Some "fixture-request")
 
 session : Runtime -> LlmTypes.Provider -> Listener -> Nursery -> Result Bool Llm.Error / { Clock, Concurrency, Net, Tls }
 let session env provider listener nursery =

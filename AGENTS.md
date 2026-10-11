@@ -1143,6 +1143,9 @@ preserve request IDs and native continuation items, and reject premature EOF.
 `LlmAnthropic` accumulates indexed Messages blocks and cumulative usage, retaining
 thinking signatures and grouping adjacent tool results. Truncated argument JSON
 remains partial data. `LlmReplay` exercises both codecs with pure transport chunks.
+`LlmTool` separates serializable definitions from effect-carrying handlers, checks
+arguments before invocation, and preserves call IDs in results. Structured-output
+helpers retain the original response alongside the decoded application value.
 
 `HttpClient.foldEvents` threads application state through scoped SSE callbacks,
 retaining typed callback errors, response metadata and bounded error bodies.
