@@ -3358,6 +3358,11 @@ Editor integration:
     Scalar replacement keeps the states in registers. Generated functions expose
     their explicit ABI to ownership lowering as well as native emission. Effects,
     traps, resources and cross-element dependencies remain conservative barriers.
+  - **Exposed intrinsic calls.** Fusion reruns the existing intrinsic-wrapper
+    recognizer on generated loops and rewritten continuations before ownership
+    insertion. Exactly saturated calls become primitives with the same operand
+    order; partial and first-class uses retain the uniform value boundary. Source
+    wrapper summaries keep their existing early-cutoff behavior.
   - **Materialized concatenation.** `List.concat` traverses chunks directly in
     one constructor-tail loop, without first reversing the outer list. Unique
     prefix cells are reused, shared prefixes are copied, and the final chunk is

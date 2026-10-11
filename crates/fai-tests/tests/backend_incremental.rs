@@ -16,6 +16,35 @@ use fai_tests::{Revision, assert_incremental_matches_clean};
 use indoc::indoc;
 
 #[test]
+fn synthesized_wrapper_edits_match_clean_loops() {
+    let plus = "module A\npublic combine : Int -> Int -> Int\nlet combine a b = a + b\n";
+    let minus = plus.replace("a + b", "b - a");
+    let caller = "module B\nlet total xs = Array.foldl A.combine 0 xs\n";
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("A.fai", plus), ("B.fai", caller)], &[("A.fai", &minus), ("B.fai", caller)]],
+        |db, files| {
+            (*fai_core::fuse_def(db, db.source_file(files[1]).unwrap(), Symbol::intern("total")))
+                .clone()
+        },
+    );
+}
+
+#[test]
+fn nonwrapper_body_edits_keep_the_generated_caller_firewall() {
+    let mut db = fai_db::FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let source = "module A\npublic combine : Int -> Int -> Int\nlet combine a b = a + b + 1\n";
+    db.add_source("A.fai".into(), source.into());
+    let id = db
+        .add_source("B.fai".into(), "module B\nlet total xs = Array.foldl A.combine 0 xs\n".into());
+    let file = db.source_file(id).unwrap();
+    let before = fai_core::fuse_def(&db, file, Symbol::intern("total"));
+    db.add_source("A.fai".into(), source.replace("+ 1", "+ 2"));
+    let after = fai_core::fuse_def(&db, file, Symbol::intern("total"));
+    assert!(std::sync::Arc::ptr_eq(&before, &after));
+}
+
+#[test]
 fn demanded_result_helper_edits_match_clean_native_objects() {
     let source = "module M\nlet step n = if n <= 0 then Some (n, 42) else step (n - 1)\nlet unpack n = match step n with | None -> 0 | Some (left, right) -> left + right\n";
     let edited = source.replace("42", "43");

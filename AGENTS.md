@@ -551,6 +551,9 @@ boxed fields and shared records retain the generic path and value semantics.
 Synthesized sequence loops inline exactly saturated, small, non-recursive
 same-file callbacks under the ordinary helper-inlining budget, so a named helper
 can retain the same element reuse as a literal lambda.
+Saturated intrinsic-wrapper calls exposed by fusion are folded before ownership
+insertion, both in generated loops and unrolled continuations. The same wrapper
+recognizer preserves operand order and keeps partial/first-class calls uniform.
 Bounded data-cell resets and same-size reconstructions have inline native fast
 paths. They preserve scalar-slot descriptors and release descendants iteratively;
 shared cells, incompatible tokens, and concurrent execution use runtime fallbacks.

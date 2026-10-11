@@ -1,0 +1,18 @@
+module Main
+
+public lengths : List String -> Int
+let lengths values = List.sum (List.map String.length values)
+
+public reverseBuild : List Int -> Array Int
+let reverseBuild values = List.foldr Array.push [||] values
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let count = lengths ["aλ", "😀z", ""]
+  let reversed = reverseBuild [9223372036854775807, -9223372036854775808]
+  let nested = Array.map (Array.push 9) [| [| 1 |], [| 2 |] |]
+  let valid = count = 4 && reversed = [| -9223372036854775808, 9223372036854775807 |]
+  runtime.console.writeLine (if valid && nested = [| [| 1, 9 |], [| 2, 9 |] |] then
+    "ok"
+  else
+    "wrong")
