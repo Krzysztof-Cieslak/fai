@@ -1,0 +1,141 @@
+module FilesystemChecks
+
+let named text = Result.withDefault Path.empty (Path.fromString text)
+
+let child base text = Path.join base (named text)
+forall text: match Path.fromString text with
+| Err _ -> true
+| Ok path -> Path.toString path = Ok text
+forall text: match Path.fromString text with
+| Err _ -> true
+| Ok path -> Path.fromNativeBytes (Path.toNativeBytes path) = Ok path
+example: Path.extension (named ".gitignore") = None
+example: Path.fileName (named "a/b") = Some (named "b")
+example: Path.stem (named "a/b.tar.gz") = Some (named "b.tar")
+example: Path.withExtension (named "txt") (named "b.dat") = Ok (named "b.txt")
+example: Path.withFileName (named "c") (named "a/b") = Ok (Path.normalize (named "a/c"))
+example: Path.normalize (named "a/../../b") = Path.normalize (named "../b")
+example: Path.relativeTo (named "a/b") (named "a/c") = Ok (Path.normalize (named "../c"))
+example: Path.resolve (named "relative") (named "child") = Err Path.IncompatibleBase
+example: Path.toNativeBytes Path.empty = Bytes.empty
+
+nativeNames : Runtime -> Path -> Bool / { FileSystem }
+let nativeNames env root =
+  let raw = Bytes.fromList (if Path.nativeEncoding = "windows" then [0, 216] else [255])
+  let name = Result.withDefault Path.empty (Path.fromNativeBytes raw)
+  let path = Path.join root name
+  let wrote = env.fs.writeBytes path (Bytes.fromList [255, 0, 42])
+  let read = env.fs.readBytes path 3
+  let found = env.fs.linkMetadata path
+  let removed = env.fs.removeFile path
+  Result.isErr (Path.toString name) && wrote = Ok () && read = Ok (Bytes.fromList [
+    255,
+    0,
+    42
+  ]) && removed = Ok () && (match found with
+  | Ok info -> info.length = 3 && info.kind = FileSystem.RegularFile
+  | _ -> false)
+
+aliases : Runtime -> Path -> Bool / { FileSystem }
+let aliases env root =
+  let path = child root "alias"
+  match env.fs.openWriter path FileSystem.CreateNew with
+  | Err _ -> false
+  | Ok writer ->
+    let written = env.fs.writeChunk writer (Bytes.fromString "payload")
+    let closed = env.fs.closeWriter writer
+    let late = env.fs.writeChunk writer Bytes.empty
+    let again = env.fs.closeWriter writer
+    let contents = env.fs.readFile path
+    contents = Ok "payload" && again = Ok () && closed = Ok () && (match late with
+    | Err error -> error.kind = FileSystem.Closed
+    | _ -> false)
+
+links : Runtime -> Path -> Bool / { Concurrency, FileSystem }
+let links env root =
+  let target = child root "target"
+  let alias = child root "hard-link"
+  let dangling = child root "dangling"
+  let written = env.fs.writeFile target "target"
+  let linked = env.fs.hardLink target alias
+  let same = env.fs.sameFile target alias
+  let symbolic = env.fs.symlink (child root "missing") dangling false
+  match symbolic with
+  | Err error ->
+    Path.nativeEncoding = "windows" && (error.kind = FileSystem.PermissionDenied || error.kind = FileSystem.Unsupported)
+  | Ok _ ->
+    let exists = FileSystem.exists env.fs dangling
+    let entry = FileSystem.entryExists env.fs dangling
+    let read = env.fs.readLink dangling
+    let removed = env.fs.removeFile dangling
+    let cycle = child root "cycle"
+    let cycleCreated = env.fs.symlink root cycle true
+    let walk =
+      Directory.walk env { Directory.walkOptions with
+        followLinks = true
+      } root 0 (fun depth entry count -> Ok (count + 1, Directory.Continue))
+    let cycleRemoved =
+      if Path.nativeEncoding = "windows" then
+        env.fs.removeDirectory cycle
+      else
+        env.fs.removeFile cycle
+    written = Ok () && linked = Ok () && same = Ok true && exists = Ok false && entry = Ok true && read = Ok (child root "missing") && Result.isErr walk.outcome && removed = Ok () && cycleCreated = Ok () && cycleRemoved = Ok ()
+
+cancelWorker : Runtime -> Path -> Channel Path -> Channel Unit -> Unit -> Bool / { Concurrency, FileSystem }
+let cancelWorker env root ready blocked unit =
+  let wait temporary =
+    let signalled = env.concurrency.send ready temporary.path
+    let stopped = env.concurrency.recv blocked
+    Err "cancelled callback"
+  let result = Temp.withDirectory env root wait
+  let completed = Wire.cleanup env.concurrency (fun _ -> env.concurrency.send ready Path.empty)
+  result = Err (FileSystem.BodyError "cancelled callback")
+
+cancelScope : Runtime -> Path -> Nursery -> Bool / { Concurrency, FileSystem }
+let cancelScope env root nursery =
+  let ready = env.concurrency.channel 1
+  let blocked = env.concurrency.channel 1
+  let worker = env.concurrency.spawn nursery (cancelWorker env root ready blocked)
+  let path = Option.withDefault Path.empty (env.concurrency.recv ready)
+  let cancelled = env.concurrency.cancel worker
+  let result = env.concurrency.await worker
+  let closed = env.concurrency.close blocked
+  let missing = FileSystem.entryExists env.fs path
+  result && path <> Path.empty && missing = Ok false
+
+atomic : Runtime -> Path -> Bool / { Concurrency, FileSystem }
+let atomic env root =
+  let path = child root "atomic"
+  let written = File.writeTextAtomic env File.atomicOptions path "first"
+  let rejected writer = Err "reject"
+  let failed = File.withAtomicWriter env File.atomicOptions path rejected
+  let kept = env.fs.readFile path
+  let durable =
+    File.writeTextAtomic env { File.atomicOptions with
+      durability = File.SyncFileAndDirectory
+    } path "second"
+  let latest = env.fs.readFile path
+  written.phase = File.Committed && written.outcome = Ok () && failed.phase = File.NotCommitted && kept = Ok "first" && latest = Ok "second" && durable.phase = File.Committed && (if Path.nativeEncoding = "windows" then
+    Result.isErr durable.outcome
+  else
+    durable.outcome = Ok ())
+
+check : Runtime -> Temp.Directory -> Result Bool String / { Concurrency, FileSystem }
+let check env temporary =
+  let names = nativeNames env temporary.path
+  let handles = aliases env temporary.path
+  let identities = links env temporary.path
+  let cancelled = env.concurrency.scope (cancelScope env temporary.path)
+  let replaced = atomic env temporary.path
+  Ok (names && handles && identities && cancelled && replaced)
+
+public main : Runtime -> Unit / { Concurrency, Console, FileSystem }
+let main env =
+  match env.fs.temporaryDirectory () with
+  | Err error -> env.console.writeLine (FileSystem.errorToString error)
+  | Ok parent ->
+    let result = Temp.withDirectory env parent (check env)
+    env.console.writeLine (if result = Ok true then
+      "filesystem checks passed"
+    else
+      "filesystem checks FAILED")

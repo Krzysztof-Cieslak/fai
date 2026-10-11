@@ -163,6 +163,9 @@ jobs:
       - uses: ./.github/actions/llm
         if: contains(fromJSON(needs.changes.outputs.packages), 'llm')
         timeout-minutes: 10
+      - name: Native filesystem compiler fixture
+        if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
+        run: python scripts/tests/filesystem_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
       - name: Package verified compiler bundle
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
         run: python scripts/compiler.py pack --offline --no-build --output "$RUNNER_TEMP/compiler.zip"
@@ -272,6 +275,9 @@ jobs:
       - uses: ./.github/actions/llm
         if: contains(fromJSON(needs.changes.outputs.packages), 'llm')
         timeout-minutes: 10
+      - name: Native filesystem compiler fixture
+        if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
+        run: python scripts/tests/filesystem_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
       - name: Package verified compiler bundle
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
         shell: python

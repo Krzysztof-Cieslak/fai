@@ -85,10 +85,10 @@ let list env limit path =
       FileSystem.scopeResult (Result.map (List.sortBy (fun a b ->
         compare a.name b.name)) result) closed
 
-openFrame : { concurrency : Concurrency, fs : FileSystem | _ } -> WalkOptions -> Int -> Int -> Path -> Bytes -> Result Frame FileSystem.Error / { Concurrency, FileSystem }
+openFrame : { concurrency : Concurrency, fs : FileSystem | _ } -> WalkOptions -> Int -> Int -> Path -> Bytes -> Result Frame (FileSystem.Error * Option FileSystem.Error) / { Concurrency, FileSystem }
 let openFrame env options depth remaining path identity =
   match env.fs.openDirectory path with
-  | Err error -> Err error
+  | Err error -> Err (error, None)
   | Ok cursor ->
     if options.order = NativeOrder then
       Ok { cursor = Some cursor, depth = depth, entries = [], identity = identity }
@@ -102,8 +102,9 @@ let openFrame env options depth remaining path identity =
         entries = List.sortBy (fun a b -> compare a.name b.name) entries,
         identity = identity
       }
-      | (Err error, _) -> Err error
-      | (_, Err error) -> Err error
+      | (Err error, Err cleanup) -> Err (error, Some cleanup)
+      | (Err error, Ok _) -> Err (error, None)
+      | (_, Err error) -> Err (error, None)
 
 closeFrame : FileSystem -> Frame -> Result Unit FileSystem.Error / { FileSystem }
 let closeFrame fs frame =
@@ -194,7 +195,12 @@ let descend env options step frames result entry depth =
       }
     else
       match openFrame env options depth (options.maxEntries - result.visited) entry.path info.identity with
-      | Err error -> handleError env options step frames result error
+      | Err (error, cleanup) ->
+        handleError env options step frames { result with
+          cleanupError = match result.cleanupError with
+          | None -> cleanup
+          | Some _ -> result.cleanupError
+        } error
       | Ok frame -> walkLoop env options step (frame :: frames) result
 
 handleError : { concurrency : Concurrency, fs : FileSystem | _ } -> WalkOptions -> (Int -> FileSystem.Entry -> 'state -> Result ('state * Decision) 'error / 'e) -> List Frame -> WalkResult 'state 'error -> FileSystem.Error -> WalkResult 'state 'error / { Concurrency, FileSystem | 'e }
@@ -234,5 +240,8 @@ let walk env options path initial step =
         result
       else
         match openFrame env options 0 options.maxEntries path info.identity with
-        | Err error -> { result with outcome = Err (FileError error) }
+        | Err (error, cleanup) -> { result with
+          cleanupError = cleanup,
+          outcome = Err (FileError error)
+        }
         | Ok frame -> walkLoop env options step [frame] result
