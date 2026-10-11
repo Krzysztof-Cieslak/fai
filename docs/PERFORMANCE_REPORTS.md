@@ -114,6 +114,14 @@ means are equally weighted geometric means; p90 is nearest-rank across eligible
 case ratios. End-to-end medians retain their startup/shutdown scope and do not
 enter warm aggregates.
 
+The generated runtime report includes an **Eligibility legend** for
+`matched kernel`, `application` and `floor: <languages>`, including the pairwise
+effect on F/R and F/O. The memory report includes a **Status legend** for
+`application/unqualified`, `floor-limited` and `process footprint only`.
+Memory's floor gate applies to every peer together, while runtime ratios are
+qualified per pair. Both reports explain the ratio abbreviations, the 10% floor
+threshold and withheld-ratio dashes next to their measurement tables.
+
 RSS is process footprint, not a common live-heap measure or a compiler-memory
 win count. Perceus evidence uses its own Fai object/backing accounting domain.
 All allocation controls retain reference counting; disabling reuse does not

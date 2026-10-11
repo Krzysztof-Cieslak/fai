@@ -25,3 +25,15 @@ Ratios are **Fai ÷ peer; lower is faster**. Aggregates include only reviewed ma
 | ocaml | 44 / 44 | 0.400× | 0.400× | 0.400× |
 
 80 main workload/size cases are measured in total. Application cases retain absolute timings, with no compiler-kernel ratio. Warm measurements use 3 passes of 21 paired observations after calibration and warmup.
+
+## Eligibility legend
+
+`F/R` means Fai divided by Rust, and `F/O` means Fai divided by OCaml. Lower ratios mean faster Fai execution. The timing floor is measured using the same harness without the workload.
+
+| Eligibility | Meaning |
+|---|---|
+| `matched kernel` | Peers share the reviewed algorithm and logical data structures, and all clear the timing-floor check. Their ratios qualify for matched-kernel comparisons. |
+| `application` | Algorithms, containers, library policies or evaluation strategies differ. Absolute timings are shown; both compiler-kernel ratios are withheld. |
+| `floor: <languages>` | Each named peer's measured harness floor reaches 10% of its elapsed time. Ratios involving those peers are withheld; another peer comparison may still qualify. |
+
+For example, `floor: rust` suppresses F/R while F/O may remain; `floor: ocaml` suppresses F/O while F/R may remain; `floor: fai` suppresses both. `—` means an excluded ratio, rather than a missing measurement. Only eligible ratios from the main workloads enter the summary above; supplemental components are reported separately.

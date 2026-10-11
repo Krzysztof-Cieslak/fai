@@ -132,6 +132,7 @@ fn footprint(snapshot: &Snapshot, evidence: &str) -> String {
         snapshot.manifest.settings.memory_samples
     );
     text.push_str("The tables report **process footprint**, including code, stacks, allocator retention and GC policy. Each displayed peak and floor is the maximum across fresh processes, in KiB (1,024 bytes). They do not measure comparable cross-language live heaps. Floors use the same executable; peaks are never subtracted or converted into compiler-memory win counts.\n\n");
+    text.push_str("## Status legend\n\nThe floor is the same executable running its harness without the workload. `Process F/R` compares Fai's peak RSS with Rust's; `Process F/O` compares it with OCaml's. Lower ratios mean a smaller observed process footprint.\n\n| Status | Meaning |\n|---|---|\n| `application/unqualified` | Peers differ in algorithms, containers or implementation policies. Absolute RSS is shown; both ratios are withheld. |\n| `floor-limited` | At least one peer's floor reaches 10% of its workload peak RSS. Both memory ratios are withheld. |\n| `process footprint only` | The reviewed matched kernel uses uninstrumented peers, at least five observations per peer, and every peer's floor is below 10% of its peak. Ratios qualify as whole-process RSS comparisons. |\n\n`—` means a ratio was excluded by these rules; the underlying measurements remain in the table and evidence. Whole-process RSS includes code, stacks, allocator retention and GC policy. Live-heap efficiency and Perceus guarantees require their own evidence.\n\n");
     text.push_str(&memory::render_footprints(samples).replacen(
         "### Isolated process footprints",
         "## Current measurements",
@@ -176,6 +177,7 @@ fn runtime(snapshot: &Snapshot, evidence: &str) -> String {
         snapshot.manifest.settings.warm_passes,
         snapshot.manifest.settings.warm_samples
     );
+    text.push_str("## Eligibility legend\n\n`F/R` means Fai divided by Rust, and `F/O` means Fai divided by OCaml. Lower ratios mean faster Fai execution. The timing floor is measured using the same harness without the workload.\n\n| Eligibility | Meaning |\n|---|---|\n| `matched kernel` | Peers share the reviewed algorithm and logical data structures, and all clear the timing-floor check. Their ratios qualify for matched-kernel comparisons. |\n| `application` | Algorithms, containers, library policies or evaluation strategies differ. Absolute timings are shown; both compiler-kernel ratios are withheld. |\n| `floor: <languages>` | Each named peer's measured harness floor reaches 10% of its elapsed time. Ratios involving those peers are withheld; another peer comparison may still qualify. |\n\nFor example, `floor: rust` suppresses F/R while F/O may remain; `floor: ocaml` suppresses F/O while F/R may remain; `floor: fai` suppresses both. `—` means an excluded ratio, rather than a missing measurement. Only eligible ratios from the main workloads enter the summary above; supplemental components are reported separately.\n\n");
     let mut gaps = Vec::new();
     for case in &cases {
         for peer in ["rust", "ocaml"] {
