@@ -95,7 +95,7 @@ def exercise(command, title, keys, finish=None, expected=None, timeout=180):
         assert b"\x1b[?1049h" in output and b"\x1b[?1049l" in output
         assert b"\x1b[?25h" in output, "cursor was not restored"
         if expected:
-            assert expected in output, output[-2000:]
+            assert expected in output or expected in CSI.sub(b"", output), output[-2000:]
     finally:
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)

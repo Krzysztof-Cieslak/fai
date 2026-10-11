@@ -1,0 +1,10 @@
+name: Native process integration
+description: Verify supervised process ownership and byte pipes through JIT and AOT
+runs:
+  using: composite
+  steps:
+    - name: Process execution and compiler fixtures
+      shell: python
+      run: |
+        import subprocess, sys
+        subprocess.run([sys.executable, "scripts/tests/process_toolchain.py"], check=True)

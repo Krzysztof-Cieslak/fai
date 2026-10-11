@@ -1844,6 +1844,20 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+Including `packages/process/src` supplies `Process` and `ProcessText`. Commands
+are pure descriptions (`command`, `arguments`, `workingDirectory`, environment
+and stdin builders); `run` captures bytes, and `withOutput` streams them to a
+sequential consumer. `communicate` runs an effectful input producer concurrently
+with its output consumer. `withChild` exposes manual scoped input/output and
+invalidates retained child aliases on return. Native execution requires explicit
+`ProcessHost.Process`; managed helpers also take `Concurrency`. A `pipeline`
+connects commands through native pipes, with final stdout and per-stage stderr
+and exit statuses. `expectSuccess` and `expectLastSuccess` apply explicit exit
+policies. Deadlines, buffering and preview limits are configurable; failures keep
+partial output and cleanup details. `ProcessText` incrementally decodes bounded
+UTF-8 LF/CRLF lines. Run `fai test -C packages process`; see
+`packages/process/README.md` for the API and the interactive `TaskRunner` example.
+
 `packages/sql` supplies `Sql` and `SqlDecode`. Bind `Sql.Value` parameters
 separately with `Sql.statement text values`; dialects/placeholders are driver
 specific. `Sql.execute` returns an affected-row count; `SqlDecode.query decoder

@@ -44,3 +44,27 @@ let scripted = {
 }
 example: (scripted.run Process.defaults (Process.command "unused" [] |> Process.stdinText "fake") |> Result.map Process.stdoutText) = Ok (Ok "fake")
 forall text: (Process.describe (Process.command "x" [] |> Process.stdinText text)).input = Bytes.fromString text
+example: Process.validate { Process.defaults with
+  bufferBytes = 1073741825
+} (Process.command "x" []) |> Result.isErr
+example: Process.validate { Process.defaults with
+  bufferBytes = 1,
+  chunkBytes = 2
+} (Process.command "x" []) |> Result.isErr
+example: Process.validate { Process.defaults with
+  pollMs = 1001
+} (Process.command "x" []) |> Result.isErr
+example: Process.validate { Process.defaults with
+  graceMs = -1
+} (Process.command "x" []) |> Result.isErr
+example: Process.validate { Process.defaults with
+  maxPreviewBytes = -1
+} (Process.command "x" []) |> Result.isErr
+example: Process.validate Process.defaults (Process.command "x" [] |> Process.workingDirectory "bad\u{0}path") |> Result.isErr
+example: Process.validate Process.defaults (Process.command "x" [] |> Process.setEnvironment "" "value") |> Result.isErr
+example: Process.validate Process.defaults (Process.command "x" [] |> Process.setEnvironment "key" "bad\u{0}value") |> Result.isErr
+example: Process.validate { Process.defaults with
+  graceMs = 0,
+  maxCaptureBytes = 0,
+  maxPreviewBytes = 0
+} (Process.command "x" []) = Ok ()

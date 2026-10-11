@@ -34,6 +34,8 @@ limit, a 1-second shutdown grace, a 5-second post-exit drain deadline, and 10 ms
 exit polling. Overall execution has no default deadline. All are configurable.
 Sizes are checked before starting; native buffers are limited to 1 GiB, polling
 to 1..1000 ms, and pipeline length to at most 1024 stages (package default: 64).
+Internal I/O overhead is additionally bounded by chunk size and stage count;
+captured results and application-retained output have their own lifetimes.
 
 Closing ends input, then terminates remaining process groups/Jobs after the grace
 interval and reaps direct children. A deadline starts cleanup; returning waits
@@ -44,7 +46,7 @@ group's ownership. External code executes with its operating-system permissions.
 constructs a native implementation; a scripted `Runner {}` is usable in pure
 contracts.
 
-## Streaming and manual sessions
+## Pipelines
 
 `pipeline commands` builds a pure pipeline. `validatePipeline` checks every stage
 before spawning. `runPipeline` captures the final stdout and all stage stderr;
@@ -58,7 +60,7 @@ cancel other stages; launch/I/O failures, explicit stop and deadlines terminate
 the managed scope. Consumers start before producers, and unused parent-side pipe
 endpoints close promptly so EOF and broken-pipe behavior propagate correctly.
 
-### Streaming callbacks
+## Streaming and manual sessions
 
 `withOutput runtime options command consume` feeds preset input and delivers
 `Chunk { bytes, stage, stderr }` values sequentially. The callback returns
@@ -85,6 +87,26 @@ the session; retained aliases fail rather than extending its lifetime.
 UTF-8 LF/CRLF decoder. Keep a separate decoder per output pipe. Split code points
 remain buffered; invalid UTF-8 and oversized lines are explicit errors. A final
 unterminated line is emitted at EOF.
+
+## Examples and integration
+
+```sh
+fai run -C packages process/examples/Capture.fai -- git status --short
+fai run -C packages process/examples/TaskRunner.fai -- git status --short
+python scripts/tests/process_toolchain.py --fai /path/to/fai
+```
+
+The task runner uses the TUI package, displays live output, supports cancellation
+and rerunning, and keeps bounded output and completion history. Arguments are
+edited one per line. Generation tags reject output from an obsolete run, and one
+FIFO keeps completion behind its output. Its per-pipe line decoders preserve
+split UTF-8 code points.
+
+`RuntimeChecks.fai` executes real child fixtures through both JIT and AOT. The
+Python integration harness supplies a portable child executable and separately
+checks compiler rejection of hidden process/callback effects. Package contracts
+remain ordinary `fai test` declarations. The CI dependency on `tui` covers the
+interactive example; the process library sources themselves use only std.
 
 ```sh
 fai fmt --check -C packages process

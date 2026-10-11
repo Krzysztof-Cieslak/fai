@@ -335,8 +335,10 @@ type Services = { concurrency : Concurrency, process : ProcessHost.Process }
 
 cleanupResult : Services -> ProcessHost.Session -> Task (Result Unit Error) -> Result Output Error -> Unit -> Result Output Error / { Concurrency, ProcessHost.Process }
 let cleanupResult env session input result unit =
-  let report = env.process.close session
+  let stopped = env.process.stop session
+  let cancelled = env.concurrency.cancel input
   let fed = env.concurrency.await input
+  let report = env.process.close session
   let result =
     match result with
     | Err failure -> Err failure

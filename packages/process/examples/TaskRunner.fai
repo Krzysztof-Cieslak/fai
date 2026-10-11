@@ -1,0 +1,229 @@
+module ProcessTaskRunner
+
+public type R = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  env : Env,
+  process : ProcessHost.Process,
+  terminal : TerminalHost.Terminal
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  env = stdEnv,
+  process = ProcessHost.native,
+  terminal = TerminalHost.native
+}
+
+type Msg =
+  | Executable String
+  | Arguments String
+  | Run
+  | Cancel
+  | Output Int Process.Chunk
+  | Finished Int (Result Process.Output Process.Error)
+  | Quit
+  | Delivered
+
+type Model = {
+  arguments : String,
+  busy : Bool,
+  decoders : Dict Int ProcessText.Decoder,
+  executable : String,
+  history : List String,
+  output : String,
+  revision : Int
+}
+
+type Services = { concurrency : Concurrency, process : ProcessHost.Process }
+
+let summary result =
+  match result with
+  | Err error -> Process.errorToString error
+  | Ok output ->
+    match Process.expectSuccess output with
+    | Ok _ -> "completed successfully"
+    | Err _ -> "completed with a nonzero exit"
+
+deliver : Concurrency -> Channel Msg -> Int -> Process.Chunk -> Result Process.Control Process.Error / { Concurrency }
+let deliver concurrency channel revision chunk =
+  let sent = concurrency.send channel (Output revision chunk)
+  Ok Process.Continue
+
+execute : Services -> Channel Msg -> Model -> Unit -> Msg / { Concurrency, ProcessHost.Process }
+let execute env channel model unit =
+  let args = if model.arguments = "" then [] else String.split "\n" model.arguments
+  let result =
+    Process.withOutput env Process.defaults (Process.command model.executable args) (deliver env.concurrency channel model.revision)
+  let sent = env.concurrency.send channel (Finished model.revision result)
+  Delivered
+
+append : String -> Model -> Model
+let append text model =
+  let output = model.output ++ text
+  { model with output = String.drop (String.length output - 200000) output }
+
+appendChunk : Process.Chunk -> Model -> Model
+let appendChunk chunk model =
+  let key = chunk.stage * 2 + (if chunk.stderr then 1 else 0)
+  let decoder =
+    match Dict.get key model.decoders with
+    | Some decoder -> Ok decoder
+    | None -> ProcessText.decoder 65536
+  let result =
+    match decoder with
+    | Err error -> Err error
+    | Ok decoder -> ProcessText.feed decoder chunk.bytes
+  match result with
+  | Err _ -> append "<binary or oversized output line>\n" { model with
+    decoders = Dict.remove key model.decoders
+  }
+  | Ok (decoder, lines) -> append (if lines = [] then
+    ""
+  else
+    String.join "\n" lines ++ "\n") { model with decoders = Dict.insert key decoder model.decoders }
+
+finishDecoder : Model -> (Int * ProcessText.Decoder) -> Model
+let finishDecoder model entry =
+  let (_, decoder) = entry
+  match ProcessText.finish decoder with
+  | Err _ -> append "<incomplete UTF-8>\n" model
+  | Ok lines -> append (String.join "\n" lines) model
+
+update : Services -> Channel Msg -> Msg -> Model -> (Model * TuiCmd.Cmd Msg { Concurrency, ProcessHost.Process })
+let update env channel message model =
+  match message with
+  | Executable text -> ({ model with executable = text }, TuiCmd.none)
+  | Arguments text -> ({ model with arguments = text }, TuiCmd.none)
+  | Run ->
+    if model.busy || String.trim model.executable = "" then
+      (model, TuiCmd.none)
+    else
+      let next = { model with
+        busy = true,
+        decoders = Dict.empty,
+        output = "",
+        revision = model.revision + 1
+      }
+      (next, TuiCmd.latest "process" (execute env channel next))
+  | Cancel ->
+    ({ model with
+      busy = false,
+      history = List.take 20 ("cancelled" :: model.history),
+      revision = model.revision + 1
+    }, TuiCmd.cancel "process")
+  | Output revision chunk ->
+    if revision <> model.revision then
+      (model, TuiCmd.none)
+    else
+      (appendChunk chunk model, TuiCmd.none)
+  | Finished revision result ->
+    if revision <> model.revision then
+      (model, TuiCmd.none)
+    else
+      let model = List.foldl finishDecoder model (Dict.toList model.decoders)
+      ({ model with
+        busy = false,
+        decoders = Dict.empty,
+        history = List.take 20 (summary result :: model.history)
+      }, TuiCmd.none)
+  | Quit -> (model, TuiCmd.quit)
+  | Delivered -> (model, TuiCmd.none)
+
+view : TuiLayout.Context -> Model -> Ui.Element Msg
+let view context model = Ui.column [
+  Ui.padding 1,
+  Ui.gap 1,
+  Ui.width Ui.fill,
+  Ui.height Ui.fill
+] [
+  Ui.text [] "Process task runner — arguments are one per line",
+  Ui.input (Ui.id "executable") [
+    Ui.width Ui.fill,
+    Ui.disabled model.busy
+  ] { label = "Executable", onChange = Executable, value = model.executable },
+  Ui.editor (Ui.id "arguments") [
+    Ui.width Ui.fill,
+    Ui.height (Ui.cells 5),
+    Ui.border,
+    Ui.disabled model.busy
+  ] {
+    label = "Arguments",
+    onBlur = None,
+    onChange = Arguments,
+    onSubmit = None,
+    value = model.arguments
+  },
+  Ui.row [
+    Ui.gap 2
+  ] [
+    Ui.button (Ui.id "run") [Ui.disabled model.busy] { label = "Run", onPress = Run },
+    Ui.button (Ui.id "cancel") [
+      Ui.disabled (not model.busy)
+    ] { label = "Cancel", onPress = Cancel },
+    Ui.button (Ui.id "quit") [] { label = "Quit", onPress = Quit }
+  ],
+  Ui.transcript (Ui.id "output") [
+    Ui.width Ui.fill,
+    Ui.height Ui.fill,
+    Ui.border
+  ] {
+    follow = true,
+    source = TuiMarkdown.source (TuiMarkdown.fromString {
+      ambiguousWide = false,
+      theme = TuiStyle.defaultTheme,
+      width = context.width - 4
+    } model.output)
+  },
+  Ui.text [] (if model.busy then
+    "running — Escape cancels"
+  else
+    String.join " | " (List.take 3 model.history))
+]
+
+receive : Concurrency -> Channel Msg -> Option (Msg * Channel Msg) / { Concurrency }
+let receive concurrency channel =
+  Option.map (fun message -> (message, channel)) (concurrency.recv channel)
+
+subscriptions : Concurrency -> Channel Msg -> Model -> TuiSub.Sub Msg { Concurrency }
+let subscriptions concurrency channel model =
+  TuiSub.stream "process-output" "1" (Stream.unfold (receive concurrency) channel) (fun error ->
+    Delivered)
+
+let event event =
+  match event with
+  | TerminalHost.Key key -> if key.code = "Escape" then Some Cancel else None
+  | _ -> None
+
+runUi : R -> String -> List String -> Unit / { Clock, Concurrency, Console, ProcessHost.Process, TerminalHost.Terminal }
+let runUi env executable arguments =
+  let channel = env.concurrency.channel 64
+  let initial = {
+    arguments = String.join "\n" arguments,
+    busy = false,
+    decoders = Dict.empty,
+    executable = executable,
+    history = [],
+    output = "",
+    revision = 0
+  }
+  let services = { concurrency = env.concurrency, process = env.process }
+  let program = { Tui.program (fun context ->
+    (initial, TuiCmd.focus (Ui.id "run"))) (update services channel) view with
+    onEvent = event,
+    subscriptions = subscriptions env.concurrency channel
+  }
+  let result = Tui.run env Tui.defaults program
+  let closed = env.concurrency.close channel
+  match result with
+  | Ok _ -> ()
+  | Err error -> env.console.writeLine error.message
+
+public main : R -> Unit / { Clock, Concurrency, Console, Env, ProcessHost.Process, TerminalHost.Terminal }
+let main env =
+  match env.env.args () with
+  | executable :: arguments -> runUi env executable arguments
+  | [] -> runUi env "git" ["status", "--short"]
