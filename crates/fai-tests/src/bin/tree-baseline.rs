@@ -2,7 +2,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use fai_tests::tree_lookup::{self, BinaryTree, KEYS};
+use fai_bench_workloads::tree_lookup::{self, BinaryTree, KEYS};
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();

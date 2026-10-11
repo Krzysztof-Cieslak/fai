@@ -11,6 +11,16 @@ locked decisions.
 - The language by example: the `samples/` directory.
 - **Remaining and proposed work lives in the issue tracker**, not here.
 
+Performance evidence distinguishes compiler mechanisms from deployment footprint.
+Cross-language kernels have explicit algorithm/representation contracts and use
+one compiler-independent peer executable per workload. Source-identical optimized
+allocation controls establish changes from fusion, reset/reuse and scalar replacement.
+The optional allocation counters measure Fai object requests and owned backing
+separately; they exclude host temporaries and OS rounding and are not interchangeable
+with OCaml GC heap statistics. Process RSS includes startup and runtime policy, is
+measured over size/repetition curves with exact-binary floors, and does not produce
+a compiler-memory win count. See `docs/BENCHMARK.md` for the versioned methodology.
+
 Decision and risk IDs are stable and never reused; a gap in the numbering is an
 entry that was folded into a later one (consolidated) or whose mitigation is
 fully realized.

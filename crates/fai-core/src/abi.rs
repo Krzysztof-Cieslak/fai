@@ -40,7 +40,21 @@ pub fn abi(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FnAbi> {
     // A niche `Option` (and a spread float aggregate) parameter/result is carried
     // wrapper-free / exploded across a direct call.
     let niche = |ty: &fai_types::Ty| niche_scheme(db, ty);
-    Arc::new(FnAbi::from_scheme(&scheme, source_param_count(db, file, name), &niche))
+    Arc::new(controlled(
+        db,
+        FnAbi::from_scheme(&scheme, source_param_count(db, file, name), &niche),
+    ))
+}
+
+pub(crate) fn controlled(db: &dyn Db, mut abi: FnAbi) -> FnAbi {
+    if fai_db::allocation_control(db) == fai_db::AllocationControl::NoScalarReplacement {
+        for repr in abi.params.iter_mut().chain(std::iter::once(&mut abi.ret)) {
+            if matches!(repr, crate::ir::Repr::Spread(_)) {
+                *repr = crate::ir::Repr::Uniform;
+            }
+        }
+    }
+    abi
 }
 
 /// `name`'s ABI located by [`DefId`], or the default (uniform) ABI for a

@@ -1,0 +1,17 @@
+[package]
+name = "fai-bench-workloads"
+description = "Compiler-independent native benchmark workloads and worker protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+[dependencies]
+wait-timeout.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

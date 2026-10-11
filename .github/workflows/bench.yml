@@ -70,6 +70,13 @@ jobs:
           mkdir -p target
           opam exec -- cargo bench --workspace --benches --locked 2>&1 | tee target/bench-output.txt
 
+      - name: Measure source-identical allocation controls
+        env:
+          FAI_BENCH_ARTIFACT_DIR: target/bench-native/allocation-controls
+        run: |
+          set -o pipefail
+          opam exec -- cargo bench -p fai-tests --features allocation-stats --bench allocation_design --locked 2>&1 | tee -a target/bench-output.txt
+
       - name: Render report
         if: always()
         # Appends a Markdown report to the run summary ($GITHUB_STEP_SUMMARY) and

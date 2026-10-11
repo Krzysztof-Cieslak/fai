@@ -18,7 +18,9 @@
 //! them, so they ride safely in the shared output stream. `WARMSTAT` records
 //! retain checked native-worker batches and their harness-floor observations.
 
+mod memory;
 mod warm;
+pub use memory::{AllocationSample, FootprintSample};
 pub use warm::WarmSample;
 
 /// One parsed benchmark measurement.
@@ -60,6 +62,10 @@ pub struct Report {
     pub mem: Vec<MemSample>,
     /// Raw paired warm-AOT observations, including their harness floors.
     pub warm: Vec<WarmSample>,
+    /// Versioned isolated process footprints, with raw floor observations.
+    pub footprints: Vec<FootprintSample>,
+    /// Same-source optimized allocation observations.
+    pub allocations: Vec<AllocationSample>,
 }
 
 /// The base URL for source links (`<server>/<repo>/blob/<sha>`), if known.
@@ -103,10 +109,20 @@ impl Report {
         let mut rows = Vec::new();
         let mut mem = Vec::new();
         let mut warm = Vec::new();
+        let mut footprints = Vec::new();
+        let mut allocations = Vec::new();
         let mut group = String::new();
         let mut stack: Vec<String> = Vec::new();
 
         for line in text.lines() {
+            if let Some(sample) = FootprintSample::parse(line) {
+                footprints.push(sample);
+                continue;
+            }
+            if let Some(sample) = AllocationSample::parse(line) {
+                allocations.push(sample);
+                continue;
+            }
             if let Some(sample) = WarmSample::parse(line) {
                 warm.push(sample);
                 continue;
@@ -149,7 +165,7 @@ impl Report {
             });
         }
 
-        Self { rows, mem, warm }
+        Self { rows, mem, warm, footprints, allocations }
     }
 
     /// Renders the report as Markdown: one collapsible table per bench group,
@@ -159,11 +175,18 @@ impl Report {
     pub fn to_markdown(&self, links: &LinkBase) -> String {
         use std::fmt::Write as _;
         let mut out = String::from("## Benchmark results\n\n");
-        if self.rows.is_empty() && self.mem.is_empty() && self.warm.is_empty() {
+        if self.rows.is_empty()
+            && self.mem.is_empty()
+            && self.warm.is_empty()
+            && self.footprints.is_empty()
+            && self.allocations.is_empty()
+        {
             out.push_str("_No benchmark results were parsed from the divan output._\n");
             return out;
         }
+        out.push_str(&memory::render_allocations(&self.allocations));
         out.push_str(&warm::render(&self.warm));
+        out.push_str(&memory::render_footprints(&self.footprints));
 
         let mut groups: Vec<&str> = Vec::new();
         for row in &self.rows {
@@ -245,6 +268,7 @@ impl Report {
                 "memory: Fai vs Rust (peak RSS)"
             };
             let _ = write!(out, "<details><summary><b>{title}</b></summary>\n\n");
+            out.push_str("**Historical unversioned process measurements.** These rows lack matched-workload and executable-set identities and are ineligible for compiler-attribution claims.\n\n");
             out.push_str("Peak resident set size of each delivered binary at its AOT workload ");
             out.push_str("(lower ratio is better). Small-heap rows are dominated by fixed ");
             out.push_str("process overhead; the heap-heavy ones carry the signal.\n\n");
@@ -365,10 +389,8 @@ impl Report {
             .collect()
     }
 
-    /// Renders the report as compact JSON (hand-rolled: the crate's non-dev
-    /// dependencies do not include a serializer). The shape is an object with a
-    /// `benchmarks` array of timing rows, a `memory` array of peak-RSS samples,
-    /// and raw `warmAot` observations with batch/pass metadata.
+    /// Renders compact JSON, retaining historical rows and versioned warm,
+    /// process-footprint, and allocation-attribution observations independently.
     #[must_use]
     pub fn to_json(&self) -> String {
         let mut out = String::from("{\"benchmarks\":[");
@@ -405,7 +427,11 @@ impl Report {
             }
             out.push_str(&sample.json());
         }
-        out.push_str("]}");
+        out.push_str("],\"processFootprints\":");
+        out.push_str(&serde_json::to_string(&self.footprints).unwrap());
+        out.push_str(",\"allocationAttribution\":");
+        out.push_str(&serde_json::to_string(&self.allocations).unwrap());
+        out.push('}');
         out
     }
 }
@@ -668,7 +694,10 @@ lsp            fastest       │ slowest       │ median        │ mean       
         assert!(report.rows.is_empty());
         assert!(report.mem.is_empty());
         assert!(report.to_markdown(&LinkBase::default()).contains("No benchmark results"));
-        assert_eq!(report.to_json(), "{\"benchmarks\":[],\"memory\":[],\"warmAot\":[]}");
+        assert_eq!(
+            report.to_json(),
+            "{\"benchmarks\":[],\"memory\":[],\"warmAot\":[],\"processFootprints\":[],\"allocationAttribution\":[]}"
+        );
     }
 
     #[test]

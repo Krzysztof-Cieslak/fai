@@ -1,4 +1,4 @@
-//! Structurally matched binary-tree lookup workloads and explicit map controls.
+//! Compiler-independent matched binary-tree workloads and explicit map controls.
 
 use std::collections::BTreeMap;
 

@@ -1,4 +1,4 @@
-//! Runtime-input programs and a checked line protocol for native benchmark workers.
+//! Runtime-input programs and a compiler-independent native worker protocol.
 
 use std::io::{self, BufRead, Write};
 
@@ -15,30 +15,42 @@ pub const MAX_SIZE: i64 = i32::MAX as i64;
 pub const MODULUS: i64 = 1_000_000_007;
 
 /// Native entry form: one argv-supplied invocation or a persistent stdin worker.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Entry {
     /// Read the workload size from the sole application argument.
     Once,
     /// Read an input window and serve checked batches until EOF.
     Worker,
+    /// Read size, repetition count, and run/floor mode; report process memory.
+    Memory,
 }
 
 /// Reuses the unmodified workload definitions with a runtime-input entry point.
 #[must_use]
 pub fn fai_program(algorithm: &Algorithm, entry: Entry) -> String {
-    let prefix = algorithm.source().split_once("public main :").expect("benchmark main").0;
+    fai_program_from(
+        algorithm.source(),
+        algorithm.entry,
+        matches!(algorithm.oracle, Oracle::Float(_)),
+        entry,
+    )
+}
+
+/// Applies the common native entry to registered or diagnostic workload source.
+#[must_use]
+pub fn fai_program_from(source: &str, function: &str, floating: bool, entry: Entry) -> String {
+    let prefix = source.split_once("public main :").map_or(source, |(prefix, _)| prefix);
     assert!(!prefix.contains("benchmarkHarness"), "reserved benchmark helper prefix");
-    let floating = matches!(algorithm.oracle, Oracle::Float(_));
     let scalar = if floating { "Float" } else { "Int" };
     let render = format!("{scalar}.toString");
     let suffix = match entry {
         Entry::Once => format!(
             "\npublic main : Runtime -> Unit / {{ Console, Env }}\nlet main runtime =\n  match runtime.env.args () with\n  | [argument] ->\n    match Int.fromString argument with\n    | Some size -> runtime.console.writeLine ({render} ({} size))\n    | None -> runtime.console.writeLine \"error: invalid size\"\n  | _ -> runtime.console.writeLine \"error: expected one size\"\n",
-            algorithm.entry
+            function
         ),
         Entry::Worker => include_str!("benchmark_aot/worker.fai.in")
             .replace("HARNESS_TYPE", scalar)
-            .replace("HARNESS_ENTRY", algorithm.entry)
+            .replace("HARNESS_ENTRY", function)
             .replace("HARNESS_RENDER", &render)
             .replace("HARNESS_ZERO", if floating { "0.0" } else { "0" })
             .replace("HARNESS_FLOOR", if floating { "Int.toFloat value" } else { "value" })
@@ -53,8 +65,72 @@ pub fn fai_program(algorithm: &Algorithm, entry: Entry) -> String {
             .replace("HARNESS_MAX_INPUTS", &MAX_INPUTS.to_string())
             .replace("HARNESS_MAX_BATCH", &MAX_BATCH.to_string())
             .replace("HARNESS_MAX_SIZE", &MAX_SIZE.to_string()),
+        Entry::Memory => include_str!("benchmark_aot/memory.fai.in")
+            .replace("HARNESS_TYPE", scalar)
+            .replace("HARNESS_ENTRY", function)
+            .replace("HARNESS_RENDER", &render)
+            .replace("HARNESS_ZERO", if floating { "0.0" } else { "0" })
+            .replace("HARNESS_FLOOR", if floating { "Int.toFloat size" } else { "size" })
+            .replace("HARNESS_ADD", if floating { "total + value" } else { "let remainder = value % 1000000007\n  let positive = if remainder < 0 then remainder + 1000000007 else remainder\n  (total + positive) % 1000000007" })
+            .replace("HARNESS_MAX_SIZE", &MAX_SIZE.to_string())
+            .replace("HARNESS_MAX_BATCH", &MAX_BATCH.to_string()),
     };
     format!("{prefix}\n{suffix}")
+}
+
+/// Runs an isolated native peer once, with no workload registry or compiler dependency.
+pub fn run_once(oracle: Oracle) -> Result<(), Box<dyn std::error::Error>> {
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments.len() != 1 {
+        return Err("expected one workload size".into());
+    }
+    let size: i64 = arguments[0].parse()?;
+    let value = match oracle {
+        Oracle::Int(f) => ExpectedAnswer::Int(f(size)),
+        Oracle::Float(f) => ExpectedAnswer::Float(f(size)),
+    };
+    write_answer(&mut std::io::stdout().lock(), value)?;
+    report_rss();
+    Ok(())
+}
+
+/// Executes checked whole-workload repetitions or the matching process floor.
+/// Output is a checksum; the floor executes no workload at any size.
+pub fn memory_process(oracle: Oracle) -> Result<(), Box<dyn std::error::Error>> {
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments.len() != 3 {
+        return Err("expected size, repetitions, and run/floor".into());
+    }
+    let size: i64 = arguments[0].parse()?;
+    let count: usize = arguments[1].parse()?;
+    if !(0..=MAX_SIZE).contains(&size) || count > MAX_BATCH {
+        return Err("memory workload size or repetition count out of range".into());
+    }
+    let floor = match arguments[2].as_str() {
+        "floor" => true,
+        "run" => false,
+        _ => return Err("expected run or floor mode".into()),
+    };
+    let result =
+        match oracle {
+            Oracle::Int(f) => {
+                ExpectedAnswer::Int(fold_int(&[size], count, |n| if floor { n } else { f(n) }))
+            }
+            Oracle::Float(f) => ExpectedAnswer::Float(fold_float(&[size], count, |n| {
+                if floor { n as f64 } else { f(n) }
+            })),
+        };
+    write_answer(&mut std::io::stdout().lock(), result)?;
+    report_rss();
+    Ok(())
+}
+
+fn report_rss() {
+    if std::env::var_os("FAI_REPORT_RSS").is_some()
+        && let Some(kib) = crate::peak_rss_kib()
+    {
+        eprintln!("fai-peak-rss-kib: {kib}");
+    }
 }
 
 fn words(line: &str) -> impl Iterator<Item = &str> {

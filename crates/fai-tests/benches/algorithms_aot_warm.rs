@@ -176,6 +176,18 @@ mod native {
         ocaml: Option<&Path>,
         config: &Config,
     ) {
+        let contract = fai_tests::benchmark_contracts::for_module(algorithm.module).unwrap();
+        let comparison_id = blake3::hash(
+            format!(
+                "{}:{}:{}",
+                fai_tests::native_peer::hash(fai),
+                fai_tests::native_peer::hash(rust_path),
+                ocaml.map(fai_tests::native_peer::hash).unwrap_or_default()
+            )
+            .as_bytes(),
+        )
+        .to_hex()
+        .to_string();
         let inputs = vec![size; INPUT_WINDOW];
         let configuration = inputs.iter().map(i64::to_string).collect::<Vec<_>>().join(" ");
         let value = ExpectedAnswer::at_size(algorithm, size);
@@ -185,8 +197,7 @@ mod native {
             Oracle::Float(_) => ExpectedAnswer::Float(size as f64),
         };
         let floors = vec![floor_value; INPUT_WINDOW];
-        let mut rust = Command::new(rust_path);
-        rust.arg(algorithm.module);
+        let rust = Command::new(rust_path);
         let mut peers = vec![
             Peer { side: "fai", worker: Worker::start(Command::new(fai), &configuration).unwrap() },
             Peer { side: "rust", worker: Worker::start(rust, &configuration).unwrap() },
@@ -225,7 +236,7 @@ mod native {
         println!(
             "WARMMETA\t{}",
             serde_json::json!({
-                "methodology": "warm-aot-batched-v1",
+                "methodology": fai_tests::benchmark_contracts::METHODOLOGY,
                 "algorithm": algorithm.module, "size": size, "batch": batch,
                 "inputWindow": INPUT_WINDOW, "targetBatchMs": TARGET_BATCH.as_millis(),
                 "slowBatchMs": SLOW_BATCH.as_millis(), "debugAssertions": cfg!(debug_assertions),
@@ -265,6 +276,10 @@ mod native {
             }
             for (index, peer) in peers.iter().enumerate() {
                 let row = WarmSample {
+                    methodology: fai_tests::benchmark_contracts::METHODOLOGY.into(),
+                    workload_version: contract.version.into(),
+                    comparison: contract.comparison.as_str().into(),
+                    comparison_id: comparison_id.clone(),
                     algorithm: algorithm.module.into(),
                     size,
                     side: peer.side.into(),
@@ -300,25 +315,22 @@ mod native {
             return;
         }
         assert!(
-            !cfg!(debug_assertions) || config.test,
-            "use cargo bench for optimized warm comparisons"
+            (!cfg!(debug_assertions) && !fai_codegen::INSTRUMENT_ALLOCATIONS) || config.test,
+            "use uninstrumented cargo bench builds for warm comparisons"
         );
         let temporary = tempfile::tempdir().unwrap();
         let directory = std::env::var_os("FAI_BENCH_ARTIFACT_DIR")
             .map_or_else(|| temporary.path().to_path_buf(), PathBuf::from);
         let directory = std::env::current_dir().unwrap().join(directory);
         std::fs::create_dir_all(&directory).unwrap();
-        let rust = directory.join("rust-worker");
-        std::fs::copy(env!("CARGO_BIN_EXE_algo-worker"), &rust).unwrap();
-        std::fs::write(directory.join("rust-worker.rs"), include_str!("../src/bin/algo-worker.rs"))
-            .unwrap();
         std::fs::write(
             directory.join("rust-worker-support.rs"),
-            include_str!("../src/benchmark_aot.rs"),
+            include_str!("../../fai-bench-workloads/src/benchmark_aot.rs"),
         )
         .unwrap();
         let metadata = serde_json::json!({
-            "methodology": "warm-aot-batched-v1", "gitRevision": std::env::var("GITHUB_SHA").ok(),
+            "methodology": fai_tests::benchmark_contracts::METHODOLOGY, "gitRevision": std::env::var("GITHUB_SHA").ok(),
+            "hashAlgorithm": "blake3", "faiCompiler": fai_driver::build_info(),
             "debugAssertions": cfg!(debug_assertions), "rustflags": std::env::var("RUSTFLAGS").ok(),
             "encodedRustflags": std::env::var("CARGO_ENCODED_RUSTFLAGS").ok(),
             "ocamlCompiler": std::env::var("FAI_BENCH_OCAMLOPT").ok(),
@@ -333,7 +345,7 @@ mod native {
         if config.components {
             std::fs::write(
                 directory.join("rust-tail-components.rs"),
-                include_str!("../src/tail_components.rs"),
+                include_str!("../../fai-bench-workloads/src/tail_components.rs"),
             )
             .unwrap();
         }
@@ -341,6 +353,15 @@ mod native {
             let folder = directory.join(algorithm.module);
             std::fs::create_dir_all(&folder).unwrap();
             let fai = build_fai(algorithm, &folder);
+            let peer = fai_tests::native_peer::rust(algorithm, Entry::Worker);
+            let rust = folder.join(format!("rust-worker{}", std::env::consts::EXE_SUFFIX));
+            std::fs::copy(&peer, &rust).unwrap();
+            std::fs::copy(peer.with_file_name("peer.rs"), folder.join("rust-worker.rs")).unwrap();
+            std::fs::copy(
+                peer.with_file_name("compiler-info.json"),
+                folder.join("rust-compiler-info.json"),
+            )
+            .unwrap();
             let ocaml = fai_tests::ocaml::worker_baseline(algorithm).map(|path| {
                 let target = folder.join("ocaml-worker");
                 std::fs::copy(&path, &target).unwrap();
@@ -355,7 +376,12 @@ mod native {
             });
             println!(
                 "AOTARTIFACT\t{}",
-                serde_json::json!({"algorithm": algorithm.module, "fai": fai, "rust": rust, "ocaml": ocaml})
+                serde_json::json!({"algorithm": algorithm.module, "fai": fai, "rust": rust, "ocaml": ocaml,
+                    "methodology": fai_tests::benchmark_contracts::METHODOLOGY,
+                    "workloadVersion": fai_tests::benchmark_contracts::for_module(algorithm.module).unwrap().version,
+                    "comparison": fai_tests::benchmark_contracts::for_module(algorithm.module).unwrap().comparison.as_str(),
+                    "faiHash": fai_tests::native_peer::hash(&fai), "rustHash": fai_tests::native_peer::hash(&rust),
+                    "ocamlHash": ocaml.as_ref().map(|path| fai_tests::native_peer::hash(path))})
             );
             for size in config.sizes(algorithm) {
                 measure(algorithm, size, &fai, &rust, ocaml.as_deref(), &config);

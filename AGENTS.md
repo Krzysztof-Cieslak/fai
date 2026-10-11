@@ -1433,7 +1433,14 @@ cache plus a fast linker (mold/lld).
    sole performance gate. Cross-language comparisons use **AOT on all three
     sides**: `algorithms_aot_warm` measures checked batches in persistent native
     workers, `algorithms_aot` includes process startup and shutdown, and
-    `algorithms_mem` records peak process RSS. Inputs arrive at runtime. Warm
+    `algorithms_mem` records isolated process RSS across input sizes and repetition
+    counts, with matched floor executions. Rust peers use the compiler-independent
+    `fai-bench-workloads` crate; all three sides select one workload per executable.
+    Reviewed contracts and executable-set identities qualify comparisons before
+    results are summarized. `allocation_design`, built with `allocation-stats`,
+    measures source-identical optimization controls in optimized AOT code. Its
+    Fai object/backing counters retain their own accounting domain; RSS is a
+    deployment footprint rather than a compiler-win count. Inputs arrive at runtime. Warm
     measurements report the harness floor without subtracting it; floor-limited
     or incomplete comparisons cannot establish compute parity. The separate
     `algorithms_jit` suite is **Fai regression coverage**, using Rust only for
@@ -1441,7 +1448,7 @@ cache plus a fast linker (mold/lld).
     Flambda and `-O3`** in the manual workflow; an absent default compiler remains
     optional locally, while an explicit invalid selection fails. The
    benchmarked algorithms (the `ALGORITHMS` registry in
-   `crates/fai-tests/src/algorithms.rs`, each a Rust oracle paired with a
+   `crates/fai-bench-workloads/src/algorithms.rs`, each a Rust oracle paired with a
    `samples/algorithms/` module and an OCaml dispatch arm) deliberately span a wide
    range of runtime shapes —
    arithmetic/recursion, lists, persistent `Dict`/`Set` (including tuple keys),

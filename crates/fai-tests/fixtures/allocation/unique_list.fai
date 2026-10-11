@@ -1,0 +1,11 @@
+module AllocationUniqueList
+
+let step xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> (x + 1) :: step rest
+
+let iterate n xs = if n <= 0 then List.sum xs else iterate (n - 1) (step xs)
+
+public run : Int -> Int
+let run n = iterate n (List.range 0 32)

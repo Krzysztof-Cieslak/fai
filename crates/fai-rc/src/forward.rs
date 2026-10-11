@@ -44,6 +44,9 @@ use crate::{
 #[salsa::tracked]
 pub fn rc_emit(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let base = crate::rc(db, file, name);
+    if fai_db::allocation_control(db) == fai_db::AllocationControl::NoReuse {
+        return base;
+    }
     let self_def = base.def;
     let mut next = next_free_local(&base);
 

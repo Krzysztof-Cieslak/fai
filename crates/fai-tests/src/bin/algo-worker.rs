@@ -2,9 +2,9 @@
 
 fn main() {
     let module = std::env::args().nth(1).expect("usage: algo-worker <module>");
-    use fai_tests::algorithms::{self as algorithms, Oracle};
-    use fai_tests::benchmark_aot::serve;
-    use fai_tests::tail_components;
+    use fai_bench_workloads::algorithms::{self as algorithms, Oracle};
+    use fai_bench_workloads::benchmark_aot::serve;
+    use fai_bench_workloads::tail_components;
     let input = std::io::stdin();
     let output = std::io::stdout();
     macro_rules! dispatch {

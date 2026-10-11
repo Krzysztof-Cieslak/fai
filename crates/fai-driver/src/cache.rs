@@ -159,7 +159,7 @@ fn object_key(db: &dyn Db, file: SourceFile, def: DefId, concurrent: bool) -> St
         CompilerBuild {
             identity: env!("FAI_COMPILER_BUILD_ID"),
             codegen_counters: fai_codegen::INSTRUMENT_ALLOCATIONS,
-            runtime_counters: cfg!(debug_assertions),
+            runtime_counters: fai_runtime::ALLOCATION_STATS_ENABLED,
         },
     )
 }

@@ -39,6 +39,31 @@ pub mod prelude {
 
 pub use salsa::{Accumulator, Durability, Setter, Update};
 
+/// A single disabled optimization for controlled compiler-allocation experiments.
+/// Normal compilation always uses `Enabled`; this is not a source-language mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum AllocationControl {
+    /// Apply every ordinary compiler optimization.
+    #[default]
+    Enabled,
+    /// Preserve sequence combinator boundaries.
+    NoFusion,
+    /// Release data cells normally instead of forwarding reset/reuse tokens.
+    NoReuse,
+    /// Keep aggregate cells and uniform aggregate call boundaries.
+    NoScalarReplacement,
+}
+
+#[salsa::input(singleton, debug)]
+struct CompilerControls {
+    allocation: AllocationControl,
+}
+
+/// Tracked diagnostic control, shared by all queries and cloned database handles.
+pub fn allocation_control(db: &dyn Db) -> AllocationControl {
+    CompilerControls::get(db).allocation(db)
+}
+
 /// The database trait every query operates over.
 ///
 /// Source lookup and workspace enumeration read tracked active membership, so
@@ -236,7 +261,19 @@ impl FaiDatabase {
             events,
         };
         let _ = SourceRegistry::builder(Vec::new()).durability(Durability::HIGH).new(&db);
+        let _ = CompilerControls::builder(AllocationControl::Enabled)
+            .durability(Durability::HIGH)
+            .new(&db);
         db
+    }
+
+    /// Changes one allocation optimization for a paired diagnostic compilation.
+    /// Updating the tracked input invalidates affected IR, ABI, and object queries.
+    pub fn set_allocation_control(&mut self, control: AllocationControl) {
+        CompilerControls::get(self)
+            .set_allocation(self)
+            .with_durability(Durability::HIGH)
+            .to(control);
     }
 
     /// Registers `path` with `text`, returning its [`SourceId`].

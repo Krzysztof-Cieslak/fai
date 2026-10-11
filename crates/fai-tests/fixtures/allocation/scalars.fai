@@ -1,0 +1,14 @@
+module AllocationScalars
+
+type Point = { x : Float, y : Float }
+
+step : Point -> Point
+let step point = { x = point.x + 1.0, y = point.y + 2.0 }
+
+iterate : Int -> Point -> Point
+let iterate n point = if n <= 0 then point else iterate (n - 1) (step point)
+
+public run : Int -> Int
+let run n =
+  let point = iterate n { x = 0.0, y = 0.0 }
+  Float.toInt (point.x + point.y)
