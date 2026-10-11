@@ -639,6 +639,19 @@ fn alternative_field_lifetimes_match_clean_native_objects() {
 }
 
 #[test]
+fn integer_tagging_range_edits_match_clean_native_objects() {
+    let source = "module M\nlet append n values = if n < 0 then values else if n < Array.length values then Array.push n values else values\n";
+    let edited = source.replace("n < Array.length values", "n >= Array.length values");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)], &[("M.fai", source)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("append"), false))
+                .clone()
+        },
+    );
+}
+
+#[test]
 fn integer_state_return_abi_edits_match_clean_callers() {
     let split = "module A\npublic make : Int -> (Int * Array Int)\nlet make value = (value, Array.singleton value)\n";
     let boxed = "module A\npublic make : Int -> (Int * Int)\nlet make value = (value, value)\n";

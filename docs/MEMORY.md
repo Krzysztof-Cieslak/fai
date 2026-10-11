@@ -2684,6 +2684,10 @@ Editor integration:
     uniform consumers can retain its word. The boxed marker acquires its reference
     before the parent release and preserves niche-payload and row-offset reads.
     Numeric consumers keep the ordinary raw-scalar projection path.
+    Integer operands with proven tagged-range bounds can cross a uniform slot
+    without an overflow branch. The range proof uses existing constraints and
+    the array allocation ceiling; unknown and wrapping values retain ordinary
+    boxing. Shadow execution validates each omitted range check.
     Consecutive distinct uniform-field projections ending at their owner's drop
     or reset may transfer the fields when the cell is uniquely owned. The field
     slots are cleared before the ordinary owner release, preserving each child

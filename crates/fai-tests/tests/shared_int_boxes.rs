@@ -6,12 +6,19 @@ use fai_syntax::Symbol;
 use std::sync::Mutex;
 
 static LOCK: Mutex<()> = Mutex::new(());
+const GUARDED_APPEND: &str = r#"
+public guardedAppend : Int -> Array Int -> Array Int
+let guardedAppend n values =
+  if n < 0 then Array.push (n + 1) values
+  else if n < Array.length values then Array.push n values
+  else Array.push (n - 1) values
+"#;
 const SOURCE: &str = "module Main\npublic pair : Int -> (Int * Int)\nlet pair x = (x + 1, x + 1)\npublic choose : Bool -> Int -> (Int * Int)\nlet choose yes x = if yes then (x + 1, x + 1) else (0, 0)\npublic captured : Int -> Int\nlet captured x =\n  let first = x + 1\n  let second = x + 1\n  let read _ = second\n  first + read ()\npublic makeInput : Int -> (Int * String)\nlet makeInput value = (value, \"label\")\npublic forward : (Int * String) -> (Int * String * Bool)\nlet forward pair =\n  let (value, label) = pair\n  (value, label, true)\npublic forwardPair : (Int * String) -> (Int * String)\nlet forwardPair pair = pair\npublic makeSome : Int -> Option Int\nlet makeSome value = Some value\npublic forwardSome : Option Int -> (Int * Int)\nlet forwardSome value = match value with | None -> (0, 0) | Some number -> (number, number)\npublic main : Runtime -> Unit\nlet main _ = ()\n";
 
 fn program() -> fai_driver::CompiledProgram {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
-    let id = db.add_source("Main.fai".into(), SOURCE.into());
+    let id = db.add_source("Main.fai".into(), format!("{SOURCE}{GUARDED_APPEND}"));
     fai_driver::jit_compile(&db, db.source_file(id).unwrap()).unwrap()
 }
 
@@ -134,6 +141,40 @@ fn forwarding_a_niche_payload_keeps_its_original_integer_box() {
 mod proptests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn bounded_tagging_and_full_width_fallback_preserve_array_values() {
+        let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        fai_driver::set_bce_shadow(true);
+        let mut program = program();
+        fai_driver::set_bce_shadow(false);
+        let append = program.function(Symbol::intern("guardedAppend")).unwrap();
+        proptest::test_runner::TestRunner::default()
+            .run(&(prop_oneof![any::<i64>(), 0i64..8], any::<bool>()), |(n, shared)| {
+                let baseline = (rt::live_count(), rt::live_bytes());
+                let values = rt::fai_array_repeat(rt::make_int(8), rt::make_int(0));
+                let retained = shared.then(|| rt::fai_dup(values));
+                let result = rt::apply(rt::fai_dup(append), &[rt::make_int(n), values]);
+                let last = rt::fai_array_get_borrowed(result, rt::make_int(8));
+                let expected = if n < 0 {
+                    n.wrapping_add(1)
+                } else if n < 8 {
+                    n
+                } else {
+                    n.wrapping_sub(1)
+                };
+                prop_assert_eq!(rt::read_int(last), expected);
+                rt::fai_drop(last);
+                rt::fai_drop(result);
+                if let Some(original) = retained {
+                    prop_assert_eq!(rt::read_int(rt::fai_array_length_borrowed(original)), 8);
+                    rt::fai_drop(original);
+                }
+                prop_assert_eq!((rt::live_count(), rt::live_bytes()), baseline);
+                Ok(())
+            })
+            .unwrap();
+    }
 
     #[test]
     fn forwarded_fields_preserve_unique_and_shared_values() {

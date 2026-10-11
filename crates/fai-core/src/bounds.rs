@@ -256,6 +256,29 @@ impl Bounds {
         self.shortest(a, b)
     }
 
+    /// Whether an integer atom is inside an inclusive interval, using both
+    /// inferred constraints and the platform-independent array length ceiling.
+    /// Unknown or possibly wrapping expressions retain their ordinary checks.
+    #[must_use]
+    pub fn integer_in_range(&self, value: &CExpr, minimum: i64, maximum: i64) -> bool {
+        if self.poisoned || minimum > maximum {
+            return false;
+        }
+        match value.kind {
+            K::Lit(Lit::Int(n)) => minimum <= n && n <= maximum,
+            K::Local(local) => {
+                let term = Term::Int(local);
+                if !self.has_term(term) {
+                    return false;
+                }
+                let (low, high) =
+                    self.intervals().get(&term).copied().unwrap_or_else(|| machine_interval(term));
+                low <= high && low >= i128::from(minimum) && high <= i128::from(maximum)
+            }
+            _ => false,
+        }
+    }
+
     /// Whether `a <= b + c` is entailed.
     fn entails_le(&self, a: Term, b: Term, c: i64) -> bool {
         self.shortest(a, b).is_some_and(|d| d <= c)
@@ -1079,6 +1102,50 @@ mod tests {
         b.transfer_let(local(0), &prim(Prim::ArrayRepeat, vec![local_expr(1), int_lit(0)]));
         assert_eq!(b.bound(Term::Len(local(0)), Term::Int(local(1))), Some(0));
         assert!(b.index_in_bounds(local(0), &int_lit(0)));
+    }
+
+    #[test]
+    fn array_length_fits_the_uniform_integer_range() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(1), &prim(Prim::ArrayLength, vec![local_expr(0)]));
+        assert!(b.integer_in_range(&local_expr(1), i64::MIN / 2, i64::MAX / 2));
+    }
+
+    #[test]
+    fn an_array_bounded_nonnegative_index_fits_the_uniform_integer_range() {
+        let mut b = Bounds::new();
+        b.set_ge(Term::Int(local(0)), 0);
+        b.add_edge(Term::Int(local(0)), Term::Len(local(1)), -1);
+        assert!(b.integer_in_range(&local_expr(0), i64::MIN / 2, i64::MAX / 2));
+    }
+
+    #[test]
+    fn an_upper_bound_alone_does_not_prove_the_uniform_integer_range() {
+        let mut b = Bounds::new();
+        b.add_edge(Term::Int(local(0)), Term::Len(local(1)), -1);
+        assert!(!b.integer_in_range(&local_expr(0), i64::MIN / 2, i64::MAX / 2));
+    }
+
+    #[test]
+    fn the_lowest_tagged_integer_is_inclusive() {
+        assert!(Bounds::new().integer_in_range(&int_lit(i64::MIN / 2), i64::MIN / 2, i64::MAX / 2));
+    }
+
+    #[test]
+    fn the_highest_tagged_integer_is_inclusive() {
+        assert!(Bounds::new().integer_in_range(&int_lit(i64::MAX / 2), i64::MIN / 2, i64::MAX / 2));
+    }
+
+    #[test]
+    fn a_full_width_integer_exceeds_the_tagged_range() {
+        assert!(!Bounds::new().integer_in_range(&int_lit(i64::MAX), i64::MIN / 2, i64::MAX / 2));
+    }
+
+    #[test]
+    fn unknown_wrapping_arithmetic_cannot_prove_a_tagged_result() {
+        let mut b = Bounds::new();
+        b.transfer_let(local(1), &prim(Prim::IntAdd, vec![local_expr(0), int_lit(1)]));
+        assert!(!b.integer_in_range(&local_expr(1), i64::MIN / 2, i64::MAX / 2));
     }
 
     #[test]

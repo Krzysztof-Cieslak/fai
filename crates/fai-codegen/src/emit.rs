@@ -2124,7 +2124,24 @@ impl<M: Module> Translator<'_, M> {
     /// value flowing into a boxed slot (a data field, environment, or argument).
     fn expr_boxed(&mut self, e: &CExpr) -> Value {
         let v = self.expr(e);
-        self.ensure_boxed(v)
+        if self.is_raw_int(v) && self.bounds.integer_in_range(e, i64::MIN / 2, i64::MAX / 2) {
+            let tagged = self.tag_int(v);
+            if self.bce_shadow {
+                let recovered = self.builder.ins().sshr_imm(tagged, 1);
+                let fits = self.builder.ins().icmp(IntCC::Equal, recovered, v);
+                let valid = self.builder.create_block();
+                let invalid = self.builder.create_block();
+                self.builder.ins().brif(fits, valid, &[], invalid, &[]);
+                self.builder.switch_to_block(invalid);
+                self.builder.seal_block(invalid);
+                self.runtime_fault("fai_bce_unsound_panic", &[], false);
+                self.builder.switch_to_block(valid);
+                self.builder.seal_block(valid);
+            }
+            tagged
+        } else {
+            self.ensure_boxed(v)
+        }
     }
 
     /// Coerces a function body's result for the uniform (boxed) ABI: an unboxed
