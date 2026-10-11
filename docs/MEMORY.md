@@ -1916,6 +1916,20 @@ Editor integration:
     of unrounded case ratios, with paired coverage and matched/application
     breakdowns. Equal weighting is per workload/input/repetition case; aggregate
     process footprints are not a count of compiler-memory wins.
+    Reviewed workload contracts fix the logical algorithm, construction and
+    materialization phases, and traversal order before measurement. Sorting uses
+    explicit shared algorithms and general shuffled input; native library sorts
+    retain separate distribution controls. Parser evaluation uses linked work
+    and value stacks on all peers, keeping deep inputs off the native stack.
+    String prefixes and split results remain materialized until their consumers;
+    native views, copies, ASCII evidence and reclamation are observable costs.
+    Hash tables start empty without insertion-count reservation, while their
+    distinct probing, chaining and growth policies keep them application cases.
+    UTF-8 builders use one classification policy across compute and memory.
+    Catalogs retain per-pair differences, and separate-process input preflights
+    record raw answers bound to the exact measured executables. Correcting a
+    workload requires a new contract and fresh measurements, not reclassification
+    of historical observations.
   - **`edit→test` measured at two levels.** The contract loop is benched both
     in-process (`fai-tests`' `contracts` bench — front end + synthesize + JIT +
     run, scaling to large workspaces) and end-to-end through the real binary and

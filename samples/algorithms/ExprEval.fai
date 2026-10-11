@@ -1,13 +1,12 @@
 module ExprEval
 
-// A recursive-descent parser and evaluator for arithmetic expressions: a token
-// `List` is parsed into an `Expr` tree honouring `*` over `+`/`-`, then evaluated.
+// A recursive-descent parser for arithmetic expressions: a token `List` becomes
+// an `Expr` tree honouring `*` over `+`/`-`, then an iterative evaluator consumes it.
 // The parser threads `Option` results through the token stream, building a nested
 // algebraic data type — a linked `List` is the structure a recursive-descent
 // parser naturally consumes (head/tail), so the Rust baseline parses the same way
-// over a cons-list rather than folding a `Vec`. (Tokens are generated
-// programmatically — the standard library has no string-to-int parsing.) Used by
-// the Rust-vs-Fai runtime benchmark.
+// over a cons-list rather than folding a `Vec`. Tokens are generated
+// programmatically. Used by the Rust-vs-Fai runtime benchmark.
 type Token =
   | TNum Int
   | TPlus
@@ -63,13 +62,39 @@ let parseExprTail left tokens =
     | Some (right, rest2) -> parseExprTail (Sub left right) rest2
   | _ -> Some (left, tokens)
 
+type Work =
+  | Visit Expr
+  | AddResult
+  | SubResult
+  | MulResult
+
+// Linked work and value stacks keep a deep left spine off the native stack.
+evalLoop : List Work -> List Int -> Int
+let evalLoop work values =
+  match work with
+  | [] ->
+    match values with
+    | result :: _ -> result
+    | [] -> 0
+  | Visit (Num k) :: rest -> evalLoop rest (k :: values)
+  | Visit (Add a b) :: rest -> evalLoop (Visit a :: Visit b :: AddResult :: rest) values
+  | Visit (Sub a b) :: rest -> evalLoop (Visit a :: Visit b :: SubResult :: rest) values
+  | Visit (Mul a b) :: rest -> evalLoop (Visit a :: Visit b :: MulResult :: rest) values
+  | operation :: rest ->
+    match values with
+    | right :: left :: tail ->
+      let result =
+        match operation with
+        | AddResult -> left + right
+        | SubResult -> left - right
+        | MulResult -> left * right
+        | Visit _ -> 0
+      evalLoop rest (result :: tail)
+    | _ -> 0
+
 eval : Expr -> Int
-let eval e =
-  match e with
-  | Num k -> k
-  | Add a b -> eval a + eval b
-  | Sub a b -> eval a - eval b
-  | Mul a b -> eval a * eval b
+let eval e = evalLoop [Visit e] []
+example: eval (Sub (Num 20) (Mul (Num 3) (Num 4))) = 8
 
 // The operator between numbers i and i+1, cycling +, *, -.
 opFor : Int -> Token
@@ -77,20 +102,20 @@ let opFor i =
   let m = i % 3
   if m = 0 then TPlus else if m = 1 then TStar else TMinus
 
-// Generate `count` numbers separated by cycling operators.
-genTokens : Int -> Int -> List Token
-let genTokens i count =
-  if i >= count then
-    []
-  else if i + 1 >= count then
-    [TNum (i % 9 + 1)]
+// Build back-to-front with the same constant-stack constructor order on each peer.
+genTokens : Int -> List Token -> List Token
+let genTokens i acc =
+  if i < 0 then
+    acc
   else
-    TNum (i % 9 + 1) :: opFor i :: genTokens (i + 1) count
+    let withNumber = TNum (i % 9 + 1) :: acc
+    let next = if i = 0 then withNumber else opFor (i - 1) :: withNumber
+    genTokens (i - 1) next
 
 /// The benchmark workload: evaluate a generated n-number expression.
 public run : Int -> Int
 let run n =
-  match parseExpr (genTokens 0 n) with
+  match parseExpr (genTokens (n - 1) []) with
   | None -> 0
   | Some (e, _) -> eval e
 example: run 3 = 7

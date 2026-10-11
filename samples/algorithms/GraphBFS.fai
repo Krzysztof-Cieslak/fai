@@ -21,13 +21,14 @@ let visit acc node =
     if HashSet.member node seen then acc else (HashSet.insert node seen, node :: frontier)
 
 // Expand the frontier one level, returning the grown visited set.
+let expand g state node = List.foldl visit state (HashDict.getOr [] node g)
+
 bfs : HashDict Int (List Int) -> List Int -> HashSet Int -> HashSet Int
 let bfs g frontier visited =
   match frontier with
   | [] -> visited
   | _ :: _ ->
-    let expanded = List.concatMap (fun node -> HashDict.getOr [] node g) frontier
-    match List.foldl visit (visited, []) expanded with
+    match List.foldl (expand g) (visited, []) frontier with
     | (visited2, next) -> bfs g next visited2
 
 /// The benchmark workload: the number of nodes reachable from 0 in an n-node graph.

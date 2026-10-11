@@ -4,7 +4,7 @@ module QuickSort
 // `unsafeGet`/`unsafeSet` idiom: a unique array is partitioned and swapped in
 // place (no fresh allocation per partition). A position-weighted checksum of the
 // sorted array (Σ i * x[i]) detects any ordering error, so the result really
-// depends on the sort. Distinct from the standard `Array.sort` (which `MergeSort`
+// depends on the sort. Distinct from the standard `Array.sort` (which `SortPatterns`
 // exercises) and from a copying functional partition. Used by the Rust-vs-Fai
 // runtime benchmark.
 // Swap elements `i` and `j` in place (the array is unique through the sort).

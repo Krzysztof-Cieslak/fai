@@ -474,8 +474,8 @@ mod tests {
     #[test]
     fn application_ratios_keep_their_comparison_class() {
         let application = |side, peak| FootprintSample {
-            algorithm: "ListSort".into(),
-            workload_version: crate::benchmark_contracts::for_module("ListSort")
+            algorithm: "GraphBFS".into(),
+            workload_version: crate::benchmark_contracts::for_module("GraphBFS")
                 .unwrap()
                 .version
                 .into(),
@@ -524,8 +524,8 @@ mod tests {
     #[test]
     fn summary_retains_the_application_comparison_class() {
         let application = |side, peak| FootprintSample {
-            algorithm: "ListSort".into(),
-            workload_version: crate::benchmark_contracts::for_module("ListSort")
+            algorithm: "GraphBFS".into(),
+            workload_version: crate::benchmark_contracts::for_module("GraphBFS")
                 .unwrap()
                 .version
                 .into(),

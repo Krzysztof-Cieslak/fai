@@ -69,6 +69,7 @@ reuses `bench-summary` parsing and comparison eligibility. It verifies:
 - Source, compiler and executable-set agreement within each comparison, including
   each peer's source and Rust/OCaml compiler metadata.
 - Pass/sample counts and measured floors.
+- Untimed boundary-input answers, tied to the exact warm-worker executable hashes.
 - Instrumentation boundaries, allocation accounting domains, and final live
   storage matching the retained harness baseline.
 - Successful execution of both memory-guard targets.
@@ -82,6 +83,12 @@ The three Markdown files and normalized `results.json` are emitted only after
 validation succeeds. Rendering the same snapshot and evidence URL is
 deterministic. The legacy `bench-summary` command remains a best-effort console
 summary; it does not authorize publication.
+
+Each workload's `validation.json` retains raw answers for its predeclared input
+window; these run in separate processes before timed workers start. The catalog
+records algorithm/materialization contracts and per-pair implementation notes.
+Changing those contracts requires a new workload version and a fresh measurement;
+an updated renderer cannot promote historical observations into the revised set.
 
 ## Publish and migrate
 

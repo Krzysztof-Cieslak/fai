@@ -387,7 +387,11 @@ mod tests {
     #[test]
     fn application_rows_do_not_become_compiler_ratios() {
         let app = |side| WarmSample {
-            algorithm: "ListSort".into(),
+            algorithm: "GraphBFS".into(),
+            workload_version: crate::benchmark_contracts::for_module("GraphBFS")
+                .unwrap()
+                .version
+                .into(),
             comparison: "application".into(),
             ..sample(side, 10000, 10)
         };

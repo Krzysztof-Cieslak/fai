@@ -5,8 +5,8 @@
 //! These are application and kernel baselines with the same observable results,
 //! not uniformly identical data structures. Many pair a contiguous `Vec` with
 //! Fai's `Array`, or the persistent [`PList`] with Fai's `List`. Exceptions include
-//! `list_sort_sum` (`Vec` versus `List`) and `option_tree_find` (`BTreeMap` versus
-//! binary tree); allocation, hashing and traversal choices also differ. See
+//! native library hashing; its probing and growth policies
+//! remain explicit application-level comparisons. See
 //! `docs/BENCHMARK.md` for the scope of each comparison. Optimizers may simplify
 //! the whole computation; benchmark barriers belong around calls, not inside a
 //! reference implementation that its peers are free to optimize.
@@ -14,7 +14,7 @@
 //! oracle), the `algo-baseline` binary (the Rust side of the subprocess AOT
 //! bench), and the sample validation tests.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// A persistent, reference-counted singly-linked list — the faithful Rust twin of
@@ -51,6 +51,57 @@ impl<T> PList<T> {
             Some(node) => ListView::Cons(&node.head, &node.tail),
         }
     }
+
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        std::iter::successors(self.0.as_deref(), |node| node.tail.0.as_deref())
+            .map(|node| &node.head)
+    }
+
+    fn from_iter_onto(values: impl IntoIterator<Item = T>, mut tail: Self) -> Self {
+        let mut result = Self::empty();
+        let mut slot = &mut result.0;
+        for head in values {
+            *slot = Some(Rc::new(ListNode { head, tail: Self::empty() }));
+            slot = &mut Rc::get_mut(slot.as_mut().unwrap()).unwrap().tail.0;
+        }
+        *slot = tail.0.take();
+        result
+    }
+}
+
+impl<T> FromIterator<T> for PList<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::from_iter_onto(iter, Self::empty())
+    }
+}
+
+impl<T: Clone> PList<T> {
+    fn uncons(mut self) -> Option<(T, Self)> {
+        let node = self.0.take()?;
+        Some(match Rc::try_unwrap(node) {
+            Ok(node) => (node.head, node.tail),
+            Err(node) => (node.head.clone(), node.tail.clone()),
+        })
+    }
+}
+
+struct OwnedListIter<T>(PList<T>);
+
+impl<T: Clone> Iterator for OwnedListIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        let (head, tail) = std::mem::replace(&mut self.0, PList::empty()).uncons()?;
+        self.0 = tail;
+        Some(head)
+    }
+}
+
+impl<T: Clone> IntoIterator for PList<T> {
+    type Item = T;
+    type IntoIter = OwnedListIter<T>;
+    fn into_iter(self) -> Self::IntoIter {
+        OwnedListIter(self)
+    }
 }
 
 impl<T> Clone for PList<T> {
@@ -67,6 +118,13 @@ impl<T> Drop for PList<T> {
             current = node.tail.0.take();
         }
     }
+}
+
+// A whole-array boundary keeps the split/prefix collection materialized while
+// allowing each implementation's scalar-length primitive to optimize normally.
+#[inline(never)]
+fn total_string_lengths<S: AsRef<str>>(parts: &[S]) -> i64 {
+    parts.iter().map(|part| part.as_ref().chars().count() as i64).sum()
 }
 
 /// Naive recursive Fibonacci: function-call and integer overhead, no allocation.
@@ -103,14 +161,13 @@ pub fn map_sum(n: i64) -> i64 {
     acc
 }
 
-/// Position-weighted checksum of `[n-1, …, 0]` after sorting it ascending.
-/// Idiomatic Rust uses a `Vec` and `Vec::sort`; the Fai sample matches it with an
-/// `Array` and the standard `Array.sort`.
+/// Position-weighted checksum after the shared shuffle and bottom-up merge sort.
 #[must_use]
 pub fn merge_sort_sum(n: i64) -> i64 {
-    let mut v: Vec<i64> = (0..n).rev().collect();
-    v.sort();
-    v.iter().enumerate().map(|(i, x)| i as i64 * x).sum()
+    crate::sorting::checksum(&crate::sorting::merge_sort(crate::sorting::input(
+        2,
+        n.max(0) as usize,
+    )))
 }
 
 /// One internal node. An empty child is a null niche, as on the Fai/OCaml peers.
@@ -173,7 +230,10 @@ pub fn dict_histogram(n: i64) -> i64 {
 pub fn word_count(n: i64) -> i64 {
     let words: Vec<String> = (0..n).map(|i| i.to_string()).collect();
     let text = words.join(" ");
-    text.split(' ').map(|w| w.chars().count() as i64).sum()
+    drop(words);
+    let parts: Vec<String> = text.split(' ').map(str::to_owned).collect();
+    drop(text);
+    total_string_lengths(&parts)
 }
 
 /// The length of the string built by appending the literal `"ab"` onto `"0"` a
@@ -193,13 +253,18 @@ pub fn string_build(n: i64) -> i64 {
 /// copy); the Rust reference takes `&str` prefixes.
 #[must_use]
 pub fn string_slice(n: i64) -> i64 {
-    let base: String = "a".repeat(n.max(0) as usize);
-    let half = (n / 2).max(0) as usize;
-    let mut acc = 0i64;
-    for _ in 0..200 {
-        acc += base.chars().take(half).count() as i64;
+    let mut base = String::new();
+    for _ in 0..n {
+        base.push('a');
     }
-    acc
+    let half = (n / 2).max(0) as usize;
+    let prefixes: Vec<&str> = (0..200)
+        .map(|_| {
+            let end = base.char_indices().nth(half).map_or(base.len(), |(offset, _)| offset);
+            &base[..end]
+        })
+        .collect();
+    total_string_lengths(&prefixes)
 }
 
 /// Two consumers of one materialized array: the sum of doubling `[0, n)` plus
@@ -219,7 +284,10 @@ pub fn map_sum_shared(n: i64) -> i64 {
 #[must_use]
 pub fn set_dedup(n: i64) -> i64 {
     let buckets = 1000;
-    let distinct: HashSet<i64> = (0..n).map(|i| i % buckets).collect();
+    let mut distinct = HashSet::new();
+    for i in 0..n {
+        distinct.insert(i % buckets);
+    }
     distinct.iter().sum()
 }
 
@@ -239,11 +307,20 @@ pub fn fold_pipeline(n: i64) -> i64 {
 /// functions (`2i`, `i+1`, `-i`), mirroring the Fai interface dispatch.
 #[must_use]
 pub fn interface_dispatch(n: i64) -> i64 {
+    struct Scorer {
+        score: fn(i64) -> i64,
+    }
+    let doubler = Scorer { score: |x| x.wrapping_mul(2) };
+    let incer = Scorer { score: |x| x.wrapping_add(1) };
+    let negator = Scorer { score: i64::wrapping_neg };
     (0..n)
-        .map(|i| match i % 3 {
-            0 => i.wrapping_mul(2),
-            1 => i + 1,
-            _ => -i,
+        .map(|i| {
+            let scorer = match i % 3 {
+                0 => &doubler,
+                1 => &incer,
+                _ => &negator,
+            };
+            (scorer.score)(i)
         })
         .fold(0, i64::wrapping_add)
 }
@@ -395,8 +472,10 @@ pub fn levenshtein(n: i64) -> i64 {
 pub fn game_of_life(n: i64) -> i64 {
     const OFFSETS: [(i64, i64); 8] =
         [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
-    let mut live: HashSet<(i64, i64)> =
-        [(1, 0), (2, 0), (0, 1), (1, 1), (1, 2)].into_iter().collect();
+    let mut live = HashSet::new();
+    for cell in [(1, 0), (2, 0), (0, 1), (1, 1), (1, 2)] {
+        live.insert(cell);
+    }
     for _ in 0..n {
         let mut counts: HashMap<(i64, i64), i64> = HashMap::new();
         for &(x, y) in &live {
@@ -404,11 +483,13 @@ pub fn game_of_life(n: i64) -> i64 {
                 *counts.entry((x + dx, y + dy)).or_insert(0) += 1;
             }
         }
-        live = counts
-            .into_iter()
-            .filter(|&(cell, c)| c == 3 || (c == 2 && live.contains(&cell)))
-            .map(|(cell, _)| cell)
-            .collect();
+        let mut next = HashSet::new();
+        for (cell, count) in counts {
+            if count == 3 || (count == 2 && live.contains(&cell)) {
+                next.insert(cell);
+            }
+        }
+        live = next;
     }
     live.len() as i64
 }
@@ -498,24 +579,24 @@ pub fn prng_xorshift(n: i64) -> i64 {
     acc as i64
 }
 
-/// The value of a generated `n`-number arithmetic expression, evaluated with `*`
-/// binding tighter than `+`/`-`. Mirrors the Fai sample exactly: a token cons-list
-/// is parsed by recursive descent into an `Expr` tree (threading the remaining
-/// tokens through `Option`, the linked structure a parser naturally consumes) and
-/// then evaluated — rather than a contiguous two-pass fold — so the comparison is
-/// matched in both representation and algorithm.
+/// The value of a generated `n`-number expression, with `*` binding tighter than
+/// `+`/`-`. Recursive descent consumes an owned token cons-list, threading the
+/// remaining tokens through `Option`; left-first iterative evaluation consumes
+/// the AST using linked work/value stacks. Native layout and reclamation remain observable.
 #[must_use]
 pub fn expr_eval(n: i64) -> i64 {
     use ListView::Cons;
     type TokList = PList<Token>;
     type Parsed = Option<(Expr, TokList)>;
 
+    #[derive(Clone)]
     enum Token {
         Num(i64),
         Plus,
         Minus,
         Star,
     }
+    #[derive(Clone)]
     enum Expr {
         Num(i64),
         Add(Box<Expr>, Box<Expr>),
@@ -551,9 +632,9 @@ pub fn expr_eval(n: i64) -> i64 {
     }
 
     // A factor is a single number.
-    fn parse_factor(tokens: &TokList) -> Parsed {
-        match tokens.view() {
-            Cons(Token::Num(k), rest) => Some((Expr::Num(*k), rest.clone())),
+    fn parse_factor(tokens: TokList) -> Parsed {
+        match tokens.uncons() {
+            Some((Token::Num(k), rest)) => Some((Expr::Num(k), rest)),
             _ => None,
         }
     }
@@ -561,79 +642,93 @@ pub fn expr_eval(n: i64) -> i64 {
     // tail recursively; the cycling operators make the input long, so the tail is
     // a loop here (the parse result, an `Expr` tree over a token cons-list, is the
     // same).
-    fn parse_term(tokens: &TokList) -> Parsed {
+    fn parse_term(tokens: TokList) -> Parsed {
         let (mut left, mut rest) = parse_factor(tokens)?;
         loop {
-            let more = match rest.view() {
-                Cons(Token::Star, more) => more.clone(),
-                _ => return Some((left, rest)),
-            };
-            let (right, rest2) = parse_factor(&more)?;
+            if !matches!(rest.view(), Cons(Token::Star, _)) {
+                return Some((left, rest));
+            }
+            let (_, more) = rest.uncons().expect("inspected token");
+            let (right, rest2) = parse_factor(more)?;
             left = Expr::Mul(Box::new(left), Box::new(right));
             rest = rest2;
         }
     }
     // An expression is a term followed by zero or more `(+|-) term`.
-    fn parse_expr(tokens: &TokList) -> Parsed {
+    fn parse_expr(tokens: TokList) -> Parsed {
         let (mut left, mut rest) = parse_term(tokens)?;
         loop {
-            let (subtract, more) = match rest.view() {
-                Cons(Token::Plus, more) => (false, more.clone()),
-                Cons(Token::Minus, more) => (true, more.clone()),
+            let subtract = match rest.view() {
+                Cons(Token::Plus, _) => false,
+                Cons(Token::Minus, _) => true,
                 _ => return Some((left, rest)),
             };
-            let (right, rest2) = parse_term(&more)?;
+            let (_, more) = rest.uncons().expect("inspected token");
+            let (right, rest2) = parse_term(more)?;
             let (l, r) = (Box::new(left), Box::new(right));
             left = if subtract { Expr::Sub(l, r) } else { Expr::Add(l, r) };
             rest = rest2;
         }
     }
-    // Evaluate the tree. The left-leaning additive spine can be thousands deep, so
-    // the walk uses an explicit work stack rather than native recursion — and it
-    // *consumes* the tree (moving each child out of its `Box`), so nothing deeply
-    // nested is left for the compiler's recursive drop to overflow on.
+    // Consume both children in source order without retaining the token root or
+    // using native stack proportional to the left-leaning expression depth.
     fn eval(root: Expr) -> i64 {
+        #[derive(Clone)]
         enum Work {
-            Node(Expr),
-            Apply(fn(i64, i64) -> i64),
+            Visit(Expr),
+            Add,
+            Sub,
+            Mul,
         }
-        // Queue the combine beneath both operands, so popping yields them in order.
-        fn push_binary(work: &mut Vec<Work>, f: fn(i64, i64) -> i64, a: Expr, b: Expr) {
-            work.push(Work::Apply(f));
-            work.push(Work::Node(a));
-            work.push(Work::Node(b));
-        }
-        let mut work = vec![Work::Node(root)];
-        let mut vals: Vec<i64> = Vec::new();
-        while let Some(item) = work.pop() {
-            match item {
-                Work::Node(Expr::Num(k)) => vals.push(k),
-                Work::Node(Expr::Add(a, b)) => push_binary(&mut work, i64::wrapping_add, *a, *b),
-                Work::Node(Expr::Sub(a, b)) => push_binary(&mut work, i64::wrapping_sub, *a, *b),
-                Work::Node(Expr::Mul(a, b)) => push_binary(&mut work, i64::wrapping_mul, *a, *b),
-                Work::Apply(f) => {
-                    let a = vals.pop().expect("left operand");
-                    let b = vals.pop().expect("right operand");
-                    vals.push(f(a, b));
+        let mut work = PList::cons(Work::Visit(root), PList::empty());
+        let mut values: PList<i64> = PList::empty();
+        while let Some((step, rest)) = work.uncons() {
+            work = rest;
+            match step {
+                Work::Visit(Expr::Num(k)) => values = PList::cons(k, values),
+                Work::Visit(expr) => {
+                    let (left, right, operation) = match expr {
+                        Expr::Add(a, b) => (a, b, Work::Add),
+                        Expr::Sub(a, b) => (a, b, Work::Sub),
+                        Expr::Mul(a, b) => (a, b, Work::Mul),
+                        Expr::Num(_) => unreachable!("number handled above"),
+                    };
+                    work = PList::cons(
+                        Work::Visit(*left),
+                        PList::cons(Work::Visit(*right), PList::cons(operation, work)),
+                    );
+                }
+                operation => {
+                    let (right, rest) = values.uncons().expect("right operand");
+                    let (left, rest) = rest.uncons().expect("left operand");
+                    let result = match operation {
+                        Work::Add => left.wrapping_add(right),
+                        Work::Sub => left.wrapping_sub(right),
+                        Work::Mul => left.wrapping_mul(right),
+                        Work::Visit(_) => unreachable!("visit handled above"),
+                    };
+                    values = PList::cons(result, rest);
                 }
             }
         }
-        vals.pop().expect("a single result")
+        values.uncons().expect("expression result").0
     }
 
-    // `eval` consumes the AST (no deep tree is left to drop); the token list is
-    // freed iteratively, since it can be thousands of nodes long.
-    let tokens = gen_tokens(n);
-    let result = match parse_expr(&tokens) {
-        Some((e, _)) => eval(e),
+    match parse_expr(gen_tokens(n)) {
+        Some((e, rest)) => {
+            drop(rest);
+            eval(e)
+        }
         None => 0,
-    };
-    drop(tokens);
-    result
+    }
 }
 
-fn graph_adjacency(n: i64) -> HashMap<i64, Vec<i64>> {
-    (0..n).map(|i| (i, vec![(i + 1) % n, (2 * i + 1) % n, (3 * i + 2) % n])).collect()
+fn graph_adjacency(n: i64) -> HashMap<i64, PList<i64>> {
+    let mut graph = HashMap::new();
+    for i in 0..n {
+        graph.insert(i, [(i + 1) % n, (2 * i + 1) % n, (3 * i + 2) % n].into_iter().collect());
+    }
+    graph
 }
 
 /// Builds the deterministic `n`-node adjacency dictionary, then counts nodes
@@ -644,17 +739,18 @@ pub fn graph_bfs(n: i64) -> i64 {
     graph_reachable(&graph)
 }
 
-fn graph_reachable(graph: &HashMap<i64, Vec<i64>>) -> i64 {
+fn graph_reachable(graph: &HashMap<i64, PList<i64>>) -> i64 {
     let mut visited: HashSet<i64> = HashSet::new();
     visited.insert(0);
-    let mut frontier = vec![0i64];
-    while !frontier.is_empty() {
-        let mut next = Vec::new();
+    let mut frontier = PList::cons(0, PList::empty());
+    while frontier.0.is_some() {
+        let mut next = PList::empty();
         for node in frontier {
             if let Some(neighbors) = graph.get(&node) {
-                for &nb in neighbors {
-                    if visited.insert(nb) {
-                        next.push(nb);
+                for &nb in neighbors.iter() {
+                    if !visited.contains(&nb) {
+                        visited.insert(nb);
+                        next = PList::cons(nb, next);
                     }
                 }
             }
@@ -670,7 +766,10 @@ mod graph_tests {
 
     #[test]
     fn adjacency_materializes_every_node_and_ordered_edge() {
-        let mut entries: Vec<_> = graph_adjacency(4).into_iter().collect();
+        let mut entries: Vec<_> = graph_adjacency(4)
+            .into_iter()
+            .map(|(node, neighbors)| (node, neighbors.into_iter().collect::<Vec<_>>()))
+            .collect();
         entries.sort_by_key(|(node, _)| *node);
         assert_eq!(
             entries,
@@ -680,7 +779,11 @@ mod graph_tests {
 
     #[test]
     fn traversal_uses_the_stored_edges() {
-        let graph = HashMap::from([(0, vec![7]), (7, vec![]), (10, vec![11])]);
+        let graph = HashMap::from([
+            (0, PList::cons(7, PList::empty())),
+            (7, PList::empty()),
+            (10, PList::cons(11, PList::empty())),
+        ]);
         assert_eq!(graph_reachable(&graph), 2);
     }
 
@@ -733,22 +836,58 @@ pub fn fib_memo(n: i64) -> i64 {
 /// after sorting it ascending (so the value detects any ordering error).
 #[must_use]
 pub fn quicksort_sum(n: i64) -> i64 {
-    let mut v: Vec<i64> =
-        (0..n).map(|k| (k.wrapping_mul(2_654_435_761).wrapping_add(12345)) % n).collect();
-    v.sort_unstable();
-    v.iter().enumerate().fold(0i64, |acc, (i, &x)| acc.wrapping_add(i as i64 * x))
+    crate::tail_components::quicksort(n)
 }
 
-/// The same position-weighted checksum as [`quicksort_sum`], but standing in for
-/// the Fai version that sorts a linked `List` with the standard library's stable
-/// `List.sortBy` — the linked counterpart to `merge_sort`'s `Array` sort. Sorting
-/// is order-total, so the checksum is independent of stability.
+/// Shared shuffled input and linked stable merge sorting. Small inputs use
+/// adjacent linked runs; larger inputs use two buffers and rebuild a linked
+/// result, matching the Fai library's algorithm and threshold.
 #[must_use]
 pub fn list_sort_sum(n: i64) -> i64 {
-    let mut v: Vec<i64> =
-        (0..n).map(|k| (k.wrapping_mul(2_654_435_761).wrapping_add(12345)) % n).collect();
-    v.sort();
-    v.iter().enumerate().fold(0i64, |acc, (i, &x)| acc.wrapping_add(i as i64 * x))
+    let list = crate::sorting::input(2, n.max(0) as usize).into_iter().collect();
+    sort_list(list).into_iter().enumerate().map(|(i, value)| i as i64 * value).sum()
+}
+
+fn sort_list(list: PList<i64>) -> PList<i64> {
+    fn merge(left: PList<i64>, right: PList<i64>) -> PList<i64> {
+        let take_left = match (left.view(), right.view()) {
+            (ListView::Nil, _) => return right,
+            (_, ListView::Nil) => return left,
+            (ListView::Cons(a, _), ListView::Cons(b, _)) => a <= b,
+        };
+        if take_left {
+            let (head, rest) = left.uncons().unwrap();
+            PList::cons(head, merge(rest, right))
+        } else {
+            let (head, rest) = right.uncons().unwrap();
+            PList::cons(head, merge(left, rest))
+        }
+    }
+    fn pairs(runs: PList<PList<i64>>) -> PList<PList<i64>> {
+        let Some((a, rest)) = runs.uncons() else { return PList::empty() };
+        let Some((b, rest)) = rest.uncons() else { return PList::cons(a, PList::empty()) };
+        let merged = merge(a, b);
+        PList::cons(merged, pairs(rest))
+    }
+    let length = list.iter().count();
+    if length <= 32 {
+        let mut runs: PList<_> =
+            list.into_iter().map(|value| PList::cons(value, PList::empty())).collect();
+        loop {
+            match runs.view() {
+                ListView::Nil => break PList::empty(),
+                ListView::Cons(_, rest) if rest.0.is_none() => break runs.uncons().unwrap().0,
+                _ => runs = pairs(runs),
+            }
+        }
+    } else {
+        let mut source = Vec::with_capacity(length);
+        source.extend(list);
+        let destination = source.clone();
+        crate::sorting::merge_with_buffer(source, destination, i64::wrapping_sub)
+            .into_iter()
+            .collect()
+    }
 }
 
 /// The number of primes below `n` (Sieve of Eratosthenes).
@@ -823,8 +962,8 @@ pub fn nbody(n: i64) -> f64 {
 /// The maximum pancake-flip count over every permutation of `[1, n]`
 /// (fannkuch-redux, the max-flips figure). Mirrors the Fai sample on the
 /// persistent cons-list: permutations and the permutation collection are linked
-/// lists, and a flip is a take/reverse/append of the leading run — so both sides
-/// pay the same linked traversal cost. The size stays small because the work is
+/// lists, and a flip is a take/reverse/append of the leading run. Native compiler
+/// fusion and reuse remain allowed. The size stays small because the work is
 /// `n!` permutations, not because of the representation.
 #[must_use]
 pub fn fannkuch(n: i64) -> i64 {
@@ -838,42 +977,35 @@ pub fn fannkuch(n: i64) -> i64 {
             _ => PList::empty(),
         }
     }
-    fn drop(k: i64, xs: &Perm) -> Perm {
-        match xs.view() {
-            Cons(_, t) if k > 0 => drop(k - 1, t),
-            _ => xs.clone(),
+    fn drop(k: i64, mut xs: Perm) -> Perm {
+        for _ in 0..k {
+            match xs.uncons() {
+                Some((_, rest)) => xs = rest,
+                None => return PList::empty(),
+            }
         }
+        xs
     }
-    fn reverse(xs: &Perm) -> Perm {
-        let mut acc = PList::empty();
-        let mut cur = xs.clone();
-        loop {
-            let next = match cur.view() {
-                Nil => break,
-                Cons(h, t) => {
-                    acc = PList::cons(*h, acc);
-                    t.clone()
-                }
-            };
-            cur = next;
-        }
-        acc
+    fn reverse(xs: Perm) -> Perm {
+        xs.into_iter().fold(PList::empty(), |acc, value| PList::cons(value, acc))
     }
-    fn append(xs: &Perm, ys: &Perm) -> Perm {
-        match xs.view() {
-            Nil => ys.clone(),
-            Cons(h, t) => PList::cons(*h, append(t, ys)),
-        }
+    fn append(xs: Perm, ys: Perm) -> Perm {
+        PList::from_iter_onto(xs, ys)
     }
     // Reverse the first `k` elements: `reverse (take k xs) ++ drop k xs`.
-    fn reverse_first(k: i64, xs: &Perm) -> Perm {
-        append(&reverse(&take(k, xs)), &drop(k, xs))
+    fn reverse_first(k: i64, xs: Perm) -> Perm {
+        let prefix = reverse(take(k, &xs));
+        append(prefix, drop(k, xs))
     }
     // Flip the leading run until the head reaches 1, counting the flips.
-    fn flips_from(acc: i64, perm: &Perm) -> i64 {
-        match perm.view() {
-            Cons(first, _) if *first > 1 => flips_from(acc + 1, &reverse_first(*first, perm)),
-            _ => acc,
+    fn flips_from(mut acc: i64, mut perm: Perm) -> i64 {
+        loop {
+            let first = match perm.view() {
+                Cons(first, _) if *first > 1 => *first,
+                _ => return acc,
+            };
+            perm = reverse_first(first, perm);
+            acc += 1;
         }
     }
     // Remove the first occurrence of `y`.
@@ -890,17 +1022,8 @@ pub fn fannkuch(n: i64) -> i64 {
         }
     }
     // Prepend `x` to every permutation in `ps`.
-    fn prepend_each(x: i64, ps: &Perms) -> Perms {
-        match ps.view() {
-            Nil => PList::empty(),
-            Cons(p, rest) => PList::cons(PList::cons(x, p.clone()), prepend_each(x, rest)),
-        }
-    }
-    fn concat(xss: &Perms, ys: &Perms) -> Perms {
-        match xss.view() {
-            Nil => ys.clone(),
-            Cons(p, rest) => PList::cons(p.clone(), concat(rest, ys)),
-        }
+    fn prepend_each(x: i64, ps: Perms) -> Perms {
+        ps.into_iter().map(|p| PList::cons(x, p)).collect()
     }
     // Every permutation of `xs`: for each element, prepend it to every permutation
     // of the rest, concatenating the results (the Fai `concatMap`).
@@ -908,23 +1031,9 @@ pub fn fannkuch(n: i64) -> i64 {
         match xs.view() {
             Nil => PList::cons(PList::empty(), PList::empty()),
             Cons(_, _) => {
-                let mut elems = Vec::new();
-                let mut cur = xs.clone();
-                loop {
-                    let next = match cur.view() {
-                        Nil => break,
-                        Cons(h, t) => {
-                            elems.push(*h);
-                            t.clone()
-                        }
-                    };
-                    cur = next;
-                }
-                let mut out = PList::empty();
-                for &x in elems.iter().rev() {
-                    out = concat(&prepend_each(x, &perms(&remove_first(x, xs))), &out);
-                }
-                out
+                let groups: PList<Perms> =
+                    xs.iter().map(|&x| prepend_each(x, perms(&remove_first(x, xs)))).collect();
+                groups.into_iter().flatten().collect()
             }
         }
     }
@@ -938,16 +1047,8 @@ pub fn fannkuch(n: i64) -> i64 {
     // Fold the maximum flip count over the permutations (a loop, so the 40k-long
     // permutation list does not recurse).
     let mut acc = 0;
-    let mut cur = perms(&range(1, n + 1));
-    loop {
-        let next = match cur.view() {
-            Nil => break,
-            Cons(p, rest) => {
-                acc = acc.max(flips_from(0, p));
-                rest.clone()
-            }
-        };
-        cur = next;
+    for perm in perms(&range(1, n + 1)) {
+        acc = acc.max(flips_from(0, perm));
     }
     acc
 }
@@ -975,7 +1076,10 @@ pub fn union_find(n: i64) -> i64 {
             }
         }
     }
-    let roots: HashSet<i64> = (0..n).map(|i| find(&parent, i)).collect();
+    let mut roots = HashSet::new();
+    for i in 0..n {
+        roots.insert(find(&parent, i));
+    }
     roots.len() as i64
 }
 
@@ -987,12 +1091,13 @@ pub fn json_serialize(n: i64) -> i64 {
 }
 
 fn json_text(n: i64) -> String {
+    #[derive(Clone)]
     enum Json {
         Null,
         Bool(bool),
         Int(i64),
-        Arr(Vec<Json>),
-        Obj(Vec<(String, Json)>),
+        Arr(PList<Json>),
+        Obj(PList<(&'static str, Json)>),
     }
     fn leaf(seed: i64) -> Json {
         match seed % 3 {
@@ -1008,19 +1113,19 @@ fn json_text(n: i64) -> String {
         let half = size / 2;
         let (l, r) = (build(seed + 1, half), build(seed + 2, size - half - 1));
         if seed % 2 == 0 {
-            Json::Arr(vec![l, r])
+            Json::Arr([l, r].into_iter().collect())
         } else {
-            Json::Obj(vec![("a".to_owned(), l), ("b".to_owned(), r)])
+            Json::Obj([("a", l), ("b", r)].into_iter().collect())
         }
     }
-    fn ser(j: &Json, output: &mut String) {
+    fn ser(j: Json, output: &mut String) {
         match j {
             Json::Null => output.push_str("null"),
-            Json::Bool(b) => output.push_str(if *b { "true" } else { "false" }),
+            Json::Bool(b) => output.push_str(if b { "true" } else { "false" }),
             Json::Int(k) => output.push_str(&k.to_string()),
             Json::Arr(items) => {
                 output.push('[');
-                for (index, item) in items.iter().enumerate() {
+                for (index, item) in items.into_iter().enumerate() {
                     if index != 0 {
                         output.push(',');
                     }
@@ -1030,7 +1135,7 @@ fn json_text(n: i64) -> String {
             }
             Json::Obj(fields) => {
                 output.push('{');
-                for (index, (key, value)) in fields.iter().enumerate() {
+                for (index, (key, value)) in fields.into_iter().enumerate() {
                     if index != 0 {
                         output.push(',');
                     }
@@ -1043,8 +1148,9 @@ fn json_text(n: i64) -> String {
             }
         }
     }
-    let mut output = String::with_capacity(1024);
-    ser(&build(0, n), &mut output);
+    let tree = build(0, n);
+    let mut output = String::new();
+    ser(tree, &mut output);
     output
 }
 
@@ -1182,7 +1288,10 @@ mod evaluator_tests {
 #[must_use]
 pub fn option_path(n: i64) -> i64 {
     let size = 100i64;
-    let table: HashMap<i64, i64> = (0..size).map(|i| (i, (i * 2 + 1) % size)).collect();
+    let mut table = HashMap::new();
+    for i in 0..size {
+        table.insert(i, (i * 2 + 1) % size);
+    }
     let mut total = 0i64;
     for i in 0..n {
         let mut key = i % (size * 2);
@@ -1203,17 +1312,17 @@ pub fn option_path(n: i64) -> i64 {
     total
 }
 
-/// Application-level BTreeMap alternative to the Fai binary-tree `find`, summing
-/// hits. It stores the same `key -> key*3` values for `[0, m)`; queries
+/// Midpoint-first binary-tree construction followed by borrowed lookups. It
+/// stores `key -> key*3` values for `[0, m)`; queries
 /// at `i % (2m)` miss half the time (the niche `None`), and `find` returns the
 /// niche `Option Int` up through the recursion.
 #[must_use]
 pub fn option_tree_find(n: i64) -> i64 {
     let m = 1000i64;
-    let tree: BTreeMap<i64, i64> = (0..m).map(|k| (k, k * 3)).collect();
+    let tree = crate::tree_lookup::BinaryTree::build(m);
     let mut total = 0i64;
     for i in 0..n {
-        if let Some(&v) = tree.get(&(i % (m * 2))) {
+        if let Some(v) = tree.find(i % (m * 2)) {
             total += v;
         }
     }
@@ -1651,5 +1760,104 @@ mod representation_tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn owned_list_iteration_preserves_shared_snapshots() {
+        let original: PList<_> = (0..32).collect();
+        assert_eq!(original.clone().into_iter().collect::<Vec<_>>(), (0..32).collect::<Vec<_>>());
+        assert_eq!(original.iter().copied().collect::<Vec<_>>(), (0..32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn abandoning_owned_iteration_releases_the_remaining_values() {
+        #[derive(Clone)]
+        struct Probe(Rc<Cell<usize>>);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let drops = Rc::new(Cell::new(0));
+        let values: PList<_> = (0..4).map(|_| Probe(drops.clone())).collect();
+        let mut iter = values.into_iter();
+        drop(iter.next());
+        assert_eq!(drops.get(), 1);
+        drop(iter);
+        assert_eq!(drops.get(), 4);
+    }
+
+    #[test]
+    fn owned_list_consumption_is_iterative() {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(|| {
+                let values: PList<i64> = (0..100000).collect();
+                assert_eq!(values.into_iter().sum::<i64>(), 4_999_950_000);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod matched_workload_tests {
+    use super::*;
+
+    #[test]
+    fn parser_preserves_precedence_and_subtraction() {
+        assert_eq!(expr_eval(6), 33);
+    }
+
+    #[test]
+    fn empty_parser_input_is_empty() {
+        assert_eq!(expr_eval(0), 0);
+    }
+
+    #[test]
+    fn staged_permutations_preserve_maximum_flips() {
+        assert_eq!(fannkuch(6), 10);
+    }
+
+    #[test]
+    fn materialized_words_cover_decimal_width_changes() {
+        assert_eq!(word_count(12), 14);
+    }
+
+    #[test]
+    fn retained_prefixes_cover_odd_lengths() {
+        assert_eq!(string_slice(5), 400);
+    }
+
+    #[test]
+    fn linked_sort_crosses_the_buffer_threshold() {
+        assert_eq!(list_sort_sum(33), 11440);
+    }
+
+    #[test]
+    fn array_merge_sort_observes_shuffled_input() {
+        assert_eq!(merge_sort_sum(33), 11440);
+    }
+
+    #[test]
+    fn binary_tree_lookup_preserves_values() {
+        assert_eq!(option_tree_find(4), 18);
+    }
+}
+
+#[cfg(test)]
+mod matched_proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn linked_sort_preserves_all_elements(mut values in prop::collection::vec(-1000i64..1000, 0..256)) {
+            let input = values.iter().copied().collect();
+            let actual: Vec<_> = sort_list(input).into_iter().collect();
+            values.sort();
+            prop_assert_eq!(actual, values);
+        }
     }
 }

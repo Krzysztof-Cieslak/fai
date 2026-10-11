@@ -54,7 +54,7 @@ pub fn profile(name: &str) -> Option<Profile> {
         "WordCount" => ("words", "live data", &[5000, 80000, 500000]),
         "StringSlice" => ("base characters", "live data", &[2000, 20000, 100000]),
         "OptionEval" | "IntEval" => ("evaluations", "fixed state", &[5000, 100000]),
-        "OptionPath" => ("path input", "live data", &[500, 4000, 30000]),
+        "OptionPath" => ("lookups; 100 keys, fuel 100", "fixed keys", &[500, 4000, 30000]),
         "OptionTreeFind" => ("lookups; 1000 keys", "fixed keys", &[5000, 100000]),
         "BinaryTrees" => ("tree depth", "live data", &[12, 17, 21]),
         "Sieve" => ("Boolean slots", "live data", &[65536, 1048576, 16777216]),
@@ -64,7 +64,7 @@ pub fn profile(name: &str) -> Option<Profile> {
         "MapSumShared" | "MemoryArrayInt" | "MemoryArrayFloat" | "MemorySharedArrays" => {
             ("elements", "live data", &[65536, 1048576, 8388608])
         }
-        "StringBuild" => ("characters", "live data", &[65536, 1048576, 16777216]),
+        "StringBuild" => ("two-character appends", "live data", &[65536, 1048576, 16777216]),
         "MemoryList" => ("cons cells", "live data", &[4096, 65536, 1048576]),
         "MemoryTree" => ("tree depth", "live data", &[12, 16, 20]),
         "MemoryUtf8" => ("UTF-8 chunks", "live data", &[8192, 131072, 1048576]),
@@ -206,8 +206,8 @@ pub fn contract(name: &str) -> Option<Contract> {
             "Distinct-key cardinality grows; four insertion/update passes and endpoint reads. Standard hash functions, layouts, growth and GC policies differ.",
         ),
         "MemoryUtf8" => (
-            Comparison::Application,
-            "Incrementally append identical nine-byte/four-scalar UTF-8 chunks and consume the final string. Buffer growth and final copying differ.",
+            Comparison::Kernel,
+            "Incrementally append identical nine-byte/four-scalar UTF-8 chunks and consume the final string, as in TailBuildUnicode. Native buffer growth and freezing/copying remain observable.",
         ),
         "MemoryBodies" => (
             Comparison::Kernel,
@@ -235,7 +235,11 @@ pub fn contract(name: &str) -> Option<Contract> {
         ),
     };
     Some(Contract {
-        version: "materialized-storage-v1",
+        version: if name == "MemoryUtf8" {
+            "string-builder-contract-v2"
+        } else {
+            "materialized-storage-v1"
+        },
         comparison,
         note,
         rust_entry,

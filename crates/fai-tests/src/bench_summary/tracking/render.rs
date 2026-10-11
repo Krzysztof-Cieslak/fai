@@ -201,6 +201,7 @@ fn footprint(snapshot: &Snapshot, evidence: &str) -> String {
         let _ =
             writeln!(text, "| {} | {} | {} | {sizes} |", case.module, profile.unit, profile.scale);
     }
+    text.push_str("\nThe evidence's `catalog.json` records each workload version, logical contract and separate Fai/Rust and Fai/OCaml implementation notes. Matching logical work still includes native representation, string storage, allocation and reclamation costs.\n");
     notes(snapshot, "memory", &mut text);
     text
 }
@@ -283,6 +284,7 @@ fn runtime(snapshot: &Snapshot, evidence: &str) -> String {
             time("ocaml")
         );
     }
+    text.push_str("\nThe evidence's `catalog.json` records each workload version, logical contract and per-pair implementation notes. `validation.json` retains untimed boundary-input answers tied to the measured executables. Corrected workloads require fresh measurements; changes from older workload versions are not compiler speedups.\n");
     notes(snapshot, "runtime", &mut text);
     text
 }

@@ -29,10 +29,10 @@ Ratios are **Fai ÷ peer; lower means a smaller process footprint**. Arithmetic 
 |---|---|---:|---:|---:|---:|
 | All cases | rust | 254 / 254 | 1.000× | 1.000× | 1.000× |
 | All cases | ocaml | 254 / 254 | 1.000× | 1.000× | 1.000× |
-| Matched kernels | rust | 142 / 142 | 1.000× | 1.000× | 1.000× |
-| Matched kernels | ocaml | 142 / 142 | 1.000× | 1.000× | 1.000× |
-| Applications | rust | 112 / 112 | 1.000× | 1.000× | 1.000× |
-| Applications | ocaml | 112 / 112 | 1.000× | 1.000× | 1.000× |
+| Matched kernels | rust | 208 / 208 | 1.000× | 1.000× | 1.000× |
+| Matched kernels | ocaml | 208 / 208 | 1.000× | 1.000× | 1.000× |
+| Applications | rust | 46 / 46 | 1.000× | 1.000× | 1.000× |
+| Applications | ocaml | 46 / 46 | 1.000× | 1.000× | 1.000× |
 
 ## Comparison and floor legend
 

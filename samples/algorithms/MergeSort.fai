@@ -1,16 +1,108 @@
 module MergeSort
 
-// Sort a descending array with the standard library's sort, then checksum it.
-// `Array.sort` recognizes the descending run and reverses it in linear work.
-// Rust's `Vec::sort` is the contiguous-library-sort peer. The module's name is
-// historical; the sort-pattern benchmark also covers general distributions.
-// Position-weighted checksum: omitting the sort changes the answer.
+// Stable bottom-up merge sort over a deterministically shuffled permutation.
+// Two full-sized arrays alternate as source and destination on each pass.
+swap : Int -> Int -> Array Int -> Array Int
+let swap i j xs =
+  let a = Array.unsafeGet i xs
+  let b = Array.unsafeGet j xs
+  Array.unsafeSet j a (Array.unsafeSet i b xs)
+
+shuffle : Int -> Int -> Array Int -> Array Int
+let shuffle i state xs =
+  if i <= 0 then
+    xs
+  else
+    let next = Int.and (state * 1664525 + 1013904223) 2147483647
+    shuffle (i - 1) next (swap i (next % (i + 1)) xs)
+
+let runValue n i =
+  let end = (i / 32 + 1) * 32
+  n - (if end > n then n else end) + i % 32
+
+public generate : Int -> Int -> Array Int
+let generate pattern n =
+  if pattern = 0 then
+    Array.range 0 n
+  else if pattern = 1 then
+    Array.init n (fun i -> n - 1 - i)
+  else if pattern = 2 then
+    shuffle (n - 1) 1 (Array.range 0 n)
+  else if pattern = 3 then
+    Array.repeat n 7
+  else if pattern = 4 then Array.init n (fun i -> i % 4) else Array.init n (runValue n)
+
+copy : Array Int -> Int -> Int -> Int -> Array Int -> Array Int
+let copy source i stop out destination =
+  if i >= stop then
+    destination
+  else
+    copy source (i + 1) stop (out + 1) (Array.unsafeSet out (Array.unsafeGet i source) destination)
+
+merge : Array Int -> Int -> Int -> Int -> Int -> Array Int -> Array Int
+let merge source middle high left right destination =
+  let out = left + right - middle
+  if left >= middle then
+    copy source right high out destination
+  else if right >= high then
+    copy source left middle out destination
+  else
+    let a = Array.unsafeGet left source
+    let b = Array.unsafeGet right source
+    mergeHeads source middle high left right a b destination
+
+mergeHeads : Array Int -> Int -> Int -> Int -> Int -> Int -> Int -> Array Int -> Array Int
+let mergeHeads source middle high left right a b destination =
+  let out = left + right - middle
+  if a <= b then
+    let changed = Array.unsafeSet out a destination
+    let next = left + 1
+    if next >= middle then
+      copy source right high (out + 1) changed
+    else
+      mergeHeads source middle high next right (Array.unsafeGet next source) b changed
+  else
+    let changed = Array.unsafeSet out b destination
+    let next = right + 1
+    if next >= high then
+      copy source left middle (out + 1) changed
+    else
+      mergeHeads source middle high left next a (Array.unsafeGet next source) changed
+
+pass : Int -> Int -> Int -> Array Int -> Array Int -> Array Int
+let pass width n low source destination =
+  if low >= n then
+    destination
+  else
+    let middle = if low + width < n then low + width else n
+    let high = if middle + width < n then middle + width else n
+    pass width n high source (merge source middle high low middle destination)
+
+sortFrom : Int -> Int -> Array Int -> Array Int -> Array Int
+let sortFrom width n source destination =
+  if width >= n then
+    source
+  else
+    let changed = pass width n 0 source destination
+    let next = if width >= n - width then n else width * 2
+    sortFrom next n changed source
+
+public sortValues : Array Int -> Array Int
+let sortValues xs =
+  let n = Array.length xs
+  if n < 2 then xs else sortFrom 1 n xs (Array.repeat n 0)
+example: Array.toList (sortValues [| 3, -1, 3, 0 |]) = [-1, 0, 3, 3]
+forall xs: Array.toList (sortValues (Array.fromList xs)) = List.sort xs
+
 let checksum i acc xs =
   if i >= Array.length xs then acc else checksum (i + 1) (acc + i * Array.unsafeGet i xs) xs
 
-/// Sort the descending array [n-1, …, 0] and checksum its order.
+public runPattern : Int -> Int -> Int
+let runPattern pattern n = checksum 0 0 (sortValues (generate pattern n))
+
+/// Sort a shuffled permutation of [0, n) and checksum its order.
 public run : Int -> Int
-let run n = checksum 0 0 (Array.sort (Array.reverse (Array.range 0 n)))
+let run n = runPattern 2 n
 example: run 5 = 30
 
 public main : Runtime -> Unit / { Console }

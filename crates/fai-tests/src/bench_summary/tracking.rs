@@ -202,8 +202,11 @@ pub fn catalog() -> serde_json::Value {
     };
     let describe = |a: &algorithms::Algorithm| {
         let c = benchmark_contracts::for_module(a.module).expect("registered contract");
+        let peers = benchmark_contracts::peer_notes(a.module).expect("registered peer notes");
         serde_json::json!({"name": a.module, "small": a.jit_size, "large": a.aot_size,
-            "version": c.version, "comparison": c.comparison.as_str(), "note": c.note})
+            "version": c.version, "comparison": c.comparison.as_str(), "note": c.note,
+            "peerNotes": {"rust": peers.rust, "ocaml": peers.ocaml},
+            "validationInputs": benchmark_contracts::validation_inputs(a.module)})
     };
     serde_json::json!({"schemaVersion": SCHEMA_VERSION, "methodology": benchmark_contracts::METHODOLOGY,
         "workloads": algorithms::ALGORITHMS.iter().map(describe).collect::<Vec<_>>(),
@@ -212,8 +215,10 @@ pub fn catalog() -> serde_json::Value {
         "memoryWorkloads": memory_workloads::algorithms().map(|a| {
             let profile = memory_workloads::profile(a.module).expect("memory profile");
             let contract = benchmark_contracts::for_module(a.module).expect("memory contract");
+            let peers = benchmark_contracts::peer_notes(a.module).expect("registered peer notes");
             serde_json::json!({"name": a.module, "sizes": profile.sizes, "unit": profile.unit,
                 "scale": profile.scale, "version": contract.version,
+                "peerNotes": {"rust": peers.rust, "ocaml": peers.ocaml},
                 "comparison": contract.comparison.as_str(), "note": contract.note})
         }).collect::<Vec<_>>(),
         "allocations": allocation_design::CASES.iter().map(|c| serde_json::json!({"name": c.name, "control": c.control_name, "inputs": c.inputs})).collect::<Vec<_>>()})

@@ -13,7 +13,7 @@ let fill i n s = if i >= n then s else fill (i + 1) n (HashSet.insert (i % bucke
 
 /// The benchmark workload: the sum of the distinct values among [0, n) % buckets.
 public run : Int -> Int
-let run n = List.sum (HashSet.toList (fill 0 n HashSet.empty))
+let run n = HashSet.foldl (fun value total -> total + value) 0 (fill 0 n HashSet.empty)
 example: run 5 = 10
 
 public main : Runtime -> Unit / { Console }

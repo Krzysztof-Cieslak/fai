@@ -67,6 +67,72 @@ pub fn checksum(values: &[i64]) -> i64 {
         .fold(0i64, |sum, (i, x)| sum.wrapping_add((i as i64).wrapping_mul(*x)))
 }
 
+/// Bottom-up stable merges with two full-sized alternating buffers.
+pub fn merge_with_buffer(
+    mut source: Vec<i64>,
+    mut destination: Vec<i64>,
+    compare: fn(i64, i64) -> i64,
+) -> Vec<i64> {
+    let n = source.len();
+    assert_eq!(destination.len(), n);
+    let mut width = 1;
+    while width < n {
+        for low in (0..n).step_by(width * 2) {
+            let middle = (low + width).min(n);
+            let high = (middle + width).min(n);
+            let (mut left, mut right, mut out) = (low, middle, low);
+            if left < middle && right < high {
+                let (mut a, mut b) = (source[left], source[right]);
+                loop {
+                    if compare(a, b) <= 0 {
+                        destination[out] = a;
+                        left += 1;
+                        out += 1;
+                        if left == middle {
+                            break;
+                        }
+                        a = source[left];
+                    } else {
+                        destination[out] = b;
+                        right += 1;
+                        out += 1;
+                        if right == high {
+                            break;
+                        }
+                        b = source[right];
+                    }
+                }
+            }
+            while left < middle {
+                destination[out] = source[left];
+                left += 1;
+                out += 1;
+            }
+            while right < high {
+                destination[out] = source[right];
+                right += 1;
+                out += 1;
+            }
+        }
+        std::mem::swap(&mut source, &mut destination);
+        width = if width >= n - width { n } else { width * 2 };
+    }
+    source
+}
+
+/// Matching array merge-sort kernel with a zero-initialized scratch buffer.
+pub fn merge_sort(values: Vec<i64>) -> Vec<i64> {
+    if values.len() < 2 {
+        return values;
+    }
+    let scratch = vec![0; values.len()];
+    merge_with_buffer(values, scratch, |a, b| match a.cmp(&b) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    })
+}
+
 /// Sorts one generated input and checksums its order.
 pub fn run(pattern: usize, n: usize) -> i64 {
     let mut values = input(pattern, n);
@@ -77,4 +143,24 @@ pub fn run(pattern: usize, n: usize) -> i64 {
 /// Fills the sample's entry with a particular distribution and size.
 pub fn program(case: Case) -> String {
     SOURCE.replace("run 1 80000", &format!("run {} {}", case.pattern, case.n))
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn explicit_merge_sort_matches_native_order(mut values in prop::collection::vec(any::<i64>(), 0..256)) {
+            let actual = merge_sort(values.clone());
+            values.sort();
+            prop_assert_eq!(actual, values);
+        }
+
+        #[test]
+        fn linked_merge_sort_matches_the_permutation_checksum(n in 0i64..512) {
+            prop_assert_eq!(crate::algorithms::list_sort_sum(n), n * (n - 1) * (2 * n - 1) / 6);
+        }
+    }
 }

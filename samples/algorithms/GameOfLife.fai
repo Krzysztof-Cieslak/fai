@@ -25,9 +25,9 @@ bump : HashDict (Int * Int) Int -> (Int * Int) -> HashDict (Int * Int) Int
 let bump d cell = HashDict.updateOr 0 (fun count -> count + 1) cell d
 
 // Tally neighbour counts contributed by every live cell.
-countNeighbors : List (Int * Int) -> HashDict (Int * Int) Int
+countNeighbors : HashSet (Int * Int) -> HashDict (Int * Int) Int
 let countNeighbors live =
-  List.foldl (fun d cell -> List.foldl bump d (neighbors cell)) HashDict.empty live
+  HashSet.foldl (fun cell d -> List.foldl bump d (neighbors cell)) HashDict.empty live
 
 // A cell lives next generation with three neighbours, or two if already alive.
 survives : HashSet (Int * Int) -> (Int * Int) -> Int -> Bool
@@ -35,15 +35,12 @@ let survives live cell count =
   if count = 3 then true else if count = 2 then HashSet.member cell live else false
 
 // Keep one (cell, count) entry if the cell survives.
-keep : HashSet (Int * Int) -> HashSet (Int * Int) -> ((Int * Int) * Int) -> HashSet (Int * Int)
-let keep live acc entry =
-  match entry with
-  | (cell, count) -> if survives live cell count then HashSet.insert cell acc else acc
+keep : HashSet (Int * Int) -> (Int * Int) -> Int -> HashSet (Int * Int) -> HashSet (Int * Int)
+let keep live cell count acc = if survives live cell count then HashSet.insert cell acc else acc
 
 // One generation: count neighbours, then keep the surviving cells.
 step : HashSet (Int * Int) -> HashSet (Int * Int)
-let step live =
-  List.foldl (keep live) HashSet.empty (HashDict.toList (countNeighbors (HashSet.toList live)))
+let step live = HashDict.foldl (keep live) HashSet.empty (countNeighbors live)
 
 fromList : List (Int * Int) -> HashSet (Int * Int)
 let fromList cells = List.foldl (fun s c -> HashSet.insert c s) HashSet.empty cells

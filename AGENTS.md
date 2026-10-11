@@ -1486,6 +1486,17 @@ Memory ratio summaries include arithmetic/geometric means and nearest-rank p90
 with pairwise coverage and matched/application breakdowns. Each declared case
 has equal weight; these remain descriptive process-footprint comparisons.
 
+Benchmark contracts also pin construction, materialization and traversal phases.
+The main sorting peers share explicit algorithms; linked parser/evaluator,
+permutation, JSON and binary-lookup peers share logical structures and lifetimes.
+Native library-sort and map alternatives remain available as application controls.
+Hash workloads start empty without insertion-count reservations, retaining their
+native hashing/probing policies as application comparisons. UTF-8 builders share
+one classification policy. Catalogs retain per-pair implementation notes, and
+untimed boundary-input answers are checked against the exact warm-worker hashes
+before publication. Contract changes require fresh measurements, never relabeling
+historical observations. See `docs/BENCHMARK.md` for the current workload matrix.
+
 The inference solver carries always-on thread-local **work counters** (variable
 resolution clones, occurs-check node visits, free-variable visits — see
 `fai-types/src/perf.rs`) so its asymptotic complexity is gated deterministically

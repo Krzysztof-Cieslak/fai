@@ -9,9 +9,9 @@
 
    The implementations compute the same results but do not always use identical
    representations. Many pair an `array` with Fai's `Array`, or a persistent
-   `list` with Fai's `List`. Hash workloads use `Hashtbl`; OptionTreeFind uses
-   `Map` rather than the Fai binary tree. ListSort uses a list here and in Fai,
-   but a Vec in Rust. See docs/BENCHMARK.md for the comparison's scope.
+    `list` with Fai's `List`. Hash workloads retain native `Hashtbl` policies;
+    sorting, binary lookup, parser and permutation workloads use explicit shared
+    algorithms. See docs/BENCHMARK.md for the comparison's scope.
 
    OCaml's native `int` is 63-bit, so the two workloads that depend on full 64-bit
    wrapping — `PrngXorshift` (u64 bit-twiddling) and `FibMemo` (i64 wrapping over
@@ -89,11 +89,62 @@ let map_sum n =
   done;
   !acc
 
-(* Position-weighted checksum of `[n-1, …, 0]` sorted ascending (an `array`, like the Fai
-   sample's `Array` and the Rust `Vec`). *)
+let sort_input pattern n =
+  let n = max 0 n in
+  let values = Array.init n (fun i -> match pattern with
+    | 1 -> n - 1 - i
+    | 3 -> 7
+    | 4 -> i mod 4
+    | 5 -> n - min n ((i / 32 + 1) * 32) + i mod 32
+    | _ -> i) in
+  if pattern = 2 then begin
+    let state = ref 1 in
+    for i = n - 1 downto 1 do
+      state := (!state * 1664525 + 1013904223) land 2147483647;
+      let j = !state mod (i + 1) in
+      let value = values.(i) in values.(i) <- values.(j); values.(j) <- value
+    done
+  end;
+  values
+
+let merge_buffers (cmp : int -> int -> int) (initial : int array) (scratch : int array) =
+  let n = Array.length initial in
+  let source = ref initial and destination = ref scratch in
+  let width = ref 1 in
+  while !width < n do
+    let low = ref 0 in
+    while !low < n do
+      let middle = min n (!low + !width) in
+      let high = min n (middle + !width) in
+      let left = ref !low and right = ref middle and out = ref !low in
+      let a = ref (if !left < middle then (!source).(!left) else 0) in
+      let b = ref (if !right < high then (!source).(!right) else 0) in
+      while !left < middle && !right < high do
+        if cmp !a !b <= 0 then begin
+          (!destination).(!out) <- !a; incr left;
+          if !left < middle then a := (!source).(!left)
+        end else begin
+          (!destination).(!out) <- !b; incr right;
+          if !right < high then b := (!source).(!right)
+        end;
+        incr out
+      done;
+      while !left < middle do (!destination).(!out) <- (!source).(!left); incr left; incr out done;
+      while !right < high do (!destination).(!out) <- (!source).(!right); incr right; incr out done;
+      low := high
+    done;
+    let old = !source in source := !destination; destination := old;
+    width := if !width >= n - !width then n else !width * 2
+  done;
+  !source
+
+let merge_sort_values values =
+  let n = Array.length values in
+  if n < 2 then values else merge_buffers compare values (Array.make n 0)
+
+(* Position-weighted checksum after the shared shuffle and bottom-up merge sort. *)
 let merge_sort_sum n =
-  let v = Array.init n (fun i -> n - 1 - i) in
-  Array.sort compare v;
+  let v = merge_sort_values (sort_input 2 n) in
   let answer = ref 0 in
   Array.iteri (fun i x -> answer := !answer + i * x) v;
   !answer
@@ -122,7 +173,7 @@ let pi terms =
 (* The count-weighted sum of a histogram of `n` keys (`i % 256`) in a hash map. *)
 let dict_histogram n =
   let buckets = 256 in
-  let counts = Hashtbl.create 512 in
+  let counts = Hashtbl.create 0 in
   for i = 0 to n - 1 do
     let k = i mod buckets in
     let c = try Hashtbl.find counts k with Not_found -> 0 in
@@ -130,16 +181,41 @@ let dict_histogram n =
   done;
   Hashtbl.fold (fun key count acc -> acc + (key * count)) counts 0
 
-(* The total length of the words in `"0 1 2 … n-1"` after joining with spaces and
-   splitting back apart. *)
-let word_count n =
-  let buf = Buffer.create ((n * 4) + 1) in
-  for i = 0 to n - 1 do
-    if i > 0 then Buffer.add_char buf ' ';
-    Buffer.add_string buf (string_of_int i)
-  done;
-  let parts = String.split_on_char ' ' (Buffer.contents buf) in
-  List.fold_left (fun acc w -> acc + String.length w) 0 parts
+let unicode_length text =
+  let count = ref 0 in
+  String.iter (fun ch -> if Char.code ch land 0xc0 <> 0x80 then incr count) text;
+  !count
+
+let[@inline never] array_string_lengths parts =
+  Array.fold_left (fun total word -> total + unicode_length word) 0 parts
+
+let join_words words =
+  let count = Array.length words in
+  let length = Array.fold_left (fun total word -> total + String.length word) (max 0 (count - 1)) words in
+  let bytes = Bytes.create length in
+  let offset = ref 0 in
+  Array.iteri (fun i word ->
+    if i > 0 then begin Bytes.set bytes !offset ' '; incr offset end;
+    Bytes.blit_string word 0 bytes !offset (String.length word);
+    offset := !offset + String.length word) words;
+  Bytes.unsafe_to_string bytes
+
+let split_words text =
+  let count = ref 1 in
+  String.iter (fun ch -> if ch = ' ' then incr count) text;
+  let words = Array.make !count "" in
+  let start = ref 0 and slot = ref 0 in
+  String.iteri (fun i ch -> if ch = ' ' then begin
+    words.(!slot) <- String.sub text !start (i - !start);
+    incr slot; start := i + 1
+  end) text;
+  words.(!slot) <- String.sub text !start (String.length text - !start);
+  words
+
+let word_text n = join_words (Array.init (max 0 n) string_of_int)
+
+(* Materialized input words, joined text, and materialized split output. *)
+let word_count n = array_string_lengths (split_words (word_text n))
 
 (* Two traversals of one materialized array, matching Fai's shared source.
    The mapped intermediate is fused into its fold on all three sides. *)
@@ -152,7 +228,7 @@ let map_sum_shared n =
 (* The sum of the distinct values among `[0, n)` reduced modulo a bucket count. *)
 let set_dedup n =
   let buckets = 1000 in
-  let s = Hashtbl.create 2048 in
+  let s = Hashtbl.create 0 in
   for i = 0 to n - 1 do
     Hashtbl.replace s (i mod buckets) ()
   done;
@@ -166,12 +242,17 @@ let fold_pipeline n =
   done;
   !acc
 
-(* The dispatched-score sum over `[0, n)`: `i % 3` selects `2i`, `i+1`, or `-i`. *)
+type scorer = { score : int -> int }
+
+(* Select one of three one-method dictionaries; normal devirtualization is allowed. *)
 let interface_dispatch n =
+  let doubler = { score = (fun x -> x * 2) } in
+  let incer = { score = (fun x -> x + 1) } in
+  let negator = { score = (fun x -> -x) } in
+  let pick i = match i mod 3 with 0 -> doubler | 1 -> incer | _ -> negator in
   let acc = ref 0 in
   for i = 0 to n - 1 do
-    let v = match i mod 3 with 0 -> i * 2 | 1 -> i + 1 | _ -> -i in
-    acc := !acc + v
+    acc := !acc + (pick i).score i
   done;
   !acc
 
@@ -298,10 +379,10 @@ let levenshtein n =
 (* The live-cell count after `n` Conway generations from the R-pentomino seed. *)
 let game_of_life n =
   let offsets = [| (-1, -1); (0, -1); (1, -1); (-1, 0); (1, 0); (-1, 1); (0, 1); (1, 1) |] in
-  let live = ref (Hashtbl.create 256) in
+  let live = ref (Hashtbl.create 0) in
   List.iter (fun cell -> Hashtbl.replace !live cell ()) [ (1, 0); (2, 0); (0, 1); (1, 1); (1, 2) ];
   for _ = 1 to n do
-    let counts = Hashtbl.create 1024 in
+    let counts = Hashtbl.create 0 in
     Hashtbl.iter
       (fun (x, y) () ->
         Array.iter
@@ -311,7 +392,7 @@ let game_of_life n =
             Hashtbl.replace counts key (c + 1))
           offsets)
       !live;
-    let next = Hashtbl.create 1024 in
+    let next = Hashtbl.create 0 in
     Hashtbl.iter
       (fun cell c -> if c = 3 || (c = 2 && Hashtbl.mem !live cell) then Hashtbl.replace next cell ())
       counts;
@@ -415,6 +496,8 @@ type expr =
   | ESub of expr * expr
   | EMul of expr * expr
 
+type eval_work = Visit of expr | AddResult | SubResult | MulResult
+
 (* The value of a generated `n`-number arithmetic expression with `*` binding
    tighter than `+`/`-`. A token `list` is parsed by recursive descent into an
    `expr` tree (the linked structure a parser naturally consumes). *)
@@ -466,41 +549,48 @@ let expr_eval n =
       in
       loop left rest
   in
-  let rec eval = function
-    | ENum k -> k
-    | EAdd (a, b) -> eval a + eval b
-    | ESub (a, b) -> eval a - eval b
-    | EMul (a, b) -> eval a * eval b
+  let rec eval work values = match work, values with
+    | [], result :: _ -> result
+    | Visit (ENum k) :: rest, _ -> eval rest (k :: values)
+    | Visit (EAdd (a, b)) :: rest, _ -> eval (Visit a :: Visit b :: AddResult :: rest) values
+    | Visit (ESub (a, b)) :: rest, _ -> eval (Visit a :: Visit b :: SubResult :: rest) values
+    | Visit (EMul (a, b)) :: rest, _ -> eval (Visit a :: Visit b :: MulResult :: rest) values
+    | AddResult :: rest, right :: left :: tail -> eval rest ((left + right) :: tail)
+    | SubResult :: rest, right :: left :: tail -> eval rest ((left - right) :: tail)
+    | MulResult :: rest, right :: left :: tail -> eval rest ((left * right) :: tail)
+    | _ -> assert false
   in
-  match parse_expr (gen_tokens n) with Some (e, _) -> eval e | None -> 0
+  match parse_expr (gen_tokens n) with Some (e, _) -> eval [Visit e] [] | None -> 0
 
 (* Build and retain the same adjacency dictionary as the Fai workload. *)
 let graph_adjacency n =
-  let graph = Hashtbl.create 1024 in
+  let graph = Hashtbl.create 0 in
   for i = 0 to n - 1 do
     Hashtbl.add graph i [ (i + 1) mod n; ((2 * i) + 1) mod n; ((3 * i) + 2) mod n ]
   done;
   graph
 
 let graph_reachable graph =
-  let visited = Hashtbl.create 1024 in
+  let visited = Hashtbl.create 0 in
   Hashtbl.replace visited 0 ();
-  let frontier = ref [ 0 ] in
-  while !frontier <> [] do
-    let next = ref [] in
-    List.iter
-      (fun node ->
-        List.iter
-          (fun nb ->
-            if not (Hashtbl.mem visited nb) then begin
-              Hashtbl.replace visited nb ();
-              next := nb :: !next
-            end)
-           (match Hashtbl.find_opt graph node with Some neighbors -> neighbors | None -> []))
-      !frontier;
-    frontier := !next
-  done;
-  Hashtbl.length visited
+  let visit next node =
+    if Hashtbl.mem visited node then next else begin
+      Hashtbl.replace visited node ();
+      node :: next
+    end
+  in
+  let rec expand frontier next = match frontier with
+    | [] -> next
+    | node :: rest ->
+      let neighbors = match Hashtbl.find_opt graph node with Some values -> values | None -> [] in
+      let next = List.fold_left visit next neighbors in
+      expand rest next
+  in
+  let rec bfs = function
+    | [] -> Hashtbl.length visited
+    | frontier -> bfs (expand frontier [])
+  in
+  bfs [0]
 
 (* The number of nodes reachable from `0`, including adjacency construction. *)
 let graph_bfs n = graph_reachable (graph_adjacency n)
@@ -523,14 +613,16 @@ let coin_change n =
 (* The `n`th Fibonacci number with two's-complement wrapping, computed top-down
    with a hash-map memo. Uses `Int64` to reproduce the oracle's i64 wrapping. *)
 let fib_memo n =
-  let memo : (int, Int64.t) Hashtbl.t = Hashtbl.create 1024 in
+  let memo : (int, Int64.t) Hashtbl.t = Hashtbl.create 0 in
   let rec go k =
     if k < 2 then Int64.of_int k
     else
       match Hashtbl.find_opt memo k with
       | Some v -> v
       | None ->
-        let v = Int64.add (go (k - 1)) (go (k - 2)) in
+        let left = go (k - 1) in
+        let right = go (k - 2) in
+        let v = Int64.add left right in
         Hashtbl.replace memo k v;
         v
   in
@@ -540,7 +632,19 @@ let fib_memo n =
    it ascending. *)
 let quicksort_sum n =
   let v = Array.init n (fun k -> ((k * 2654435761) + 12345) mod n) in
-  Array.sort compare v;
+  let swap i j = let x = v.(i) in v.(i) <- v.(j); v.(j) <- x in
+  let rec sort low high =
+    if high - low > 1 then begin
+      let store = ref low in
+      for index = low to high - 2 do
+        if v.(index) < v.(high - 1) then begin swap !store index; incr store end
+      done;
+      swap !store (high - 1);
+      if !store - low < high - !store - 1 then begin sort low !store; sort (!store + 1) high end
+      else begin sort (!store + 1) high; sort low !store end
+    end
+  in
+  sort 0 (Array.length v);
   let acc = ref 0 in
   Array.iteri (fun i x -> acc := !acc + (i * x)) v;
   !acc
@@ -638,9 +742,8 @@ let fannkuch n =
     match xs with
     | [] -> [ [] ]
     | _ ->
-      List.fold_right
-        (fun x acc -> List.map (fun p -> x :: p) (perms (remove_first x xs)) @ acc)
-        xs []
+      let groups = List.map (fun x -> List.map (fun p -> x :: p) (perms (remove_first x xs))) xs in
+      List.concat groups
   in
   let rec range lo hi = if lo >= hi then [] else lo :: range (lo + 1) hi in
   List.fold_left (fun acc p -> max acc (flips_from 0 p)) 0 (perms (range 1 (n + 1)))
@@ -648,7 +751,7 @@ let fannkuch n =
 (* The number of connected components among `n` nodes after linking each `i` (not
    a multiple of 5) to `i/2` via union-find. *)
 let union_find n =
-  let parent = Hashtbl.create 1024 in
+  let parent = Hashtbl.create 0 in
   let rec find x =
     match Hashtbl.find_opt parent x with Some p when p <> x -> find p | _ -> x
   in
@@ -659,7 +762,7 @@ let union_find n =
       if ra <> rb then Hashtbl.replace parent ra rb
     end
   done;
-  let roots = Hashtbl.create 1024 in
+  let roots = Hashtbl.create 0 in
   for i = 0 to n - 1 do
     Hashtbl.replace roots (find i) ()
   done;
@@ -673,7 +776,7 @@ type json =
   | JObj of (string * json) list
 
 (* The length of the serialized balanced JSON tree of `n` nodes. *)
-let json_serialize n =
+let json_text n =
   let leaf seed = match seed mod 3 with 0 -> JNull | 1 -> JBool true | _ -> JInt seed in
   let rec build seed size =
     if size <= 1 then leaf seed
@@ -684,7 +787,8 @@ let json_serialize n =
       if seed mod 2 = 0 then JArr [ l; r ] else JObj [ ("a", l); ("b", r) ]
     end
   in
-  let buf = Buffer.create 1024 in
+  let tree = build 0 n in
+  let buf = Buffer.create 0 in
   let rec ser j =
     match j with
     | JNull -> Buffer.add_string buf "null"
@@ -710,27 +814,42 @@ let json_serialize n =
         fields;
       Buffer.add_char buf '}'
   in
-  ser (build 0 n);
-  String.length (Buffer.contents buf)
+  ser tree;
+  Buffer.contents buf
+
+let json_serialize n = unicode_length (json_text n)
 
 (* The length of the string built by appending `"ab"` onto `"0"` `n` times. *)
-let string_build n =
-  let buf = Buffer.create ((2 * n) + 1) in
+let string_build_text n =
+  let buf = Buffer.create 0 in
   Buffer.add_string buf (string_of_int 0);
   for _ = 1 to n do
     Buffer.add_string buf "ab"
   done;
-  String.length (Buffer.contents buf)
+  Buffer.contents buf
+
+let string_build n = unicode_length (string_build_text n)
 
 (* The total length of 200 half-length substrings of a length-`n` base. *)
-let string_slice n =
-  let base = String.make (max n 0) 'a' in
-  let half = max (n / 2) 0 in
-  let acc = ref 0 in
-  for _ = 1 to 200 do
-    acc := !acc + String.length (String.sub base 0 half)
+let slice_base n =
+  let buffer = Buffer.create 0 in
+  for _ = 1 to n do Buffer.add_char buffer 'a' done;
+  Buffer.contents buffer
+
+let unicode_prefix count text =
+  let offset = ref 0 and remaining = ref count in
+  while !remaining > 0 && !offset < String.length text do
+    let first = Char.code text.[!offset] in
+    offset := !offset + (if first < 0x80 then 1 else if first < 0xe0 then 2 else if first < 0xf0 then 3 else 4);
+    decr remaining
   done;
-  !acc
+  String.sub text 0 !offset
+
+let string_slice n =
+  let base = slice_base n in
+  let half = max (n / 2) 0 in
+  let prefixes = Array.init 200 (fun _ -> unicode_prefix half base) in
+  array_string_lengths prefixes
 
 (* Sum the safe-evaluation results over `[0, n)`, taking the chain at `i` or, when
    it fails (a zero divisor), the one at `i + 1`. *)
@@ -774,7 +893,7 @@ let int_eval n =
    missing key ends the walk, and a per-walk fuel bounds the cyclic table. *)
 let option_path n =
   let size = 100 in
-  let table = Hashtbl.create 256 in
+  let table = Hashtbl.create 0 in
   for i = 0 to size - 1 do
     Hashtbl.replace table i (((i * 2) + 1) mod size)
   done;
@@ -796,26 +915,60 @@ let option_path n =
   done;
   !total
 
-module IntMap = Map.Make (Int)
+type lookup_tree = LLeaf | LNode of { mutable left : lookup_tree; key : int; mutable value : int; mutable right : lookup_tree }
 
-(* Map application baseline; the matched binary-node peer is in tree_lookup.ml. *)
+let rec lookup_insert key value = function
+  | LLeaf -> LNode { left = LLeaf; key; value; right = LLeaf }
+  | LNode node as tree ->
+    if key < node.key then node.left <- lookup_insert key value node.left
+    else if key > node.key then node.right <- lookup_insert key value node.right
+    else node.value <- value;
+    tree
+
+let rec lookup_build lo hi tree =
+  if lo >= hi then tree else
+  let mid = (lo + hi) / 2 in
+  let tree = lookup_insert mid (mid * 3) tree in
+  let tree = lookup_build lo mid tree in
+  lookup_build (mid + 1) hi tree
+
+let rec lookup_find key = function
+  | LLeaf -> None
+  | LNode node ->
+    if key < node.key then lookup_find key node.left else if key > node.key then lookup_find key node.right else Some node.value
+
+(* Midpoint-first binary nodes with borrowed lookup and optional results. *)
 let option_tree_find n =
   let m = 1000 in
-  let tree = ref IntMap.empty in
-  for k = 0 to m - 1 do
-    tree := IntMap.add k (k * 3) !tree
-  done;
+  let tree = lookup_build 0 m LLeaf in
   let total = ref 0 in
   for i = 0 to n - 1 do
-    match IntMap.find_opt (i mod (m * 2)) !tree with Some v -> total := !total + v | None -> ()
+    match lookup_find (i mod (m * 2)) tree with Some v -> total := !total + v | None -> ()
   done;
   !total
 
 (* The position-weighted checksum of a scrambled `n`-element `list` after sorting
    it — the linked counterpart to `merge_sort_sum`'s array sort. *)
+let linked_sort cmp values =
+  let rec merge left right = match left, right with
+    | [], _ -> right
+    | _, [] -> left
+    | a :: rest_a, b :: rest_b ->
+      if cmp a b <= 0 then a :: merge rest_a right else b :: merge left rest_b
+  in
+  let rec pairs = function
+    | [] -> []
+    | [run] -> [run]
+    | a :: b :: rest -> let run = merge a b in run :: pairs rest
+  in
+  let rec all = function [] -> [] | [run] -> run | runs -> all (pairs runs) in
+  let n = List.length values in
+  if n <= 32 then all (List.map (fun value -> [value]) values)
+  else let source = Array.of_list values in
+    Array.to_list (merge_buffers cmp source (Array.copy source))
+
 let list_sort_sum n =
-  let rec go k acc = if k < 0 then acc else go (k - 1) ((((k * 2654435761) + 12345) mod n) :: acc) in
-  let sorted = List.sort compare (go (n - 1) []) in
+  let sorted = linked_sort (fun a b -> a - b) (Array.to_list (sort_input 2 n)) in
   let acc = ref 0 in
   List.iteri (fun i x -> acc := !acc + (i * x)) sorted;
   !acc
