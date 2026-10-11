@@ -92,6 +92,8 @@ logs, normalized data, source/build provenance and prior issue bodies in a
 versioned gist. Full compressed executable bytes remain in the local snapshot;
 their identities are included in the published manifest. `archivePublic` controls
 the gist visibility.
+Empty or whitespace-only logs are retained exactly in `blank-files.json`, since
+GitHub rejects them as individual gist files.
 
 Each issue body is replaced, then fetched again and verified. A short refresh
 comment links the immutable evidence revision. Repeating publication is

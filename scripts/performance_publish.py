@@ -30,7 +30,11 @@ class Github:
         command = ["gh", "api", path]
         if payload is not None:
             command += ["--method", method or "PATCH", "--input", "-"]
-        return json.loads(subprocess.check_output(command, input=json.dumps(payload) if payload is not None else None, text=True))
+        try:
+            response = subprocess.check_output(command, input=json.dumps(payload) if payload is not None else None, text=True)
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(f"GitHub request {path} failed: {error.output}") from error
+        return json.loads(response)
 
     def pages(self, path):
         page = 1
@@ -89,6 +93,14 @@ def archive_files(run, config, migration):
     files["artifact-provenance.json"] = {"content": json.dumps(provenance, indent=2)}
     if migration:
         files["superseded-issues.json"] = {"content": json.dumps(migration, indent=2)}
+    # Gists reject empty or whitespace-only files. Keep their exact contents in
+    # a JSON map so a successful, silent command remains distinguishable from a
+    # missing log and can be reconstructed without adding bytes to the log.
+    blank = {name: value["content"] for name, value in files.items() if not value["content"].strip()}
+    if blank:
+        for name in blank:
+            del files[name]
+        files["blank-files.json"] = {"content": json.dumps(blank, indent=2)}
     return files
 
 

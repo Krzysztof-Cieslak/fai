@@ -4,6 +4,7 @@ import copy
 import gzip
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -56,6 +57,14 @@ class FakeGithub:
 
     def verify_archive(self, identity, files):
         assert all(self.gist["files"][name] == value for name, value in files.items())
+
+
+class GithubRequestTests(unittest.TestCase):
+    def test_error_response_retains_the_github_validation_details(self):
+        failure = subprocess.CalledProcessError(1, ["gh", "api"], output='{"field":"files","code":"missing_field"}')
+        with patch("performance_publish.subprocess.check_output", side_effect=failure):
+            with self.assertRaisesRegex(RuntimeError, '"code":"missing_field"'):
+                publishing.Github().request("gists", {"files": {}})
 
 
 class PerformanceTests(unittest.TestCase):
@@ -137,6 +146,16 @@ class PerformanceTests(unittest.TestCase):
         receipt = performance.read_json(self.root / "publication.json")
         self.assertEqual(receipt["archiveUrl"], "https://gist.github.com/archive/updated")
         self.assertIn(receipt["archiveUrl"], self.github.comments[10][0]["body"])
+
+    def test_blank_logs_are_archived_exactly_without_invalid_gist_files(self):
+        (self.root / "raw").mkdir()
+        (self.root / "raw/empty.stderr").write_text("")
+        (self.root / "raw/whitespace.stdout").write_text("\n\t ")
+        self.publish()
+        files = self.github.gist["files"]
+        self.assertTrue(all(value["content"].strip() for value in files.values()))
+        self.assertEqual(json.loads(files["blank-files.json"]["content"]), {
+            "raw-empty.stderr": "", "raw-whitespace.stdout": "\n\t "})
 
     def test_executable_compression_is_lossless_and_keeps_identity_mapping(self):
         folder = self.root / "artifacts"
