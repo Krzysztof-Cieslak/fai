@@ -208,6 +208,15 @@ fai run -C packages http-client/examples/EventReaderChecks.fai
 
 ## Reconnecting SSE subscriptions
 
+`foldEvents client options initial step request` threads immutable application
+state through one SSE response. `step head state event` returns a new state and
+`ContinueEvents`/`StopEvents`, or its own typed error. The returned `EventFold`
+retains the last committed value, response head, SSE progress and either the end
+reason or `FoldHttpError`/`FoldConsumerError`. Non-success HTTP bodies are retained
+up to `config.maxErrorBytes`, with a truncation flag. Overall timeout includes
+callbacks; read-idle timeout covers only network reads. State survives cancellation
+and timeout after the scoped worker finishes. No POST or callback is replayed.
+
 `subscribeEvents client options consume target` makes a bodyless GET subscription.
 `subscribeEventsWith client options observe consume target` additionally reports
 `EventOpening`, `EventConnected`, and `EventReconnecting` notices, including the

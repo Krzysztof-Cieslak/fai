@@ -1933,6 +1933,10 @@ framing with the retained ID. Cross-origin redirects strip old IDs
 and credentials. Every timeout/heartbeat/reconnect duration is configurable.
 
 Including `packages/http-client/src` and `packages/json/src` supplies `HttpClient`.
+`HttpClient.foldEvents client options initial step request` threads state through
+SSE events. The callback receives response metadata and returns new state plus a
+continue/stop decision, or its own error type. The result retains committed state,
+headers, progress, bounded error-body bytes and typed HTTP/consumer failures.
 `withClient runtime (config baseUrl) callback` opens a scoped pool. Pure `get`,
 `post`, `request method target`, `header`, `query`, `jsonBody encoder value`,
 `textBody` and `bytesBody media bytes` build requests. Pipe through `expectJson

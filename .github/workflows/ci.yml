@@ -148,6 +148,9 @@ jobs:
       - uses: ./.github/actions/process
         if: contains(fromJSON(needs.changes.outputs.packages), 'process')
         timeout-minutes: 10
+      - uses: ./.github/actions/http-client
+        if: contains(fromJSON(needs.changes.outputs.packages), 'http-client')
+        timeout-minutes: 10
       - name: Package verified compiler bundle
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
         run: python scripts/compiler.py pack --offline --no-build --output "$RUNNER_TEMP/compiler.zip"
@@ -246,6 +249,9 @@ jobs:
         timeout-minutes: 10
       - uses: ./.github/actions/process
         if: contains(fromJSON(needs.changes.outputs.packages), 'process')
+        timeout-minutes: 10
+      - uses: ./.github/actions/http-client
+        if: contains(fromJSON(needs.changes.outputs.packages), 'http-client')
         timeout-minutes: 10
       - name: Package verified compiler bundle
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')

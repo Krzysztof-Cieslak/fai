@@ -1,0 +1,17 @@
+name: Native HTTP client integration
+description: Check scoped stateful SSE readers with the cached compiler
+runs:
+  using: composite
+  steps:
+    - name: Stateful SSE JIT and AOT checks
+      shell: python
+      run: |
+        import os, pathlib, subprocess
+        source = "http-client/examples/EventFoldChecks.fai"
+        executable = pathlib.Path(os.environ["RUNNER_TEMP"]) / "http-event-fold.exe"
+        def checked(command):
+            result = subprocess.run(command, check=True, capture_output=True, timeout=180)
+            assert b"event fold checks passed" in result.stdout, (result.stdout, result.stderr)
+        checked(["fai", "run", "--no-daemon", "-C", "packages", source])
+        subprocess.run(["fai", "build", "--no-daemon", "-C", "packages", source, "--out", str(executable)], check=True, timeout=180)
+        checked([str(executable)])

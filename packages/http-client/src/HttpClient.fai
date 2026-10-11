@@ -782,6 +782,171 @@ let withEvents client options consume request =
           eventResult (eventConnection cfg env pool options wire emptyEventState (fun _ ->
             Ok ()) consume))
 
+/// A fold keeps consumer failures typed independently of HTTP failures.
+public type EventFoldFailure 'error =
+  | FoldHttpError Error
+  | FoldConsumerError 'error
+
+/// The last committed value survives transport errors and cancellation. Response
+/// metadata and bounded non-success body bytes remain available for API clients.
+public type EventFold 'state 'error = {
+  head : Option ResponseHead,
+  outcome : Result EventEnd (EventFoldFailure 'error),
+  preview : Bytes,
+  progress : EventState,
+  truncated : Bool,
+  value : 'state
+}
+
+foldInitial : 'state -> EventFold 'state 'error
+let foldInitial value = {
+  head = None,
+  outcome = Ok EventEof,
+  preview = Bytes.empty,
+  progress = emptyEventState,
+  truncated = false,
+  value = value
+}
+
+foldRead : Capabilities -> EventOptions -> (ResponseHead -> 'state -> Sse.Event -> Result ('state * EventDecision) 'error / 'e) -> ResponseHead -> Sse.Decoder -> Bytes -> Int -> Stream Bytes { Concurrency, Net, Tls } -> EventFold 'state 'error -> EventFold 'state 'error / { Clock, Concurrency, Net, Tls | 'e }
+let foldRead env options step head decoder bytes index source state =
+  match Sse.next decoder bytes index with
+  | Err error -> { state with outcome = Err (FoldHttpError (EventCodec error)) }
+  | Ok progress ->
+    match progress.update with
+    | Some update ->
+      let updated = { state with progress = eventProgress state.progress update }
+      match update with
+      | Sse.Dispatch event ->
+        if not (cancellationPoint env.concurrency) then
+          { state with outcome = Err (FoldHttpError Cancelled) }
+        else
+          match step head state.value event with
+          | Err error -> { updated with outcome = Err (FoldConsumerError error) }
+          | Ok (value, StopEvents) -> { updated with outcome = Ok EventStopped, value = value }
+          | Ok (value, ContinueEvents) -> foldRead env options step head progress.decoder bytes progress.nextIndex source { updated with
+            value = value
+          }
+      | _ -> foldRead env options step head progress.decoder bytes progress.nextIndex source updated
+    | None ->
+      match deadline env options.readIdleTimeoutMs (fun _ ->
+        Result.mapError (BodyRead head) (Stream.uncons source)) with
+      | Err DeadlineExceeded -> { state with outcome = Err (FoldHttpError EventIdleTimeout) }
+      | Err error -> { state with outcome = Err (FoldHttpError error) }
+      | Ok None -> { state with outcome = Ok EventEof }
+      | Ok (Some (bytes, rest)) ->
+        foldRead env options step head progress.decoder bytes 0 rest state
+
+foldPreview : Capabilities -> EventOptions -> Int -> ResponseHead -> Stream Bytes { Concurrency, Net, Tls } -> Bytes -> Result (Bytes * Bool) Error / { Clock, Concurrency, Net, Tls }
+let foldPreview env options limit head source bytes =
+  match deadline env options.readIdleTimeoutMs (fun _ ->
+    Result.mapError (BodyRead head) (Stream.uncons source)) with
+  | Err error -> Err error
+  | Ok None -> Ok (bytes, false)
+  | Ok (Some (chunk, rest)) ->
+    let remaining = limit - Bytes.length bytes
+    if Bytes.length chunk > remaining then
+      Ok (Bytes.concat bytes (Bytes.slice 0 remaining chunk), true)
+    else
+      foldPreview env options limit head rest (Bytes.concat bytes chunk)
+
+foldResponse : Config -> Capabilities -> EventOptions -> Option (Task Unit) -> 'state -> (ResponseHead -> 'state -> Sse.Event -> Result ('state * EventDecision) 'error / 'e) -> Response (Stream Bytes { Concurrency, Net, Tls }) -> Result (EventFold 'state 'error) Error / { Clock, Concurrency, Net, Tls | 'e }
+let foldResponse cfg env options timer initial step response =
+  let stopped = cancelTimer env.concurrency timer
+  let state = { foldInitial initial with head = Some response.head }
+  if response.head.status = 204 then
+    Ok { state with outcome = Ok EventNoContent }
+  else if response.head.status <> 200 then
+    match foldPreview env options cfg.maxErrorBytes response.head response.body Bytes.empty with
+    | Err error -> Ok { state with outcome = Err (FoldHttpError error) }
+    | Ok (preview, truncated) -> Ok { state with
+      outcome = Err (FoldHttpError (EventStatus response.head)),
+      preview = preview,
+      truncated = truncated
+    }
+  else if not (eventMedia response.head.headers) then
+    Ok { state with
+      outcome = Err (FoldHttpError (EventMediaType response.head (Headers.get "Content-Type" response.head.headers)))
+    }
+  else
+    match Sse.decoder options.limits with
+    | Err error -> Ok { state with outcome = Err (FoldHttpError (EventCodec error)) }
+    | Ok decoder ->
+      Ok (foldRead env options step response.head decoder Bytes.empty 0 response.body state)
+
+foldPublish : Concurrency -> Channel (EventFold 'state 'error) -> EventFold 'state 'error -> Unit -> Unit / { Concurrency }
+let foldPublish concurrency checkpoint result unit =
+  let previous = concurrency.recv checkpoint
+  concurrency.send checkpoint result
+
+foldWorker : Config -> Capabilities -> Http.Client -> EventOptions -> Prepared -> 'state -> (ResponseHead -> 'state -> Sse.Event -> Result ('state * EventDecision) 'error / 'e) -> Option (Task Unit) -> Channel (EventFold 'state 'error) -> Channel (Option Error) -> Unit -> Unit / { Clock, Concurrency, Net, Tls | 'e }
+let foldWorker cfg env pool options wire initial step timer checkpoint signal unit =
+  let result = exchange cfg env pool wire 0 0 1 (foldResponse cfg env options timer initial step)
+  let snapshot =
+    match result with
+    | Ok result -> result
+    | Err error -> { foldInitial initial with outcome = Err (FoldHttpError error) }
+  let saved = Wire.cleanup env.concurrency (foldPublish env.concurrency checkpoint snapshot)
+  env.concurrency.send signal None
+
+foldConnectTimer : Capabilities -> Int -> Channel (Option Error) -> Unit -> Unit / { Clock, Concurrency }
+let foldConnectTimer env timeout signal unit =
+  let slept = env.clock.sleep timeout
+  env.concurrency.send signal (Some EventConnectTimeout)
+
+foldConnection : Config -> Capabilities -> Http.Client -> EventOptions -> Prepared -> 'state -> (ResponseHead -> 'state -> Sse.Event -> Result ('state * EventDecision) 'error / 'e) -> Channel (EventFold 'state 'error) -> Nursery -> Result Unit Error / { Clock, Concurrency, Net, Tls | 'e }
+let foldConnection cfg env pool options wire initial step checkpoint nursery =
+  let signal = env.concurrency.channel 1
+  let timer =
+    match options.connectTimeoutMs with
+    | None -> None
+    | Some timeout -> Some (env.concurrency.spawn nursery (foldConnectTimer env timeout signal))
+  let worker =
+    env.concurrency.spawn nursery (foldWorker cfg env pool options wire initial step timer checkpoint signal)
+  let result = env.concurrency.recv signal
+  let cancelled = env.concurrency.cancel worker
+  let cancelledTimer = cancelTimer env.concurrency timer
+  let closed = env.concurrency.close signal
+  match result with
+  | None -> Err Cancelled
+  | Some (Some error) -> Err error
+  | Some None -> Ok ()
+
+foldTake : Concurrency -> Channel (EventFold 'state 'error) -> 'state -> Unit -> EventFold 'state 'error / { Concurrency }
+let foldTake concurrency checkpoint initial unit =
+  Option.withDefault (foldInitial initial) (concurrency.recv checkpoint)
+
+foldRun : Config -> Capabilities -> Http.Client -> EventOptions -> Prepared -> 'state -> (ResponseHead -> 'state -> Sse.Event -> Result ('state * EventDecision) 'error / 'e) -> EventFold 'state 'error / { Clock, Concurrency, Net, Tls | 'e }
+let foldRun cfg env pool options wire initial step =
+  let checkpoint = env.concurrency.channel 1
+  let seeded =
+    Wire.cleanup env.concurrency (fun _ -> env.concurrency.send checkpoint (foldInitial initial))
+  let result =
+    deadline env options.subscriptionTimeoutMs (fun _ ->
+      env.concurrency.scope (foldConnection cfg env pool options wire initial step checkpoint))
+  let snapshot = Wire.cleanup env.concurrency (foldTake env.concurrency checkpoint initial)
+  let closed = env.concurrency.close checkpoint
+  match result with
+  | Ok _ -> snapshot
+  | Err error -> { snapshot with outcome = Err (FoldHttpError error) }
+
+/// Fold one POST/GET SSE connection with typed consumer errors and retained state.
+/// The callback sees response metadata; non-success bodies are bounded by the
+/// client's maxErrorBytes. Overall timeout includes callbacks, read idle does not.
+public foldEvents : Client -> EventOptions -> 'state -> (ResponseHead -> 'state -> Sse.Event -> Result ('state * EventDecision) 'error / 'e) -> Request Bytes -> EventFold 'state 'error / { Clock, Concurrency, Net, Tls | 'e }
+let foldEvents client options initial step request =
+  match SseOptions.validateEvents options with
+  | Err message -> { foldInitial initial with
+    outcome = Err (FoldHttpError (InvalidConfiguration message))
+  }
+  | Ok _ ->
+    match client with
+    | MkClient original env pool ->
+      let cfg = eventConfig original
+      match prepare cfg (header "Accept" "text/event-stream" request) with
+      | Err error -> { foldInitial initial with outcome = Err (FoldHttpError error) }
+      | Ok wire -> foldRun cfg env pool options wire initial step
+
 /// All subscription durations, reconnect bounds, and the optional initial cursor.
 public type SubscriptionOptions = SseOptions.Subscription
 

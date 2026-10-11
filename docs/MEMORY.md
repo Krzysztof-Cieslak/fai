@@ -41,6 +41,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Stateful SSE folding retains application state and typed consumer failures
+  independently of transport failures. A scoped worker publishes its final state
+  under cancellation-masked cleanup; callers recover it after deadline or
+  cancellation. Non-success response bodies have an explicit preview bound.
+
 - Process stdio policies are explicit per descriptor: piped, inherited or
   discarded. Only pipeline boundary descriptors and stage stderr can change mode.
   Inherited streams retain OS byte behavior and do not populate captured output.
