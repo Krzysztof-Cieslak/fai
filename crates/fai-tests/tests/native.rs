@@ -9,6 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use indoc::{formatdoc, indoc};
 
 #[test]
+fn scalar_tail_selection_preserves_native_values() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/ScalarTailSelects.fai")),
+        ("ok\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn synthesized_intrinsics_preserve_saturation_permutation_and_full_width_values() {
     assert_eq!(
         build_and_run(include_str!("fixtures/SynthesizedIntrinsics.fai")),

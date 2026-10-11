@@ -679,6 +679,9 @@ other remainder observations retain signed truncation and zero divisors still tr
 Small total raw-Int value alternatives can compile to a native conditional move.
 The condition is evaluated once; calls, effects, possible traps, data projections,
 unknown representations and larger alternatives retain ordinary branches.
+The same bounded selection applies to two self-loop back-edges whose differing
+arguments are raw Ints. Other carried owners must be the same evaluated local;
+all state is rebound together, and conditional releases retain their branches.
 For a raw Int proven nonnegative by current bounds, division or remainder by a
 positive power of two uses a direct shift or mask. Negative or unknown dividends
 retain signed truncation; possibly wrapping expressions need their own proof.
