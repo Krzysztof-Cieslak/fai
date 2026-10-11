@@ -27,6 +27,19 @@ duplicate tool names, invalid image types and cross-provider continuation fail
 validation. `Llm.Model 'e` is an effect-carrying generation port; scripted models
 can be pure and participate in ordinary contracts.
 
+`LlmOpenAI.config key` selects the native Responses API. `Llm.withClient` opens a
+scoped HTTP client using explicit `clock`, `concurrency`, `net`, and `tls` fields.
+`generate` returns a full response; `withStream` additionally invokes sequential
+event callbacks with their effects forwarded. Requests are streamed internally.
+An early callback stop returns `LlmTypes.Stopped`; normal completion returns
+`Finished`. EOF without the provider's terminal event is an error. Final snapshots
+are decoded once rather than appended to prior deltas. `encode`, `decode`, and
+`reduce` in the provider module are pure and independently testable.
+
+OpenAI uses application-owned history and `store: false` by default. Native output
+items, including opaque reasoning payloads, are retained in `continuation`.
+Configure `OpenAIOptions` explicitly for server storage or reasoning effort.
+
 ```sh
 fai fmt --check -C packages llm
 fai check -C packages llm

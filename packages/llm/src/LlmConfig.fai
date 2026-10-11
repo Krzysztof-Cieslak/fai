@@ -1,0 +1,29 @@
+module LlmConfig
+
+public type Config = {
+  events : HttpClient.EventOptions,
+  http : HttpClient.Config,
+  limits : LlmTypes.Limits,
+  provider : LlmTypes.Provider,
+  retryBaseMs : Int,
+  retryCount : Int,
+  retryMaxMs : Int
+}
+
+public create : LlmTypes.Provider -> String -> Headers -> Config
+let create provider base headers = {
+  events = { HttpClient.eventOptions with
+    limits = { maxEventBytes = 33554432, maxLineBytes = 33554432 },
+    readIdleTimeoutMs = Some 120000
+  },
+  http = { HttpClient.config base with
+    followRedirects = false,
+    headers = headers,
+    timeoutMs = None
+  },
+  limits = LlmTypes.limits,
+  provider = provider,
+  retryBaseMs = 250,
+  retryCount = 0,
+  retryMaxMs = 30000
+}

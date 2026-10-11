@@ -1,0 +1,127 @@
+module LlmStream
+
+public type Draft = { arguments : String, id : String, itemId : Option String, name : String }
+
+public type State = {
+  bytes : Int,
+  closed : Set String,
+  done : Bool,
+  drafts : Dict Int Draft,
+  events : Int,
+  items : Dict Int Json.Value,
+  open : Set String,
+  reasoning : Set String,
+  response : LlmTypes.Response,
+  started : Bool,
+  texts : Dict String String
+}
+
+public initial : LlmTypes.Provider -> State
+let initial provider = {
+  bytes = 0,
+  closed = Set.empty,
+  done = false,
+  drafts = Dict.empty,
+  events = 0,
+  items = Dict.empty,
+  open = Set.empty,
+  reasoning = Set.empty,
+  response = LlmTypes.emptyResponse provider,
+  started = false,
+  texts = Dict.empty
+}
+
+public partial : State -> LlmTypes.Response
+let partial state =
+  if state.done then
+    state.response
+  else
+    { state.response with blocks = List.map (textBlock state.reasoning) (Dict.toList state.texts) }
+
+let textBlock reasoning pair =
+  let (key, text) = pair
+  if Set.member key reasoning then LlmTypes.ReasoningBlock key text else LlmTypes.TextBlock key text
+
+public failure : State -> LlmTypes.ErrorKind -> String -> LlmTypes.Error
+let failure state kind message = { LlmTypes.error kind message with partial = Some (partial state) }
+
+public accept : LlmTypes.Limits -> State -> Result State LlmTypes.Error
+let accept limits state =
+  if state.done then
+    Err (failure state LlmTypes.ProtocolError "event after response completion")
+  else if state.events >= limits.maxEvents then
+    Err (failure state LlmTypes.LimitExceeded "event limit exceeded")
+  else
+    Ok { state with events = state.events + 1 }
+
+public addBytes : LlmTypes.Limits -> String -> State -> Result State LlmTypes.Error
+let addBytes limits text state =
+  let count = Bytes.length (Bytes.fromString text)
+  if count > limits.maxResponseBytes - state.bytes then
+    Err (failure state LlmTypes.LimitExceeded "response byte limit exceeded")
+  else
+    Ok { state with bytes = state.bytes + count }
+
+public call : LlmTypes.Limits -> Draft -> Result LlmTypes.ToolCall LlmTypes.Error
+let call limits draft =
+  if draft.id = "" || not (LlmValidate.toolName draft.name) then
+    Err (LlmTypes.error LlmTypes.ProtocolError "invalid tool call identity")
+  else if Bytes.length (Bytes.fromString draft.arguments) > limits.maxToolArgumentBytes then
+    Err (LlmTypes.error LlmTypes.LimitExceeded "tool arguments exceed their byte limit")
+  else
+    match LlmJson.parse draft.arguments with
+    | Err error -> Err { error with kind = LlmTypes.InvalidToolArguments }
+    | Ok (Json.Object fields) -> Ok {
+      arguments = Json.Object fields,
+      id = draft.id,
+      itemId = draft.itemId,
+      name = draft.name,
+      rawArguments = draft.arguments
+    }
+    | Ok _ -> Err (LlmTypes.error LlmTypes.InvalidToolArguments "tool arguments must be an object")
+
+public usage : Json.Value -> LlmTypes.Usage -> Result LlmTypes.Usage LlmTypes.Error
+let usage value previous =
+  let names = [
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens"
+  ]
+  let valid =
+    List.all (fun name ->
+      match LlmJson.get name value with
+      | None -> true
+      | Some field ->
+        (match LlmJson.number field with
+        | Some count -> count >= 0
+        | None -> false)) names
+  if not valid then
+    Err (LlmTypes.error LlmTypes.ProtocolError "usage counters must be nonnegative integers")
+  else
+    Ok {
+      cacheReadTokens = choose (LlmJson.count "cache_read_input_tokens" value) (nested "input_tokens_details" "cached_tokens" value previous.cacheReadTokens),
+      cacheWriteTokens = choose (LlmJson.count "cache_creation_input_tokens" value) previous.cacheWriteTokens,
+      inputTokens = choose (LlmJson.count "input_tokens" value) previous.inputTokens,
+      outputTokens = choose (LlmJson.count "output_tokens" value) previous.outputTokens,
+      reasoningTokens = nested "output_tokens_details" "reasoning_tokens" value previous.reasoningTokens,
+      totalTokens = choose (LlmJson.count "total_tokens" value) previous.totalTokens
+    }
+
+let choose current previous =
+  match current with
+  | None -> previous
+  | Some _ -> current
+
+let nested name field value previous =
+  match LlmJson.get name value with
+  | None -> previous
+  | Some nested -> choose (LlmJson.count field nested) previous
+
+public responseLimit : LlmTypes.Limits -> Json.Value -> Result Unit LlmTypes.Error
+let responseLimit limits value =
+  if Bytes.length (Bytes.fromString (Json.toString value)) > limits.maxResponseBytes then
+    Err (LlmTypes.error LlmTypes.LimitExceeded "final response exceeds its byte limit")
+  else
+    Ok ()
