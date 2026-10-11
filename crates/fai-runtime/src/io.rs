@@ -11,6 +11,12 @@ use std::sync::{Arc, Mutex};
 use crate::Value;
 use crate::scheduler::{CancellationProbe, cancellation_probe};
 
+mod directory;
+pub use directory::{
+    fai_fs_close_directory, fai_fs_location, fai_fs_metadata, fai_fs_mutate, fai_fs_next_directory,
+    fai_fs_open_directory, fai_fs_same_file,
+};
+
 type Result<T> = std::result::Result<T, Error>;
 
 // Declaration order agrees with FileSystem.ErrorKind in the embedded library.
@@ -146,6 +152,7 @@ fn decode_path(value: Value) -> Result<PathBuf> {
 enum FileState {
     Reader(Option<BufReader<File>>),
     Writer(Option<BufWriter<File>>),
+    Directory(Option<std::fs::ReadDir>),
 }
 struct FileObject {
     path: PathBuf,
@@ -294,6 +301,10 @@ pub extern "C" fn fai_file_write_chunk(writer: Value, bytes: Value) -> Value {
 
 fn close_state(state: &mut FileState) -> Result<()> {
     match state {
+        FileState::Directory(directory) => {
+            directory.take();
+            Ok(())
+        }
         FileState::Reader(reader) => {
             reader.take();
             Ok(())
@@ -383,6 +394,9 @@ pub extern "C" fn fai_file_seek(handle: Value, offset: Value) -> Value {
         check(&probe)?;
         let position = SeekFrom::Start(offset_value as u64);
         let offset = match &mut *state {
+            FileState::Directory(_) => {
+                return Err(Error::new(Kind::InvalidArgument, "cannot seek a directory"));
+            }
             FileState::Reader(reader) => reader.as_mut().ok_or_else(closed)?.seek(position)?,
             FileState::Writer(writer) => writer.as_mut().ok_or_else(closed)?.seek(position)?,
         };

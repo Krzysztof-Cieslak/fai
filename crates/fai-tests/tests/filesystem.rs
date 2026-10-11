@@ -105,3 +105,29 @@ fn zero_read_is_not_end_of_file() {
         "ok\n"
     );
 }
+
+#[test]
+fn enumerated_native_name_reopens_without_unicode_conversion() {
+    assert_eq!(
+        run_case(
+            r#"  let directory = Option.withDefault Path.empty (Path.parent path)
+  let units = if Path.nativeEncoding = "unix" then [255] else [0, 216]
+  let name = Result.withDefault Path.empty (Path.fromNativeBytes (Bytes.fromList units))
+  let native = Path.join directory name
+  let written = r.fs.writeBytes native (Bytes.fromString "contents")
+  match r.fs.openDirectory directory with
+  | Err error -> r.console.writeLine (FileSystem.errorToString error)
+  | Ok cursor ->
+    let item = r.fs.nextDirectory cursor
+    let closed = r.fs.closeDirectory cursor
+    match item with
+    | Ok (Some entry) ->
+      let bytes = r.fs.readBytes entry.path 8
+      let metadata = r.fs.metadata entry.path
+      let same = r.fs.sameFile native entry.path
+      r.console.writeLine (if entry.name = name && bytes = Ok (Bytes.fromString "contents") && same = Ok true && (match metadata with | Ok value -> value.length = 8 && value.kind = FileSystem.RegularFile && value.modified <> None | _ -> false) then "ok" else "bad")
+    | _ -> r.console.writeLine "missing entry""#
+        ),
+        "ok\n"
+    );
+}

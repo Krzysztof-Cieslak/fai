@@ -1179,6 +1179,10 @@ handle aliases and is idempotent; writer flush failure still closes the handle.
 `File.withReader`/`withWriter` mask cancellation for cleanup and preserve callback
 and close failures. Stream file adapters render filesystem errors into their
 String error channel; file sinks require Concurrency for reliable scoped cleanup.
+Directory cursors retain lossless entry names and close through the same shared
+state protocol. Metadata includes native identity and optional nanosecond Instants.
+Rename is no-clobber; replacement and overwrite-copy are explicit. Copies reject
+source/destination identity before truncation and do not follow destination links.
 
 ```
 source (.fai)

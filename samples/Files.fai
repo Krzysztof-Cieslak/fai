@@ -1,0 +1,10 @@
+module Files
+
+/// Read a small UTF-8 configuration file with an explicit allocation limit.
+public readConfig : { fs : FileSystem | _ } -> Path -> Result String FileSystem.Error / { FileSystem }
+let readConfig env path = File.readText env.fs 65536 path
+
+/// Metadata is a snapshot. Actual filesystem operations still return errors if
+/// the entry changes after this observation.
+public size : { fs : FileSystem | _ } -> Path -> Result Int FileSystem.Error / { FileSystem }
+let size env path = Result.map (fun info -> info.length) (env.fs.metadata path)

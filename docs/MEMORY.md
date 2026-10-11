@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Directory entry names retain their native encoding through enumeration and
+  reopening. Metadata carries native identity and nanosecond timestamp values.
+  Renaming without replacement uses native atomic no-clobber operations; copy
+  checks the opened handles' identities before truncating an existing destination.
+
 - Filesystem APIs consistently use native Path values and structured errors.
   File handles have shared closed state: explicit close expires all aliases,
   and a failed final writer flush does not leave an open handle. Scoped helpers

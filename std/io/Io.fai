@@ -16,3 +16,7 @@ public opaque type Reader =
 
 public opaque type Writer =
   | WriterCell Int
+
+/// A shared, explicitly closeable native directory enumeration.
+public opaque type DirectoryCursor =
+  | DirectoryCell Int
