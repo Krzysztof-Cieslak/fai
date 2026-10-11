@@ -168,6 +168,40 @@ mod native {
         built.artifact.unwrap().into_std_path_buf()
     }
 
+    fn validate_inputs(
+        algorithm: &Algorithm,
+        folder: &Path,
+        fai: &Path,
+        rust: &Path,
+        ocaml: Option<&Path>,
+    ) {
+        let inputs = fai_tests::benchmark_contracts::validation_inputs(algorithm.module);
+        let configuration = inputs.iter().map(i64::to_string).collect::<Vec<_>>().join(" ");
+        let expected: Vec<_> =
+            inputs.iter().map(|&n| ExpectedAnswer::at_size(algorithm, n)).collect();
+        let mut peers = serde_json::Map::new();
+        for (side, path) in [("fai", Some(fai)), ("rust", Some(rust)), ("ocaml", ocaml)] {
+            let Some(path) = path else { continue };
+            let mut worker = Worker::start(Command::new(path), &configuration).unwrap();
+            let mut answers = Vec::new();
+            for (index, value) in expected.iter().enumerate() {
+                let answer = worker.request(&format!("value {index}")).unwrap();
+                value
+                    .verify_line(
+                        &format!("{} {side} input {}", algorithm.module, inputs[index]),
+                        &answer,
+                    )
+                    .unwrap();
+                answers.push(answer);
+            }
+            worker.finish().unwrap();
+            peers.insert(side.into(), serde_json::json!({"executableHash": fai_tests::native_peer::hash(path), "answers": answers}));
+        }
+        let record = serde_json::json!({"schemaVersion": 1, "inputs": inputs, "peers": peers});
+        std::fs::write(folder.join("validation.json"), serde_json::to_vec_pretty(&record).unwrap())
+            .unwrap();
+    }
+
     fn measure(
         algorithm: &Algorithm,
         size: i64,
@@ -383,6 +417,7 @@ mod native {
                     "faiHash": fai_tests::native_peer::hash(&fai), "rustHash": fai_tests::native_peer::hash(&rust),
                     "ocamlHash": ocaml.as_ref().map(|path| fai_tests::native_peer::hash(path))})
             );
+            validate_inputs(algorithm, &folder, &fai, &rust, ocaml.as_deref());
             for size in config.sizes(algorithm) {
                 measure(algorithm, size, &fai, &rust, ocaml.as_deref(), &config);
             }

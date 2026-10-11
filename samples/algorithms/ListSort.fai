@@ -3,13 +3,25 @@ module ListSort
 // Sort a scrambled linked list with the standard library's stable `List.sortBy`,
 // then form a position-weighted checksum (Σ i * x[i]) so the result depends on the
 // order. This is the linked-`List` counterpart to `MergeSort` (which sorts an
-// `Array`): pairing them compares the public list and array sorting APIs. Private
+// `Array`). All peers use the same adjacent-run merging algorithm. Private
 // merge buffers and conversions inside `List.sortBy` remain timed, and the
 // explicit comparator exercises callback dispatch. Used by the Rust-vs-Fai
 // runtime benchmark.
-// A scrambled input of n values via a multiplicative hash modulo n.
+// The same Fisher-Yates permutation used by the array merge-sort peer.
+let swap i j xs =
+  let a = Array.unsafeGet i xs
+  let b = Array.unsafeGet j xs
+  Array.unsafeSet j a (Array.unsafeSet i b xs)
+
+let shuffle i state xs =
+  if i <= 0 then
+    xs
+  else
+    let next = Int.and (state * 1664525 + 1013904223) 2147483647
+    shuffle (i - 1) next (swap i (next % (i + 1)) xs)
+
 gen : Int -> List Int
-let gen n = List.map (fun k -> (k * 2654435761 + 12345) % n) (List.range 0 n)
+let gen n = Array.toList (shuffle (n - 1) 1 (Array.range 0 n))
 
 // Σ i * x[i], accumulated left to right.
 checksum : Int -> Int -> List Int -> Int

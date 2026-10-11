@@ -39,6 +39,86 @@ pub struct Contract {
     pub ocaml_support: &'static [&'static str],
 }
 
+/// Residual implementation differences for each independently interpreted pair.
+/// Algorithm/staging agreement belongs to `Contract`; these costs remain native.
+pub struct PeerNotes {
+    /// Fai versus Rust.
+    pub rust: &'static str,
+    /// Fai versus OCaml.
+    pub ocaml: &'static str,
+}
+
+/// Pair-specific qualifications retained in the machine-readable workload catalog.
+pub fn peer_notes(name: &str) -> Option<PeerNotes> {
+    for_module(name)?;
+    let (rust, ocaml) = match name {
+        "DictHistogram" | "GameOfLife" => (
+            "Fai structural hash/linear probing/separate entries versus Rust seeded SwissTable/inline entries; both update through one entry lookup. Fai public folds currently materialize lists; Rust iterates directly. Empty-start minimum capacity and growth remain native.",
+            "Fai linear probing versus OCaml chained buckets; OCaml uses lookup then replacement for updates. Fai public folds currently materialize lists; OCaml iterates directly. Empty-start minimum capacity, growth and GC remain native.",
+        ),
+        "MemoryHistogram" => (
+            "Four empty-start entry-update passes and endpoint reads; Fai structural hash/linear probing/separate entries differ from Rust seeded SwissTable/inline entries and its growth policy.",
+            "Four empty-start update passes and endpoint reads; Fai performs one entry update, while OCaml Hashtbl uses lookup then replacement. Hashing, chained buckets, minimum capacity/growth and GC differ.",
+        ),
+        "SetDedup" => (
+            "Fai structural hash/linear probing/separate entries versus Rust seeded SwissTable/inline entries. All tables start empty without input-size reservation. Fai set folds currently materialize lists; traversal, native capacity/growth and optional-value layout remain visible.",
+            "Fai linear probing versus OCaml chained buckets. All tables start empty without input-size reservation. Fai set folds currently materialize lists; traversal, native capacity/growth, optional-value layout and GC remain visible.",
+        ),
+        "MemorySet" | "UnionFind" | "OptionPath" | "GraphBFS" => (
+            "Fai structural hash/linear probing/separate entries versus Rust seeded SwissTable/inline entries. All tables start empty without input-size reservation. Native minimum capacity/growth and optional-value layout remain visible.",
+            "Fai linear probing versus OCaml chained buckets. All tables start empty without input-size reservation. Native minimum capacity/growth, optional-value layout and GC remain visible.",
+        ),
+        "FibMemo" => (
+            "Shared recurrence/order and empty-start memo; Fai HashDict state passing and native probing/layout differ from Rust HashMap with borrowed mutation.",
+            "Shared recurrence/order and empty-start memo; Fai HashDict differs from OCaml Hashtbl. OCaml uses boxed Int64 for required full-width wrapping; GC remains native.",
+        ),
+        "StringSlice" | "TailViewsAscii" | "TailViewsUnicode" => (
+            "Fai reference-counted views/copies and ASCII evidence versus borrowed Rust str slices and scalar scans; the prefix array is retained through its consumer.",
+            "Fai reference-counted views/copies and ASCII evidence versus copied OCaml substrings and scalar scans. Buffer.contents freezes by copying; GC remains native.",
+        ),
+        "WordCount" => (
+            "Owned word arrays and split arrays on both sides; native decimal conversion, joining, split scanning/reservation and scalar-length implementations differ.",
+            "Word arrays and split arrays on both sides; OCaml uses a sized join buffer and a count/fill array split. Fai/Rust use their array-producing string operations. Scalar-length scanning and GC remain native.",
+        ),
+        "StringBuild" | "MemoryUtf8" | "TailBuildAscii" | "TailBuildUnicode"
+        | "TailLengthAscii" | "TailLengthUnicode" => (
+            "Unreserved incremental string builders; native capacity growth, ASCII evidence and Unicode-scalar counting differ.",
+            "Unreserved incremental builders; OCaml Buffer.contents freezes by copying. Native capacity growth, scalar counting and GC remain visible.",
+        ),
+        "ExprEval" | "JsonSerialize" | "Fannkuch" | "ListSort" => (
+            "Shared linked logical structures and phase order; Rust monomorphic enums/Rc and Fai uniform cells differ in layout. Last-use ownership, compiler fusion/reuse and native buffer policies remain visible.",
+            "Shared linked logical structures and phase order; GC versus last-use reference counting, native ADT layout and buffer policies remain visible.",
+        ),
+        _ => (
+            "Shared logical algorithm; native scalar/data layout, ownership, allocation and legal compiler transformations remain visible.",
+            "Shared logical algorithm; native scalar/data layout, GC/allocation and legal compiler transformations remain visible.",
+        ),
+    };
+    Some(PeerNotes { rust, ocaml })
+}
+
+/// Untimed input windows cover empty values, representation thresholds and
+/// algorithm boundaries independently of the measured sizes.
+pub fn validation_inputs(name: &str) -> &'static [i64] {
+    match name {
+        "MergeSort" | "ListSort" | "QuickSort" => &[0, 1, 2, 3, 17, 31, 32, 33, 63, 64, 65, 257],
+        "StringBuild" | "StringSlice" => &[0, 1, 2, 3, 31, 32, 63, 64, 65, 257],
+        "WordCount" => &[0, 1, 9, 10, 11, 99, 100, 101],
+        "InterfaceDispatch" => &[0, 1, 2, 3, 4, 5, 6, 31, 32],
+        "ExprEval" => &[0, 1, 2, 3, 4, 5, 31, 32, 127, 128, 1024],
+        "Fannkuch" => &[0, 1, 2, 3, 4, 5, 6],
+        "FibMemo" => &[0, 1, 2, 3, 10, 93, 94],
+        "GameOfLife" => &[0, 1, 2, 3, 5, 10],
+        "OptionTreeFind" => &[0, 1, 999, 1000, 1001, 1999, 2000, 2001],
+        "JsonSerialize" => &[0, 1, 2, 3, 4, 7, 8, 15, 16, 17, 63, 64, 65, 257],
+        "SetDedup" => &[0, 1, 5, 6, 7, 23, 24, 25, 999, 1000, 1001],
+        "DictHistogram" | "UnionFind" | "OptionPath" | "GraphBFS" => {
+            &[0, 1, 5, 6, 7, 23, 24, 25, 95, 96, 97, 257]
+        }
+        _ => &[2, 3],
+    }
+}
+
 /// Returns a reviewed contract; unregistered names never acquire eligibility.
 #[must_use]
 pub fn for_module(name: &str) -> Option<Contract> {
@@ -49,15 +129,25 @@ pub fn for_module(name: &str) -> Option<Contract> {
         "Fib" => ("algorithms::fib", "fib", &[]),
         "Collatz" => ("algorithms::collatz_sum", "collatz_sum", &[]),
         "MapSum" => ("algorithms::map_sum", "map_sum", &[]),
-        "MergeSort" => ("algorithms::merge_sort_sum", "merge_sort_sum", &[]),
+        "MergeSort" => (
+            "algorithms::merge_sort_sum",
+            "merge_sort_sum",
+            &["sort_input", "merge_buffers", "merge_sort_values"],
+        ),
         "BinaryTrees" => ("algorithms::tree_count", "tree_count", &["tree"]),
         "Pi" => ("algorithms::pi", "pi", &[]),
         "DictHistogram" => ("algorithms::dict_histogram", "dict_histogram", &[]),
-        "WordCount" => ("algorithms::word_count", "word_count", &[]),
+        "WordCount" => (
+            "algorithms::word_count",
+            "word_count",
+            &["unicode_length", "array_string_lengths", "join_words", "split_words", "word_text"],
+        ),
         "MapSumShared" => ("algorithms::map_sum_shared", "map_sum_shared", &[]),
         "SetDedup" => ("algorithms::set_dedup", "set_dedup", &[]),
         "FoldPipeline" => ("algorithms::fold_pipeline", "fold_pipeline", &[]),
-        "InterfaceDispatch" => ("algorithms::interface_dispatch", "interface_dispatch", &[]),
+        "InterfaceDispatch" => {
+            ("algorithms::interface_dispatch", "interface_dispatch", &["scorer"])
+        }
         "Particles" => ("algorithms::particles", "particles", &[]),
         "VecMat" => ("algorithms::vec_mat", "vec_mat", &[]),
         "NQueens" => ("algorithms::nqueens", "nqueens", &[]),
@@ -71,7 +161,7 @@ pub fn for_module(name: &str) -> Option<Contract> {
         "Mandelbrot" => ("algorithms::mandelbrot", "mandelbrot", &[]),
         "Ackermann" => ("algorithms::ackermann", "ackermann", &[]),
         "PrngXorshift" => ("algorithms::prng_xorshift", "prng_xorshift", &[]),
-        "ExprEval" => ("algorithms::expr_eval", "expr_eval", &["token", "expr"]),
+        "ExprEval" => ("algorithms::expr_eval", "expr_eval", &["token", "expr", "eval_work"]),
         "GraphBFS" => {
             ("algorithms::graph_bfs", "graph_bfs", &["graph_adjacency", "graph_reachable"])
         }
@@ -82,14 +172,32 @@ pub fn for_module(name: &str) -> Option<Contract> {
         "NBody" => ("algorithms::nbody", "nbody", &[]),
         "Fannkuch" => ("algorithms::fannkuch", "fannkuch", &[]),
         "UnionFind" => ("algorithms::union_find", "union_find", &[]),
-        "JsonSerialize" => ("algorithms::json_serialize", "json_serialize", &["json"]),
-        "StringBuild" => ("algorithms::string_build", "string_build", &[]),
-        "StringSlice" => ("algorithms::string_slice", "string_slice", &[]),
+        "JsonSerialize" => (
+            "algorithms::json_serialize",
+            "json_serialize",
+            &["json", "unicode_length", "json_text"],
+        ),
+        "StringBuild" => {
+            ("algorithms::string_build", "string_build", &["unicode_length", "string_build_text"])
+        }
+        "StringSlice" => (
+            "algorithms::string_slice",
+            "string_slice",
+            &["unicode_length", "array_string_lengths", "slice_base", "unicode_prefix"],
+        ),
         "OptionEval" => ("algorithms::option_eval", "option_eval", &[]),
         "IntEval" => ("algorithms::int_eval", "int_eval", &[]),
         "OptionPath" => ("algorithms::option_path", "option_path", &[]),
-        "OptionTreeFind" => ("algorithms::option_tree_find", "option_tree_find", &["IntMap"]),
-        "ListSort" => ("algorithms::list_sort_sum", "list_sort_sum", &[]),
+        "OptionTreeFind" => (
+            "algorithms::option_tree_find",
+            "option_tree_find",
+            &["lookup_tree", "lookup_insert", "lookup_build", "lookup_find"],
+        ),
+        "ListSort" => (
+            "algorithms::list_sort_sum",
+            "list_sort_sum",
+            &["sort_input", "merge_buffers", "linked_sort"],
+        ),
         "TailQuickSort" => ("tail_components::quicksort", "quicksort", &[]),
         "TailBuildAscii" => {
             ("tail_components::build_ascii", "(fun n -> length (ascii n))", &["ascii", "length"])
@@ -122,49 +230,57 @@ pub fn for_module(name: &str) -> Option<Contract> {
         _ => return None,
     };
     let (comparison, note) = match name {
-        "MergeSort" | "QuickSort" | "ListSort" => (
-            Comparison::Application,
-            "Different library sorts or input preparation; ListSort also uses Vec versus List. Use matched sorting kernels for compiler attribution.",
+        "MergeSort" => (
+            Comparison::Kernel,
+            "Shared Fisher-Yates input and stable bottom-up merge sort with zero-initialized scratch, cached run heads, identical pass order and position-weighted checksum.",
+        ),
+        "QuickSort" => (
+            Comparison::Kernel,
+            "Identical scrambled inputs, Lomuto partition, smaller-side-first recursion and position-weighted checksum on all peers.",
+        ),
+        "ListSort" => (
+            Comparison::Kernel,
+            "Shared shuffled input materialized as a linked list. Adjacent-run stable merges: linked through 32 elements, then two copied buffers and a linked result; the same bounded subtraction comparator.",
         ),
         "DictHistogram" | "SetDedup" | "GameOfLife" | "FibMemo" | "UnionFind" | "OptionPath" => (
             Comparison::Application,
-            "Hash functions, table layout, initial capacity and growth policies differ.",
+            "Empty-start standard collections with the same key/update workload. Native hashing, probing, layout, minimum capacity and growth policies differ; folds use each collection's public traversal API.",
         ),
         "GraphBFS" => (
             Comparison::Application,
-            "All peers build adjacency; hash policies and List versus Vec adjacency/frontiers differ.",
+            "Empty-start standard hash collections with linked three-edge adjacency and linked frontiers. All stream adjacency lookup/visitation and prepend newly seen nodes; native hash-table implementations differ.",
         ),
         "JsonSerialize" => (
-            Comparison::Application,
-            "All peers build the tree and serialize into one buffer; List versus Vec children and buffer policies differ.",
+            Comparison::Kernel,
+            "Build the same linked-child JSON tree with shared literal keys, then consume it into one unreserved output builder. Native ADT layout, reclamation and string freezing remain observable.",
         ),
         "WordCount" => (
-            Comparison::Application,
-            "Word materialization, joining, splitting and retained source lifetimes differ.",
+            Comparison::Kernel,
+            "Materialized input-word array, one joined string, then a materialized split array and whole-array scalar-length consumer. Completed input phases have no later uses; reclamation remains native.",
         ),
         "StringBuild" => (
-            Comparison::Application,
-            "Incremental append, but initial reservation and final buffer copying differ.",
+            Comparison::Kernel,
+            "Unreserved incremental appends of ab onto 0, then Unicode-scalar length. Native buffer growth, ASCII evidence and freezing/copying are implementation costs of the same string operations.",
         ),
         "StringSlice" => (
-            Comparison::Application,
-            "Base construction and materialized substring versus scalar scan differ; use TailViews for matched retained prefixes.",
+            Comparison::Kernel,
+            "Incrementally construct the same base and retain an array of 200 half-length prefixes before a whole-array scalar-length consumer. Native views versus copies remain observable.",
         ),
         "OptionTreeFind" => (
-            Comparison::Application,
-            "Fai binary tree, Rust BTreeMap and OCaml Map; use tree_lookup for matched nodes.",
+            Comparison::Kernel,
+            "Four-field binary nodes, midpoint/left/right insertion order, 1000 fixed keys, and identical half-hit query sequence. Native node layout and reclamation remain observable.",
         ),
         "ExprEval" => (
-            Comparison::Application,
-            "Equivalent parser results; AST layout and explicit-stack versus recursive evaluation differ.",
+            Comparison::Kernel,
+            "Back-to-front linked tokens consumed by recursive descent, then left-first iterative AST evaluation with linked work/value stacks. No retained token root; native enum layout and reclamation remain observable.",
         ),
         "Fannkuch" => (
-            Comparison::Application,
-            "Full permutation materialization, but concat-map versus fold-right staging differs.",
+            Comparison::Kernel,
+            "Linked permutations and permutation collections. Construct producer groups left-to-right before flattening, then consume permutations through the same prefix-reversal idiom. Normal compiler fusion/reuse is allowed.",
         ),
         "InterfaceDispatch" => (
-            Comparison::Application,
-            "Interface construction/dispatch versus a handwritten branch selector.",
+            Comparison::Kernel,
+            "Select one of three immutable one-method dictionaries and invoke its score field. Known-choice devirtualization is allowed on every peer.",
         ),
         "BinaryTrees" => (
             Comparison::Kernel,
@@ -204,11 +320,20 @@ pub fn for_module(name: &str) -> Option<Contract> {
         ),
     };
     let version = match name {
+        "MergeSort" => "stable-array-merges-v3",
+        "QuickSort" => "matched-lomuto-v3",
+        "ListSort" => "stable-list-merges-v3",
         "BinaryTrees" => "unallocated-leaves-v2",
-        "NQueens" | "ExprEval" | "Fannkuch" => "unallocated-empty-list-v2",
+        "NQueens" => "unallocated-empty-list-v2",
+        "ExprEval" => "owned-linked-evaluator-v3",
+        "Fannkuch" => "staged-permutations-v3",
+        "WordCount" | "StringBuild" | "StringSlice" => "equivalent-string-phases-v3",
+        "OptionTreeFind" => "binary-node-lookup-v3",
+        "InterfaceDispatch" => "dictionary-choice-v3",
         "MapSumShared" => "materialized-shared-source-v2",
-        "GraphBFS" => "materialized-adjacency-v2",
-        "JsonSerialize" => "single-buffer-v2",
+        "GraphBFS" | "DictHistogram" | "SetDedup" | "GameOfLife" | "FibMemo" | "UnionFind"
+        | "OptionPath" => "empty-start-collections-v3",
+        "JsonSerialize" => "linked-json-phases-v3",
         "MapSum" | "FoldPipeline" => "unrestricted-arithmetic-v2",
         name if name.starts_with("Tail") => "tail-components-v1",
         _ => "reviewed-source-v1",
@@ -238,7 +363,23 @@ mod tests {
     }
 
     #[test]
-    fn library_sort_comparisons_are_not_compiler_kernels() {
-        assert_eq!(for_module("ListSort").unwrap().comparison, Comparison::Application);
+    fn sorting_comparisons_use_explicit_shared_algorithms() {
+        assert_eq!(for_module("ListSort").unwrap().comparison, Comparison::Kernel);
+    }
+
+    #[test]
+    fn utf8_builders_share_one_classification_policy() {
+        assert_eq!(
+            for_module("MemoryUtf8").unwrap().comparison,
+            for_module("TailBuildUnicode").unwrap().comparison
+        );
+    }
+
+    #[test]
+    fn native_hash_policies_remain_application_comparisons() {
+        assert_eq!(for_module("DictHistogram").unwrap().comparison, Comparison::Application);
+        let notes = peer_notes("DictHistogram").unwrap();
+        assert!(notes.rust.contains("one entry lookup"));
+        assert!(notes.ocaml.contains("lookup then replacement"));
     }
 }

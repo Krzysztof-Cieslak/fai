@@ -45,19 +45,19 @@
     "memory": [
       "Extend size and repetition curves around container-capacity thresholds and larger working sets. GraphBFS (#151) has capacity-sensitive jumps and stable post-run RSS at fixed inputs in prior controls; study graph storage separately from allocator retention.",
       "Sieve (#141) uses eight-byte Bool slots versus Rust's one-byte elements. MapSumShared (#153) retains a dense Int array through two traversals. SetDedup (#146) retains only 1,000 distinct values and DictHistogram (#148) only 256 keys despite growing iteration counts.",
-      "Separate construction, output and destruction in WordCount (#167), StringBuild/StringSlice (#161, #169), ExprEval (#171) and JsonSerialize (#692); their representations and buffer policies differ across peers.",
+      "The revised WordCount, StringBuild/StringSlice, ExprEval and JsonSerialize contracts align construction, materialization and consumption phases. Native layouts, string views/copies, buffer growth and reclamation remain observable; compare only within the same workload version.",
       "Establish compatible allocation/live/backing accounting before drawing cross-language live-heap conclusions.",
       "Repeat on additional architectures and retain allocator, GC and host-environment configurations."
     ],
     "runtime": [
       "Add independent workload and input holdouts, including varied distributions, Unicode and sharing.",
-      "Add matched kernels for application cases with different sorting, hashing, graph/JSON representation or evaluation staging.",
+      "Retain native library-sort and map alternatives alongside explicit matched kernels. Hash-table probing, growth and traversal policies remain application-level comparisons.",
       "Quantify uncertainty for narrow timing differences and expand hardware coverage.",
       "Prioritize array/indexing and scalar costs in CoinChange, MatrixMultiply/FloatMatrixMultiply and Levenshtein (#143, #154, #190, #159); preserve the one-row DP algorithm. NQueens (#164) retains persistent backtracking/sharing, while Collatz/Pi (#165, #172) are mainly scalar work.",
       "Use input-dependent holdouts for MapSum/FoldPipeline (#166, #145): closed-form or fixed-point work reduction and a floor-limited result do not measure sustained instruction throughput.",
-      "Continue controlled hashing/probe/growth studies for FibMemo, SetDedup, DictHistogram, UnionFind, GraphBFS and GameOfLife (#142, #146, #148, #157, #151, #160). The application ratios include library and representation differences.",
+      "Continue controlled hashing/probe/growth studies for FibMemo, SetDedup, DictHistogram, UnionFind, GraphBFS and GameOfLife (#142, #146, #148, #157, #151, #160). Empty-start application measurements retain native library and representation differences.",
       "ListSort (#149) merge-state/register-pressure work must preserve stability, comparator order and sharing. Broad layout hoisting and boxed-domain RC-guard controls were rejected; [retained experiments](https://gist.github.com/Krzysztof-Cieslak/7c1f666874369cacb6fd944ee56f5b96) must not be multiplied into the current results.",
-      "MergeSort/QuickSort (#144, #152), strings (#161, #167, #169), InterfaceDispatch (#150), OptionTreeFind (#163), ExprEval (#171) and JsonSerialize (#692) need matched components for compiler attribution. TailQuickSort and ASCII/Unicode components are measured separately; the older matched-node tree_lookup fixture remains a follow-up refresh.",
+      "Sorting, retained strings, dictionary dispatch, binary lookup, linked-stack evaluation, linked JSON and staged permutations now have source-matched main-workload contracts. TailQuickSort and ASCII/Unicode components remain separate measurements. Changes from older workload versions are methodology corrections, not compiler speedups.",
       "Fannkuch (#697) remains staging- and scheduling-sensitive. Existing controls establish neither a sole cache cause nor a promoted fix; retain canonical interleaved observations alongside diagnostics.",
       "Track behavioral implementation work separately, including proper tail calls (#90) and known-closure register calls (#131)."
     ]

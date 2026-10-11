@@ -49,14 +49,68 @@ dependencies. Fai retains one native executable per workload.
 
 `crates/fai-bench-workloads/src/contracts.rs` fixes each workload's source version,
 comparison eligibility and representation notes **before measurement**. Matched
-kernels use the same algorithm and logical data; compiler transformations may
-still eliminate allocations or choose different physical layouts. Application
-comparisons include different library sorts, hash policies, graph/JSON containers
-or evaluation staging. Their absolute measurements remain useful, but cannot
+kernels use the same algorithm, logical data, construction phases and traversal
+order; compiler transformations may still eliminate allocations or choose
+different physical layouts. Native string storage, scalar scanning and reclamation
+remain implementation costs. Application comparisons retain different library
+sorts or hash-table algorithms. Their absolute measurements remain useful, but cannot
 enter a compiler-kernel ratio merely because their output checksum agrees.
 Changes to workload algorithms, data construction, or sharing require a new
 contract version and matching structural/answer checks. Current artifact content
 identities use BLAKE3; historical SHA-256 manifests retain their original scheme.
+
+### Source-matched workload contracts
+
+The main suite uses the following contracts. `catalog.json` retains their versions,
+validation inputs and **separate Fai/Rust and Fai/OCaml notes** in every checkpoint.
+“Matched” describes logical work; it does not imply identical machine code,
+allocation counts, runtime headers or garbage-collection behavior.
+
+| Workload | Shared work and remaining costs |
+|---|---|
+| `MergeSort` | Fisher–Yates shuffled permutation; stable bottom-up merges through two full-size arrays, zero-initialized scratch, cached run heads, and a position-weighted checksum. |
+| `QuickSort` | Identical scrambled array; Lomuto partition, smaller-side-first recursion, and a position-weighted checksum. |
+| `ListSort` | Shuffled array converted to a linked list; stable adjacent-run merges. Up to 32 elements stay linked; larger inputs use two buffers and reconstruct a linked result. Fai calls `List.sortBy`; peers implement that algorithm. |
+| `WordCount` | Materialize the decimal-word array, join it, materialize the split array, then consume scalar lengths through a whole-array boundary. Completed input phases have no later uses. Native joining/splitting/reservation and reclamation remain visible. |
+| `StringBuild` | Start with `"0"`, append `"ab"` repeatedly without final-size reservation, then count Unicode scalars. Native buffer growth and OCaml's final `Buffer.contents` copy remain visible. |
+| `StringSlice` | Incrementally build the base, materialize 200 half-length prefixes in an array, then consume their scalar lengths. Rust borrows, Fai chooses views/copies, OCaml copies; all retain the prefix collection. |
+| `ExprEval` | Construct linked tokens back-to-front, consume them with recursive descent, then evaluate the AST left-first using linked work/value stacks. The original token root is not retained through evaluation. |
+| `JsonSerialize` | Build the same balanced tree with linked children and shared literal keys, then consume it into one unreserved string builder. Native ADT layouts and freezing/reclamation remain visible. |
+| `Fannkuch` | Linked permutations and result collections; construct groups left-to-right before concatenation, then consume permutations using the same prefix-reversal idiom. Compiler fusion and uniqueness-based reuse are allowed. |
+| `OptionTreeFind` | The same four-field binary nodes, midpoint/left/right insertion order, 1,000 keys and half-hit query sequence. |
+| `InterfaceDispatch` | Choose among three immutable one-method dictionaries, then invoke the selected method. Every compiler may devirtualize known choices. |
+| `MemoryUtf8`, `TailBuildUnicode` | Incrementally append the same nine-byte/four-scalar chunks without final-size reservation, then count scalars. Both use the matched-builder policy, including native freezing/copying costs. |
+
+The seven main hash workloads (`DictHistogram`, `SetDedup`, `GameOfLife`,
+`FibMemo`, `UnionFind`, `OptionPath`, `GraphBFS`) and the `MemoryHistogram`/
+`MemorySet` cardinality fixtures remain **application comparisons**. Their tables
+start empty, without reserving from the number of insertion attempts. Fai uses
+structural hashing, linear probing and separate entry cells; Rust uses seeded
+SwissTable with inline entries; OCaml uses chained buckets. Minimum capacity,
+growth, iteration order and lifetime policy remain native. Histogram updates
+use one entry lookup in Fai/Rust, versus lookup then replacement in OCaml.
+Fai's public hash folds currently traverse a materialized list.
+
+`GraphBFS` uses linked three-edge adjacency and linked frontiers everywhere:
+look up one node, visit its neighbors in order, test membership before insertion,
+and prepend each new frontier node. It does not stage every adjacency lookup
+before visitation. `OptionPath` always has 100 keys and fuel 100; its size axis
+counts queries rather than live data. The cardinality fixtures grow the number
+of distinct keys and complement the fixed-key application loops.
+
+Untimed worker validation covers empty/singleton inputs, decimal-width changes,
+hash growth boundaries, the 32-element list-sort switch, and partial final merge
+runs. It executes in separate processes before warmup and records raw answers
+and executable hashes in `validation.json`; publication verifies those answers.
+Sorting tests also compare complete input/output arrays across ascending,
+descending, shuffled, equal, few-key and partial-run distributions, and check
+that deleting the sort fails. The `sort_patterns` suite retains idiomatic native
+library sorts across those distributions; `tree_lookup` retains the Rust BTreeMap
+and OCaml Map alternatives. These broader cases complement the explicit kernels.
+
+Correcting a workload is a new workload version, **not a compiler speedup**.
+Historical sources and results retain their original contracts; only a fresh
+pinned-main checkpoint can publish results for the revised matrix.
 
 `WARMSTAT2` identifies the methodology, workload version and complete executable
 set as well as raw batches/floors. Different versions or executable sets never
@@ -484,8 +538,8 @@ labels each input axis and includes ten additional storage fixtures. Arrays,
 linked cells, complete trees and array-adjacency BFS provide matched logical
 structures. Distinct-key maps/sets vary cardinality instead of repeatedly
 touching the same small key set, and variable-count bodies complement the
-fixed-five-body simulations. UTF-8 builders retain their application-level
-buffer-policy differences. Non-inlined whole-structure consumers keep storage
+fixed-five-body simulations. UTF-8 builders use the same matched-builder policy
+as the supplemental string suite. Non-inlined whole-structure consumers keep storage
 observable; element operations retain ordinary optimization. Run `--list` to
 see the curves; `--size all` selects every declared size, while `small`/`large`
 select endpoints. `--test --size large --repeats 1` checks the largest sizes.
@@ -602,7 +656,7 @@ is closest to the pure size factor.
 
 `algorithms_aot_warm --components` selects the separate `tail-components-v1`
 workloads, with distinct `Tail*` measurement names. The normal 40-workload
-registry and its historical results are unchanged. The supplemental string cases
+registry has its own versioned contracts. The supplemental string cases
 incrementally construct the same ASCII or mixed-width UTF-8 base on every peer.
 They then observe scalar length once, observe it 200 times, or retain an array of
 200 varying scalar-indexed prefixes before consuming their scalar lengths.
@@ -611,8 +665,8 @@ Rust may borrow prefixes, Fai may use borrowing views, and OCaml copies them;
 these representation choices remain visible. Every peer counts Unicode scalars,
 including supplementary characters. Normal optimization is unrestricted.
 `TailQuickSort` runs the sample's Lomuto partition and smaller-side-first
-recursion on all three peers; the existing `QuickSort` remains the application
-comparison against the peer library sorts. The supplemental cases use the same
+recursion on all three peers, now also used by the corrected main `QuickSort`.
+The separate `sort_patterns` suite retains native library sorts. Supplemental cases use the same
 runtime input windows, calibrated batches, checked replies and floor qualification
 as the primary suite, but their results are not included in its aggregates.
 
@@ -644,8 +698,8 @@ retain prompt final-drop release; a throughput win does not waive the space gate
   - **Contiguous** where access is index-, iterate-, or build-then-traverse-heavy
     (an `Array` is then also the better Fai structure): Fai's **`Array`** against
     Rust's `Vec`. `MapSum`/`MapSumShared` build-map-fold an `Array`; `MergeSort`
-    uses the standard `Array.sort`; `QuickSort` is a hand-written Lomuto quicksort
-    on scrambled input, compared with the peers' library sorts;
+    uses explicit bottom-up merges; `QuickSort` is a hand-written Lomuto quicksort
+    on scrambled input, using the same algorithm on the peers;
     `MatrixMultiply`/`Levenshtein` use array-of-array and array-row DP;
     `SpectralNorm` and `FloatMatrixMultiply` use unboxed `Array Float` (raw inline
     `f64` slots); `NBody`/`Particles` hold their bodies in an
@@ -659,16 +713,14 @@ retain prompt final-drop release; a throughput win does not waive the space gate
     is cache-hostile and would unfairly slow Rust). `NQueens` (a backtracking
     stack), `Fannkuch` (permutation generation + reversal), and `ExprEval` (a
     parser building an `Expr` tree) match this way.
-  **`ListSort`** sorts a Fai/OCaml linked list against Rust's `Vec::sort`.
-  `List.sortBy` uses private merge buffers for large inputs; converting to and from
-  the linked representation remains timed. This is an application-level comparison.
-  Comparing its ratio to `MergeSort` does not isolate representation cost because
-  their input distributions and sizes differ. **`OptionTreeFind`** uses a Fai
-  binary tree, Rust `BTreeMap` and OCaml `Map`; use `tree_lookup` for matched nodes.
-  **`JsonSerialize`** has List versus Vec children, and **`GraphBFS`** has List
-  versus Vec adjacency/frontiers. Their allocation/traversal differences remain
-  part of the measurements. Hash-container implementations, hash functions,
-  seeding and initial capacities also differ between languages; these are library
+  **`ListSort`** starts and ends with linked lists on every peer, including
+  private merge buffers for large inputs. Converting to and from the linked
+  representation remains timed. Comparing its ratio to `MergeSort` does not
+  isolate representation cost: sizes, scratch initialization and comparator
+  dispatch differ. **`OptionTreeFind`** uses matched binary nodes;
+  **`JsonSerialize`** has linked children and **`GraphBFS`** has linked adjacency
+  and frontiers everywhere. Hash-container implementations, hash functions,
+  seeding, minimum capacities and growth differ between languages; these are library
   comparisons rather than isolated structural-hash or probe-loop timings.
 
 ### Keeping the sides in lockstep
@@ -702,9 +754,10 @@ materialized and joined child strings while OCaml already used a buffer. The
 buffered traversal is a new workload version; retain those old rows separately
 from compiler-only comparisons.
 
-The historical `OptionTreeFind` row remains the application comparison of a Fai
-binary tree against Rust `BTreeMap` and OCaml `Map`. Use **`tree_lookup`** to
-isolate the matched binary-node kernel: all three insert the same 1,000 keys in
+Historical `OptionTreeFind` rows compared a Fai binary tree against Rust
+`BTreeMap` and OCaml `Map`. The current main row uses matched binary nodes;
+**`tree_lookup`** additionally separates construction and lookup-only costs,
+retaining the native map alternatives. All three binary peers insert 1,000 keys in
 midpoint/left/right order, with identical four logical fields, values and shape.
 It uses 5,000 and 100,000 queries (`i % 2000`) and a position-weighted checksum
 that includes misses as `-1`; its timings therefore form a separate workload

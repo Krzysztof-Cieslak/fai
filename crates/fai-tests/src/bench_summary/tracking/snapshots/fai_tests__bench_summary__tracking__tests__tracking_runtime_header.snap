@@ -21,8 +21,8 @@ Ratios are **Fai ÷ peer; lower is faster**. Aggregates include only reviewed ma
 
 | Peer | Eligible / matched cases | Geometric mean | Arithmetic mean | P90 |
 |---|---:|---:|---:|---:|
-| rust | 44 / 44 | 0.500× | 0.500× | 0.500× |
-| ocaml | 44 / 44 | 0.400× | 0.400× | 0.400× |
+| rust | 66 / 66 | 0.500× | 0.500× | 0.500× |
+| ocaml | 66 / 66 | 0.400× | 0.400× | 0.400× |
 
 80 main workload/size cases are measured in total. Application cases retain absolute timings, with no compiler-kernel ratio. Warm measurements use 3 passes of 21 paired observations after calibration and warmup.
 

@@ -5,13 +5,20 @@ module WordCount
 // exercises `String.joinArray`/`String.splitArray` and the runtime string
 // representation. The words live in a contiguous `Array` (matching the Rust
 // `Vec<String>` baseline). Used by the Rust-vs-Fai runtime benchmark.
+// A whole-array consumer keeps split pieces materialized until traversal.
+let totalLengths i acc parts =
+  if i >= Array.length parts then
+    acc
+  else
+    totalLengths (i + 1) (acc + String.length (Array.unsafeGet i parts)) parts
+
 /// The benchmark workload: total length of the words in "0 1 2 … n-1".
 public run : Int -> Int
 let run n =
   let words = Array.init n Int.toString
   let text = String.joinArray " " words
   let parts = String.splitArray " " text
-  Array.sum (Array.map String.length parts)
+  totalLengths 0 0 parts
 example: run 3 = 3
 
 public main : Runtime -> Unit / { Console }

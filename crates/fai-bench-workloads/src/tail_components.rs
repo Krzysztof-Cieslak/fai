@@ -206,7 +206,9 @@ mod tests {
 
     #[test]
     fn lomuto_result_matches_the_registered_sort_checksum() {
-        assert_eq!(quicksort(257), crate::algorithms::quicksort_sum(257));
+        let mut values: Vec<_> = (0..257).map(|i| (i * 2_654_435_761i64 + 12345) % 257).collect();
+        values.sort();
+        assert_eq!(quicksort(257), crate::sorting::checksum(&values));
     }
 }
 

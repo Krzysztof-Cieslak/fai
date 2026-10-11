@@ -51,8 +51,13 @@ fn verify(output: &Output, expected: &[ExpectedAnswer]) {
     let text = std::str::from_utf8(&output.stdout).unwrap();
     let mut lines = text.lines();
     assert_eq!(lines.next(), Some("ready"));
-    for answer in expected {
-        answer.verify_line("native worker", lines.next().expect("response")).unwrap();
+    for (index, answer) in expected.iter().enumerate() {
+        answer
+            .verify_line(
+                &format!("native worker response {index}"),
+                lines.next().expect("response"),
+            )
+            .unwrap();
     }
     assert_eq!(lines.next(), None, "extra worker output");
 }
@@ -61,26 +66,34 @@ fn verify(output: &Output, expected: &[ExpectedAnswer]) {
 fn check_worker(module: &str) {
     let algorithm =
         by_module(module).or_else(|| fai_tests::tail_components::by_module(module)).unwrap();
-    let expected = [ExpectedAnswer::at_size(algorithm, 2), ExpectedAnswer::at_size(algorithm, 3)];
-    let floor = match algorithm.oracle {
-        Oracle::Int(_) => [ExpectedAnswer::Int(2), ExpectedAnswer::Int(3)],
-        Oracle::Float(_) => [ExpectedAnswer::Float(2.0), ExpectedAnswer::Float(3.0)],
-    };
-    let replies = [
-        expected[0],
-        expected[1],
-        aot::checksum(&expected, 5),
-        aot::checksum(&floor, 5),
+    let inputs = fai_tests::benchmark_contracts::validation_inputs(module);
+    let expected: Vec<_> = inputs.iter().map(|&n| ExpectedAnswer::at_size(algorithm, n)).collect();
+    let floor: Vec<_> = inputs
+        .iter()
+        .map(|&n| match algorithm.oracle {
+            Oracle::Int(_) => ExpectedAnswer::Int(n),
+            Oracle::Float(_) => ExpectedAnswer::Float(n as f64),
+        })
+        .collect();
+    let batch = inputs.len() + 3;
+    let mut replies = expected.clone();
+    replies.extend([
+        aot::checksum(&expected, batch),
+        aot::checksum(&floor, batch),
         aot::checksum(&expected, 0),
-    ];
-    let input = "2 3\nvalue 0\nvalue 1\nrun 5\nfloor 5\nrun 0\n";
+    ]);
+    let mut input = inputs.iter().map(i64::to_string).collect::<Vec<_>>().join(" ") + "\n";
+    for index in 0..inputs.len() {
+        input.push_str(&format!("value {index}\n"));
+    }
+    input.push_str(&format!("run {batch}\nfloor {batch}\nrun 0\n"));
     let program = build(algorithm, Entry::Worker);
-    verify(&exchange(Command::new(program.path), input), &replies);
+    verify(&exchange(Command::new(program.path), &input), &replies);
     let mut rust = Command::new(env!("CARGO_BIN_EXE_algo-worker"));
     rust.arg(module);
-    verify(&exchange(rust, input), &replies);
+    verify(&exchange(rust, &input), &replies);
     if let Some(ocaml) = fai_tests::ocaml::worker_baseline(algorithm) {
-        verify(&exchange(Command::new(ocaml), input), &replies);
+        verify(&exchange(Command::new(ocaml), &input), &replies);
     }
 }
 

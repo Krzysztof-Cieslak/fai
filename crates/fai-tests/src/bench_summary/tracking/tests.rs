@@ -170,7 +170,35 @@ impl Fixture {
             let mut text = String::new();
             for algorithm in algorithms {
                 let contract = contracts::for_module(algorithm.module).unwrap();
-                let (identity, _) = fixture.peers(&root, algorithm.module, "worker");
+                let (identity, hashes) = fixture.peers(&root, algorithm.module, "worker");
+                let inputs = contracts::validation_inputs(algorithm.module);
+                let answers: Vec<_> = inputs
+                    .iter()
+                    .map(|&n| {
+                        match crate::benchmark_process::ExpectedAnswer::at_size(algorithm, n) {
+                            crate::benchmark_process::ExpectedAnswer::Int(value) => {
+                                value.to_string()
+                            }
+                            crate::benchmark_process::ExpectedAnswer::Float(value) => {
+                                value.to_string()
+                            }
+                        }
+                    })
+                    .collect();
+                let peers: serde_json::Map<_, _> = ["fai", "rust", "ocaml"]
+                    .into_iter()
+                    .zip(hashes)
+                    .map(|(side, hash)| {
+                        (
+                            side.into(),
+                            serde_json::json!({"executableHash": hash, "answers": answers}),
+                        )
+                    })
+                    .collect();
+                fixture.json(
+                    &format!("{root}/{}/validation.json", algorithm.module),
+                    serde_json::json!({"schemaVersion": 1, "inputs": inputs, "peers": peers}),
+                );
                 fixture.file(
                     &format!("{root}/{}/worker.fai", algorithm.module),
                     aot::fai_program(algorithm, aot::Entry::Worker).as_bytes(),
@@ -378,6 +406,39 @@ fn missing_warm_case_is_rejected() {
     let mut fixture = Fixture::new();
     fixture.rewrite("raw/warm.stdout", |text| text.lines().skip(1).collect::<Vec<_>>().join("\n"));
     assert!(fixture.load().unwrap_err().to_string().contains("incomplete warm matrix"));
+}
+
+#[test]
+fn incomplete_input_validation_is_rejected() {
+    let mut fixture = Fixture::new();
+    fixture.rewrite("artifacts/warm/Fib/validation.json", |text| {
+        let mut record: serde_json::Value = serde_json::from_str(&text).unwrap();
+        record["peers"]["rust"]["answers"] = serde_json::json!([]);
+        record.to_string()
+    });
+    assert!(fixture.load().unwrap_err().to_string().contains("incomplete warm validation"));
+}
+
+#[test]
+fn wrong_input_validation_answer_is_rejected() {
+    let mut fixture = Fixture::new();
+    fixture.rewrite("artifacts/warm/Fib/validation.json", |text| {
+        let mut record: serde_json::Value = serde_json::from_str(&text).unwrap();
+        record["peers"]["ocaml"]["answers"][0] = serde_json::json!("-999");
+        record.to_string()
+    });
+    assert!(fixture.load().unwrap_err().to_string().contains("warm input validation"));
+}
+
+#[test]
+fn input_validation_belongs_to_the_measured_executable() {
+    let mut fixture = Fixture::new();
+    fixture.rewrite("artifacts/warm/Fib/validation.json", |text| {
+        let mut record: serde_json::Value = serde_json::from_str(&text).unwrap();
+        record["peers"]["fai"]["executableHash"] = serde_json::json!("f".repeat(64));
+        record.to_string()
+    });
+    assert!(fixture.load().unwrap_err().to_string().contains("warm validation executable"));
 }
 
 #[test]

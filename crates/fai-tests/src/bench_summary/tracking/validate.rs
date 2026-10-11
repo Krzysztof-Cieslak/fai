@@ -260,6 +260,39 @@ fn validate_warm(
         )?;
         identities
             .insert(algorithm.module, files.peers(&step.artifacts, algorithm.module, "worker")?);
+        let preflight =
+            files.json(&format!("{}/{}/validation.json", step.artifacts, algorithm.module))?;
+        let inputs = benchmark_contracts::validation_inputs(algorithm.module);
+        require(
+            preflight["schemaVersion"] == 1 && preflight["inputs"] == serde_json::json!(inputs),
+            "warm validation inputs mismatch",
+        )?;
+        let answers: Vec<_> = inputs
+            .iter()
+            .map(|&n| crate::benchmark_process::ExpectedAnswer::at_size(algorithm, n))
+            .collect();
+        for side in ["fai", "rust", "ocaml"] {
+            let peer = &preflight["peers"][side];
+            require(
+                peer["executableHash"]
+                    == files
+                        .artifact(&format!(
+                            "{}/{}/{side}-worker",
+                            step.artifacts, algorithm.module
+                        ))?
+                        .blake3,
+                "warm validation executable mismatch",
+            )?;
+            let actual = peer["answers"]
+                .as_array()
+                .ok_or_else(|| Error("missing warm validation answers".into()))?;
+            require(actual.len() == answers.len(), "incomplete warm validation answers")?;
+            for (expected, actual) in answers.iter().zip(actual) {
+                expected
+                    .verify_line("warm input validation", actual.as_str().unwrap_or_default())
+                    .map_err(|error| Error(error.to_string()))?;
+            }
+        }
         for size in BTreeSet::from([algorithm.jit_size, algorithm.aot_size]) {
             for side in ["fai", "rust", "ocaml"] {
                 for pass in 1..=manifest.settings.warm_passes {

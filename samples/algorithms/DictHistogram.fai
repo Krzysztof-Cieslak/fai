@@ -17,15 +17,13 @@ let tally i n d =
     let key = i % buckets
     tally (i + 1) n (HashDict.updateOr 0 (fun count -> count + 1) key d)
 
-// Weigh one (key, count) entry into the running total: an order-independent sum.
-addWeight : Int -> (Int * Int) -> Int
-let addWeight acc entry =
-  match entry with
-  | (key, count) -> acc + key * count
+// Fold through the public map API; traversal policy belongs to the library.
+addWeight : Int -> Int -> Int -> Int
+let addWeight key count acc = acc + key * count
 
 /// The benchmark workload: the count-weighted sum of an n-key histogram.
 public run : Int -> Int
-let run n = List.foldl addWeight 0 (HashDict.toList (tally 0 n HashDict.empty))
+let run n = HashDict.foldl addWeight 0 (tally 0 n HashDict.empty)
 example: run 3 = 3
 
 public main : Runtime -> Unit / { Console }
