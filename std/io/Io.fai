@@ -20,3 +20,7 @@ public opaque type Writer =
 /// A shared, explicitly closeable native directory enumeration.
 public opaque type DirectoryCursor =
   | DirectoryCell Int
+
+/// An owned temporary entry, cleaned on scope exit or final drop unless persisted.
+public opaque type Temporary =
+  | TemporaryCell Int

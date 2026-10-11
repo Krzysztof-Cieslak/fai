@@ -1188,6 +1188,12 @@ state through a depth-first traversal with explicit entry, depth and open-cursor
 limits, optional sorted order, link following and error policy. Stop, skipped
 children and failures retain committed state; all active cursors close under
 cancellation-masked cleanup. Cycle checks retain only ancestor identities.
+`Temp.withFile`/`withDirectory` own exclusive randomly named resources in an
+explicit parent. Scoped cleanup and final-drop fallback delete unpersisted entries;
+writer aliases expire first. `Temp.persist` atomically transfers an entry with
+an explicit overwrite policy. Recursive removal uses the native no-follow
+implementation and may partially complete on error; in-flight OS deletion is
+not interruptible, while the call observes cancellation before starting.
 
 ```
 source (.fai)

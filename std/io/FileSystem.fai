@@ -77,6 +77,7 @@ public type Entry = { hint : Option EntryKind, name : Path, path : Path }
 /// Scope failures preserve both the callback failure and a failed cleanup.
 public type ScopeError 'error =
   | OpenError Error
+  | OpenAndCloseError Error Error
   | BodyError 'error
   | CloseError Error
   | BodyAndCloseError 'error Error

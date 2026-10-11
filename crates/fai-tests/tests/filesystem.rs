@@ -6,7 +6,7 @@ use fai_db::Db;
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn run_case(body: &str) -> String {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data");
     let source = format!(
@@ -158,6 +158,39 @@ fn directory_stop_and_limit_retain_committed_state() {
   let stopped = Directory.walk r Directory.walkOptions root 0 (fun depth entry count -> Ok (count + 1, Directory.Stop))
   let limited = Directory.walk r { Directory.walkOptions with maxEntries = 0 } root 7 (fun depth entry count -> Ok (count + 1, Directory.Continue))
   r.console.writeLine (if stopped.value = 1 && stopped.outcome = Ok Directory.Stopped && limited.value = 7 && Result.isErr limited.outcome && stopped.cleanupError = None then "ok" else "bad")"#
+        ),
+        "ok\n"
+    );
+}
+
+#[test]
+fn temporary_scope_removes_entry_and_expires_writer() {
+    assert_eq!(
+        run_case(
+            r#"  let parent = Option.withDefault Path.empty (Path.parent path)
+  let scoped = Temp.withFile r parent (fun temp -> Ok (temp.path, temp.writer))
+  match scoped with
+  | Err _ -> r.console.writeLine "scope failed"
+  | Ok (temporary, writer) ->
+    let exists = FileSystem.entryExists r.fs temporary
+    let late = r.fs.writeChunk writer Bytes.empty
+    r.console.writeLine (if exists = Ok false && (match late with | Err error -> error.kind = FileSystem.Closed | _ -> false) then "ok" else "bad")"#
+        ),
+        "ok\n"
+    );
+}
+
+#[test]
+fn persisted_temporary_survives_scope_and_flushes() {
+    assert_eq!(
+        run_case(
+            r#"  let parent = Option.withDefault Path.empty (Path.parent path)
+  let save temp =
+    let written = r.fs.writeChunk temp.writer (Bytes.fromString "saved")
+    Temp.persist r.fs temp.resource path false
+  let scoped = Temp.withFile r parent save
+  let contents = r.fs.readFile path
+  r.console.writeLine (if scoped = Ok path && contents = Ok "saved" then "ok" else "bad")"#
         ),
         "ok\n"
     );
