@@ -1194,6 +1194,11 @@ writer aliases expire first. `Temp.persist` atomically transfers an entry with
 an explicit overwrite policy. Recursive removal uses the native no-follow
 implementation and may partially complete on error; in-flight OS deletion is
 not interruptible, while the call observes cancellation before starting.
+`File.withAtomicWriter` writes an exclusive temporary sibling and commits by
+native rename. Options select overwrite, symlink handling, portable permission
+copying and file/directory synchronization. Its result distinguishes no attempted
+commit, uncertain rename outcome, and committed replacement; a post-commit sync
+failure remains committed. Cleanup errors have a separate field.
 
 ```
 source (.fai)

@@ -283,6 +283,16 @@ fn mutate(op: i64, a: &Path, b: &Path, probe: &CancellationProbe) -> Result<()> 
         }
         10 => fs::hard_link(a, b)?,
         11 => fs::remove_dir_all(a)?,
+        12 => fs::set_permissions(b, fs::metadata(a)?.permissions())?,
+        13 => {
+            #[cfg(unix)]
+            File::open(a)?.sync_all()?;
+            #[cfg(windows)]
+            return Err(Error::new(
+                Kind::Unsupported,
+                "directory synchronization is not available",
+            ));
+        }
         _ => return Err(Error::new(Kind::InvalidArgument, "invalid filesystem operation")),
     }
     Ok(())
@@ -312,13 +322,15 @@ pub extern "C" fn fai_fs_mutate(op: Value, a: Value, b: Value) -> Value {
         8 | 9 => "symlink",
         10 => "hardLink",
         11 => "removeTree",
+        12 => "copyPermissions",
+        13 => "syncDirectory",
         _ => "mutate",
     };
     result(
         outcome,
         name,
         pa.as_deref(),
-        if (4..=10).contains(&code) { pb.as_deref() } else { None },
+        if (4..=10).contains(&code) || code == 12 { pb.as_deref() } else { None },
         |_| crate::FAI_UNIT,
     )
 }

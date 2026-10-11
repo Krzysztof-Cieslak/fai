@@ -35,3 +35,132 @@ let readText fs limit path =
     | Some text -> Ok text
     | None ->
       Err (FileSystem.error FileSystem.InvalidEncoding "readText" (Some path) "file is not UTF-8")
+
+public type Durability =
+  | VisibilityOnly
+  | SyncFile
+  | SyncFileAndDirectory
+
+public type AtomicOptions = {
+  durability : Durability,
+  overwrite : Bool,
+  preservePermissions : Bool,
+  replaceSymlink : Bool
+}
+
+/// Replace with a new private file, rejecting symbolic-link destinations.
+/// Durability is explicit: visibility alone does not promise crash persistence.
+public atomicOptions : AtomicOptions
+let atomicOptions = {
+  durability = VisibilityOnly,
+  overwrite = true,
+  preservePermissions = false,
+  replaceSymlink = false
+}
+example: atomicOptions.durability = VisibilityOnly
+
+public type CommitPhase =
+  | NotCommitted
+  | CommitUnknown
+  | Committed
+
+public type AtomicError 'error =
+  | FileError FileSystem.Error
+  | CallbackError 'error
+
+/// A failed post-rename sync reports Committed, not a rollback. CommitUnknown
+/// means a rename was attempted and its error cannot establish a remote outcome.
+public type AtomicResult 'a 'error = {
+  cleanupError : Option FileSystem.Error,
+  outcome : Result 'a (AtomicError 'error),
+  phase : CommitPhase
+}
+
+let failure phase error = { cleanupError = None, outcome = Err error, phase = phase }
+
+destinationInfo : FileSystem -> AtomicOptions -> Path -> Result (Option FileSystem.Metadata) FileSystem.Error / { FileSystem }
+let destinationInfo fs options path =
+  match fs.linkMetadata path with
+  | Err error -> if error.kind = FileSystem.NotFound then Ok None else Err error
+  | Ok info ->
+    if info.kind = FileSystem.SymbolicLink && not options.replaceSymlink then
+      Err (FileSystem.error FileSystem.InvalidPath "atomicWrite" (Some path) "destination is a symbolic link")
+    else if info.kind = FileSystem.SymbolicLink && options.preservePermissions then
+      Err (FileSystem.error FileSystem.Unsupported "atomicWrite" (Some path) "cannot preserve a symbolic link's permissions")
+    else
+      Ok (Some info)
+
+commit : FileSystem -> AtomicOptions -> Path -> Path -> Io.Temporary -> Writer -> 'a -> AtomicResult 'a 'error / { FileSystem }
+let commit fs options destination parent resource writer value =
+  let flushed =
+    if options.durability = VisibilityOnly then fs.flushWriter writer else fs.syncWriter writer true
+  match flushed with
+  | Err error -> failure NotCommitted (FileError error)
+  | Ok _ ->
+    match fs.closeWriter writer with
+    | Err error -> failure NotCommitted (FileError error)
+    | Ok _ ->
+      match fs.persistTemporary resource destination options.overwrite with
+      | Err error -> failure CommitUnknown (FileError error)
+      | Ok _ ->
+        let synced =
+          if options.durability = SyncFileAndDirectory then fs.syncDirectory parent else Ok ()
+        match synced with
+        | Err error -> failure Committed (FileError error)
+        | Ok _ -> { cleanupError = None, outcome = Ok value, phase = Committed }
+
+writeAtomic : FileSystem -> AtomicOptions -> Path -> Path -> Io.Temporary -> (Writer -> Result 'a 'error / 'e) -> AtomicResult 'a 'error / { FileSystem | 'e }
+let writeAtomic fs options destination parent resource work =
+  match fs.temporaryWriter resource with
+  | Err error -> failure NotCommitted (FileError error)
+  | Ok writer ->
+    match work writer with
+    | Err error -> failure NotCommitted (CallbackError error)
+    | Ok value ->
+      let prepared =
+        if not options.preservePermissions then
+          Ok ()
+        else
+          match fs.temporaryPath resource with
+          | Err error -> Err error
+          | Ok temporary ->
+            match fs.copyPermissions destination temporary with
+            | Err error -> if error.kind = FileSystem.NotFound then Ok () else Err error
+            | Ok _ -> Ok ()
+      match prepared with
+      | Err error -> failure NotCommitted (FileError error)
+      | Ok _ -> commit fs options destination parent resource writer value
+
+/// Write a temporary sibling, then atomically rename it. The callback runs once.
+/// Portable permission copying retains Unix modes / Windows readonly, not ACLs
+/// or ownership. The destination and directory may change concurrently.
+public withAtomicWriter : { concurrency : Concurrency, fs : FileSystem | _ } -> AtomicOptions -> Path -> (Writer -> Result 'a 'error / 'e) -> AtomicResult 'a 'error / { Concurrency, FileSystem | 'e }
+let withAtomicWriter env options path work =
+  match Path.parent path with
+  | None ->
+    failure NotCommitted (FileError (FileSystem.error FileSystem.InvalidPath "atomicWrite" (Some path) "destination needs a filename"))
+  | Some parent ->
+    let parent =
+      if parent = Path.empty then Result.withDefault Path.empty (Path.fromString ".") else parent
+    match destinationInfo env.fs options path with
+    | Err error -> failure NotCommitted (FileError error)
+    | Ok _ ->
+      match env.fs.createTemporary parent false with
+      | Err error -> failure NotCommitted (FileError error)
+      | Ok resource ->
+        let result = writeAtomic env.fs options path parent resource work
+        let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeTemporary resource)
+        { result with
+          cleanupError = match closed with
+          | Ok _ -> None
+          | Err error -> Some error
+        }
+
+/// Atomically replace a file with binary data, retaining commit and cleanup state.
+public writeBytesAtomic : { concurrency : Concurrency, fs : FileSystem | _ } -> AtomicOptions -> Path -> Bytes -> AtomicResult Unit FileSystem.Error / { Concurrency, FileSystem }
+let writeBytesAtomic env options path bytes =
+  withAtomicWriter env options path (fun writer -> env.fs.writeChunk writer bytes)
+
+public writeTextAtomic : { concurrency : Concurrency, fs : FileSystem | _ } -> AtomicOptions -> Path -> String -> AtomicResult Unit FileSystem.Error / { Concurrency, FileSystem }
+let writeTextAtomic env options path text =
+  writeBytesAtomic env options path (Bytes.fromString text)

@@ -51,6 +51,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Atomic writes use an exclusive temporary sibling and explicit rename policy.
+  Visibility-only, file-sync and file-plus-directory-sync modes are distinct.
+  Results retain commit phase separately from callback, native and cleanup
+  failures; a failure after replacement never implies rollback. Portable
+  permission preservation copies mode/read-only attributes, not ACLs or ownership.
+
 - Temporary resources are exclusive native creations, with private Unix modes,
   explicit parent directories and owned cleanup. Persisting closes initial writer
   aliases and transfers the directory entry only after a successful rename.

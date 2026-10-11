@@ -4,6 +4,11 @@ module Files
 public readConfig : { fs : FileSystem | _ } -> Path -> Result String FileSystem.Error / { FileSystem }
 let readConfig env path = File.readText env.fs 65536 path
 
+/// Atomic visibility and crash synchronization are separate policies.
+public saveConfig : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> String -> File.AtomicResult Unit FileSystem.Error / { Concurrency, FileSystem }
+let saveConfig env path text =
+  File.writeTextAtomic env { File.atomicOptions with durability = File.SyncFile } path text
+
 /// Temporary directories are removed even when the callback reports failure.
 public scratch : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> Result Path (FileSystem.ScopeError String) / { Concurrency, FileSystem }
 let scratch env parent = Temp.withDirectory env parent (fun temporary -> Ok temporary.path)

@@ -1139,6 +1139,16 @@ forall xs: mirror (mirror xs) = xs
 
 ### FileSystem and File — native file I/O
 
+`File.withAtomicWriter env options path work`, `writeBytesAtomic` and
+`writeTextAtomic` stage an exclusive sibling before rename. `atomicOptions`
+defaults to overwrite, reject destination symlinks, new private permissions,
+and `VisibilityOnly`. Choose `SyncFile` or `SyncFileAndDirectory` explicitly;
+directory synchronization is unsupported on Windows. Set `preservePermissions`
+to copy portable mode/read-only attributes (not ACLs/ownership), and
+`replaceSymlink` to replace the link entry. `AtomicResult` has `outcome`,
+`cleanupError`, and `phase`: `NotCommitted`, `CommitUnknown` after a failed rename
+attempt, or `Committed`, including a failed post-rename synchronization.
+
 `Temp.withFile env parent work` and `Temp.withDirectory env parent work` create
 exclusive temporary resources. The callback receives the native path and opaque
 resource; a file also supplies its writer. Scope exit expires writer aliases and
