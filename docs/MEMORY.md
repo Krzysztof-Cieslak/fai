@@ -3065,8 +3065,11 @@ Editor integration:
     A bounded scalar-only loop of short literal appends can check its incoming
     unique, nonempty inline String once. Every carried String derives from that
     owner, so successful growth preserves the proof and each fast iteration only
-    checks capacity. Shared, empty, sliced and uncertain inputs use ordinary
-    appends. This changes no owner lifetime or allocation-retention policy.
+    checks capacity. If every transition appends a nonempty literal, an initially
+    empty, shared or sliced value can re-enter the guard after ordinary startup.
+    At most two appends establish the unique buffer; all carried scalar state is
+    rebound simultaneously. Uncertain loops keep their ordinary path. This changes
+    no owner lifetime or allocation-retention policy.
   - **`++` chains are left-reassociated before reference counting.** `++` is
     right-associative, so a source chain `a ++ b ++ c` is a right-leaning tree of
     `StrConcat` nodes (after the prim/helper inliners), whose left operand at each

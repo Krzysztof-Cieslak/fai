@@ -7672,6 +7672,14 @@ impl<M: Module> Translator<'_, M> {
             && let Some(plan) = crate::string_loop::plan(params, body, &self.var_tys)
         {
             self.unique_string_versioned = true;
+            // Ordinary startup may begin with an empty, shared or sliced value.
+            // Nonempty appends establish a unique buffer without retaining the
+            // old owner, so re-enter this guard with the new loop state.
+            let recheck = plan.recheck.then(|| self.builder.create_block());
+            if let Some(guard) = recheck {
+                self.builder.ins().jump(guard, &[]);
+                self.builder.switch_to_block(guard);
+            }
             let string = self.use_var(plan.root);
             let count = self.builder.ins().load(
                 types::I64,
@@ -7713,8 +7721,11 @@ impl<M: Module> Translator<'_, M> {
             self.array_float_tag = array_tags.clone();
             self.builder.switch_to_block(ordinary);
             self.builder.seal_block(ordinary);
-            let result = self.join_plain(params, body, result_ty);
+            let result = self.join_with_reentry(params, body, result_ty, recheck);
             self.builder.ins().jump(done, &[result.into()]);
+            if let Some(guard) = recheck {
+                self.builder.seal_block(guard);
+            }
             self.builder.switch_to_block(done);
             self.builder.seal_block(done);
             self.bounds = bounds;
@@ -7764,7 +7775,19 @@ impl<M: Module> Translator<'_, M> {
         self.join_plain(params, body, result_ty)
     }
 
-    fn join_plain(&mut self, params: &[LocalId], body: &CExpr, _result_ty: &Ty) -> Value {
+    fn join_plain(&mut self, params: &[LocalId], body: &CExpr, result_ty: &Ty) -> Value {
+        self.join_with_reentry(params, body, result_ty, None)
+    }
+
+    /// A startup version may send its back-edges through an enclosing guard.
+    /// Parameter rebinding is identical to an ordinary loop back-edge.
+    fn join_with_reentry(
+        &mut self,
+        params: &[LocalId],
+        body: &CExpr,
+        _result_ty: &Ty,
+        reentry: Option<Block>,
+    ) -> Value {
         let saved_tags = std::mem::take(&mut self.known_tags);
         let mut affine = Vec::new();
         if !self.concurrent {
@@ -7818,7 +7841,7 @@ impl<M: Module> Translator<'_, M> {
         let prev = self.loop_ctx.replace(LoopCtx {
             fixed_point,
             affine,
-            header,
+            header: reentry.unwrap_or(header),
             exit,
             params: params.to_vec(),
             exit_raw: false,

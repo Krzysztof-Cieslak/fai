@@ -6,6 +6,15 @@ let build n text = if n <= 0 then text else build (n - 1) (text ++ "ab")
 public unicode : Int -> String -> String
 let unicode n text = if n <= 0 then text else unicode (n - 1) (text ++ "λ")
 
+public alternating : Int -> Int -> String -> String
+let alternating n counter text =
+  if n <= 0 then
+    text
+  else if counter % 2 = 0 then
+    alternating (n - 1) (counter + 1) (text ++ "a")
+  else
+    alternating (n - 1) (counter + 1) (text ++ "λ")
+
 public main : Runtime -> Unit / { Console }
 let main runtime =
   let seed = Int.toString 123
@@ -17,11 +26,12 @@ let main runtime =
   let text = unicode 128 (Int.toString 0)
   let original = seed = "123" && String.length shared = 23
   let sliced = String.length base = 65 && String.length view = 40 && String.length changed = 60
-  let empty = build 2 "" = "abab" && build 0 "seed" = "seed"
+  let empty = build 1 "" = "ab" && build 2 "" = "abab" && build 0 "seed" = "seed"
+  let carried = alternating 6 9223372036854775807 "" = "λaλaλa"
   let negative = build (-9223372036854775808) "seed" = "seed"
   let contents =
     String.length grown = 40001 && String.length text = 129 && String.drop 128 text = "λ"
-  runtime.console.writeLine (if original && sliced && empty && negative && contents then
+  runtime.console.writeLine (if original && sliced && empty && negative && contents && carried then
     "ok"
   else
     "wrong")
