@@ -54,6 +54,26 @@ public type WriteMode =
   | Append
   | Existing
 
+public type EntryKind =
+  | RegularFile
+  | Directory
+  | SymbolicLink
+  | Other
+
+/// Metadata is a point-in-time snapshot; native identity is opaque binary data.
+public type Metadata = {
+  accessed : Option Instant,
+  created : Option Instant,
+  identity : Bytes,
+  kind : EntryKind,
+  length : Int,
+  modified : Option Instant,
+  readonly : Bool
+}
+
+/// The kind is a cheap hint, not a guarantee about a later operation.
+public type Entry = { hint : Option EntryKind, name : Path, path : Path }
+
 /// Scope failures preserve both the callback failure and a failed cleanup.
 public type ScopeError 'error =
   | OpenError Error
@@ -69,3 +89,16 @@ let scopeResult body cleanup =
   | (Ok _, Err error) -> Err (CloseError error)
   | (Err first, Err last) -> Err (BodyAndCloseError first last)
 example: scopeResult (Ok 3) (Ok ()) = Ok 3
+
+let present result =
+  match result with
+  | Ok _ -> Ok true
+  | Err error -> if error.kind = NotFound then Ok false else Err error
+
+/// Existence of a followed target. Permission and I/O errors remain errors.
+public exists : FileSystem -> Path -> Result Bool Error / { FileSystem }
+let exists fs path = present (fs.metadata path)
+
+/// Existence of an entry itself, including a dangling symbolic link.
+public entryExists : FileSystem -> Path -> Result Bool Error / { FileSystem }
+let entryExists fs path = present (fs.linkMetadata path)

@@ -5259,7 +5259,8 @@ pub use io::{
     fai_file_close_reader, fai_file_close_writer, fai_file_flush, fai_file_open_append,
     fai_file_open_read, fai_file_open_write, fai_file_open_writer, fai_file_read,
     fai_file_read_bytes, fai_file_read_chunk, fai_file_seek, fai_file_sync, fai_file_write,
-    fai_file_write_bytes, fai_file_write_chunk,
+    fai_file_write_bytes, fai_file_write_chunk, fai_fs_close_directory, fai_fs_location,
+    fai_fs_metadata, fai_fs_mutate, fai_fs_next_directory, fai_fs_open_directory, fai_fs_same_file,
 };
 
 // The TLS engine's C-ABI entry points (the `Tls` capability), re-exported at the

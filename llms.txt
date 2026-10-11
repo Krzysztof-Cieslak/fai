@@ -1139,6 +1139,17 @@ forall xs: mirror (mirror xs) = xs
 
 ### FileSystem and File — native file I/O
 
+The capability also provides `metadata` (follow links), `linkMetadata`,
+`sameFile`, `canonicalize`, `currentDirectory`, `temporaryDirectory`, `readLink`,
+`createDirectory`, `createDirectories`, `removeFile`, `removeDirectory`,
+`rename` (atomic no-clobber), `replace`, `copy source destination overwrite`,
+`hardLink`, and `symlink target link directory`. Errors preserve both paths.
+`Metadata` has `kind`, `length`, `readonly`, binary `identity`, and optional
+`accessed`/`created`/`modified` Instants. `FileSystem.exists` follows links;
+`entryExists` observes the entry itself. Only absence becomes false.
+`openDirectory`/`nextDirectory`/`closeDirectory` operate a scoped cursor; entries
+have a lossless `name`, `path`, and optional `hint` kind. Enumeration order is native.
+
 `FileSystem.Error` carries `kind`, `operation`, `path`, `destination`, `nativeCode`,
 and `message`; use `FileSystem.errorToString` at text-only boundaries.
 `WriteMode` is `CreateNew`, `Truncate`, `Append`, or `Existing`. Explicit close is

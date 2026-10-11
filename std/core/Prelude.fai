@@ -164,19 +164,38 @@ public interface Random =
   nextInt : Int -> Int / { Random }
 
 public interface FileSystem =
+  canonicalize : Path -> Result Path FileSystem.Error / { FileSystem }
+  closeDirectory : Io.DirectoryCursor -> Result Unit FileSystem.Error / { FileSystem }
   closeReader : Reader -> Result Unit FileSystem.Error / { FileSystem }
   closeWriter : Writer -> Result Unit FileSystem.Error / { FileSystem }
+  copy : Path -> Path -> Bool -> Result Unit FileSystem.Error / { FileSystem }
+  createDirectories : Path -> Result Unit FileSystem.Error / { FileSystem }
+  createDirectory : Path -> Result Unit FileSystem.Error / { FileSystem }
+  currentDirectory : Unit -> Result Path FileSystem.Error / { FileSystem }
   flushWriter : Writer -> Result Unit FileSystem.Error / { FileSystem }
+  hardLink : Path -> Path -> Result Unit FileSystem.Error / { FileSystem }
+  linkMetadata : Path -> Result FileSystem.Metadata FileSystem.Error / { FileSystem }
+  metadata : Path -> Result FileSystem.Metadata FileSystem.Error / { FileSystem }
+  nextDirectory : Io.DirectoryCursor -> Result (Option FileSystem.Entry) FileSystem.Error / { FileSystem }
   openAppend : Path -> Result Writer FileSystem.Error / { FileSystem }
+  openDirectory : Path -> Result Io.DirectoryCursor FileSystem.Error / { FileSystem }
   openRead : Path -> Result Reader FileSystem.Error / { FileSystem }
   openWrite : Path -> Result Writer FileSystem.Error / { FileSystem }
   openWriter : Path -> FileSystem.WriteMode -> Result Writer FileSystem.Error / { FileSystem }
   readBytes : Path -> Int -> Result Bytes FileSystem.Error / { FileSystem }
   readChunk : Reader -> Int -> Result Bytes FileSystem.Error / { FileSystem }
   readFile : Path -> Result String FileSystem.Error / { FileSystem }
+  readLink : Path -> Result Path FileSystem.Error / { FileSystem }
+  removeDirectory : Path -> Result Unit FileSystem.Error / { FileSystem }
+  removeFile : Path -> Result Unit FileSystem.Error / { FileSystem }
+  rename : Path -> Path -> Result Unit FileSystem.Error / { FileSystem }
+  replace : Path -> Path -> Result Unit FileSystem.Error / { FileSystem }
+  sameFile : Path -> Path -> Result Bool FileSystem.Error / { FileSystem }
   seekReader : Reader -> Int -> Result Int FileSystem.Error / { FileSystem }
   seekWriter : Writer -> Int -> Result Int FileSystem.Error / { FileSystem }
+  symlink : Path -> Path -> Bool -> Result Unit FileSystem.Error / { FileSystem }
   syncWriter : Writer -> Bool -> Result Unit FileSystem.Error / { FileSystem }
+  temporaryDirectory : Unit -> Result Path FileSystem.Error / { FileSystem }
   writeBytes : Path -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
   writeChunk : Writer -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
   writeFile : Path -> String -> Result Unit FileSystem.Error / { FileSystem }
@@ -333,6 +352,20 @@ foreign "fai_file_seek" fileSeekReader : Reader -> Int -> Result Int FileSystem.
 
 foreign "fai_file_seek" fileSeekWriter : Writer -> Int -> Result Int FileSystem.Error / { FileSystem }
 
+foreign "fai_fs_metadata" fsMetadata : Path -> Bool -> Result FileSystem.Metadata FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_mutate" fsMutate : Int -> Path -> Path -> Result Unit FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_location" fsLocation : Int -> Path -> Result Path FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_same_file" fsSameFile : Path -> Path -> Result Bool FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_open_directory" fsOpenDirectory : Path -> Result Io.DirectoryCursor FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_next_directory" fsNextDirectory : Io.DirectoryCursor -> Result (Option FileSystem.Entry) FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_close_directory" fsCloseDirectory : Io.DirectoryCursor -> Result Unit FileSystem.Error / { FileSystem }
+
 foreign "fai_env_get" envGet : String -> (Bool * String) / { Env }
 
 foreign "fai_env_args" envArgs : Unit -> List String / { Env }
@@ -443,19 +476,38 @@ let envGetHost name =
 
 public stdFs : FileSystem
 let stdFs = { FileSystem with
+  canonicalize path = fsLocation 2 path,
+  closeDirectory = fsCloseDirectory,
   closeReader = fileCloseReader,
   closeWriter = fileCloseWriter,
+  copy source destination overwrite = fsMutate (if overwrite then 7 else 6) source destination,
+  createDirectories path = fsMutate 1 path Path.empty,
+  createDirectory path = fsMutate 0 path Path.empty,
+  currentDirectory unit = fsLocation 0 Path.empty,
   flushWriter = fileFlush,
+  hardLink = fsMutate 10,
+  linkMetadata path = fsMetadata path false,
+  metadata path = fsMetadata path true,
+  nextDirectory = fsNextDirectory,
   openAppend = fileOpenAppend,
+  openDirectory = fsOpenDirectory,
   openRead = fileOpenRead,
   openWrite = fileOpenWrite,
   openWriter = fileOpenWriter,
   readBytes = fileReadBytes,
   readChunk = fileReadChunk,
   readFile = fileRead,
+  readLink path = fsLocation 3 path,
+  removeDirectory path = fsMutate 3 path Path.empty,
+  removeFile path = fsMutate 2 path Path.empty,
+  rename = fsMutate 4,
+  replace = fsMutate 5,
+  sameFile = fsSameFile,
   seekReader = fileSeekReader,
   seekWriter = fileSeekWriter,
+  symlink target link directory = fsMutate (if directory then 9 else 8) target link,
   syncWriter = fileSync,
+  temporaryDirectory unit = fsLocation 1 Path.empty,
   writeBytes = fileWriteBytes,
   writeChunk = fileWriteChunk,
   writeFile = fileWrite
