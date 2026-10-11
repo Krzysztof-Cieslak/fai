@@ -1,0 +1,151 @@
+module Path
+
+/// A lossless native path: bytes on Unix, little-endian UTF-16 units on Windows.
+/// Equality and ordering compare exact spelling, without filesystem case folding.
+public opaque type Path = Bytes
+
+public type Error =
+  | InvalidEncoding
+  | InvalidPath
+  | IncompatibleBase
+
+let convert result =
+  match result with
+  | (0, bytes) -> Ok bytes
+  | (1, _) -> Err InvalidEncoding
+  | (3, _) -> Err IncompatibleBase
+  | _ -> Err InvalidPath
+
+let optional result =
+  match result with
+  | (0, bytes) -> Some bytes
+  | _ -> None
+
+let unary code path = Prim.pathOperation code path Bytes.empty
+
+/// The encoding of native units on this compilation target: unix or windows.
+public nativeEncoding : String
+let nativeEncoding =
+  let (_, bytes) = unary 17 Bytes.empty
+  Option.withDefault "" (Bytes.toString bytes)
+example: nativeEncoding = "unix" || nativeEncoding = "windows"
+
+/// Construct a path from text, rejecting embedded NULs.
+public fromString : String -> Result Path Error
+let fromString text = convert (unary 0 (Bytes.fromString text))
+example: fromString "a\u{0}b" = Err InvalidPath
+
+/// Construct a path from native units, rejecting NULs and incomplete UTF-16 units.
+public fromNativeBytes : Bytes -> Result Path Error
+let fromNativeBytes bytes = convert (unary 3 bytes)
+example: fromNativeBytes Bytes.empty = fromString ""
+
+/// The exact native encoding; suitable for round trips on the same platform.
+public toNativeBytes : Path -> Bytes
+let toNativeBytes path = path
+example: Result.map (fun path ->
+  fromNativeBytes (toNativeBytes path)) (fromString "é") = Result.map Ok (fromString "é")
+
+/// Convert to Unicode text only when it is lossless.
+public toString : Path -> Result String Error
+let toString path =
+  Result.map (fun bytes -> Option.withDefault "" (Bytes.toString bytes)) (convert (unary 1 path))
+example: Result.map toString (fromString "é") = Ok (Ok "é")
+
+/// Quoted, escaped diagnostic text. Never pass display output back to the OS.
+public display : Path -> String
+let display path =
+  let (_, bytes) = unary 2 path
+  Option.withDefault "" (Bytes.toString bytes)
+example: Result.map display (fromString "a") = Ok "\"a\""
+
+/// The empty spelling, distinct from the current-directory spelling.
+public empty : Path
+let empty = Bytes.empty
+example: fromString "" = Ok empty
+
+public isAbsolute : Path -> Bool
+let isAbsolute path =
+  match unary 4 path with
+  | (0, _) -> true
+  | _ -> false
+example: not (isAbsolute empty)
+
+public isRelative : Path -> Bool
+let isRelative path = not (isAbsolute path)
+example: isRelative empty
+
+/// Parent of the final component; a root has no parent.
+public parent : Path -> Option Path
+let parent path = optional (unary 5 path)
+example: parent empty = None
+
+public fileName : Path -> Option Path
+let fileName path = optional (unary 6 path)
+example: fileName empty = None
+
+public stem : Path -> Option Path
+let stem path = optional (unary 7 path)
+example: stem empty = None
+
+public extension : Path -> Option Path
+let extension path = optional (unary 8 path)
+example: Result.map extension (fromString ".gitignore") = Ok None
+
+/// Append a native path. Absolute children replace the base. Native Windows
+/// root-relative and prefixed children follow native PathBuf joining rules.
+public join : Path -> Path -> Path
+let join base child =
+  let (_, bytes) = Prim.pathOperation 9 base child
+  bytes
+example: join empty empty = empty
+
+/// Pure lexical normalization; never resolves symbolic links. Verbatim Windows
+/// paths retain their spelling, including dot components.
+public normalize : Path -> Path
+let normalize path =
+  let (_, bytes) = unary 10 path
+  bytes
+example: Result.map normalize (fromString "a/..") = fromString "."
+forall text: match fromString text with
+| Err _ -> true
+| Ok path -> normalize (normalize path) = normalize path
+
+/// Resolve against an explicit absolute base. Drive-relative children are
+/// rejected, since they would otherwise require a drive's working directory.
+public resolve : Path -> Path -> Result Path Error
+let resolve base child = convert (Prim.pathOperation 11 base child)
+example: resolve empty empty = Err IncompatibleBase
+
+/// A lexical relative path from base to target; incompatible roots and unresolved
+/// parent components in the remaining base are rejected.
+public relativeTo : Path -> Path -> Result Path Error
+let relativeTo base target = convert (Prim.pathOperation 12 base target)
+example: relativeTo empty empty = fromString "."
+
+public withFileName : Path -> Path -> Result Path Error
+let withFileName name path = convert (Prim.pathOperation 13 path name)
+example: withFileName empty empty = Err InvalidPath
+
+/// An empty extension removes the extension. A separator is not an extension.
+public withExtension : Path -> Path -> Result Path Error
+let withExtension name path = convert (Prim.pathOperation 14 path name)
+example: withExtension empty empty = Err InvalidPath
+
+/// Native root/prefix spelling, including a Windows drive prefix when present.
+public root : Path -> Option Path
+let root path = optional (unary 15 path)
+example: root empty = None
+
+/// Native lexical components, with root and drive/share prefix components kept.
+public components : Path -> Array Path
+let components path = Prim.pathComponents path
+example: components empty = [||]
+
+public errorToString : Error -> String
+let errorToString error =
+  match error with
+  | InvalidEncoding -> "path is not representable as Unicode"
+  | InvalidPath -> "invalid native path or filename"
+  | IncompatibleBase -> "incompatible path base"
+example: errorToString InvalidPath = "invalid native path or filename"

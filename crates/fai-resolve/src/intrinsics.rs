@@ -80,6 +80,8 @@ pub const INTRINSICS: &[&str] = &[
     "cryptoScramPassword",
     "textGraphemes",
     "textWidth",
+    "pathOperation",
+    "pathComponents",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

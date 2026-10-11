@@ -112,6 +112,8 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::CryptoScramPassword => "cryptoScramPassword",
         Prim::TextGraphemes => "textGraphemes",
         Prim::TextWidth => "textWidth",
+        Prim::PathOperation => "pathOperation",
+        Prim::PathComponents => "pathComponents",
         Prim::BytesSlice => "bytesSlice",
         Prim::BytesFromList => "bytesFromList",
         Prim::BytesToList => "bytesToList",

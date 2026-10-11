@@ -225,6 +225,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_terminal_size", rt::fai_terminal_size);
     sym!("fai_text_graphemes", rt::fai_text_graphemes);
     sym!("fai_text_width", rt::fai_text_width);
+    sym!("fai_path_operation", rt::fai_path_operation);
+    sym!("fai_path_components", rt::fai_path_components);
     sym!("fai_cleanup", rt::fai_cleanup);
     sym!("fai_net_peer", rt::fai_net_peer);
     sym!("fai_tls_server_endpoint", rt::fai_tls_server_endpoint);

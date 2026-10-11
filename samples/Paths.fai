@@ -1,0 +1,9 @@
+module Paths
+
+/// Resolve configuration names without consulting the filesystem.
+public configPath : String -> Result Path Path.Error
+let configPath directory =
+  match Path.fromString directory with
+  | Err error -> Err error
+  | Ok base -> Result.map (Path.join base) (Path.fromString "config.toml")
+example: Result.map Path.toString (configPath "") = Ok (Ok "config.toml")
