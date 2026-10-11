@@ -36,12 +36,15 @@ let loop provider limits decoder state bytes index chunks =
 /// Replay arbitrary transport chunks through the same SSE and provider codecs.
 public fromChunks : LlmTypes.Provider -> LlmTypes.Limits -> List Bytes -> Result LlmTypes.Response LlmTypes.Error
 let fromChunks provider limits chunks =
-  match Sse.decoder {
-    maxEventBytes = limits.maxResponseBytes,
-    maxLineBytes = limits.maxResponseBytes
-  } with
-  | Err error -> Err (LlmTypes.error LlmTypes.InvalidRequest (Sse.errorToString error))
-  | Ok decoder -> loop provider limits decoder (LlmStream.initial provider) Bytes.empty 0 chunks
+  match LlmValidate.limits limits with
+  | Err error -> Err error
+  | Ok _ ->
+    match Sse.decoder {
+      maxEventBytes = limits.maxResponseBytes,
+      maxLineBytes = limits.maxResponseBytes
+    } with
+    | Err error -> Err (LlmTypes.error LlmTypes.InvalidRequest (Sse.errorToString error))
+    | Ok decoder -> loop provider limits decoder (LlmStream.initial provider) Bytes.empty 0 chunks
 
 /// A scripted model is a pure function of the complete request, including history.
 public model : LlmTypes.Provider -> LlmTypes.Limits -> (LlmTypes.Request -> List Bytes) -> { generate : LlmTypes.Request -> Result LlmTypes.Response LlmTypes.Error }

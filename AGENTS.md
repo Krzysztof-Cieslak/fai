@@ -1130,8 +1130,6 @@ Process stdio can be piped, inherited or discarded. Intermediate pipeline links
 stay piped. Startup failures retain statuses of already-started stages; explicit
 stop also observes an expired operation deadline before beginning cleanup.
 
-## 6. Compiler pipeline
-
 The optional `packages/llm` library defines pure model requests, ordered content
 and provider-tagged continuation items. `LlmSchema` pairs portable JSON schemas
 with typed decoders and explicit local refinements; object fields are required,
@@ -1149,11 +1147,17 @@ helpers retain the original response alongside the decoded application value.
 Model retries are opt-in and limited to rejected HTTP requests before generation
 events are exposed. One deadline covers attempts, callbacks and backoff; failures
 retain partial state, provider metadata and attempt/event counts.
+The LLM examples include an application-controlled coding assistant with typed
+file and command tools, a streaming TUI, and versioned SQLite conversation state.
+Interrupted tools are recorded without automatic replay. Native contracts and
+local-provider JIT/AOT fixtures cover both protocols without external credentials.
 
 `HttpClient.foldEvents` threads application state through scoped SSE callbacks,
 retaining typed callback errors, response metadata and bounded error bodies.
 Cancellation and deadlines retain the final committed state after worker cleanup;
 read-idle time excludes callback execution.
+
+## 6. Compiler pipeline
 
 ```
 source (.fai)

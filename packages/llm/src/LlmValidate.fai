@@ -66,7 +66,9 @@ let image limits image =
       else
         invalid "image URLs require HTTP or HTTPS"
   | LlmTypes.ImageBytes media bytes ->
-    if not (List.member media ["image/png", "image/jpeg", "image/webp", "image/gif"]) then
+    if Bytes.isEmpty bytes then
+      invalid "image data is empty"
+    else if not (List.member media ["image/png", "image/jpeg", "image/webp", "image/gif"]) then
       invalid "unsupported image MIME type"
     else if Bytes.length bytes > limits.maxImageBytes then
       limited "image exceeds its byte limit"
@@ -114,6 +116,16 @@ let request provider limit request =
     | None -> false
     | Some value -> Result.isErr (JsonNumber.fromFloat value) || value < 0.0 || value > 2.0) then
       invalid "temperature must be finite and in 0..2"
+    else if provider = LlmTypes.Anthropic && (match request.temperature with
+    | Some value -> value > 1.0
+    | None -> false) then
+      invalid "Anthropic temperature must be in 0..1"
+    else if (match request.topP with
+    | None -> false
+    | Some value -> Result.isErr (JsonNumber.fromFloat value) || value < 0.0 || value > 1.0) then
+      invalid "topP must be finite and in 0..1"
+    else if List.any (fun text -> text = "") request.stopSequences then
+      invalid "stop sequences cannot be empty"
     else
       match LlmJson.traverse (history provider limit) request.history with
       | Err error -> Err error

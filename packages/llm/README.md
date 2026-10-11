@@ -68,6 +68,11 @@ larger records while retaining a single wire schema and decoder.
 
 ## Lifecycle and policy
 
+Generation settings include `maxOutputTokens`, `temperature`, `topP` and
+`stopSequences`. Anthropic supports stop sequences; Responses rejects that option
+locally. Provider-specific options remain explicit. LLM execution disables HTTP
+redirects and HTTP-level retries; use the LLM retry settings described below.
+
 `LlmConfig.Config` includes the HTTP pool settings, SSE connection/read-idle/overall
 deadlines, decoding limits and retry policy. Defaults use a 30-second connection
 deadline, 120-second read-idle deadline, no overall deadline and no retries.
@@ -85,6 +90,56 @@ distinct from deadlines, and the last partial response survives worker cleanup.
 `LlmPolicy.delay` is the pure policy entry point. `FailureChecks.fai` exercises
 status bodies, retries, premature EOF, in-band errors, early stop, read-idle and
 overall deadlines against a local server.
+
+## Coding assistant
+
+Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, then select an explicit model:
+
+```sh
+fai run -C packages llm/examples/Generate.fai -- openai MODEL "Hello"
+fai run -C packages llm/examples/Assistant.fai -- --provider openai MODEL
+fai run -C packages llm/examples/Assistant.fai -- --provider anthropic MODEL --prompt "Explain this project"
+```
+
+The assistant uses an application-owned model/tool loop. Its three explicit tools
+read UTF-8 files, write files, and run executables with argv lists through the
+process package. The runtime supplies FileSystem, Process, SQLite and terminal
+capabilities in addition to networking. Tool execution is sequential and bounded
+by `--max-turns` and `--tool-bytes`; model output uses `--max-tokens`, and
+`--timeout-ms` sets an optional overall model-request deadline.
+`--process-timeout-ms` separately configures command-tool deadlines; zero disables
+either deadline. Cancelled and replacement UI turns serialize through cleanup
+before reloading the last committed conversation.
+
+Use `--workspace` for tool paths and command working directories, `--database`
+for the SQLite file, and `--session` to select a named conversation. `--prompt`
+runs one headless message; otherwise the full-screen interface streams text,
+shows tool results and a collapsible reasoning summary, and supports cancellation.
+`--base-url` selects a compatible endpoint, including the deterministic local
+test server.
+
+Completed context is stored as versioned provider-native data without request
+credentials. Each new operation reloads committed context. Pending tool records
+are marked interrupted on restart and are not silently executed again. Display
+history is bounded separately from request context; an oversized request returns
+a limit error rather than silently discarding conversation items.
+
+## Verification
+
+```sh
+fai test -C packages llm
+python scripts/tests/llm_toolchain.py --fai /path/to/fai
+```
+
+Native contracts cover pure encoders, reducers, schema decoding, tool invocation,
+retry decisions, persistence encoding and arbitrary SSE chunk boundaries. The
+integration fixture uses local model servers for both protocols through JIT and
+AOT, including real file/command tools and SQLite. Unix PTY checks cover the live
+assistant and terminal restoration. No live provider credentials are needed for
+CI; the Generate example provides an opt-in live smoke test.
+
+Library sources depend on json/http-client/sse. The package CI dependency list
+also includes the CLI, TUI, process and database packages used by examples.
 
 ```sh
 fai fmt --check -C packages llm

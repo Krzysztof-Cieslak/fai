@@ -26,9 +26,11 @@ let request model = {
   outputSchema = None,
   parallelTools = true,
   providerOptions = LlmTypes.Defaults,
+  stopSequences = [],
   temperature = None,
   toolChoice = LlmTypes.Auto,
-  tools = []
+  tools = [],
+  topP = None
 }
 
 public instructions : String -> Request -> Request
@@ -44,6 +46,15 @@ let userText text request = user [LlmTypes.Text text] request
 
 public maxOutputTokens : Int -> Request -> Request
 let maxOutputTokens count request = { request with maxOutputTokens = count }
+
+public temperature : Float -> Request -> Request
+let temperature value request = { request with temperature = Some value }
+
+public topP : Float -> Request -> Request
+let topP value request = { request with topP = Some value }
+
+public stopSequences : List String -> Request -> Request
+let stopSequences values request = { request with stopSequences = values }
 
 public tools : List LlmTypes.ToolDefinition -> Request -> Request
 let tools definitions request = { request with tools = definitions }
@@ -138,6 +149,7 @@ let deliver head consume events state =
     | Err error -> Err { error with
       attempts = state.attempts,
       eventsDelivered = state.delivered + 1,
+      headers = head.headers,
       partial = Some (LlmStream.partial state.protocol),
       requestId = requestId head
     }
@@ -154,10 +166,10 @@ let step config consume head state event =
     | LlmTypes.OpenAI -> LlmOpenAI.reduce config.limits state.protocol event.data
     | LlmTypes.Anthropic -> LlmAnthropic.reduce config.limits state.protocol event.data
   match reduced with
-  | Err error -> Err { error with
+  | Err error -> Err { LlmStream.attach state.protocol error with
     attempts = state.attempts,
     eventsDelivered = state.delivered,
-    partial = Some (LlmStream.partial state.protocol),
+    headers = head.headers,
     requestId = requestId head
   }
   | Ok (protocol, events) -> deliver head consume events { state with

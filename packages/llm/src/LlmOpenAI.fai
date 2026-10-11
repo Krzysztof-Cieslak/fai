@@ -60,7 +60,12 @@ let choice value =
 
 public encode : LlmTypes.Limits -> LlmTypes.Request -> Result Json.Value LlmTypes.Error
 let encode limits request =
-  match LlmValidate.request LlmTypes.OpenAI limits request with
+  let validation =
+    if request.stopSequences <> [] then
+      Err (LlmTypes.error LlmTypes.UnsupportedFeature "Responses does not support stop sequences")
+    else
+      LlmValidate.request LlmTypes.OpenAI limits request
+  match validation with
   | Err error -> Err error
   | Ok _ ->
     let body = LlmJson.object [
@@ -92,6 +97,11 @@ let encode limits request =
       | None -> body
       | Some value ->
         LlmJson.set "temperature" (Result.withDefault Json.Null (JsonEncode.float value)) body
+    let body =
+      match request.topP with
+      | None -> body
+      | Some value ->
+        LlmJson.set "top_p" (Result.withDefault Json.Null (JsonEncode.float value)) body
     match request.providerOptions with
     | LlmTypes.AnthropicOptions _ ->
       Err (LlmTypes.error LlmTypes.UnsupportedFeature "Anthropic options cannot be sent to OpenAI")
@@ -258,6 +268,24 @@ let delta limits state value reasoning =
           texts = Dict.insert id (Dict.getOr "" id state.texts ++ text) state.texts
         }, [if reasoning then LlmTypes.ReasoningDelta id text else LlmTypes.TextDelta id text])
 
+sameDraft : LlmTypes.Response -> (Int * LlmStream.Draft) -> Bool
+let sameDraft response entry =
+  let (_, draft) = entry
+  List.any (fun call -> call.id = draft.id && call.name = draft.name) response.toolCalls
+
+sameText : LlmStream.State -> LlmTypes.Block -> Bool
+let sameText state block =
+  match block with
+  | LlmTypes.TextBlock key text ->
+    (match Dict.get key state.texts with
+    | Some observed -> observed = text
+    | None -> true)
+  | LlmTypes.RefusalBlock key text ->
+    (match Dict.get key state.texts with
+    | Some observed -> observed = text
+    | None -> true)
+  | _ -> true
+
 reduceEvent : LlmTypes.Limits -> LlmStream.State -> Json.Value -> Result (LlmStream.State * List LlmTypes.Event) LlmTypes.Error
 let reduceEvent limits state value =
   let kind = stringField "type" value
@@ -276,8 +304,10 @@ let reduceEvent limits state value =
     match LlmJson.get "item" value with
     | None -> Err (LlmStream.failure state LlmTypes.ProtocolError "missing output item")
     | Some item ->
-      if index < 0 || Dict.member index state.items || Dict.size state.items >= limits.maxBlocks then
+      if index < 0 || Dict.member index state.items then
         Err (LlmStream.failure state LlmTypes.ProtocolError "invalid or duplicate output index")
+      else if Dict.size state.items >= limits.maxBlocks then
+        Err (LlmStream.failure state LlmTypes.LimitExceeded "too many output items")
       else
         let state = { state with items = Dict.insert index item state.items }
         if stringField "type" item = "function_call" then
@@ -287,9 +317,15 @@ let reduceEvent limits state value =
             itemId = LlmJson.text "id" item,
             name = stringField "name" item
           }
-          Ok ({ state with
-            drafts = Dict.insert index draft state.drafts
-          }, [LlmTypes.ToolStarted draft.id draft.name])
+          if draft.id = "" || not (LlmValidate.toolName draft.name) || List.any (fun entry ->
+            draftId entry = draft.id) (Dict.toList state.drafts) then
+            Err (LlmStream.failure state LlmTypes.ProtocolError "invalid or duplicate tool call ID")
+          else if Dict.size state.drafts >= limits.maxToolCalls then
+            Err (LlmStream.failure state LlmTypes.LimitExceeded "too many tool calls")
+          else
+            Ok ({ state with
+              drafts = Dict.insert index draft state.drafts
+            }, [LlmTypes.ToolStarted draft.id draft.name])
         else
           Ok (state, [])
   else if kind = "response.content_part.added" || kind = "response.reasoning_summary_part.added" then
@@ -300,14 +336,27 @@ let reduceEvent limits state value =
       if Dict.size state.texts >= limits.maxBlocks then
         Err (LlmStream.failure state LlmTypes.LimitExceeded "too many content blocks")
       else
-        Ok ({ state with
-          open = Set.insert id state.open,
-          reasoning = if kind = "response.reasoning_summary_part.added" then
-            Set.insert id state.reasoning
+        let part = Option.withDefault Json.Null (LlmJson.get "part" value)
+        let text = Option.withDefault (stringField "refusal" part) (LlmJson.text "text" part)
+        match LlmStream.addBytes limits text state with
+        | Err error -> Err error
+        | Ok state ->
+          Ok ({ state with
+            open = Set.insert id state.open,
+            reasoning = if kind = "response.reasoning_summary_part.added" then
+              Set.insert id state.reasoning
+            else
+              state.reasoning,
+            texts = Dict.insert id text state.texts
+          }, if text = "" then
+            []
           else
-            state.reasoning,
-          texts = Dict.insert id "" state.texts
-        }, [])
+            [
+              if kind = "response.reasoning_summary_part.added" then
+                LlmTypes.ReasoningDelta id text
+              else
+                LlmTypes.TextDelta id text
+            ])
   else if kind = "response.output_text.delta" || kind = "response.refusal.delta" then
     delta limits state value false
   else if kind = "response.reasoning_summary_text.delta" then
@@ -320,8 +369,10 @@ let reduceEvent limits state value =
       match LlmJson.needText "delta" value with
       | Err error -> Err error
       | Ok text ->
-        if Bytes.length (Bytes.fromString text) > limits.maxToolArgumentBytes - Bytes.length (Bytes.fromString draft.arguments) || Set.member (Int.toString index) state.closed then
-          Err (LlmStream.failure state LlmTypes.LimitExceeded "tool arguments are closed or too large")
+        if Set.member (Int.toString index) state.closed then
+          Err (LlmStream.failure state LlmTypes.ProtocolError "tool arguments are closed")
+        else if Bytes.length (Bytes.fromString text) > limits.maxToolArgumentBytes - Bytes.length (Bytes.fromString draft.arguments) then
+          Err (LlmStream.failure state LlmTypes.LimitExceeded "tool arguments are too large")
         else
           match LlmStream.addBytes limits text state with
           | Err error -> Err error
@@ -338,13 +389,14 @@ let reduceEvent limits state value =
       if Set.member (Int.toString index) state.closed then
         Err (LlmStream.failure state LlmTypes.ProtocolError "tool completed twice")
       else
-        match LlmStream.call limits { draft with
-          arguments = Option.withDefault draft.arguments (LlmJson.text "arguments" value)
-        } with
+        let arguments = Option.withDefault draft.arguments (LlmJson.text "arguments" value)
+        let draft = { draft with arguments = arguments }
+        match LlmStream.call limits draft with
         | Err error -> Err error
         | Ok _ ->
           Ok ({ state with
-            closed = Set.insert (Int.toString index) state.closed
+            closed = Set.insert (Int.toString index) state.closed,
+            drafts = Dict.insert index draft state.drafts
           }, [LlmTypes.BlockCompleted draft.id])
   else if kind = "response.content_part.done" || kind = "response.reasoning_summary_part.done" then
     let id = key state value
@@ -364,6 +416,11 @@ let reduceEvent limits state value =
       | Ok response ->
         if response.id <> state.response.id || response.finish = LlmTypes.InProgress then
           Err (LlmStream.failure state LlmTypes.ProtocolError "invalid terminal response")
+        else if (match response.finish with
+        | LlmTypes.Incomplete _ -> false
+        | _ ->
+          not (Set.isEmpty state.open) || not (List.all (sameDraft response) (Dict.toList state.drafts)) || not (List.all (sameText state) response.blocks)) then
+          Err (LlmStream.failure state LlmTypes.ProtocolError "terminal response contradicts streamed content")
         else
           Ok ({ state with
             done = true,
@@ -371,6 +428,11 @@ let reduceEvent limits state value =
           }, [LlmTypes.UsageUpdated response.usage, LlmTypes.ResponseCompleted response])
   else
     Ok (state, [LlmTypes.ExtensionEvent kind value])
+
+draftId : (Int * LlmStream.Draft) -> String
+let draftId entry =
+  let (_, draft) = entry
+  draft.id
 
 public reduce : LlmTypes.Limits -> LlmStream.State -> String -> Result (LlmStream.State * List LlmTypes.Event) LlmTypes.Error
 let reduce limits state data =
@@ -387,4 +449,4 @@ let reduce limits state data =
           Ok state
       match staged with
       | Err error -> Err error
-      | Ok state -> reduceEvent limits state value
+      | Ok state -> Result.mapError (LlmStream.attach state) (reduceEvent limits state value)

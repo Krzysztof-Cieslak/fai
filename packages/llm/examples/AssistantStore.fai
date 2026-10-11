@@ -1,0 +1,110 @@
+module LlmAssistantStore
+
+public type Store = { host : SqliteHost.Sqlite, session : SqliteHost.Session }
+
+public type Loaded = { interrupted : Bool, request : Llm.Request }
+
+execute : Store -> Sql.Statement -> Result Unit String / { SqliteHost.Sqlite }
+let execute store statement =
+  Result.map (fun _ ->
+    ()) (Result.mapError (fun error ->
+    error.message) (store.host.execute store.session statement.text (Array.map native statement.parameters)))
+
+let native value =
+  match value with
+  | Sql.Text value -> SqliteHost.Text value
+  | Sql.Integer value -> SqliteHost.Integer value
+  | _ -> SqliteHost.Null
+
+public initialize : Store -> String -> Result Unit String / { SqliteHost.Sqlite }
+let initialize store name =
+  match execute store (Sql.text "create table if not exists llm_sessions (name text primary key, snapshot text not null, state text not null)") with
+  | Err error -> Err error
+  | Ok _ ->
+    match execute store (Sql.text "create table if not exists llm_tools (session text not null, id text not null, name text not null, state text not null, output text, primary key(session,id))") with
+    | Err error -> Err error
+    | Ok _ ->
+      execute store (Sql.statement "update llm_tools set state='interrupted' where session=? and state='started'" [|
+        Sql.Text name
+      |])
+
+let providerName provider = if provider = LlmTypes.OpenAI then "openai" else "anthropic"
+
+public snapshot : Llm.Config -> Llm.Request -> Result String Llm.Error
+let snapshot config request =
+  Result.map (fun wire ->
+    Json.toString (LlmJson.object [
+      ("version", LlmJson.integer 1),
+      ("provider", Json.String (providerName config.provider)),
+      ("model", Json.String request.model),
+      ("instructions", Json.String request.instructions),
+      ("wire", wire)
+    ])) (Llm.encode config request)
+
+public restore : Llm.Config -> Llm.Request -> String -> Result Llm.Request String
+let restore config initial snapshot =
+  match LlmJson.parse snapshot with
+  | Err error -> Err error.message
+  | Ok value ->
+    if LlmJson.count "version" value <> Some 1 || LlmJson.text "provider" value <> Some (providerName config.provider) || LlmJson.text "model" value <> Some initial.model then
+      Err "saved session has a different version, provider or model"
+    else
+      let wire = Option.withDefault Json.Null (LlmJson.get "wire" value)
+      match LlmJson.list (if config.provider = LlmTypes.OpenAI then
+        "input"
+      else
+        "messages") wire with
+      | None -> Err "saved session has no conversation"
+      | Some items -> Ok { initial with
+        history = List.map (LlmTypes.Native config.provider) items,
+        instructions = Option.withDefault initial.instructions (LlmJson.text "instructions" value)
+      }
+
+public load : Store -> String -> Llm.Config -> Llm.Request -> Result Loaded String / { SqliteHost.Sqlite }
+let load store name config initial =
+  match store.host.query store.session "select snapshot,state from llm_sessions where name=?" [|
+    SqliteHost.Text name
+  |] with
+  | Err error -> Err error.message
+  | Ok cursor ->
+    let row = store.host.next cursor
+    let closed = store.host.finish cursor
+    match row with
+    | Err error -> Err error.message
+    | Ok None -> Ok { interrupted = false, request = initial }
+    | Ok (Some values) ->
+      match (Array.get 0 values, Array.get 1 values) with
+      | (Some (SqliteHost.Text snapshot), Some (SqliteHost.Text state)) ->
+        Result.map (fun request -> {
+          interrupted = state <> "idle",
+          request = request
+        }) (restore config initial snapshot)
+      | _ -> Err "invalid saved session"
+
+public save : Store -> String -> Llm.Config -> Llm.Request -> String -> Result Unit String / { SqliteHost.Sqlite }
+let save store name config request state =
+  match snapshot config request with
+  | Err error -> Err error.message
+  | Ok snapshot ->
+    execute store (Sql.statement "insert into llm_sessions(name,snapshot,state) values(?,?,?) on conflict(name) do update set snapshot=excluded.snapshot,state=excluded.state" [|
+      Sql.Text name,
+      Sql.Text snapshot,
+      Sql.Text state
+    |])
+
+public mark : Store -> String -> String -> Result Unit String / { SqliteHost.Sqlite }
+let mark store name state =
+  execute store (Sql.statement "update llm_sessions set state=? where name=?" [|
+    Sql.Text state,
+    Sql.Text name
+  |])
+
+public tool : Store -> String -> LlmTypes.ToolCall -> String -> String -> Result Unit String / { SqliteHost.Sqlite }
+let tool store name call state output =
+  execute store (Sql.statement "insert into llm_tools(session,id,name,state,output) values(?,?,?,?,?) on conflict(session,id) do update set state=excluded.state,output=excluded.output" [|
+    Sql.Text name,
+    Sql.Text call.id,
+    Sql.Text call.name,
+    Sql.Text state,
+    Sql.Text output
+  |])

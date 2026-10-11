@@ -1,0 +1,154 @@
+module LlmAssistant
+
+public type R = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  env : Env,
+  fs : FileSystem,
+  net : Net,
+  process : ProcessHost.Process,
+  sqlite : SqliteHost.Sqlite,
+  terminal : TerminalHost.Terminal,
+  tls : Tls
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  env = stdEnv,
+  fs = stdFs,
+  net = stdNet,
+  process = ProcessHost.native,
+  sqlite = SqliteHost.native,
+  terminal = TerminalHost.native,
+  tls = stdTls
+}
+
+type Arguments = {
+  base : Option String,
+  database : String,
+  maxTokens : Int,
+  maxTurns : Int,
+  model : String,
+  processTimeout : Int,
+  prompt : Option String,
+  provider : String,
+  session : String,
+  timeout : Int,
+  toolBytes : Int,
+  workspace : String
+}
+
+parser : Args.Parser Arguments
+let parser =
+  Args.succeed (fun provider model database session prompt base turns tokens timeout bytes workspace processTimeout -> {
+    base = base,
+    database = database,
+    maxTokens = tokens,
+    maxTurns = turns,
+    model = model,
+    processTimeout = processTimeout,
+    prompt = prompt,
+    provider = provider,
+    session = session,
+    timeout = timeout,
+    toolBytes = bytes,
+    workspace = workspace
+  }) |> Args.andMap (Args.optionWithDefault "openai" Args.string (Args.named "provider" "openai or anthropic")) |> Args.andMap (Args.argument Args.string (Args.positional "MODEL" "Provider model identifier")) |> Args.andMap (Args.optionWithDefault "fai-assistant.sqlite" Args.string (Args.named "database" "SQLite history file")) |> Args.andMap (Args.optionWithDefault "default" Args.string (Args.named "session" "Conversation name")) |> Args.andMap (Args.option Args.string (Args.named "prompt" "Run one headless message")) |> Args.andMap (Args.option Args.string (Args.named "base-url" "Provider-compatible API base URL")) |> Args.andMap (Args.optionWithDefault 16 Args.int (Args.named "max-turns" "Maximum model turns per message")) |> Args.andMap (Args.optionWithDefault 4096 Args.int (Args.named "max-tokens" "Output token budget per model turn")) |> Args.andMap (Args.optionWithDefault 0 Args.int (Args.named "timeout-ms" "Overall model request timeout; zero disables")) |> Args.andMap (Args.optionWithDefault 65536 Args.int (Args.named "tool-bytes" "Maximum captured file/command bytes")) |> Args.andMap (Args.optionWithDefault "." Args.string (Args.named "workspace" "Tool working directory")) |> Args.andMap (Args.optionWithDefault 0 Args.int (Args.named "process-timeout-ms" "Command tool timeout; zero disables"))
+
+app : Args.Program Arguments
+let app =
+  Args.program (Args.described "fai-assistant" "A streaming, capability-based coding assistant") parser
+
+observe : Console -> LlmAssistantCore.Observation -> Unit / { Console }
+let observe console observation =
+  match observation with
+  | LlmAssistantCore.ModelEvent (LlmTypes.TextDelta _ text) -> console.write text
+  | LlmAssistantCore.ToolStarted name -> console.writeLine ("\n[tool " ++ name ++ "]")
+  | LlmAssistantCore.ToolFinished name output -> console.writeLine (String.take 4096 output)
+  | _ -> ()
+
+withStore : R -> Arguments -> LlmAssistantCore.Settings -> LlmAssistantStore.Store -> Result Unit String / { Clock, Concurrency, Console, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, TerminalHost.Terminal, Tls }
+let withStore env args settings store =
+  let gate = env.concurrency.channel 1
+  let seeded = env.concurrency.send gate ()
+  let initial =
+    Llm.request args.model |> Llm.maxOutputTokens args.maxTokens |> Llm.instructions "You are a coding assistant. Use the supplied file and command tools when needed. Explain the result concisely."
+  let services = {
+    clock = env.clock,
+    concurrency = env.concurrency,
+    fs = env.fs,
+    gate = gate,
+    net = env.net,
+    process = env.process,
+    store = store,
+    tls = env.tls
+  }
+  let result =
+    match LlmAssistantStore.initialize store args.session with
+    | Err error -> Err error
+    | Ok _ ->
+      match LlmAssistantStore.load store args.session settings.config initial with
+      | Err error -> Err error
+      | Ok loaded ->
+        match args.prompt with
+        | Some prompt ->
+          Result.map (fun _ ->
+            ()) (Result.mapError Llm.errorToString (LlmAssistantCore.run services settings loaded.request prompt (observe env.console)))
+        | None ->
+          LlmAssistantUI.run {
+            clock = env.clock,
+            concurrency = env.concurrency,
+            terminal = env.terminal
+          } services settings loaded
+  result
+
+run : R -> Arguments -> Unit / { Clock, Concurrency, Console, Env, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, TerminalHost.Terminal, Tls }
+let run env args =
+  let keyName = if args.provider = "anthropic" then "ANTHROPIC_API_KEY" else "OPENAI_API_KEY"
+  let key = Option.withDefault "" (env.env.get keyName)
+  if args.processTimeout < 0 then
+    env.console.writeLine "invalid process timeout"
+  else if args.provider <> "openai" && args.provider <> "anthropic" then
+    env.console.writeLine "unknown provider"
+  else if key = "" && args.base = None then
+    env.console.writeLine ("Set " ++ keyName)
+  else if args.maxTurns <= 0 || args.maxTokens <= 0 || args.timeout < 0 || args.toolBytes <= 0 || args.toolBytes > 16777216 then
+    env.console.writeLine "invalid token, turn, timeout or tool limit"
+  else
+    let config =
+      if args.provider = "anthropic" then LlmAnthropic.config key else LlmOpenAI.config key
+    let config = { config with
+      events = { config.events with
+        subscriptionTimeoutMs = if args.timeout = 0 then None else Some args.timeout
+      },
+      http = { config.http with baseUrl = Option.withDefault config.http.baseUrl args.base }
+    }
+    let settings = {
+      config = config,
+      maxTurns = args.maxTurns,
+      processOptions = { Process.defaults with
+        timeoutMs = if args.processTimeout = 0 then None else Some args.processTimeout
+      },
+      session = args.session,
+      toolBytes = args.toolBytes,
+      workspace = args.workspace
+    }
+    match env.sqlite.open args.database false 5000 with
+    | Err error -> env.console.writeLine error.message
+    | Ok session ->
+      let result = withStore env args settings { host = env.sqlite, session = session }
+      let closed = Wire.cleanup env.concurrency (fun _ -> env.sqlite.close session)
+      match result with
+      | Ok _ -> env.console.writeLine ""
+      | Err error -> env.console.writeLine error
+
+public main : R -> Unit / { Clock, Concurrency, Console, Env, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, TerminalHost.Terminal, Tls }
+let main env =
+  match Args.parse app (env.env.args ()) with
+  | Err error -> env.console.writeLine (Args.errorToString error)
+  | Ok (Args.Help text) -> env.console.write text
+  | Ok (Args.Version text) -> env.console.writeLine text
+  | Ok (Args.Parsed args) -> run env args

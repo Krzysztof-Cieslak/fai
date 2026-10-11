@@ -1,0 +1,35 @@
+module LlmLimitsSpec
+
+let request = Llm.request "fixture"
+example: LlmOpenAI.encode Llm.limits (request |> Llm.topP 1.1) |> Result.isErr
+example: LlmOpenAI.encode Llm.limits (request |> Llm.temperature (-0.1)) |> Result.isErr
+example: LlmAnthropic.encode Llm.limits (request |> Llm.temperature 1.5) |> Result.isErr
+example: LlmOpenAI.encode Llm.limits (request |> Llm.stopSequences ["stop"]) |> Result.isErr
+example: LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences ["stop"]) |> Result.isOk
+example: LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences [""]) |> Result.isErr
+example: LlmOpenAI.encode { Llm.limits with maxRequestBytes = 4 } request |> Result.isErr
+example: LlmOpenAI.encode Llm.limits (request |> Llm.user [
+  LlmMessage.imageBytes "image/png" Bytes.empty
+]) |> Result.isErr
+example: LlmOpenAI.encode Llm.limits (request |> Llm.user [
+  LlmMessage.imageUrl "file:///private/image.png"
+]) |> Result.isErr
+example: LlmOpenAI.encode { Llm.limits with
+  maxImageBytes = 1
+} (request |> Llm.user [LlmMessage.imageBytes "image/png" (Bytes.fromList [1, 2])]) |> Result.isErr
+example: LlmValidate.limits { Llm.limits with maxEvents = 0 } |> Result.isErr
+example: LlmReplay.fromChunks LlmTypes.OpenAI { Llm.limits with
+  maxToolCalls = 1
+} [Bytes.fromString (LlmFixtures.openai false)] |> Result.isErr
+example: LlmReplay.fromChunks LlmTypes.Anthropic { Llm.limits with
+  maxToolArgumentBytes = 1
+} [Bytes.fromString (LlmFixtures.anthropic false)] |> Result.isErr
+
+let prefix =
+  Bytes.fromString "data: {\"type\":\"response.created\",\"response\":{\"id\":\"partial\",\"model\":\"fixture\"}}\n\n"
+example: (match LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [prefix] with
+| Err error ->
+  (match error.partial with
+  | Some response -> response.id = "partial"
+  | None -> false)
+| Ok _ -> false)

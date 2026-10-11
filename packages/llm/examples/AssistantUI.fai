@@ -1,0 +1,235 @@
+module LlmAssistantUI
+
+public type UiRuntime = {
+  clock : Clock,
+  concurrency : Concurrency,
+  terminal : TerminalHost.Terminal
+}
+
+type Msg =
+  | Draft String
+  | Send
+  | Cancel
+  | Observed Int LlmAssistantCore.Observation
+  | Finished Int (Result Llm.Request Llm.Error)
+  | Resize Int
+  | Delivered
+  | ShowReasoning Bool
+
+type Model = {
+  busy : Bool,
+  document : TuiMarkdown.Document,
+  draft : String,
+  history : Llm.Request,
+  reasoning : String,
+  revision : Int,
+  showReasoning : Bool,
+  status : String,
+  text : String,
+  width : Int
+}
+
+let options width = {
+  ambiguousWide = false,
+  theme = TuiStyle.defaultTheme,
+  width = if width < 1 then 1 else width
+}
+
+append : String -> Model -> Model
+let append text model =
+  let all = model.text ++ text
+  if String.length all > 200000 then
+    let trimmed = String.drop (String.length all - 200000) all
+    { model with document = TuiMarkdown.fromString (options model.width) trimmed, text = trimmed }
+  else
+    { model with document = TuiMarkdown.append text model.document, text = all }
+
+observe : Concurrency -> Channel Msg -> Int -> LlmAssistantCore.Observation -> Unit / { Concurrency }
+let observe concurrency channel revision observation =
+  concurrency.send channel (Observed revision observation)
+
+execute : LlmAssistantCore.Services -> LlmAssistantCore.Settings -> Channel Msg -> Model -> String -> Unit -> Msg / { Clock, Concurrency, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, Tls }
+let execute env settings channel model prompt unit =
+  let result =
+    match LlmAssistantStore.load env.store settings.session settings.config model.history with
+    | Err error -> Err (LlmTypes.error LlmTypes.ConsumerError error)
+    | Ok loaded ->
+      LlmAssistantCore.run env settings loaded.request prompt (observe env.concurrency channel model.revision)
+  let sent = env.concurrency.send channel (Finished model.revision result)
+  Delivered
+
+update : LlmAssistantCore.Services -> LlmAssistantCore.Settings -> Channel Msg -> Msg -> Model -> (Model * TuiCmd.Cmd Msg { Clock, Concurrency, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, Tls })
+let update env settings channel message model =
+  match message with
+  | Draft text -> ({ model with draft = text }, TuiCmd.none)
+  | Send ->
+    if model.busy || String.trim model.draft = "" then
+      (model, TuiCmd.none)
+    else
+      let prompt = model.draft
+      let next = append ("\n**You:** " ++ prompt ++ "\n\n") { model with
+        busy = true,
+        draft = "",
+        reasoning = "",
+        revision = model.revision + 1,
+        status = "Generating"
+      }
+      (next, TuiCmd.latest "generation" (execute env settings channel next prompt))
+  | Cancel ->
+    if model.busy then
+      ({ model with
+        busy = false,
+        revision = model.revision + 1,
+        status = "Cancelled; interrupted work is not replayed"
+      }, TuiCmd.cancel "generation")
+    else
+      (model, TuiCmd.quit)
+  | Observed revision observation ->
+    if revision <> model.revision then
+      (model, TuiCmd.none)
+    else
+      let next =
+        match observation with
+        | LlmAssistantCore.ToolStarted name -> append ("\n*Tool: " ++ name ++ "*\n") model
+        | LlmAssistantCore.ToolFinished name result ->
+          append ("\n```\n" ++ String.take 4096 result ++ "\n```\n") model
+        | LlmAssistantCore.ModelEvent (LlmTypes.TextDelta _ text) -> append text model
+        | LlmAssistantCore.ModelEvent (LlmTypes.ReasoningDelta _ text) -> { model with
+          reasoning = String.take 4096 (model.reasoning ++ text),
+          status = "Reasoning"
+        }
+        | LlmAssistantCore.ModelEvent (LlmTypes.UsageUpdated usage) -> { model with
+          status = "Output tokens: " ++ (match usage.outputTokens with
+          | None -> "?"
+          | Some count -> Int.toString count)
+        }
+        | _ -> model
+      (next, TuiCmd.none)
+  | Finished revision result ->
+    if revision <> model.revision then
+      (model, TuiCmd.none)
+    else
+      match result with
+      | Ok history ->
+        ({ model with
+          busy = false,
+          history = history,
+          status = "Ready"
+        }, TuiCmd.focus (Ui.id "composer"))
+      | Err error ->
+        (append ("\n**Error:** " ++ error.message ++ "\n") { model with
+          busy = false,
+          status = "Failed"
+        }, TuiCmd.none)
+  | Resize width ->
+    ({ model with
+      document = TuiMarkdown.resize (options (width - 4)) model.document,
+      width = width - 4
+    }, TuiCmd.none)
+  | Delivered -> (model, TuiCmd.none)
+  | ShowReasoning shown -> ({ model with showReasoning = shown }, TuiCmd.none)
+
+view : TuiLayout.Context -> Model -> Ui.Element Msg
+let view context model = Ui.column [
+  Ui.padding 1,
+  Ui.gap 1,
+  Ui.width Ui.fill,
+  Ui.height Ui.fill
+] [
+  Ui.text [] "Fai coding assistant",
+  Ui.transcript (Ui.id "conversation") [
+    Ui.width Ui.fill,
+    Ui.height Ui.fill,
+    Ui.border
+  ] { follow = true, source = TuiMarkdown.source model.document },
+  Ui.disclosure (Ui.id "reasoning") [] {
+    expanded = model.showReasoning,
+    label = "Reasoning summary",
+    onToggle = ShowReasoning
+  } (Ui.text [Ui.height (Ui.cells 4)] model.reasoning),
+  Ui.editor (Ui.id "composer") [
+    Ui.width Ui.fill,
+    Ui.height (Ui.cells 5),
+    Ui.border,
+    Ui.maxLength 32768
+  ] {
+    label = "Message",
+    onBlur = None,
+    onChange = Draft,
+    onSubmit = Some Send,
+    value = model.draft
+  },
+  Ui.text [] (model.status ++ " · Enter: send · Shift+Enter: newline · Escape: cancel/quit")
+]
+
+receive : Concurrency -> Channel Msg -> Option (Msg * Channel Msg) / { Concurrency }
+let receive concurrency channel =
+  Option.map (fun message -> (message, channel)) (concurrency.recv channel)
+
+subscriptions : Concurrency -> Channel Msg -> Model -> TuiSub.Sub Msg { Concurrency }
+let subscriptions concurrency channel model =
+  TuiSub.stream "model-events" "1" (Stream.unfold (receive concurrency) channel) (fun error ->
+    Delivered)
+
+let event value =
+  match value with
+  | TerminalHost.Resize width _ -> Some (Resize width)
+  | TerminalHost.Key key -> if key.code = "Escape" then Some Cancel else None
+  | _ -> None
+
+let shownPart part =
+  match part with
+  | LlmTypes.Text text -> text
+  | LlmTypes.Image _ -> "[image]"
+
+let nativeText value =
+  String.join "" (List.map (fun block ->
+    Option.withDefault "" (LlmJson.text "text" block)) (Option.withDefault [] (LlmJson.list "content" value)))
+
+let shownItem item =
+  match item with
+  | LlmTypes.Message role parts ->
+    "\n**" ++ (if role = LlmTypes.User then
+      "You"
+    else
+      "Assistant") ++ ":** " ++ String.join "" (List.map shownPart parts) ++ "\n"
+  | LlmTypes.Native _ value ->
+    let text = nativeText value
+    if text = "" then
+      ""
+    else
+      "\n**" ++ Option.withDefault "Assistant" (LlmJson.text "role" value) ++ ":** " ++ text ++ "\n"
+  | LlmTypes.ToolOutput _ -> ""
+
+initial : LlmAssistantStore.Loaded -> TuiLayout.Context -> (Model * TuiCmd.Cmd Msg 'e)
+let initial loaded context =
+  let notice =
+    if loaded.interrupted then
+      "Previous work was interrupted. Send a new message to continue from the saved context.\n"
+    else
+      "Ready. Conversation context is saved in SQLite.\n"
+  let history = String.join "" (List.map shownItem loaded.request.history)
+  let text = notice ++ String.drop (String.length history - 200000) history
+  ({
+    busy = false,
+    document = TuiMarkdown.fromString (options (context.width - 4)) text,
+    draft = "",
+    history = loaded.request,
+    reasoning = "",
+    revision = 0,
+    showReasoning = false,
+    status = "Ready",
+    text = text,
+    width = context.width - 4
+  }, TuiCmd.focus (Ui.id "composer"))
+
+public run : UiRuntime -> LlmAssistantCore.Services -> LlmAssistantCore.Settings -> LlmAssistantStore.Loaded -> Result Unit String / { Clock, Concurrency, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, TerminalHost.Terminal, Tls }
+let run runtime env settings loaded =
+  let channel = runtime.concurrency.channel 64
+  let program = { Tui.program (initial loaded) (update env settings channel) view with
+    onEvent = event,
+    subscriptions = subscriptions runtime.concurrency channel
+  }
+  let result = Tui.run runtime Tui.defaults program
+  let closed = runtime.concurrency.close channel
+  Result.map (fun _ -> ()) (Result.mapError (fun error -> error.message) result)

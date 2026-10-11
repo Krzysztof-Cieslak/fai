@@ -117,6 +117,16 @@ let encode limits request =
       | None -> body
       | Some value ->
         LlmJson.set "temperature" (Result.withDefault Json.Null (JsonEncode.float value)) body
+    let body =
+      match request.topP with
+      | None -> body
+      | Some value ->
+        LlmJson.set "top_p" (Result.withDefault Json.Null (JsonEncode.float value)) body
+    let body =
+      if request.stopSequences = [] then
+        body
+      else
+        LlmJson.set "stop_sequences" (LlmJson.array (List.map Json.String request.stopSequences)) body
     match request.providerOptions with
     | LlmTypes.OpenAIOptions _ ->
       Err (LlmTypes.error LlmTypes.UnsupportedFeature "OpenAI options cannot be sent to Anthropic")
@@ -236,8 +246,10 @@ startBlock : LlmTypes.Limits -> LlmStream.State -> Int -> Json.Value -> Result (
 let startBlock limits state index block =
   let key = Int.toString index
   let kind = stringField "type" block
-  if index < 0 || Dict.member index state.items || Dict.size state.items >= limits.maxBlocks then
+  if index < 0 || Dict.member index state.items then
     Err (LlmStream.failure state LlmTypes.ProtocolError "invalid or duplicate content index")
+  else if Dict.size state.items >= limits.maxBlocks then
+    Err (LlmStream.failure state LlmTypes.LimitExceeded "too many content blocks")
   else
     let state = { state with
       items = Dict.insert index block state.items,
@@ -251,9 +263,15 @@ let startBlock limits state index block =
         itemId = None,
         name = stringField "name" block
       }
-      Ok ({ state with
-        drafts = Dict.insert index draft state.drafts
-      }, [LlmTypes.ToolStarted draft.id draft.name])
+      if draft.id = "" || not (LlmValidate.toolName draft.name) || List.any (fun entry ->
+        draftId entry = draft.id) (Dict.toList state.drafts) then
+        Err (LlmStream.failure state LlmTypes.ProtocolError "invalid or duplicate tool call ID")
+      else if Dict.size state.drafts >= limits.maxToolCalls then
+        Err (LlmStream.failure state LlmTypes.LimitExceeded "too many tool calls")
+      else
+        Ok ({ state with
+          drafts = Dict.insert index draft state.drafts
+        }, [LlmTypes.ToolStarted draft.id draft.name])
     else if kind = "text" || kind = "thinking" then
       let text = stringField (if kind = "text" then "text" else "thinking") block
       match LlmStream.addBytes limits text state with
@@ -397,10 +415,13 @@ let reduceEvent limits state value =
         match decode limits message with
         | Err error -> Err error
         | Ok response ->
-          Ok ({ state with
-            response = response,
-            started = true
-          }, [LlmTypes.Started response.id response.model])
+          if response.blocks <> [] || response.finish <> LlmTypes.InProgress then
+            Err (LlmStream.failure state LlmTypes.ProtocolError "message start must have empty, unfinished content")
+          else
+            Ok ({ state with
+              response = response,
+              started = true
+            }, [LlmTypes.Started response.id response.model])
   else if not state.started then
     Err (LlmStream.failure state LlmTypes.ProtocolError "event before message start")
   else if kind = "content_block_start" then
@@ -422,7 +443,8 @@ let reduceEvent limits state value =
         response = { state.response with finish = reason, usage = usage }
       }, [LlmTypes.UsageUpdated usage])
   else if kind = "message_stop" then
-    if not (Set.isEmpty state.open) || state.response.finish = LlmTypes.InProgress then
+    if not (Set.isEmpty state.open) || state.response.finish = LlmTypes.InProgress || not (List.all (fun index ->
+      Dict.member index state.items) (List.range 0 (Dict.size state.items))) then
       Err (LlmStream.failure state LlmTypes.ProtocolError "message stopped with unfinished blocks or no stop reason")
     else
       match readyResponse limits state with
@@ -433,6 +455,11 @@ let reduceEvent limits state value =
     Err (LlmStream.failure state LlmTypes.ProtocolError "event has no type")
   else
     Ok (state, [LlmTypes.ExtensionEvent kind value])
+
+draftId : (Int * LlmStream.Draft) -> String
+let draftId entry =
+  let (_, draft) = entry
+  draft.id
 
 public reduce : LlmTypes.Limits -> LlmStream.State -> String -> Result (LlmStream.State * List LlmTypes.Event) LlmTypes.Error
 let reduce limits state data =
@@ -449,4 +476,4 @@ let reduce limits state data =
           Ok state
       match staged with
       | Err error -> Err error
-      | Ok state -> reduceEvent limits state value
+      | Ok state -> Result.mapError (LlmStream.attach state) (reduceEvent limits state value)

@@ -46,6 +46,12 @@ let delta text = obj [
 
 let completed = obj [("type", str "response.completed"), ("response", final)]
 
+let partDone = obj [
+  ("type", str "response.content_part.done"),
+  ("output_index", num 0),
+  ("content_index", num 0)
+]
+
 step : Result LlmStream.State LlmTypes.Error -> Json.Value -> Result LlmStream.State LlmTypes.Error
 let step result event =
   match result with
@@ -67,10 +73,13 @@ example: (run [
   part,
   delta "hel",
   delta "lo",
+  partDone,
   completed
 ] |> Result.map (fun state -> Llm.text state.response)) = Ok "hello"
 example: run [created, delta "out of order"] |> Result.isErr
 example: run [created, added, added] |> Result.isErr
+example: run [created, added, part, delta "wrong", partDone, completed] |> Result.isErr
+example: run [created, added, part, delta "hello", completed] |> Result.isErr
 example: run [created, completed, completed] |> Result.isErr
 example: run [obj []] |> Result.isErr
 example: LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) "{broken" |> Result.isErr

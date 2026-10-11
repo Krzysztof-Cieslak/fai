@@ -46,9 +46,11 @@ public type Request = {
   outputSchema : Option Json.Value,
   parallelTools : Bool,
   providerOptions : ProviderOptions,
+  stopSequences : List String,
   temperature : Option Float,
   toolChoice : ToolChoice,
-  tools : List ToolDefinition
+  tools : List ToolDefinition,
+  topP : Option Float
 }
 
 public type Usage = {
