@@ -2,11 +2,11 @@
 
 Three durable issues report the current validated checkpoint:
 
-- **Perceus memory guarantees and allocation evidence:** source-identical Fai
+- **[Perceus memory guarantees and allocation evidence](https://github.com/Krzysztof-Cieslak/fai/issues/745):** source-identical Fai
   controls, reference-count/space guards, live objects and allocator backing.
-- **Native process memory:** isolated Fai/Rust/OCaml executables, raw peak RSS,
+- **[Native process memory](https://github.com/Krzysztof-Cieslak/fai/issues/746):** isolated Fai/Rust/OCaml executables, raw peak RSS,
   repetition counts and same-executable floors.
-- **Native runtime:** warm AOT kernel comparisons, application observations,
+- **[Native runtime](https://github.com/Krzysztof-Cieslak/fai/issues/747):** warm AOT kernel comparisons, application observations,
   and separate end-to-end medians.
 
 The issue bodies contain one current snapshot. Previous snapshots live in
