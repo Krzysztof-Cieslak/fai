@@ -4,11 +4,11 @@ let content = String.join "" (Array.toList (Array.repeat 20000 "hé\n"))
 
 let handler request = Ok (Http.textResponse 200 content)
 
-save : Runtime -> String -> HttpClient.Response (Stream Bytes { Concurrency, Net, Tls }) -> Result Unit HttpClient.Error / { Concurrency, FileSystem, Net, Tls }
+save : Runtime -> Path -> HttpClient.Response (Stream Bytes { Concurrency, Net, Tls }) -> Result Unit HttpClient.Error / { Concurrency, FileSystem, Net, Tls }
 let save r path response =
   Result.mapError HttpClient.ConsumerFailure (Stream.toFile r path response.body)
 
-session : Runtime -> String -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, FileSystem, Net, Tls }
+session : Runtime -> Path -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, FileSystem, Net, Tls }
 let session r path listener nursery =
   let server = r.concurrency.spawn nursery (fun _ -> Http.serveListener r listener handler)
   let cfg =
@@ -29,7 +29,10 @@ public main : Runtime -> Unit / { Clock, Concurrency, Console, Env, FileSystem, 
 let main r =
   match r.env.args () with
   | path :: [] ->
-    match r.net.listen 0 with
-    | Err error -> r.console.writeLine error
-    | Ok listener -> r.concurrency.scope (session r path listener)
+    match Path.fromString path with
+    | Err error -> r.console.writeLine (Path.errorToString error)
+    | Ok path ->
+      match r.net.listen 0 with
+      | Err error -> r.console.writeLine error
+      | Ok listener -> r.concurrency.scope (session r path listener)
   | _ -> r.console.writeError "usage: DownloadCheck OUTPUT_FILE\n"

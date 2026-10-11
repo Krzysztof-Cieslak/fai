@@ -1,0 +1,37 @@
+module File
+
+/// Scope a reader. Callback and close failures remain distinguishable, and cleanup
+/// runs under sticky cancellation. Retaining an alias does not extend the scope.
+public withReader : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> (Reader -> Result 'a 'error / 'e) -> Result 'a (FileSystem.ScopeError 'error) / { Concurrency, FileSystem | 'e }
+let withReader env path work =
+  match env.fs.openRead path with
+  | Err error -> Err (FileSystem.OpenError error)
+  | Ok reader ->
+    let result = work reader
+    let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeReader reader)
+    FileSystem.scopeResult result closed
+
+/// Scope a writer with an explicit creation policy and observable final flush.
+public withWriter : { concurrency : Concurrency, fs : FileSystem | _ } -> FileSystem.WriteMode -> Path -> (Writer -> Result 'a 'error / 'e) -> Result 'a (FileSystem.ScopeError 'error) / { Concurrency, FileSystem | 'e }
+let withWriter env mode path work =
+  match env.fs.openWriter path mode with
+  | Err error -> Err (FileSystem.OpenError error)
+  | Ok writer ->
+    let result = work writer
+    let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeWriter writer)
+    FileSystem.scopeResult result closed
+
+/// Read binary contents with an explicit nonnegative byte limit.
+public readBytes : FileSystem -> Int -> Path -> Result Bytes FileSystem.Error / { FileSystem }
+let readBytes fs limit path = fs.readBytes path limit
+
+/// Read bounded UTF-8 text, returning InvalidEncoding for binary contents.
+public readText : FileSystem -> Int -> Path -> Result String FileSystem.Error / { FileSystem }
+let readText fs limit path =
+  match fs.readBytes path limit with
+  | Err error -> Err error
+  | Ok bytes ->
+    match Bytes.toString bytes with
+    | Some text -> Ok text
+    | None ->
+      Err (FileSystem.error FileSystem.InvalidEncoding "readText" (Some path) "file is not UTF-8")

@@ -1172,6 +1172,14 @@ spelling. Normalization is lexical, preserves Windows verbatim paths, and does
 not resolve symbolic links. Resolving relative paths requires an explicit
 absolute base; Windows drive-relative children are rejected.
 
+Filesystem operations take `Path` and return `FileSystem.Error`, including kind,
+operation, source/destination paths and a native code. Binary reads have explicit
+byte limits; UTF-8 decoding errors are distinct. Explicit close expires all file
+handle aliases and is idempotent; writer flush failure still closes the handle.
+`File.withReader`/`withWriter` mask cancellation for cleanup and preserve callback
+and close failures. Stream file adapters render filesystem errors into their
+String error channel; file sinks require Concurrency for reliable scoped cleanup.
+
 ```
 source (.fai)
   → lex                 (fai-syntax)   tokens + spans

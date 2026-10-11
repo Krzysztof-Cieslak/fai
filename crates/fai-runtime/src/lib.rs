@@ -4794,59 +4794,6 @@ fn ok_string_pair(ok: bool, payload: Value) -> Value {
     unsafe { fai_make_data(0, 2, fields.as_ptr()) }
 }
 
-/// Reads a file's contents, yielding the text or an error message — the OS call
-/// behind `FileSystem.readFile`, returning a plain Rust value so it can run on the
-/// blocking pool without touching the Fai heap.
-fn read_file_os(path: &str) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|e| e.to_string())
-}
-
-/// Writes `contents` to a file, yielding `()` or an error message — the OS call
-/// behind `FileSystem.writeFile` (see [`read_file_os`]).
-fn write_file_os(path: &str, contents: &str) -> Result<(), String> {
-    std::fs::write(path, contents.as_bytes()).map_err(|e| e.to_string())
-}
-
-/// `FileSystem.readFile`: reads `path`, returning `(true, contents)` or
-/// `(false, error message)`. Consumes `path`. Inside a task the blocking read runs
-/// on the blocking pool while the task parks, so it never stalls a scheduler
-/// worker; outside any task (a program without concurrency) it runs inline.
-#[unsafe(no_mangle)]
-pub extern "C" fn fai_file_read(path: Value) -> Value {
-    // SAFETY: `path` is a boxed `String`.
-    let p = unsafe { string_str(path) }.to_owned();
-    let outcome = if scheduler::in_task() {
-        scheduler::run_blocking(Box::new(move || read_file_os(&p)))
-    } else {
-        read_file_os(&p)
-    };
-    fai_drop(path);
-    match outcome {
-        Ok(contents) => ok_string_pair(true, make_string(contents.as_bytes())),
-        Err(e) => ok_string_pair(false, make_string(e.as_bytes())),
-    }
-}
-
-/// `FileSystem.writeFile`: writes `contents` to `path`, returning `(true, "")` or
-/// `(false, error message)`. Consumes both arguments. Offloaded to the blocking
-/// pool inside a task, run inline otherwise (see [`fai_file_read`]).
-#[unsafe(no_mangle)]
-pub extern "C" fn fai_file_write(path: Value, contents: Value) -> Value {
-    // SAFETY: both are boxed `String`s.
-    let (p, c) = unsafe { (string_str(path).to_owned(), string_str(contents).to_owned()) };
-    let outcome = if scheduler::in_task() {
-        scheduler::run_blocking(Box::new(move || write_file_os(&p, &c)))
-    } else {
-        write_file_os(&p, &c)
-    };
-    fai_drop(path);
-    fai_drop(contents);
-    match outcome {
-        Ok(()) => ok_string_pair(true, make_string(b"")),
-        Err(e) => ok_string_pair(false, make_string(e.as_bytes())),
-    }
-}
-
 /// `Env.get`: looks up environment variable `name`, returning `(true, value)` or
 /// `(false, "")`. Consumes `name`.
 #[unsafe(no_mangle)]
@@ -5309,8 +5256,10 @@ pub use reactor::{
 // re-exported at the crate root so generated code and the JIT symbol registry
 // reach them as `fai_*` like every other runtime primitive.
 pub use io::{
-    fai_file_close_reader, fai_file_close_writer, fai_file_open_append, fai_file_open_read,
-    fai_file_open_write, fai_file_read_chunk, fai_file_write_chunk,
+    fai_file_close_reader, fai_file_close_writer, fai_file_flush, fai_file_open_append,
+    fai_file_open_read, fai_file_open_write, fai_file_open_writer, fai_file_read,
+    fai_file_read_bytes, fai_file_read_chunk, fai_file_seek, fai_file_sync, fai_file_write,
+    fai_file_write_bytes, fai_file_write_chunk,
 };
 
 // The TLS engine's C-ABI entry points (the `Tls` capability), re-exported at the

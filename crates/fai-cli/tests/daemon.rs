@@ -880,7 +880,7 @@ fn a_mid_run_daemon_disconnect_does_not_repeat_side_effects() {
     let counter = daemon.workspace.join("count.txt");
     let path = serde_json::to_string(counter.to_str().unwrap()).unwrap();
     let source = format!(
-        "module Main\npublic main : Runtime -> Unit / {{ Clock, Console, FileSystem }}\nlet main r =\n  let previous = Result.withDefault \"\" (r.fs.readFile {path})\n  let written = r.fs.writeFile {path} (previous ++ \"x\")\n  let printed = r.console.writeLine \"READY\"\n  r.clock.sleep 500\n"
+        "module Main\npublic main : Runtime -> Unit / {{ Clock, Console, FileSystem }}\nlet main r =\n  let path = Result.withDefault Path.empty (Path.fromString {path})\n  let previous = Result.withDefault \"\" (r.fs.readFile path)\n  let written = r.fs.writeFile path (previous ++ \"x\")\n  let printed = r.console.writeLine \"READY\"\n  r.clock.sleep 500\n"
     );
     std::fs::write(daemon.workspace.join("Main.fai"), source).unwrap();
     let mut client = KillOnDrop(

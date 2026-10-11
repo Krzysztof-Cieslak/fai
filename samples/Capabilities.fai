@@ -7,11 +7,14 @@ module Capabilities
 // reveals its reach and it accepts any larger runtime.
 // Needs only a file system and a console; the `FileSystem` operations return a
 // `Result`, so failure is honest rather than hidden.
-public save : { console : Console, fs : FileSystem | _ } -> String -> String -> Unit / { Console, FileSystem }
+public save : { console : Console, fs : FileSystem | _ } -> Path -> String -> Unit / { Console, FileSystem }
 let save env path note =
   match env.fs.writeFile path note with
-  | Err message -> env.console.writeLine message
+  | Err error -> env.console.writeLine (FileSystem.errorToString error)
   | Ok unit -> env.console.writeLine ("saved: " ++ note)
 
 public main : Runtime -> Unit / { Console, FileSystem }
-let main runtime = save runtime "/tmp/fai-note.txt" "hello"
+let main runtime =
+  match Path.fromString "/tmp/fai-note.txt" with
+  | Err error -> runtime.console.writeLine (Path.errorToString error)
+  | Ok path -> save runtime path "hello"

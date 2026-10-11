@@ -65,8 +65,9 @@ let check env directory python database listener nursery =
     workspace = directory
   }
   let initialized = LlmAssistantStore.initialize store "checks"
-  let a = env.fs.writeFile (directory ++ "/a") "fixture-a"
-  let b = env.fs.writeFile (directory ++ "/b") "fixture-b"
+  let native name = Result.withDefault Path.empty (Path.fromString (directory ++ "/" ++ name))
+  let a = env.fs.writeFile (native "a") "fixture-a"
+  let b = env.fs.writeFile (native "b") "fixture-b"
   let result =
     LlmAssistantCore.run services settings (Llm.request "fixture") "read files" (fun _ -> ())
   let loaded = LlmAssistantStore.load store "checks" config (Llm.request "fixture")
@@ -83,7 +84,7 @@ let check env directory python database listener nursery =
       ("path", Json.String "written"),
       ("text", Json.String "from-tool")
     ]))
-  let read = env.fs.readFile (directory ++ "/written")
+  let read = env.fs.readFile (native "written")
   let ran =
     LlmTool.execute tools (toolCall "run_command" (LlmJson.object [
       ("executable", Json.String python),

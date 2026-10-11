@@ -479,6 +479,7 @@ fn tasks_do_file_io_concurrently() {
 
 doFile : {{ fs : FileSystem | _ }} -> String -> Int / {{ FileSystem }}
 let doFile env path =
+  let path = Result.withDefault Path.empty (Path.fromString path)
   match env.fs.writeFile path "payload" with
   | Err e -> 0 - 1
   | Ok w ->

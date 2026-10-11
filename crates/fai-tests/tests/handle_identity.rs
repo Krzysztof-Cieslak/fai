@@ -89,7 +89,7 @@ fn file_readers_and_writers_keep_their_identity() {
     check(
         "FileSystem",
         &format!(
-            "match (r.fs.openRead {path_text:?}, r.fs.openRead {path_text:?}, r.fs.openAppend {path_text:?}) with\n| (Ok a, Ok b, Ok writer) -> same a a && distinct a b && same writer writer\n| _ -> false"
+            "let path = Result.withDefault Path.empty (Path.fromString {path_text:?})\nmatch (r.fs.openRead path, r.fs.openRead path, r.fs.openAppend path) with\n| (Ok a, Ok b, Ok writer) -> same a a && distinct a b && same writer writer\n| _ -> false"
         ),
         "",
     );

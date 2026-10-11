@@ -525,11 +525,11 @@ fn console_write_line_rejects_a_non_string() {
 }
 
 #[test]
-fn file_read_rejects_a_non_string_path() {
+fn file_read_rejects_a_non_path_value() {
     let src = indoc! {r#"
         module M
 
-        public probe : Runtime -> Result String String
+        public probe : Runtime -> Result String FileSystem.Error / { FileSystem }
         let probe runtime = runtime.fs.readFile 5
     "#};
     let (db, f) = db_with_std(&[("M.fai", src)]);

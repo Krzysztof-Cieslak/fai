@@ -1620,8 +1620,8 @@ fn all_capabilities_compose_in_one_program() {
         let main runtime =
           let t = runtime.clock.now ()
           let n = runtime.random.nextInt 1
-          match runtime.fs.writeFile "{path}" "x" with
-          | Err e -> runtime.console.writeLine e
+          match runtime.fs.writeFile (Result.withDefault Path.empty (Path.fromString "{path}")) "x" with
+          | Err e -> runtime.console.writeLine (FileSystem.errorToString e)
           | Ok u ->
             match runtime.env.get "FAI_DEFINITELY_UNSET_E2E" with
             | Some v -> runtime.console.writeLine v
@@ -1641,11 +1641,12 @@ fn file_system_capability_round_trips() {
 
         public main : Runtime -> Unit / {{ Console, FileSystem }}
         let main runtime =
-          match runtime.fs.writeFile "{path}" "persisted" with
-          | Err e -> runtime.console.writeLine e
+          let path = Result.withDefault Path.empty (Path.fromString "{path}")
+          match runtime.fs.writeFile path "persisted" with
+          | Err e -> runtime.console.writeLine (FileSystem.errorToString e)
           | Ok u ->
-            match runtime.fs.readFile "{path}" with
-            | Err e -> runtime.console.writeLine e
+            match runtime.fs.readFile path with
+            | Err e -> runtime.console.writeLine (FileSystem.errorToString e)
             | Ok contents -> runtime.console.writeLine contents
     "#};
     let (out, code) = build_and_run(&src);
@@ -1714,7 +1715,7 @@ fn progressive_file_write_then_read_round_trips() {
     let src = formatdoc! {r#"
         module Main
 
-        writeAll : {{ fs : FileSystem | _ }} -> String -> Result Unit String / {{ FileSystem }}
+        writeAll : {{ fs : FileSystem | _ }} -> Path -> Result Unit FileSystem.Error / {{ FileSystem }}
         let writeAll env path =
           match env.fs.openWrite path with
           | Err e -> Err e
@@ -1729,7 +1730,7 @@ fn progressive_file_write_then_read_round_trips() {
         readAll : {{ fs : FileSystem | _ }} -> Reader -> String -> Result String String / {{ FileSystem }}
         let readAll env r acc =
           match env.fs.readChunk r 4 with
-          | Err e -> Err e
+          | Err e -> Err (FileSystem.errorToString e)
           | Ok chunk ->
             if Bytes.length chunk = 0 then Ok acc
             else
@@ -1739,12 +1740,12 @@ fn progressive_file_write_then_read_round_trips() {
 
         public main : Runtime -> Unit / {{ Console, FileSystem }}
         let main runtime =
-          let path = "{path}"
+          let path = Result.withDefault Path.empty (Path.fromString "{path}")
           match writeAll runtime path with
-          | Err e -> runtime.console.writeLine ("write failed: " ++ e)
+          | Err e -> runtime.console.writeLine ("write failed: " ++ FileSystem.errorToString e)
           | Ok u ->
             match runtime.fs.openRead path with
-            | Err e -> runtime.console.writeLine ("open failed: " ++ e)
+            | Err e -> runtime.console.writeLine ("open failed: " ++ FileSystem.errorToString e)
             | Ok r ->
               match readAll runtime r "" with
               | Err e -> runtime.console.writeLine ("read failed: " ++ e)
@@ -1803,8 +1804,8 @@ fn stream_lines_from_file_builds_and_runs() {
 
         public main : Runtime -> Unit / {{ Console, FileSystem }}
         let main runtime =
-          match runtime.fs.openRead "{path}" with
-          | Err e -> runtime.console.writeLine ("open failed: " ++ e)
+          match runtime.fs.openRead (Result.withDefault Path.empty (Path.fromString "{path}")) with
+          | Err e -> runtime.console.writeLine ("open failed: " ++ FileSystem.errorToString e)
           | Ok r ->
             match Stream.fold (fun acc b -> acc + Bytes.length b) 0 (bytesOf runtime r) with
             | Err e -> runtime.console.writeLine ("read failed: " ++ e)
@@ -1830,7 +1831,7 @@ fn file_lines_grep_pipeline_builds_and_runs() {
         public main : Runtime -> Unit / {{ Console, FileSystem }}
         let main runtime =
           let matches =
-            Stream.fileLines runtime "{path}"
+            Stream.fileLines runtime (Result.withDefault Path.empty (Path.fromString "{path}"))
               |> Stream.filter (fun line -> String.contains line "e")
               |> Stream.toStdoutLines runtime
           match matches with

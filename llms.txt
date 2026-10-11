@@ -649,16 +649,23 @@ interface Random =
   nextInt : Int -> Int / { Random }
 
 interface FileSystem =
-  readFile : String -> Result String String / { FileSystem }
-  writeFile : String -> String -> Result Unit String / { FileSystem }
+  readFile : Path -> Result String FileSystem.Error / { FileSystem }
+  writeFile : Path -> String -> Result Unit FileSystem.Error / { FileSystem }
+  readBytes : Path -> Int -> Result Bytes FileSystem.Error / { FileSystem }
+  writeBytes : Path -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
   // Progressive (chunked) handle I/O; `Reader`/`Writer` are opaque handles.
-  openRead : String -> Result Reader String / { FileSystem }
-  openWrite : String -> Result Writer String / { FileSystem }     // create/truncate
-  openAppend : String -> Result Writer String / { FileSystem }
-  readChunk : Reader -> Int -> Result Bytes String / { FileSystem }  // empty Bytes = EOF
-  writeChunk : Writer -> Bytes -> Result Unit String / { FileSystem }
-  closeReader : Reader -> Unit / { FileSystem }
-  closeWriter : Writer -> Result Unit String / { FileSystem }     // flush + close
+  openRead : Path -> Result Reader FileSystem.Error / { FileSystem }
+  openWrite : Path -> Result Writer FileSystem.Error / { FileSystem } // create/truncate
+  openAppend : Path -> Result Writer FileSystem.Error / { FileSystem }
+  openWriter : Path -> FileSystem.WriteMode -> Result Writer FileSystem.Error / { FileSystem }
+  readChunk : Reader -> Int -> Result Bytes FileSystem.Error / { FileSystem } // positive count; empty = EOF
+  writeChunk : Writer -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
+  closeReader : Reader -> Result Unit FileSystem.Error / { FileSystem }
+  closeWriter : Writer -> Result Unit FileSystem.Error / { FileSystem } // flush + close
+  flushWriter : Writer -> Result Unit FileSystem.Error / { FileSystem }
+  syncWriter : Writer -> Bool -> Result Unit FileSystem.Error / { FileSystem }
+  seekReader : Reader -> Int -> Result Int FileSystem.Error / { FileSystem }
+  seekWriter : Writer -> Int -> Result Int FileSystem.Error / { FileSystem }
 
 interface Env =
   args : Unit -> List String / { Env }
@@ -712,14 +719,17 @@ let shout s = String.toUpper s ++ "!"
 `Runtime` is accepted anywhere a smaller open record is expected:
 
 ```fai
-public save : { console : Console, fs : FileSystem | _ } -> String -> String -> Unit / { Console, FileSystem }
+public save : { console : Console, fs : FileSystem | _ } -> Path -> String -> Unit / { Console, FileSystem }
 let save env path note =
   match env.fs.writeFile path note with
-  | Err message -> env.console.writeLine message
+  | Err error -> env.console.writeLine (FileSystem.errorToString error)
   | Ok unit -> env.console.writeLine ("saved: " ++ note)
 
 public main : Runtime -> Unit / { Console, FileSystem }
-let main runtime = save runtime "/tmp/note.txt" "hello"
+let main runtime =
+  match Path.fromString "/tmp/note.txt" with
+  | Err error -> runtime.console.writeLine (Path.errorToString error)
+  | Ok path -> save runtime path "hello"
 ```
 
 Key facts:
@@ -1126,6 +1136,21 @@ forall xs: mirror (mirror xs) = xs
 ---
 
 ## 13. Standard library reference
+
+### FileSystem and File — native file I/O
+
+`FileSystem.Error` carries `kind`, `operation`, `path`, `destination`, `nativeCode`,
+and `message`; use `FileSystem.errorToString` at text-only boundaries.
+`WriteMode` is `CreateNew`, `Truncate`, `Append`, or `Existing`. Explicit close is
+idempotent and expires every alias. Writer close flushes and remains closed even
+on a flush error. Positive read sizes return up to that many bytes (native chunks
+are capped at 64 KiB); zero/negative sizes return InvalidArgument.
+`File.withReader env path work` and `File.withWriter env mode path work` require
+`fs` and `concurrency`; cleanup runs under cancellation and `ScopeError` preserves
+both callback and close failures. `File.readBytes fs limit path` and
+`File.readText fs limit path` use explicit byte limits. Existing Stream file
+adapters take Path and render errors into their String channel; file sinks also
+require Concurrency for cleanup.
 
 ### Path — lossless native paths
 
