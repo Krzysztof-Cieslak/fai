@@ -59,6 +59,14 @@ Changes to workload algorithms, data construction, or sharing require a new
 contract version and matching structural/answer checks. Current artifact content
 identities use BLAKE3; historical SHA-256 manifests retain their original scheme.
 
+Generated tracker bodies give **Matched kernels** and **Application comparisons**
+independent sections and tables. Runtime kernel summaries and rankings cover only
+qualified kernels; applications have their own absolute warm and end-to-end
+timings. Each memory category has its own ratios, averages, p90, coverage,
+post-workload residency and input axes. The reports do not blend their ratios
+into an all-case average. The application label records comparison scope; claims
+of idiomatic language usage require reviewing the individual source choices.
+
 ### Source-matched workload contracts
 
 The main suite uses the following contracts. `catalog.json` retains their versions,
@@ -527,8 +535,8 @@ least five observations per side. Application comparisons retain their class,
 and each language's floor/peak percentage is shown without suppressing ratios.
 An unavailable third peer does not suppress a valid pair. Every ratio remains a
 **process-footprint** comparison. Reports include arithmetic/geometric means and
-nearest-rank p90 of unrounded case ratios, with paired coverage counts and
-separate matched-kernel/application breakdowns. Each input/repetition case has
+nearest-rank p90 of unrounded case ratios, with paired coverage counts in
+independent matched-kernel and application sections. Each input/repetition case has
 equal weight. These describe this process-footprint matrix rather than counting
 "compiler memory wins". Missing RSS
 observations and wrong answers fail the measurement instead of becoming zeros.
