@@ -1863,6 +1863,9 @@ thinking signatures are retained. Truncated tool arguments remain partial data.
 Registries combine explicitly; `definitions` supplies wire data, and `execute`
 validates and runs one complete call. `generateStructured` returns a typed value
 with its response; `decodeStructured` performs the same final decoding purely.
+Retries are disabled by default; configured retries cover only selected HTTP
+rejections before event delivery. One optional deadline spans every attempt and
+callback. Failures retain partial response state and native request metadata.
 
 Including `packages/process/src` supplies `Process` and `ProcessText`. Commands
 are pure descriptions (`command`, `arguments`, `workingDirectory`, environment

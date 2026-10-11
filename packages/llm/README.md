@@ -66,6 +66,26 @@ turns and incomplete answers remain distinguishable in the failure's response;
 only complete answers are parsed as JSON. `LlmSchema.object0` and `andMap` build
 larger records while retaining a single wire schema and decoder.
 
+## Lifecycle and policy
+
+`LlmConfig.Config` includes the HTTP pool settings, SSE connection/read-idle/overall
+deadlines, decoding limits and retry policy. Defaults use a 30-second connection
+deadline, 120-second read-idle deadline, no overall deadline and no retries.
+Individual SSE lines/events allow 32 MiB so terminal snapshots can carry a full
+response; retained response data defaults to 16 MiB, arguments to 1 MiB per call,
+64 tools/calls and 256 content blocks. All these limits are configurable.
+
+Opt-in retries apply only to selected rejected HTTP statuses before any generation
+event was exposed. Transport ambiguity, partial streams and consumer failures are
+not automatically replayed. Backoff is exponential and bounded; Retry-After can
+extend it. One overall deadline covers every attempt, callback and delay. Attempts
+and exposed-event counts remain available in responses/errors. Cancellation stays
+distinct from deadlines, and the last partial response survives worker cleanup.
+
+`LlmPolicy.delay` is the pure policy entry point. `FailureChecks.fai` exercises
+status bodies, retries, premature EOF, in-band errors, early stop, read-idle and
+overall deadlines against a local server.
+
 ```sh
 fai fmt --check -C packages llm
 fai check -C packages llm

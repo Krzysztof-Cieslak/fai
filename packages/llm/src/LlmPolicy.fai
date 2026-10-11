@@ -1,0 +1,28 @@
+module LlmPolicy
+
+let backoff count delay maximum =
+  if count <= 0 || delay = 0 || delay >= maximum then
+    if delay > maximum then maximum else delay
+  else if delay > maximum - delay then maximum else backoff (count - 1) (delay + delay) maximum
+
+/// Retry only rejected HTTP requests whose generation events were never exposed.
+/// Server Retry-After is honored beyond the exponential-backoff cap.
+public delay : LlmConfig.Config -> Int -> Int -> LlmTypes.Error -> Option Int
+let delay config nowSeconds retries error =
+  let rejected =
+    match error.http with
+    | Some (HttpClient.EventStatus _) -> true
+    | _ -> false
+  let transient =
+    match error.status with
+    | Some status -> List.member status [408, 429, 500, 502, 503, 504, 529]
+    | None -> false
+  if config.retryCount < 0 || config.retryBaseMs < 0 || config.retryMaxMs < config.retryBaseMs || retries < 0 || not rejected || not transient || error.eventsDelivered > 0 || retries >= config.retryCount then
+    None
+  else
+    let base = backoff retries config.retryBaseMs config.retryMaxMs
+    let hint =
+      match Headers.get "Retry-After" error.headers with
+      | None -> 0
+      | Some text -> Option.withDefault 0 (HttpClientPolicy.retryAfter nowSeconds text)
+    Some (if hint > base then hint else base)
