@@ -71,6 +71,18 @@ let concatLoops n chunks total =
     concatLoops (n - 1) chunks (total + List.sum flat + List.length flat)
 public concatLoop : Int -> Int
 let concatLoop n = concatLoops n [List.range 0 16, [], List.range 16 32] 0
+type Pair = | A String String | B String String
+let pairLoops n pair =
+  if n <= 0 then
+    match pair with
+    | A left right -> String.length left + String.length right
+    | B left right -> String.length left + String.length right
+  else
+    match pair with
+    | A left right -> pairLoops (n - 1) (B right left)
+    | B left right -> pairLoops (n - 1) (A right left)
+public branchFieldLoop : Int -> Int
+let branchFieldLoop n = pairLoops n (A (Int.toString 123) (Int.toString 4))
 let churn n total =
   if n <= 0 then total else
     let size = if n % 3 = 0 then 8 else if n % 3 = 1 then 128 else 4096
@@ -132,6 +144,11 @@ fn bounded(name: &'static str, expected: impl Fn(i64) -> i64) {
 #[test]
 fn record_reuse_has_bounded_slab_retention() {
     bounded("recordLoop", |n| n);
+}
+
+#[test]
+fn alternative_field_transfers_keep_retained_storage_bounded() {
+    bounded("branchFieldLoop", |_| 4);
 }
 
 #[test]

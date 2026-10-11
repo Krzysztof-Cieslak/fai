@@ -15,6 +15,16 @@ let pick pair =
   let (value, _) = pair
   value
 
+public type Branch =
+  | Left String String
+  | Right String String
+
+public unpackBranch : Branch -> (String * String)
+let unpackBranch branch =
+  match branch with
+  | Left a b -> (b, a)
+  | Right a b -> (a, b)
+
 public main : Runtime -> Unit / { Console }
 let main runtime =
   let original = (Int.toString 42, List.range 0 8)
@@ -23,4 +33,11 @@ let main runtime =
   let ok = text = "42" && values = List.range 0 8 && original = ("42", values)
   let raw = mixed (Float.fromBits 0xfff8000000002345, text)
   let option = pick (Some values, raw)
-  runtime.console.writeLine (if ok && option = Some values && raw = "42" then "yes" else "no")
+  let branch = Right (Int.toString 10) (Int.toString 20)
+  let movedBranch = unpackBranch branch
+  let movedUnique = unpackBranch (Left (Int.toString 20) (Int.toString 10))
+  let branchOk = movedBranch = ("10", "20") && movedUnique = movedBranch && branch = Right "10" "20"
+  runtime.console.writeLine (if ok && option = Some values && raw = "42" && branchOk then
+    "yes"
+  else
+    "no")
