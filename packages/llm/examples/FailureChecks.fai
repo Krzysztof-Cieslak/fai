@@ -1,0 +1,132 @@
+module LlmFailureChecks
+
+type Case = { mode : String, retry : Int, total : Option Int }
+
+let basic = { mode = "normal", retry = 0, total = None }
+
+let started =
+  "data: {\"type\":\"response.created\",\"response\":{\"id\":\"partial\",\"model\":\"fixture\"}}\n\n"
+
+slowBody : Runtime -> Unit -> Stream Bytes { Clock, Concurrency } / { Clock, Concurrency }
+let slowBody env unit =
+  let gate = env.concurrency.channel 1
+  let slept = env.clock.sleep 10000
+  let closed = env.concurrency.close gate
+  Http.stringBody ""
+
+handle : Runtime -> Case -> Channel Int -> Http.Request 'e -> Result (Http.Response { Clock, Concurrency }) String / { Clock, Concurrency }
+let handle env case counter request =
+  let observed = env.clock.now ()
+  let count = Option.withDefault 0 (env.concurrency.recv counter)
+  let sent = env.concurrency.send counter (count + 1)
+  let reject =
+    case.mode = "status" || case.mode = "retry-timeout" || (case.mode = "retry" && count = 0)
+  let text =
+    if reject then
+      "{\"error\":{\"code\":\"rate_limit\",\"message\":\"retry later\"}}"
+    else if case.mode = "eof" then
+      started
+    else if case.mode = "inband" then
+      started ++ "data: {\"type\":\"error\",\"code\":\"overloaded\"}\n\n"
+    else
+      LlmFixtures.openai true
+  let source =
+    if case.mode = "idle" then
+      Stream.cons (Bytes.fromString started) (Stream.defer (slowBody env))
+    else
+      Http.stringBody text
+  Ok (Http.chunkedResponse (if reject then
+    429
+  else
+    200) (Headers.fromList [
+    ("Content-Type", if reject then "application/json" else "text/event-stream"),
+    ("x-request-id", "failure-request"),
+    ("Retry-After", if case.mode = "retry-timeout" then "60" else "0")
+  ]) source)
+
+consume : Runtime -> Case -> Llm.Event -> Result LlmTypes.Decision Llm.Error / { Clock }
+let consume env case event =
+  let slept = if case.mode = "deadline" then env.clock.sleep 100 else ()
+  if case.mode = "consumer" then
+    Err (LlmTypes.error LlmTypes.ConsumerError "consumer failed")
+  else
+    Ok (if case.mode = "stop" then LlmTypes.Stop else LlmTypes.Continue)
+
+useClient : Runtime -> Case -> Llm.Client -> Result LlmTypes.StreamResult Llm.Error / { Clock, Concurrency, Net, Tls }
+let useClient env case client =
+  Llm.withStream client (Llm.request "fixture" |> Llm.userText "hello") (consume env case)
+
+session : Runtime -> Case -> Listener -> Nursery -> (Result LlmTypes.StreamResult Llm.Error * Int) / { Clock, Concurrency, Net, Tls }
+let session env case listener nursery =
+  let counter = env.concurrency.channel 1
+  let seeded = env.concurrency.send counter 0
+  let server =
+    env.concurrency.spawn nursery (fun _ ->
+      Http.serveListener env listener (handle env case counter))
+  let config = LlmOpenAI.config "test"
+  let config = { config with
+    events = { config.events with readIdleTimeoutMs = Some 30, subscriptionTimeoutMs = case.total },
+    http = { config.http with
+      baseUrl = "http://127.0.0.1:" ++ Int.toString (env.net.localPort listener) ++ "/"
+    },
+    retryBaseMs = 0,
+    retryCount = case.retry,
+    retryMaxMs = 0
+  }
+  let result = Llm.withClient env config (useClient env case)
+  let count = Option.withDefault 0 (env.concurrency.recv counter)
+  let cancelled = env.concurrency.cancel server
+  (result, count)
+
+run : Runtime -> Case -> (Result LlmTypes.StreamResult Llm.Error * Int) / { Clock, Concurrency, Net, Tls }
+let run env case =
+  match env.net.listen 0 with
+  | Err message -> (Err (LlmTypes.error LlmTypes.TransportError message), 0)
+  | Ok listener -> env.concurrency.scope (session env case listener)
+
+isError : LlmTypes.ErrorKind -> (Result LlmTypes.StreamResult Llm.Error * Int) -> Bool
+let isError kind pair =
+  let (result, _) = pair
+  match result with
+  | Err error -> error.kind = kind
+  | Ok _ -> false
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main env =
+  let (retried, attempts) = run env { basic with mode = "retry", retry = 2 }
+  let retryGood =
+    attempts = 2 && (match retried with
+    | Ok (LlmTypes.Finished response) ->
+      response.attempts = 2 && Llm.text response = "tools completed"
+    | _ -> false)
+  let (status, statusCount) = run env { basic with mode = "status" }
+  let statusGood =
+    statusCount = 1 && (match status with
+    | Err error ->
+      error.providerCode = Some "rate_limit" && error.requestId = Some "failure-request" && error.message = "retry later"
+    | _ -> false)
+  let eof = isError LlmTypes.ProtocolError (run env { basic with mode = "eof" })
+  let inband = isError LlmTypes.ProviderError (run env { basic with mode = "inband", retry = 2 })
+  let (consumer, count) = run env { basic with mode = "consumer", retry = 2 }
+  let consumerGood =
+    count = 1 && (match consumer with
+    | Err error -> error.message = "consumer failed" && error.eventsDelivered > 0
+    | _ -> false)
+  let idle = isError LlmTypes.DeadlineExceeded (run env { basic with mode = "idle" })
+  let deadline =
+    isError LlmTypes.DeadlineExceeded (run env { basic with mode = "deadline", total = Some 50 })
+  let backoff =
+    isError LlmTypes.DeadlineExceeded (run env { basic with
+      mode = "retry-timeout",
+      retry = 2,
+      total = Some 50
+    })
+  let (stopped, _) = run env { basic with mode = "stop" }
+  let stopGood =
+    match stopped with
+    | Ok (LlmTypes.Stopped _) -> true
+    | _ -> false
+  env.console.writeLine (if retryGood && statusGood && eof && inband && consumerGood && idle && deadline && backoff && stopGood then
+    "LLM failure checks passed"
+  else
+    "LLM failure checks FAILED")

@@ -1,0 +1,33 @@
+module LlmPolicySpec
+
+let config = { LlmOpenAI.config "key" with retryBaseMs = 100, retryCount = 2, retryMaxMs = 1000 }
+
+decide : LlmConfig.Config -> Int -> (Llm.Error -> Llm.Error) -> Option Int
+let decide config retries update =
+  match Url.parse "https://example.com/" with
+  | Err _ -> None
+  | Ok url ->
+    let head = {
+      attempts = 1,
+      headers = Headers.empty,
+      reason = "rate limited",
+      status = 429,
+      url = url
+    }
+    let error = { LlmTypes.error LlmTypes.ProviderError "rate limited" with
+      http = Some (HttpClient.EventStatus head),
+      status = Some 429
+    }
+    LlmPolicy.delay config 0 retries (update error)
+example: decide config 0 identity = Some 100
+example: decide config 1 identity = Some 200
+example: decide config 2 identity = None
+example: decide config 0 (fun error -> { error with eventsDelivered = 1 }) = None
+example: decide config 0 (fun error -> { error with
+  headers = Headers.fromList [("Retry-After", "2")]
+}) = Some 2000
+example: decide { config with retryCount = 0 } 0 identity = None
+example: decide config 0 (fun error -> { error with status = Some 401 }) = None
+example: decide config 0 (fun error -> { error with
+  http = Some (HttpClient.Transport "connection lost")
+}) = None

@@ -67,7 +67,12 @@ let text response =
 public errorToString : Error -> String
 let errorToString error = error.message
 
-public opaque type Client = { config : LlmConfig.Config, http : HttpClient.Client }
+public opaque type Client = {
+  clock : Clock,
+  concurrency : Concurrency,
+  config : LlmConfig.Config,
+  http : HttpClient.Client
+}
 
 requestId : HttpClient.ResponseHead -> Option String
 let requestId head =
@@ -95,19 +100,29 @@ let withClient env config work =
     if config.retryCount < 0 || config.retryBaseMs < 0 || config.retryMaxMs < config.retryBaseMs then
       Err (LlmTypes.error LlmTypes.InvalidRequest "invalid retry policy")
     else
-      match HttpClient.withClient env { config.http with
-        followRedirects = false,
-        retry = HttpClientPolicy.noRetry
-      } (fun http -> Ok (work { config = config, http = http })) with
-      | Err error -> Err (httpError error)
-      | Ok result -> result
+      match SseOptions.validateEvents config.events with
+      | Err message -> Err (LlmTypes.error LlmTypes.InvalidRequest message)
+      | Ok _ ->
+        match HttpClient.withClient env { config.http with
+          followRedirects = false,
+          retry = HttpClientPolicy.noRetry
+        } (fun http ->
+          Ok (work {
+            clock = env.clock,
+            concurrency = env.concurrency,
+            config = config,
+            http = http
+          })) with
+        | Err error -> Err (httpError error)
+        | Ok result -> result
 
-type State = { delivered : Int, protocol : LlmStream.State, stopped : Bool }
+type State = { attempts : Int, delivered : Int, protocol : LlmStream.State, stopped : Bool }
 
-annotate : HttpClient.ResponseHead -> LlmTypes.Event -> LlmTypes.Event
-let annotate head event =
+annotate : HttpClient.ResponseHead -> Int -> LlmTypes.Event -> LlmTypes.Event
+let annotate head attempts event =
   match event with
   | LlmTypes.ResponseCompleted response -> LlmTypes.ResponseCompleted { response with
+    attempts = attempts,
     headers = head.headers,
     requestId = requestId head
   }
@@ -119,8 +134,10 @@ let deliver head consume events state =
   | [] ->
     Ok (state, if state.protocol.done then HttpClient.StopEvents else HttpClient.ContinueEvents)
   | event :: rest ->
-    match consume (annotate head event) with
+    match consume (annotate head state.attempts event) with
     | Err error -> Err { error with
+      attempts = state.attempts,
+      eventsDelivered = state.delivered + 1,
       partial = Some (LlmStream.partial state.protocol),
       requestId = requestId head
     }
@@ -138,19 +155,27 @@ let step config consume head state event =
     | LlmTypes.Anthropic -> LlmAnthropic.reduce config.limits state.protocol event.data
   match reduced with
   | Err error -> Err { error with
+    attempts = state.attempts,
+    eventsDelivered = state.delivered,
     partial = Some (LlmStream.partial state.protocol),
     requestId = requestId head
   }
   | Ok (protocol, events) -> deliver head consume events { state with
     protocol = { protocol with
-      response = { protocol.response with headers = head.headers, requestId = requestId head }
+      response = { protocol.response with
+        attempts = state.attempts,
+        headers = head.headers,
+        requestId = requestId head
+      }
     }
   }
 
 providerError : HttpClient.EventFold State LlmTypes.Error -> HttpClient.Error -> LlmTypes.Error
 let providerError fold native =
   let error = { httpError native with
+    attempts = fold.value.attempts,
     bodyPreview = fold.preview,
+    eventsDelivered = fold.value.delivered,
     partial = Some (LlmStream.partial fold.value.protocol),
     previewTruncated = fold.truncated
   }
@@ -179,32 +204,106 @@ let encode config request =
   | LlmTypes.OpenAI -> LlmOpenAI.encode config.limits request
   | LlmTypes.Anthropic -> LlmAnthropic.encode config.limits request
 
+singleStream : Client -> Json.Value -> Int -> (LlmTypes.Event -> Result LlmTypes.Decision LlmTypes.Error / 'e) -> Result LlmTypes.StreamResult LlmTypes.Error / { Clock, Concurrency, Net, Tls | 'e }
+let singleStream client body attempts consume =
+  let target =
+    match client.config.provider with
+    | LlmTypes.OpenAI -> "responses"
+    | LlmTypes.Anthropic -> "messages"
+  let initial = {
+    attempts = attempts,
+    delivered = 0,
+    protocol = LlmStream.initial client.config.provider,
+    stopped = false
+  }
+  let fold =
+    HttpClient.foldEvents client.http { client.config.events with
+      subscriptionTimeoutMs = None
+    } initial (step client.config consume) (HttpClient.post target |> HttpClient.jsonBody JsonEncode.value body)
+  match fold.outcome with
+  | Err (HttpClient.FoldConsumerError error) -> Err error
+  | Err (HttpClient.FoldHttpError error) -> Err (providerError fold error)
+  | Ok _ ->
+    if fold.value.stopped then
+      Ok (LlmTypes.Stopped (LlmStream.partial fold.value.protocol))
+    else if fold.value.protocol.done then
+      Ok (LlmTypes.Finished fold.value.protocol.response)
+    else
+      Err { LlmStream.failure fold.value.protocol LlmTypes.ProtocolError "stream ended before the provider's terminal event" with
+        attempts = attempts,
+        eventsDelivered = fold.value.delivered
+      }
+
+alive : Concurrency -> Bool / { Concurrency }
+let alive concurrency =
+  let channel = concurrency.channel 1
+  let sent = concurrency.send channel ()
+  let result = concurrency.recv channel
+  let closed = concurrency.close channel
+  result <> None
+
+retryStream : Client -> Json.Value -> Int -> (LlmTypes.Event -> Result LlmTypes.Decision LlmTypes.Error / 'e) -> Result LlmTypes.StreamResult LlmTypes.Error / { Clock, Concurrency, Net, Tls | 'e }
+let retryStream client body retries consume =
+  if not (alive client.concurrency) then
+    Err (LlmTypes.error LlmTypes.Cancelled "model request cancelled")
+  else
+    match singleStream client body (retries + 1) consume with
+    | Ok result -> Ok result
+    | Err error ->
+      match LlmPolicy.delay client.config (Int.floorDiv (client.clock.now ()) 1000) retries error with
+      | None -> Err error
+      | Some delay ->
+        let slept = client.clock.sleep delay
+        retryStream client body (retries + 1) consume
+
+type Generation = Result LlmTypes.StreamResult LlmTypes.Error
+
+publish : Concurrency -> Channel Generation -> Generation -> Unit -> Unit / { Concurrency }
+let publish concurrency channel value unit =
+  let previous = concurrency.recv channel
+  concurrency.send channel value
+
+recorded : Client -> Json.Value -> (LlmTypes.Event -> Result LlmTypes.Decision LlmTypes.Error / 'e) -> Channel Generation -> Unit -> Unit / { Clock, Concurrency, Net, Tls | 'e }
+let recorded client body consume channel unit =
+  let result = retryStream client body 0 consume
+  Wire.cleanup client.concurrency (publish client.concurrency channel result)
+
+timed : Client -> Int -> Json.Value -> (LlmTypes.Event -> Result LlmTypes.Decision LlmTypes.Error / 'e) -> Generation / { Clock, Concurrency, Net, Tls | 'e }
+let timed client ms body consume =
+  let channel = client.concurrency.channel 1
+  let initial = Err (LlmTypes.error LlmTypes.Cancelled "model request cancelled")
+  let seeded = Wire.cleanup client.concurrency (fun _ -> client.concurrency.send channel initial)
+  let completed =
+    Async.timeout client.concurrency client.clock ms (recorded client body consume channel)
+  let saved = Wire.cleanup client.concurrency (fun _ -> client.concurrency.recv channel)
+  let closed = client.concurrency.close channel
+  let result = Option.withDefault initial saved
+  if completed <> None then
+    result
+  else
+    let kind = if alive client.concurrency then LlmTypes.DeadlineExceeded else LlmTypes.Cancelled
+    let prior =
+      match result with
+      | Err error -> error
+      | Ok (LlmTypes.Finished response) -> { LlmTypes.error kind "" with partial = Some response }
+      | Ok (LlmTypes.Stopped response) -> { LlmTypes.error kind "" with partial = Some response }
+    Err { prior with
+      kind = kind,
+      message = if kind = LlmTypes.Cancelled then
+        "model request cancelled"
+      else
+        "model request deadline exceeded"
+    }
+
+/// One logical request and deadline, including retries, callbacks and backoff.
 public withStream : Client -> LlmTypes.Request -> (LlmTypes.Event -> Result LlmTypes.Decision LlmTypes.Error / 'e) -> Result LlmTypes.StreamResult LlmTypes.Error / { Clock, Concurrency, Net, Tls | 'e }
 let withStream client request consume =
   match encode client.config request with
   | Err error -> Err error
   | Ok body ->
-    let target =
-      match client.config.provider with
-      | LlmTypes.OpenAI -> "responses"
-      | LlmTypes.Anthropic -> "messages"
-    let initial = {
-      delivered = 0,
-      protocol = LlmStream.initial client.config.provider,
-      stopped = false
-    }
-    let fold =
-      HttpClient.foldEvents client.http client.config.events initial (step client.config consume) (HttpClient.post target |> HttpClient.jsonBody JsonEncode.value body)
-    match fold.outcome with
-    | Err (HttpClient.FoldConsumerError error) -> Err error
-    | Err (HttpClient.FoldHttpError error) -> Err (providerError fold error)
-    | Ok _ ->
-      if fold.value.stopped then
-        Ok (LlmTypes.Stopped (LlmStream.partial fold.value.protocol))
-      else if fold.value.protocol.done then
-        Ok (LlmTypes.Finished fold.value.protocol.response)
-      else
-        Err (LlmStream.failure fold.value.protocol LlmTypes.ProtocolError "stream ended before the provider's terminal event")
+    match client.config.events.subscriptionTimeoutMs with
+    | None -> retryStream client body 0 consume
+    | Some ms -> timed client ms body consume
 
 public generate : Client -> LlmTypes.Request -> Result LlmTypes.Response LlmTypes.Error / { Clock, Concurrency, Net, Tls }
 let generate client request =

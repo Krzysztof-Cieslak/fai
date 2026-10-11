@@ -93,6 +93,7 @@ public type Finish =
   | Incomplete String
 
 public type Response = {
+  attempts : Int,
   blocks : List Block,
   continuation : List Item,
   finish : Finish,
@@ -107,6 +108,7 @@ public type Response = {
 
 public emptyResponse : Provider -> Response
 let emptyResponse provider = {
+  attempts = 0,
   blocks = [],
   continuation = [],
   finish = InProgress,
@@ -145,8 +147,10 @@ public type ErrorKind =
   | SchemaError
 
 public type Error = {
+  attempts : Int,
   bodyPreview : Bytes,
   detail : Option JsonDecode.ReadError,
+  eventsDelivered : Int,
   headers : Headers,
   http : Option HttpClient.Error,
   kind : ErrorKind,
@@ -160,8 +164,10 @@ public type Error = {
 
 public error : ErrorKind -> String -> Error
 let error kind message = {
+  attempts = 0,
   bodyPreview = Bytes.empty,
   detail = None,
+  eventsDelivered = 0,
   headers = Headers.empty,
   http = None,
   kind = kind,

@@ -1146,6 +1146,9 @@ remains partial data. `LlmReplay` exercises both codecs with pure transport chun
 `LlmTool` separates serializable definitions from effect-carrying handlers, checks
 arguments before invocation, and preserves call IDs in results. Structured-output
 helpers retain the original response alongside the decoded application value.
+Model retries are opt-in and limited to rejected HTTP requests before generation
+events are exposed. One deadline covers attempts, callbacks and backoff; failures
+retain partial state, provider metadata and attempt/event counts.
 
 `HttpClient.foldEvents` threads application state through scoped SSE callbacks,
 retaining typed callback errors, response metadata and bounded error bodies.

@@ -41,6 +41,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- LLM retry policy is explicit and conservative: selected rejected HTTP statuses
+  can retry before event delivery; ambiguous transport failures and exposed
+  streams are not replayed. The overall deadline encloses all attempts and delays,
+  with cancellation-masked publication preserving the final partial response.
+
 - Model tool definitions are pure wire data; executable handlers live in a
   separate effect-carrying registry and run only on explicit application calls.
   Arguments decode before invocation. Structured output parses complete answers
