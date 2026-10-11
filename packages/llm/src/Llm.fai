@@ -10,6 +10,10 @@ public type Event = LlmTypes.Event
 
 public type Limits = LlmTypes.Limits
 
+public type Config = LlmConfig.Config
+
+public type Model 'e = { generate : Request -> Result Response Error / 'e }
+
 public limits : Limits
 let limits = LlmTypes.limits
 
@@ -63,5 +67,145 @@ let text response =
 public errorToString : Error -> String
 let errorToString error = error.message
 
-/// A model port can be a pure scripted function or native provider execution.
-public type Model 'e = { generate : Request -> Result Response Error / 'e }
+public opaque type Client = { config : LlmConfig.Config, http : HttpClient.Client }
+
+requestId : HttpClient.ResponseHead -> Option String
+let requestId head =
+  match Headers.get "x-request-id" head.headers with
+  | Some id -> Some id
+  | None -> Headers.get "request-id" head.headers
+
+httpError : HttpClient.Error -> LlmTypes.Error
+let httpError error =
+  let kind =
+    match error with
+    | HttpClient.Cancelled -> LlmTypes.Cancelled
+    | HttpClient.DeadlineExceeded -> LlmTypes.DeadlineExceeded
+    | HttpClient.EventConnectTimeout -> LlmTypes.DeadlineExceeded
+    | HttpClient.EventIdleTimeout -> LlmTypes.DeadlineExceeded
+    | HttpClient.EventStatus _ -> LlmTypes.ProviderError
+    | _ -> LlmTypes.TransportError
+  { LlmTypes.error kind (HttpClient.errorToString error) with http = Some error }
+
+public withClient : { clock : Clock, concurrency : Concurrency, net : Net, tls : Tls | _ } -> LlmConfig.Config -> (Client -> Result 'a LlmTypes.Error / 'e) -> Result 'a LlmTypes.Error / { Concurrency | 'e }
+let withClient env config work =
+  match LlmValidate.limits config.limits with
+  | Err error -> Err error
+  | Ok _ ->
+    if config.retryCount < 0 || config.retryBaseMs < 0 || config.retryMaxMs < config.retryBaseMs then
+      Err (LlmTypes.error LlmTypes.InvalidRequest "invalid retry policy")
+    else
+      match HttpClient.withClient env { config.http with
+        followRedirects = false,
+        retry = HttpClientPolicy.noRetry
+      } (fun http -> Ok (work { config = config, http = http })) with
+      | Err error -> Err (httpError error)
+      | Ok result -> result
+
+type State = { delivered : Int, protocol : LlmStream.State, stopped : Bool }
+
+annotate : HttpClient.ResponseHead -> LlmTypes.Event -> LlmTypes.Event
+let annotate head event =
+  match event with
+  | LlmTypes.ResponseCompleted response -> LlmTypes.ResponseCompleted { response with
+    requestId = requestId head
+  }
+  | _ -> event
+
+deliver : HttpClient.ResponseHead -> (LlmTypes.Event -> Result LlmTypes.Decision LlmTypes.Error / 'e) -> List LlmTypes.Event -> State -> Result (State * HttpClient.EventDecision) LlmTypes.Error / 'e
+let deliver head consume events state =
+  match events with
+  | [] ->
+    Ok (state, if state.protocol.done then HttpClient.StopEvents else HttpClient.ContinueEvents)
+  | event :: rest ->
+    match consume (annotate head event) with
+    | Err error -> Err { error with
+      partial = Some (LlmStream.partial state.protocol),
+      requestId = requestId head
+    }
+    | Ok LlmTypes.Stop ->
+      Ok ({ state with delivered = state.delivered + 1, stopped = true }, HttpClient.StopEvents)
+    | Ok LlmTypes.Continue -> deliver head consume rest { state with
+      delivered = state.delivered + 1
+    }
+
+step : LlmConfig.Config -> (LlmTypes.Event -> Result LlmTypes.Decision LlmTypes.Error / 'e) -> HttpClient.ResponseHead -> State -> Sse.Event -> Result (State * HttpClient.EventDecision) LlmTypes.Error / 'e
+let step config consume head state event =
+  let reduced =
+    match config.provider with
+    | LlmTypes.OpenAI -> LlmOpenAI.reduce config.limits state.protocol event.data
+    | _ -> Err (LlmTypes.error LlmTypes.UnsupportedFeature "provider is not implemented")
+  match reduced with
+  | Err error -> Err { error with
+    partial = Some (LlmStream.partial state.protocol),
+    requestId = requestId head
+  }
+  | Ok (protocol, events) -> deliver head consume events { state with
+    protocol = { protocol with response = { protocol.response with requestId = requestId head } }
+  }
+
+providerError : HttpClient.EventFold State LlmTypes.Error -> HttpClient.Error -> LlmTypes.Error
+let providerError fold native =
+  let error = { httpError native with
+    bodyPreview = fold.preview,
+    partial = Some (LlmStream.partial fold.value.protocol)
+  }
+  let error =
+    match fold.head with
+    | None -> error
+    | Some head -> { error with requestId = requestId head, status = Some head.status }
+  match JsonDecode.fromBytes JsonDecode.value fold.preview with
+  | Err _ -> error
+  | Ok body ->
+    let detail = Option.withDefault body (LlmJson.get "error" body)
+    { error with
+      message = Option.withDefault error.message (LlmJson.text "message" detail),
+      providerCode = (match LlmJson.text "code" detail with
+      | Some code -> Some code
+      | None -> LlmJson.text "type" detail)
+    }
+
+public encode : LlmConfig.Config -> LlmTypes.Request -> Result Json.Value LlmTypes.Error
+let encode config request =
+  match config.provider with
+  | LlmTypes.OpenAI -> LlmOpenAI.encode config.limits request
+  | _ -> Err (LlmTypes.error LlmTypes.UnsupportedFeature "provider is not implemented")
+
+public withStream : Client -> LlmTypes.Request -> (LlmTypes.Event -> Result LlmTypes.Decision LlmTypes.Error / 'e) -> Result LlmTypes.StreamResult LlmTypes.Error / { Clock, Concurrency, Net, Tls | 'e }
+let withStream client request consume =
+  match encode client.config request with
+  | Err error -> Err error
+  | Ok body ->
+    let target =
+      match client.config.provider with
+      | LlmTypes.OpenAI -> "responses"
+      | LlmTypes.Anthropic -> "messages"
+    let initial = {
+      delivered = 0,
+      protocol = LlmStream.initial client.config.provider,
+      stopped = false
+    }
+    let fold =
+      HttpClient.foldEvents client.http client.config.events initial (step client.config consume) (HttpClient.post target |> HttpClient.jsonBody JsonEncode.value body)
+    match fold.outcome with
+    | Err (HttpClient.FoldConsumerError error) -> Err error
+    | Err (HttpClient.FoldHttpError error) -> Err (providerError fold error)
+    | Ok _ ->
+      if fold.value.stopped then
+        Ok (LlmTypes.Stopped (LlmStream.partial fold.value.protocol))
+      else if fold.value.protocol.done then
+        Ok (LlmTypes.Finished fold.value.protocol.response)
+      else
+        Err (LlmStream.failure fold.value.protocol LlmTypes.ProtocolError "stream ended before the provider's terminal event")
+
+public generate : Client -> LlmTypes.Request -> Result LlmTypes.Response LlmTypes.Error / { Clock, Concurrency, Net, Tls }
+let generate client request =
+  match withStream client request (fun event -> Ok LlmTypes.Continue) with
+  | Err error -> Err error
+  | Ok (LlmTypes.Finished response) -> Ok response
+  | Ok (LlmTypes.Stopped response) -> Err { LlmTypes.error LlmTypes.ConsumerError "generation stopped" with
+    partial = Some response
+  }
+
+public model : Client -> { generate : LlmTypes.Request -> Result LlmTypes.Response LlmTypes.Error / { Clock, Concurrency, Net, Tls } }
+let model client = { generate = generate client }

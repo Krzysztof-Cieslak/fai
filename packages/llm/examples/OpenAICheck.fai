@@ -1,0 +1,88 @@
+module LlmOpenAICheck
+
+let frame value = "data: " ++ Json.toString value ++ "\n\n"
+
+let obj = LlmJson.object
+
+let str = Json.String
+
+let num = LlmJson.integer
+
+let item = obj [
+  ("id", str "msg"),
+  ("type", str "message"),
+  ("role", str "assistant"),
+  ("content", LlmJson.array [obj [("type", str "output_text"), ("text", str "hello")]])
+]
+
+let response = obj [
+  ("id", str "resp"),
+  ("model", str "fixture"),
+  ("status", str "completed"),
+  ("output", LlmJson.array [item])
+]
+
+let body =
+  String.join "" (List.map frame [
+    obj [
+      ("type", str "response.created"),
+      ("response", obj [("id", str "resp"), ("model", str "fixture")])
+    ],
+    obj [
+      ("type", str "response.output_item.added"),
+      ("output_index", num 0),
+      ("item", obj [("id", str "msg"), ("type", str "message")])
+    ],
+    obj [
+      ("type", str "response.content_part.added"),
+      ("output_index", num 0),
+      ("content_index", num 0)
+    ],
+    obj [
+      ("type", str "response.output_text.delta"),
+      ("output_index", num 0),
+      ("content_index", num 0),
+      ("delta", str "hello")
+    ],
+    obj [
+      ("type", str "response.content_part.done"),
+      ("output_index", num 0),
+      ("content_index", num 0)
+    ],
+    obj [("type", str "response.completed"), ("response", response)]
+  ])
+
+handle : Http.Request 'e -> Result (Http.Response { }) String
+let handle request =
+  Ok (Http.chunkedResponse 200 (Headers.fromList [
+    ("Content-Type", "text/event-stream"),
+    ("x-request-id", "request-fixture")
+  ]) (Http.stringBody body))
+
+work : Llm.Client -> Result Llm.Response Llm.Error / { Clock, Concurrency, Net, Tls }
+let work client = Llm.generate client (Llm.request "fixture" |> Llm.userText "hello")
+
+session : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let session env listener nursery =
+  let server = env.concurrency.spawn nursery (fun _ -> Http.serveListener env listener handle)
+  let config = LlmOpenAI.config "test"
+  let config = { config with
+    http = { config.http with
+      baseUrl = "http://127.0.0.1:" ++ Int.toString (env.net.localPort listener) ++ "/"
+    }
+  }
+  let result = Llm.withClient env config work
+  let cancelled = env.concurrency.cancel server
+  match result with
+  | Ok response -> Llm.text response = "hello" && response.requestId = Some "request-fixture"
+  | Err error -> false
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main env =
+  match env.net.listen 0 with
+  | Err error -> env.console.writeLine error
+  | Ok listener ->
+    env.console.writeLine (if env.concurrency.scope (session env listener) then
+      "OpenAI loopback passed"
+    else
+      "OpenAI loopback FAILED")

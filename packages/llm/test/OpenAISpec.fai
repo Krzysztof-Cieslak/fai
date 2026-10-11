@@ -1,0 +1,116 @@
+module LlmOpenAISpec
+
+let obj = LlmJson.object
+
+let str = Json.String
+
+let num = LlmJson.integer
+
+let message = obj [
+  ("id", str "msg"),
+  ("type", str "message"),
+  ("content", LlmJson.array [obj [("type", str "output_text"), ("text", str "hello")]])
+]
+
+let final = obj [
+  ("id", str "resp"),
+  ("model", str "model"),
+  ("status", str "completed"),
+  ("output", LlmJson.array [message]),
+  ("usage", obj [("input_tokens", num 10), ("output_tokens", num 2)])
+]
+
+let created = obj [
+  ("type", str "response.created"),
+  ("response", obj [("id", str "resp"), ("model", str "model")])
+]
+
+let added = obj [
+  ("type", str "response.output_item.added"),
+  ("output_index", num 0),
+  ("item", obj [("id", str "msg"), ("type", str "message")])
+]
+
+let part = obj [
+  ("type", str "response.content_part.added"),
+  ("output_index", num 0),
+  ("content_index", num 0)
+]
+
+let delta text = obj [
+  ("type", str "response.output_text.delta"),
+  ("output_index", num 0),
+  ("content_index", num 0),
+  ("delta", str text)
+]
+
+let completed = obj [("type", str "response.completed"), ("response", final)]
+
+step : Result LlmStream.State LlmTypes.Error -> Json.Value -> Result LlmStream.State LlmTypes.Error
+let step result event =
+  match result with
+  | Err error -> Err error
+  | Ok state ->
+    Result.map (fun pair -> first pair) (LlmOpenAI.reduce Llm.limits state (Json.toString event))
+
+first : (LlmStream.State * List LlmTypes.Event) -> LlmStream.State
+let first pair =
+  let (state, _) = pair
+  state
+
+run : List Json.Value -> Result LlmStream.State LlmTypes.Error
+let run events = List.foldl step (Ok (LlmStream.initial LlmTypes.OpenAI)) events
+example: (LlmOpenAI.decode Llm.limits final |> Result.map Llm.text) = Ok "hello"
+example: (run [
+  created,
+  added,
+  part,
+  delta "hel",
+  delta "lo",
+  completed
+] |> Result.map (fun state -> Llm.text state.response)) = Ok "hello"
+example: run [created, delta "out of order"] |> Result.isErr
+example: run [created, added, added] |> Result.isErr
+example: run [created, completed, completed] |> Result.isErr
+example: run [obj []] |> Result.isErr
+example: LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) "{broken" |> Result.isErr
+example: LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) "{\"type\":\"a\",\"type\":\"b\"}" |> Result.isErr
+example: LlmOpenAI.decode Llm.limits (obj [
+  ("id", str "resp"),
+  ("status", str "completed")
+]) |> Result.isErr
+example: LlmOpenAI.encode Llm.limits (Llm.request "model" |> Llm.user [
+  LlmMessage.imageBytes "image/png" (Bytes.fromList [1, 2, 3])
+]) |> Result.isOk
+example: LlmOpenAI.encode Llm.limits { Llm.request "model" with
+  providerOptions = LlmTypes.AnthropicOptions { thinkingBudget = None }
+} |> Result.isErr
+example: (LlmOpenAI.encode Llm.limits (Llm.request "model") |> Result.map (LlmJson.get "store")) = Ok (Some (Json.Boolean false))
+
+let call id name arguments = obj [
+  ("id", str ("item-" ++ id)),
+  ("type", str "function_call"),
+  ("call_id", str id),
+  ("name", str name),
+  ("arguments", str arguments)
+]
+
+let toolFinal =
+  LlmJson.set "output" (LlmJson.array [
+    call "a" "first" "{\"x\":1}",
+    call "b" "second" "{\"x\":2}"
+  ]) final
+example: (LlmOpenAI.decode Llm.limits toolFinal |> Result.map (fun response ->
+  List.map (fun call -> call.id) response.toolCalls)) = Ok ["a", "b"]
+example: LlmOpenAI.decode Llm.limits (LlmJson.set "output" (LlmJson.array [
+  call "a" "first" "{}",
+  call "a" "second" "{}"
+]) final) |> Result.isErr
+example: LlmOpenAI.decode Llm.limits (LlmJson.set "output" (LlmJson.array [
+  call "a" "first" "{\"x\":1,\"x\":2}"
+]) final) |> Result.isErr
+example: (LlmOpenAI.decode Llm.limits (LlmJson.set "status" (str "incomplete") final) |> Result.map (fun response ->
+  match response.finish with
+  | LlmTypes.Incomplete _ -> true
+  | _ -> false)) = Ok true
+forall text: LlmOpenAI.encode Llm.limits (Llm.request "model" |> Llm.userText text) |> Result.isOk

@@ -41,6 +41,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Native model adapters separate pure request/event codecs from scoped transport.
+  OpenAI Responses retains opaque output items for client-owned continuation,
+  explicitly disables storage by default, and reconciles final snapshots without
+  duplicating streamed text. Premature EOF is distinct from normal completion.
+
 - LLM conversations preserve provider-native continuation items alongside typed
   text, image and tool data. Requests remain pure and model IDs stay open strings.
   Typed schemas pair their wire shape with local decoding; refinements remain

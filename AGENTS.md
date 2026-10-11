@@ -1137,6 +1137,9 @@ and provider-tagged continuation items. `LlmSchema` pairs portable JSON schemas
 with typed decoders and explicit local refinements; object fields are required,
 unknown fields fail, and nullable values remain distinct from missing fields.
 Tool-result continuation checks IDs and preserves native item order.
+`LlmOpenAI` implements the native Responses protocol with pure encoding and event
+reduction. Scoped `Llm.generate`/`withStream` use existing networking capabilities,
+preserve request IDs and native continuation items, and reject premature EOF.
 
 `HttpClient.foldEvents` threads application state through scoped SSE callbacks,
 retaining typed callback errors, response metadata and bounded error bodies.

@@ -1852,6 +1852,10 @@ JSON decoder (`field`, `map2`, `list`, `nullable`, scalar schemas and local
 `refine`). `Llm.structured` attaches its output shape. `LlmMessage.continueWith`
 requires one result for each completed tool call. `Llm.Model 'e` is an
 effect-carrying generation port that also supports pure scripted models.
+`LlmOpenAI.config key` selects Responses. `Llm.withClient` scopes the HTTP pool;
+`generate` returns a complete response and `withStream` forwards sequential event
+callbacks. Execution uses `{ Clock, Concurrency, Net, Tls }` and propagates callback
+effects. Storage defaults to false; native continuation items remain available.
 
 Including `packages/process/src` supplies `Process` and `ProcessText`. Commands
 are pure descriptions (`command`, `arguments`, `workingDirectory`, environment
