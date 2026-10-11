@@ -1,0 +1,29 @@
+module ProcessPipelineSpec
+
+example: Process.validatePipeline Process.defaults (Process.pipeline []) |> Result.isErr
+example: Process.validatePipeline Process.defaults (Process.pipeline [
+  Process.command "a" []
+]) = Ok ()
+example: Process.validatePipeline { Process.defaults with
+  maxPipelineStages = 1
+} (Process.pipeline [Process.command "a" [], Process.command "b" []]) |> Result.isErr
+example: Process.validatePipeline Process.defaults (Process.pipeline [
+  Process.command "a" [],
+  Process.command "" []
+]) |> Result.isErr
+example: Process.validatePipeline Process.defaults (Process.pipeline [
+  Process.command "a" [] |> Process.stdinText "input",
+  Process.command "b" []
+]) = Ok ()
+example: Process.validatePipeline Process.defaults (Process.pipeline [
+  Process.command "a" [],
+  Process.command "b" [] |> Process.stdinText "input"
+]) |> Result.isErr
+example: Process.expectLastSuccess { Process.emptyOutput with
+  exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)]
+} |> Result.isOk
+example: Process.expectSuccess { Process.emptyOutput with
+  exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)]
+} |> Result.isErr
+forall names: List.map (fun command ->
+  (Process.describe command).launch.executable) (Process.stages (Process.pipeline (List.map (fun name -> Process.command name []) names))) = names

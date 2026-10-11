@@ -109,7 +109,26 @@ let checks env python fixture =
   let streaming =
     Process.communicate env settings (command python fixture "echo" []) (writeInput binary) continueOutput
   let l = report env.console "streaming input" (outputIs binary streaming)
-  a && b && c && d && e && f && g && h && i && j && k && l
+  let pipeline = Process.pipeline [
+    command python fixture "echo" [] |> Process.stdinText "pipeline",
+    command python fixture "upper" [],
+    command python fixture "count" []
+  ]
+  let piped = Process.runPipeline env settings pipeline
+  let m =
+    report env.console "pipeline" (outputIs (Bytes.fromString "8") piped && (match piped with
+    | Ok output -> List.length output.exits = 3
+    | Err _ -> false))
+  let partial =
+    Process.runPipeline env settings (Process.pipeline [
+      Process.command "/fai-does-not-exist/program" [],
+      command python fixture "hold" []
+    ])
+  let n =
+    report env.console "partial pipeline startup" (match partial with
+    | Err failure -> failure.kind = Process.SpawnFailure
+    | Ok _ -> false)
+  a && b && c && d && e && f && g && h && i && j && k && l && m && n
 
 public main : R -> Unit / { Concurrency, Console, Env, ProcessHost.Process }
 let main env =

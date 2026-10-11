@@ -46,6 +46,20 @@ contracts.
 
 ## Streaming and manual sessions
 
+`pipeline commands` builds a pure pipeline. `validatePipeline` checks every stage
+before spawning. `runPipeline` captures the final stdout and all stage stderr;
+`withPipelineOutput` streams the same data with zero-based stage tags. Native
+pipes connect adjacent stages directly. Only the first stage accepts preset
+stdin. Partial startup failure shuts down every already-started stage.
+
+`expectSuccess` checks every status; `expectLastSuccess` checks only the last.
+Both retain all statuses and output. Nonzero exits alone do not automatically
+cancel other stages; launch/I/O failures, explicit stop and deadlines terminate
+the managed scope. Consumers start before producers, and unused parent-side pipe
+endpoints close promptly so EOF and broken-pipe behavior propagate correctly.
+
+### Streaming callbacks
+
 `withOutput runtime options command consume` feeds preset input and delivers
 `Chunk { bytes, stage, stderr }` values sequentially. The callback returns
 `Ok Continue`, `Ok Stop`, or `Err error`. Its effects are forwarded. Returned

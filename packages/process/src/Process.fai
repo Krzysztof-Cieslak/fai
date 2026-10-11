@@ -510,6 +510,73 @@ let communicate env options command produce consume =
         process = env.process
       } options [command] produce consume
 
+/// An ordered description. Native pipes connect adjacent stages at execution.
+public opaque type Pipeline =
+  | Pipeline (List Command)
+
+public pipeline : List Command -> Pipeline
+let pipeline commands = Pipeline commands
+
+public stages : Pipeline -> List Command
+let stages pipeline =
+  match pipeline with
+  | Pipeline commands -> commands
+
+let validateStage options result command =
+  match result with
+  | Err failure -> Err failure
+  | Ok _ -> validate options command
+
+/// Validate all stages before starting any. Only the first stage has preset stdin.
+public validatePipeline : Options -> Pipeline -> Result Unit Error
+let validatePipeline options pipeline =
+  match stages pipeline with
+  | [] -> Err (error InvalidInput "a pipeline must contain at least one command")
+  | first :: rest ->
+    if List.length (stages pipeline) > options.maxPipelineStages then
+      Err (error InvalidInput "pipeline stage limit exceeded")
+    else if List.any (fun command -> not (Bytes.isEmpty (describe command).input)) rest then
+      Err (error InvalidInput "only the first pipeline stage accepts preset input")
+    else
+      List.foldl (validateStage options) (Ok ()) (first :: rest)
+
+/// Capture final stdout and each stage's stderr; statuses remain in stage order.
+public runPipeline : { concurrency : Concurrency, process : ProcessHost.Process | _ } -> Options -> Pipeline -> Result Output Error / { Concurrency, ProcessHost.Process }
+let runPipeline env options pipeline =
+  match validatePipeline options pipeline with
+  | Err failure -> Err failure
+  | Ok _ ->
+    execute { concurrency = env.concurrency, process = env.process } options (stages pipeline)
+
+/// Stream final stdout and stage-tagged stderr under one cancellation scope.
+public withPipelineOutput : { concurrency : Concurrency, process : ProcessHost.Process | _ } -> Options -> Pipeline -> (Chunk -> Result Control Error / { ProcessHost.Process | 'e }) -> Result Output Error / { Concurrency, ProcessHost.Process | 'e }
+let withPipelineOutput env options pipeline consume =
+  match validatePipeline options pipeline with
+  | Err failure -> Err failure
+  | Ok _ ->
+    match stages pipeline with
+    | [] -> Err (error InvalidInput "empty pipeline")
+    | first :: _ ->
+      streamCommands {
+        concurrency = env.concurrency,
+        process = env.process
+      } options (stages pipeline) (writePreset (describe first).input) consume
+
+/// Apply an explicit last-stage-only success policy, retaining all other statuses.
+public expectLastSuccess : Output -> Result Output Error
+let expectLastSuccess output =
+  match List.reverse output.exits with
+  | Some exit :: _ ->
+    if succeeded exit then
+      Ok output
+    else
+      Err { error UnsuccessfulExit "the final pipeline stage did not succeed" with
+        partial = output
+      }
+  | _ -> Err { error UnsuccessfulExit "the final pipeline stage has no exit status" with
+    partial = output
+  }
+
 writePreset : Bytes -> Child -> Result Unit Error / { ProcessHost.Process }
 let writePreset bytes child = write child bytes
 
