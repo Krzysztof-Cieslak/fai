@@ -45,6 +45,12 @@ let stringLoops n total =
     stringLoops (n - 1) (total + String.length text)
 public stringLoop : Int -> Int
 let stringLoop n = stringLoops n 0
+let emptyStringLoops n total =
+  if n <= 0 then total else
+    let text = append 8 ""
+    emptyStringLoops (n - 1) (total + String.length text)
+public emptyStringLoop : Int -> Int
+let emptyStringLoop n = emptyStringLoops n 0
 let indexLoops n original total =
   if n <= 0 then total else
     let prefix = String.take 9223372036854775807 original
@@ -174,6 +180,11 @@ fn reserved_boxed_builders_keep_initialized_storage_bounded() {
 #[test]
 fn literal_string_loops_keep_fixed_state_storage_bounded() {
     bounded("stringLoop", |n| n * 17);
+}
+
+#[test]
+fn empty_string_startup_keeps_retained_storage_bounded() {
+    bounded("emptyStringLoop", |n| n * 16);
 }
 
 #[test]

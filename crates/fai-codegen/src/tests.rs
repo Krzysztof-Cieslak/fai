@@ -4684,6 +4684,12 @@ fn an_unbounded_array_element_keeps_its_boxing_overflow_guard() {
 }
 
 #[test]
+fn empty_string_reentry_preserves_float_loop_state() {
+    let source = "module M\nlet loop n x text = if n <= 0 then text else if x > 0.0 then loop (n - 1) (-x) (text ++ \"p\") else loop (n - 1) (-x) (text ++ \"n\")\npublic main : Runtime -> Unit / { Console }\nlet main runtime = runtime.console.writeLine (loop 6 1.0 \"\")\n";
+    assert_eq!(run(source), (0, "pnpnpn\n".into()));
+}
+
+#[test]
 fn guarded_bulk_repeat_justifies_the_first_element_read() {
     let source = "module M\nlet first n =\n  let values = Array.repeat n 7\n  if n > 0 then Array.unsafeGet 0 values else 0\n";
     let ir = entry_ir(source, "first");

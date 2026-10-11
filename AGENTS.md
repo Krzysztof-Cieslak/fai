@@ -403,7 +403,10 @@ prefix in place. Shared operands and borrowing slices retain their contents.
 A bounded scalar-only literal-append loop can check its incoming String's unique,
 nonempty inline form once. Its fast body retains capacity checks and normal
 growth; every carried String must derive from that owner through short literals.
-Shared, empty, sliced, captured or uncertain inputs retain ordinary appends.
+If every transition appends a nonempty literal, ordinary startup can recheck the
+new state and enter the fast loop after obtaining a unique buffer. Initially empty,
+shared or sliced inputs need at most two such appends. Captured or uncertain
+loops retain ordinary appends.
 `String.join` and `String.joinArray` size their result with checked arithmetic,
 then copy into one final buffer without an intermediate growable string.
 Known-ASCII Strings carry descriptor evidence without adding per-value fields.

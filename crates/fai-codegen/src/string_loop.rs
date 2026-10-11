@@ -14,6 +14,9 @@ pub(crate) struct Plan {
     pub(crate) root: LocalId,
     /// String results derived only through the admitted literal appends.
     pub(crate) aliases: FxHashSet<LocalId>,
+    /// Every back-edge has appended a nonempty literal. Ordinary startup reaches
+    /// a unique, nonempty buffer after at most two such transitions.
+    pub(crate) recheck: bool,
 }
 
 fn scalar(ty: &Ty) -> bool {
@@ -37,6 +40,8 @@ pub(crate) fn plan(params: &[LocalId], body: &CExpr, types: &FxHashMap<usize, Ty
     }
     let mut scan = Scan {
         aliases: FxHashSet::from_iter([**root]),
+        grown: FxHashSet::default(),
+        recheck: true,
         types,
         position: *position,
         arity: params.len(),
@@ -46,11 +51,13 @@ pub(crate) fn plan(params: &[LocalId], body: &CExpr, types: &FxHashMap<usize, Ty
     if !scan.walk(body, true) || scan.appends == 0 {
         return None;
     }
-    Some(Plan { root: **root, aliases: scan.aliases })
+    Some(Plan { root: **root, aliases: scan.aliases, recheck: scan.recheck })
 }
 
 struct Scan<'a> {
     aliases: FxHashSet<LocalId>,
+    grown: FxHashSet<LocalId>,
+    recheck: bool,
     types: &'a FxHashMap<usize, Ty>,
     position: usize,
     arity: usize,
@@ -59,6 +66,18 @@ struct Scan<'a> {
 }
 
 impl Scan<'_> {
+    fn grows(&self, e: &CExpr) -> bool {
+        match &e.kind {
+            K::Local(local) => self.grown.contains(local),
+            K::Prim { op: Prim::StrConcat, args } => {
+                matches!(args.get(1).map(|arg| &arg.kind), Some(K::Lit(Lit::Str(bytes))) if !bytes.is_empty())
+                    || args.first().is_some_and(|arg| self.grows(arg))
+            }
+            K::Let { body, .. } | K::Drop { body, .. } | K::Dup { body, .. } => self.grows(body),
+            _ => false,
+        }
+    }
+
     fn string_result(&self, e: &CExpr) -> bool {
         match &e.kind {
             K::Local(local) => self.aliases.contains(local),
@@ -94,12 +113,21 @@ impl Scan<'_> {
                 if self.string_result(value) {
                     self.aliases.insert(*local);
                 }
+                if self.grows(value) {
+                    self.grown.insert(*local);
+                }
                 self.walk(body, string_value)
             }
             K::If { cond, then, els } => {
-                self.walk(cond, false)
-                    && self.walk(then, string_value)
-                    && self.walk(els, string_value)
+                if !self.walk(cond, false) {
+                    return false;
+                }
+                let grown = self.grown.clone();
+                let left = self.walk(then, string_value);
+                self.grown = grown.clone();
+                let right = self.walk(els, string_value);
+                self.grown = grown;
+                left && right
             }
             K::Prim { op: Prim::StrConcat, args } => {
                 let [left, right] = args.as_slice() else { return false };
@@ -121,14 +149,17 @@ impl Scan<'_> {
                     && self.walk(body, string_value)
             }
             K::Recur { args } => {
-                args.len() == self.arity
-                    && args.iter().enumerate().all(|(index, arg)| {
-                        if index == self.position {
-                            self.string_result(arg) && self.walk(arg, true)
-                        } else {
-                            self.walk(arg, false)
-                        }
-                    })
+                if args.len() != self.arity {
+                    return false;
+                }
+                self.recheck &= self.grows(&args[self.position]);
+                args.iter().enumerate().all(|(index, arg)| {
+                    if index == self.position {
+                        self.string_result(arg) && self.walk(arg, true)
+                    } else {
+                        self.walk(arg, false)
+                    }
+                })
             }
             _ => false,
         }
@@ -142,14 +173,18 @@ mod tests {
     use fai_syntax::Symbol;
 
     fn planned(source: &str) -> bool {
+        source_plan(source).is_some()
+    }
+
+    fn source_plan(source: &str) -> Option<Plan> {
         let mut db = FaiDatabase::new();
         fai_types::std_lib::load_std(&mut db);
         let id = db.add_source("M.fai".into(), source.into());
         let lowered = fai_rc::rc(&db, db.source_file(id).unwrap(), Symbol::intern("loop"));
-        let K::Join { params, body } = &lowered.entry().body.kind else { return false };
+        let K::Join { params, body } = &lowered.entry().body.kind else { return None };
         let mut types = FxHashMap::default();
         crate::emit::collect_local_types(&lowered.entry().body, &mut types);
-        plan(params, body, &types).is_some()
+        plan(params, body, &types)
     }
 
     #[test]
@@ -185,5 +220,20 @@ mod tests {
         assert!(!planned(
             "module M\nlet loop n text = if n <= 0 then text else loop (n - 1) (text ++ \"012345678901234567\")\n"
         ));
+    }
+
+    #[test]
+    fn nonempty_transitions_can_recheck_startup_ownership() {
+        let plan = source_plan(
+            "module M\nlet loop n text = if n <= 0 then text else loop (n - 1) (text ++ \"a\")\n",
+        )
+        .unwrap();
+        assert!(plan.recheck);
+    }
+
+    #[test]
+    fn unchanged_transitions_keep_the_single_initial_guard() {
+        let plan = source_plan("module M\nlet loop n text = if n <= 0 then text else if n % 2 = 0 then loop (n - 1) text else loop (n - 1) (text ++ \"a\")\n").unwrap();
+        assert!(!plan.recheck);
     }
 }
