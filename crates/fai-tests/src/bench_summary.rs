@@ -21,7 +21,7 @@
 mod memory;
 pub mod tracking;
 mod warm;
-pub use memory::{AllocationSample, FootprintSample};
+pub use memory::{AllocationSample, FootprintSample, ReclamationSample};
 pub use warm::WarmSample;
 
 /// One parsed benchmark measurement.
@@ -188,6 +188,7 @@ impl Report {
         out.push_str(&memory::render_allocations(&self.allocations));
         out.push_str(&warm::render(&self.warm));
         out.push_str(&memory::render_footprints(&self.footprints));
+        out.push_str(&memory::render_reclamation(&self.footprints));
 
         let mut groups: Vec<&str> = Vec::new();
         for row in &self.rows {

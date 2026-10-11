@@ -1,0 +1,27 @@
+module MemoryGraph
+
+let visit j edges visited queue =
+  if j >= Array.length edges then
+    (visited, queue)
+  else
+    let next = Array.unsafeGet j edges
+    if Array.unsafeGet next visited then
+      visit (j + 1) edges visited queue
+    else
+      visit (j + 1) edges (Array.unsafeSet next true visited) (Array.push next queue)
+
+let walk cursor graph visited queue =
+  if cursor >= Array.length queue then
+    cursor
+  else
+    let node = Array.unsafeGet cursor queue
+    let (nextVisited, nextQueue) = visit 0 (Array.unsafeGet node graph) visited queue
+    walk (cursor + 1) graph nextVisited nextQueue
+
+public run : Int -> Int
+let run n =
+  if n <= 0 then
+    0
+  else
+    let graph = Array.init n (fun i -> [| (i + 1) % n, (i * 2 + 1) % n, (i * 3 + 2) % n |])
+    walk 0 graph (Array.unsafeSet 0 true (Array.repeat n false)) [| 0 |]

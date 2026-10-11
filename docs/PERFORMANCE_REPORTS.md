@@ -29,15 +29,18 @@ The complete run includes:
 1. Three warm-AOT passes of 21 paired run/floor observations at both registered
    sizes, plus the matched supplemental components.
 2. Three end-to-end passes with at least 100 observations per language/workload.
-3. Peak RSS at both sizes and 1/16 complete invocations, using five fresh
-   processes per side and mode.
+3. Independent memory-size curves and 1/16 complete invocations, using five fresh
+   processes per side and mode. Each process is observed before the workload and
+   after its result is consumed, with current and peak RSS kept distinct.
 4. Optimized `allocation-stats` source-identical controls.
 5. The `perceus_space` and `perceus_storage` guard targets.
 
 Builds and measurements run serially. Uninstrumented timing/footprint binaries,
 instrumented allocation binaries and assertion-enabled guards have separate
 identities. Executables are copied into the snapshot and losslessly compressed
-after use. The runner removes only its own disposable build directory.
+after use. Identical compressed images share disk storage through hard links when
+available. The runner removes only its own disposable build directory and can
+release duplicate Cargo images after retaining the executable copies.
 
 The default destination is `target/performance/<timestamp>-<revision>`; choose
 another with `--output`. Linux and `taskset` are required for the complete RSS
@@ -69,6 +72,11 @@ reuses `bench-summary` parsing and comparison eligibility. It verifies:
 - Instrumentation boundaries, allocation accounting domains, and final live
   storage matching the retained harness baseline.
 - Successful execution of both memory-guard targets.
+
+Snapshot schema 2 includes the versioned memory input catalog and requires
+`MEMSTAT3` observations (`isolated-memory-v3`) with paired before/after current
+RSS as well as peaks. Older snapshots retain their own renderer and source
+identity; their peak-only observations do not acquire inferred after-RSS values.
 
 The three Markdown files and normalized `results.json` are emitted only after
 validation succeeds. Rendering the same snapshot and evidence URL is
@@ -128,6 +136,22 @@ RSS is process footprint, not a common live-heap measure or a compiler-memory
 win count. Perceus evidence uses its own Fai object/backing accounting domain.
 All allocation controls retain reference counting; disabling reuse does not
 disable RC or the runtime's ordinary uniqueness rules.
+
+The memory matrix comes from `fai-bench-workloads/src/memory_workloads.rs`, rather
+than the compute benchmark sizes. It includes the application workloads and ten
+storage fixtures: Int/Float arrays, shared array snapshots, a linked list, a
+complete binary tree, UTF-8 construction, distinct-key maps/sets, materialized
+array-adjacency BFS and variable-count Float bodies. Whole-structure consumers
+keep storage materialized without per-element optimizer barriers. Each reviewed
+contract records the logical shape and remaining representation/policy differences.
+
+The harness reads `/proc/PID/status` in the parent while each child is paused:
+after setup and after workload-result consumption. The child stays alive until
+the parent finishes observing it. Current RSS after work exposes retained pages;
+the high-water mark remains a peak and cannot establish reclamation by itself.
+No forced GC, allocator trimming or baseline subtraction changes the natural
+language/runtime policy. The issue shows the largest input's before/after values
+at each repetition count; every size's paired observations remain in the archive.
 
 Presentation and validation tests live under
 `crates/fai-tests/src/bench_summary/tracking/`; publisher/retention tests are in

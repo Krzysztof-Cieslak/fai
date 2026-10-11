@@ -1,0 +1,13 @@
+module MemoryList
+
+let build i n values = if i >= n then values else build (i + 1) n (i :: values)
+
+let consume total values =
+  match values with
+  | [] -> total
+  | value :: rest -> consume (total + value + 1) rest
+
+public run : Int -> Int
+let run n =
+  let values = build 0 n []
+  consume 0 values

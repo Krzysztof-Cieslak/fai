@@ -448,29 +448,44 @@ addition. Malformed requests return an error and terminate; EOF ends the worker.
 The Rust and generated Fai/OCaml worker tests compare varied inputs, full-width
 and Float results, zero batches, errors and repeated requests.
 
-### `algorithms_mem` — delivered binaries, peak memory
+### `algorithms_mem` — delivered binaries, memory curves and reclamation
 
 `crates/fai-tests/benches/algorithms_mem.rs` measures **process footprints**, not
-compiler-allocation wins. The default runs both registered input sizes, each at
-1 and 16 whole-workload invocations per fresh process. Five observations per peer
+compiler-allocation wins. Its predeclared memory-specific sizes are independent
+of JIT/AOT compute sizes, each at 1 and 16 whole-workload invocations per fresh process. Five observations per peer
 are interleaved with floor executions of the same binary. Size, repetition count
 and run/floor mode arrive through argv. Floor mode never invokes the workload,
 even for inputs whose actual computation would be expensive.
 
-All three sides are measured **identically by self-reporting**: with
-`FAI_REPORT_RSS` set in the child's environment, the Fai runtime (`run_entry`),
-the isolated Rust peer, and the isolated OCaml peer each read their own peak RSS
-from `/proc/self/status` (`VmHWM`, the high-water mark) and print a
-`fai-peak-rss-kib:` line to stderr. The harness emits `MEMSTAT2` JSON records containing every raw RSS and
-floor observation, input size, repetition count, workload version and paired
-executable identity. `bench-summary` renders the absolute footprints and floors.
+All three sides use **externally observed quiescent boundaries**. Each child
+accepts `prepare`, prints `ready`, and waits. The parent reads current RSS from
+`/proc/PID/status`, then sends `run`. After consuming its workload result, the
+child prints the checked scalar answer and waits for EOF. The parent reads
+current RSS and its high-water mark (`VmRSS` and `VmHWM`) before allowing exit.
+The observer's buffers therefore live outside the measured child. No forced GC
+or allocator trimming changes natural reclamation. `MEMSTAT3` records retain
+paired before/peak/after observations for both workload and same-executable
+floor, plus input size, repetition count, contract and executable identity. The
+methodology is `isolated-memory-v3`; historical `MEMSTAT2` peaks stay peak-only.
+`bench-summary` renders absolute peaks, floors and post-workload resident memory.
 A process ratio requires a compatible pair of uninstrumented binaries and at
 least five observations per side. Application comparisons retain their class,
 and each language's floor/peak percentage is shown without suppressing ratios.
 An unavailable third peer does not suppress a valid pair. Every ratio remains a
 **process-footprint** comparison. There is no
 "compiler memory wins" count or aggregate built from these rows. Missing RSS
-self-reports and wrong answers fail the measurement instead of becoming zeros.
+observations and wrong answers fail the measurement instead of becoming zeros.
+
+The source-reviewed catalog in `fai-bench-workloads/src/memory_workloads.rs`
+labels each input axis and includes ten additional storage fixtures. Arrays,
+linked cells, complete trees and array-adjacency BFS provide matched logical
+structures. Distinct-key maps/sets vary cardinality instead of repeatedly
+touching the same small key set, and variable-count bodies complement the
+fixed-five-body simulations. UTF-8 builders retain their application-level
+buffer-policy differences. Non-inlined whole-structure consumers keep storage
+observable; element operations retain ordinary optimization. Run `--list` to
+see the curves; `--size all` selects every declared size, while `small`/`large`
+select endpoints. `--test --size large --repeats 1` checks the largest sizes.
 
 Reading peak RSS:
 

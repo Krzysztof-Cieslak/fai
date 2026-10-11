@@ -8,6 +8,8 @@ pub mod algorithms;
 pub mod benchmark_aot;
 pub mod benchmark_process;
 pub mod contracts;
+pub mod footprint;
+pub mod memory_workloads;
 pub mod sorting;
 pub mod tail_components;
 pub mod tree_lookup;

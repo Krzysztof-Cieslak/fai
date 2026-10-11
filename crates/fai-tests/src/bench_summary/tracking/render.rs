@@ -15,7 +15,7 @@ fn header(snapshot: &Snapshot, key: &str, title: &str, evidence: &str) -> String
         &m.measured_revision[..12],
         m.repository,
         m.measured_revision,
-        m.methodology
+        if key == "memory" { crate::memory_workloads::METHODOLOGY } else { &m.methodology }
     );
     let get = |key: &str| m.machine.get(key).map(String::as_str).unwrap_or("unspecified");
     let tool = |key: &str| m.toolchains.get(key).map(String::as_str).unwrap_or("unspecified");
@@ -126,8 +126,8 @@ fn footprint(snapshot: &Snapshot, evidence: &str) -> String {
     let samples = &snapshot.reports["memory"].footprints;
     let _ = writeln!(
         text,
-        "## Current coverage\n\n**{} workloads · {} size/repetition cases · {} fresh processes per side and mode.** Both registered input sizes and 1/16 whole-workload repetitions are included. Every peer is an isolated, uninstrumented executable.\n",
-        crate::algorithms::ALGORITHMS.len(),
+        "## Current coverage\n\n**{} workloads · {} size/repetition cases · {} fresh processes per side and mode.** Predeclared memory-specific input curves and 1/16 whole-workload repetitions are included. Additional storage fixtures vary elements, keys, nodes, UTF-8 chunks and body counts. Every peer is an isolated, uninstrumented executable. Input units and fixed-state cases are listed below.\n",
+        crate::memory_workloads::algorithms().count(),
         samples.len() / 3,
         snapshot.manifest.settings.memory_samples
     );
@@ -138,6 +138,16 @@ fn footprint(snapshot: &Snapshot, evidence: &str) -> String {
         "## Current measurements",
         1,
     ));
+    text.push_str(&memory::render_reclamation(samples));
+    text.push_str("## Input axes\n\nSizes are fixed before measurement. Fixed-state curves increase work rather than resident data; the storage fixtures vary the live dataset itself. Tree depth d describes 2^d − 1 nonempty nodes in MemoryTree. Each MemoryUtf8 chunk is nine bytes / four Unicode scalars. Array/body inputs count elements.\n\n| Workload | Input unit | Scale | Sizes |\n|---|---|---|---|\n");
+    let mut cases: Vec<_> = crate::memory_workloads::algorithms().collect();
+    cases.sort_by_key(|case| case.module);
+    for case in cases {
+        let profile = crate::memory_workloads::profile(case.module).expect("memory profile");
+        let sizes = profile.sizes.iter().map(i64::to_string).collect::<Vec<_>>().join(", ");
+        let _ =
+            writeln!(text, "| {} | {} | {} | {sizes} |", case.module, profile.unit, profile.scale);
+    }
     notes(snapshot, "memory", &mut text);
     text
 }

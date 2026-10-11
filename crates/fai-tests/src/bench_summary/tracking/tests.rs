@@ -6,10 +6,10 @@ use std::io::Write as _;
 use sha2::{Digest, Sha256};
 
 use super::*;
-use crate::bench_summary::{AllocationSample, FootprintSample, WarmSample};
+use crate::bench_summary::{AllocationSample, FootprintSample, ReclamationSample, WarmSample};
 use crate::{
     algorithms, allocation_design, benchmark_aot as aot, benchmark_contracts as contracts,
-    tail_components,
+    memory_workloads, tail_components,
 };
 
 struct Fixture {
@@ -71,12 +71,14 @@ impl Fixture {
                 )
             })
             .to_vec();
-        let algorithm =
-            algorithms::by_module(module).or_else(|| tail_components::by_module(module)).unwrap();
+        let algorithm = algorithms::by_module(module)
+            .or_else(|| tail_components::by_module(module))
+            .or_else(|| memory_workloads::by_module(module))
+            .unwrap();
         let entry = match mode {
             "once" => aot::Entry::Once,
             "worker" => aot::Entry::Worker,
-            _ => aot::Entry::Memory,
+            _ => aot::Entry::Footprint,
         };
         let source = self.file(
             &format!(
@@ -94,7 +96,7 @@ impl Fixture {
         );
         let contract = contracts::for_module(module).unwrap();
         self.json(&format!("{root}/{module}/rust-compiler-info.json"), serde_json::json!({
-            "methodology": contracts::METHODOLOGY, "workload": module, "workloadVersion": contract.version,
+            "methodology": if mode == "memory" { memory_workloads::METHODOLOGY } else { contracts::METHODOLOGY }, "workload": module, "workloadVersion": contract.version,
             "sourceHash": source, "executableHash": hashes[1], "compiler": "fixture",
             "libraryBuild": {"compiler": "fixture", "artifact": {"profile": {"opt_level": "3", "debug_assertions": false, "overflow_checks": false}}}
         }));
@@ -110,7 +112,7 @@ impl Fixture {
         let mut fixture = Self {
             directory: tempfile::tempdir().unwrap(),
             manifest: Manifest {
-                schema_version: 1,
+                schema_version: SCHEMA_VERSION,
                 run_id: "fixture-checkpoint".into(),
                 status: "complete".into(),
                 repository: "example/fai".into(),
@@ -199,23 +201,25 @@ impl Fixture {
             fixture.step(name, "timing", &text);
         }
         let mut memory = String::new();
-        for algorithm in algorithms::ALGORITHMS {
+        for algorithm in memory_workloads::algorithms() {
             let contract = contracts::for_module(algorithm.module).unwrap();
             let root = "artifacts/memory";
             let (identity, hashes) = fixture.peers(root, algorithm.module, "memory");
             fixture.file(
                 &format!("{root}/{}/memory.fai", algorithm.module),
-                aot::fai_program(algorithm, aot::Entry::Memory).as_bytes(),
+                aot::fai_program(algorithm, aot::Entry::Footprint).as_bytes(),
             );
+            let profile = memory_workloads::profile(algorithm.module).unwrap();
             fixture.json(
                 &format!("{root}/{}/identity.json", algorithm.module),
-                serde_json::json!({"faiCompiler": Self::compiler()}),
+                serde_json::json!({"faiCompiler": Self::compiler(), "methodology": memory_workloads::METHODOLOGY,
+                    "memoryProfile": {"unit": profile.unit, "scale": profile.scale, "sizes": profile.sizes}}),
             );
-            for size in [algorithm.jit_size, algorithm.aot_size] {
+            for &size in profile.sizes {
                 for iterations in [1, 16] {
                     for (index, side) in ["fai", "rust", "ocaml"].into_iter().enumerate() {
                         let row = FootprintSample {
-                            methodology: contracts::METHODOLOGY.into(),
+                            methodology: memory_workloads::METHODOLOGY.into(),
                             algorithm: algorithm.module.into(),
                             workload_version: contract.version.into(),
                             comparison: contract.comparison.as_str().into(),
@@ -227,6 +231,12 @@ impl Fixture {
                             samples_kib: vec![50000; 5],
                             floor_kib: vec![1000; 5],
                             instrumented: false,
+                            reclamation: Some(ReclamationSample {
+                                before_kib: vec![2000; 5],
+                                after_kib: vec![3000; 5],
+                                floor_before_kib: vec![1000; 5],
+                                floor_after_kib: vec![1000; 5],
+                            }),
                         };
                         memory.push_str(&row.to_line());
                         memory.push('\n');
@@ -368,6 +378,25 @@ fn missing_warm_case_is_rejected() {
     let mut fixture = Fixture::new();
     fixture.rewrite("raw/warm.stdout", |text| text.lines().skip(1).collect::<Vec<_>>().join("\n"));
     assert!(fixture.load().unwrap_err().to_string().contains("incomplete warm matrix"));
+}
+
+#[test]
+fn missing_memory_curve_observation_is_rejected() {
+    let mut fixture = Fixture::new();
+    fixture
+        .rewrite("raw/memory.stdout", |text| text.lines().skip(1).collect::<Vec<_>>().join("\n"));
+    assert!(
+        fixture.load().unwrap_err().to_string().contains("incomplete process-footprint matrix")
+    );
+}
+
+#[test]
+fn missing_current_rss_is_not_a_complete_memory_observation() {
+    let mut fixture = Fixture::new();
+    fixture.rewrite("raw/memory.stdout", |text| {
+        text.replacen("\"afterKib\":[3000,3000,3000,3000,3000]", "\"afterKib\":[]", 1)
+    });
+    assert!(fixture.load().unwrap_err().to_string().contains("malformed"));
 }
 
 #[test]

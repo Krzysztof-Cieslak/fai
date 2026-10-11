@@ -121,6 +121,18 @@ def compress_artifacts(run, folder, state):
             if hashlib.file_digest(stream, "sha256").hexdigest() != expected:
                 raise ValueError(f"compression verification failed: {relative}")
         temporary.replace(target)
+        blobs = state.setdefault("compressedBlobs", {})
+        compressed_hash = digest(target)
+        previous = run / blobs.get(compressed_hash, target.relative_to(run).as_posix())
+        if previous != target and previous.is_file() and digest(previous) == compressed_hash:
+            linked = target.with_name(target.name + ".link")
+            try:
+                os.link(previous, linked)
+                linked.replace(target)
+            except OSError:
+                linked.unlink(missing_ok=True)
+        else:
+            blobs[compressed_hash] = target.relative_to(run).as_posix()
         state["compressed"][relative] = target.relative_to(run).as_posix()
         write_json(run / "state.json", state)
         path.unlink()
@@ -293,6 +305,20 @@ def render(run, evidence=""):
     subprocess.run([str(renderer), str(run), str(run / "reports"), *([evidence] if evidence else [])], check=True)
 
 
+def release_timing_cache(run, state, env):
+    """Retained bin/ images embed their runtime; Cargo's copies are disposable."""
+    if state.get("timingCacheReleased") or not (run / "build/release").exists():
+        return
+    if shutil.disk_usage(run).free >= 2_000_000_000:
+        return
+    command = ["cargo", "clean", "--profile", "release", "-p", "fai-tests", "-p", "fai-driver", "--target-dir", str(run / "build")]
+    output = subprocess.run(command, cwd=run / "source", env=env, check=True, capture_output=True, text=True)
+    write_json(run / "build-records/timing-cache-release.json", {
+        "command": command, "stdout": output.stdout, "stderr": output.stderr, "finishedAt": utc()})
+    state["timingCacheReleased"] = True
+    write_json(run / "state.json", state)
+
+
 def execute(run):
     manifest = read_json(run / "snapshot.json")
     if manifest["status"] == "complete":
@@ -313,15 +339,15 @@ def execute(run):
         write_json(run / "catalog.json", catalog)
         manifest["methodology"] = catalog["methodology"]
         write_json(run / "snapshot.json", manifest)
+        release_timing_cache(run, state, env)
         step(run, manifest, state, "warm", [normal["algorithms_aot_warm"], "--samples", str(settings["warmSamples"]), "--passes", str(settings["warmPasses"])], "timing", env)
         step(run, manifest, state, "components", [normal["algorithms_aot_warm"], "--components", "--samples", str(settings["warmSamples"]), "--passes", str(settings["warmPasses"])], "timing", env)
         for n in range(1, settings["aotPasses"] + 1):
+            release_timing_cache(run, state, env)
             step(run, manifest, state, f"aot-{n}", [normal["algorithms_aot"], "--bench", "--sample-count", str(settings["aotSamples"]), "--min-time", "0.25", "--max-time", "120", "--sortr" if n % 2 == 0 else "--sort", "name"], "timing", env)
-        step(run, manifest, state, "memory", [normal["algorithms_mem"], "--size", "both", "--samples", str(settings["memorySamples"]), "--repeats", ",".join(map(str, settings["memoryRepeats"]))], "timing", env)
-        # The build directory belongs exclusively to this run. Copies in bin/
-        # retain the exact executables; profile caches are disposable.
-        if (run / "build/release").exists() and shutil.disk_usage(run).free < 2_000_000_000:
-            subprocess.run(["cargo", "clean", "--profile", "release", "-p", "fai-driver", "--target-dir", str(run / "build")], cwd=run / "source", env=env, check=True)
+        release_timing_cache(run, state, env)
+        step(run, manifest, state, "memory", [normal["algorithms_mem"], "--size", "all", "--samples", str(settings["memorySamples"]), "--repeats", ",".join(map(str, settings["memoryRepeats"]))], "timing", env)
+        release_timing_cache(run, state, env)
         instrumented = build(run, manifest, state, "allocation", env)
         step(run, manifest, state, "allocations", [instrumented["allocation_design"]], "allocation", env)
         if (run / "build/release").exists():
@@ -369,7 +395,7 @@ def start(args):
         raise ValueError("benchmark CPU is outside the allowed affinity")
     machine["benchmarkCpu"] = str(cpu)
     env = {key: os.environ.get(key) for key in ENVIRONMENT}
-    manifest = {"schemaVersion": 1, "runId": run_id, "status": "incomplete", "repository": config["repository"],
+    manifest = {"schemaVersion": 2, "runId": run_id, "status": "incomplete", "repository": config["repository"],
                 "measuredRevision": revision, "reporterRevision": revision, "startedAt": utc(), "completedAt": "",
                 "methodology": "", "machine": machine, "environment": env,
                 "toolchains": {"rustVersion": rust.splitlines()[0], "rustDetails": rust, "ocamlVersion": version[1], "ocamlConfiguration": ocaml, "ocamlExecutable": str(Path(compiler).resolve())},

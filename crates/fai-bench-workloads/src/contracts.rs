@@ -42,6 +42,9 @@ pub struct Contract {
 /// Returns a reviewed contract; unregistered names never acquire eligibility.
 #[must_use]
 pub fn for_module(name: &str) -> Option<Contract> {
+    if let Some(contract) = crate::memory_workloads::contract(name) {
+        return Some(contract);
+    }
     let (rust_entry, ocaml_entry, ocaml_support): (_, _, &[_]) = match name {
         "Fib" => ("algorithms::fib", "fib", &[]),
         "Collatz" => ("algorithms::collatz_sum", "collatz_sum", &[]),
@@ -222,6 +225,7 @@ mod tests {
         let missing: Vec<_> = crate::algorithms::ALGORITHMS
             .iter()
             .chain(crate::tail_components::COMPONENTS)
+            .chain(crate::memory_workloads::FIXTURES)
             .filter(|case| for_module(case.module).is_none())
             .map(|case| case.module)
             .collect();

@@ -1,0 +1,13 @@
+module MemorySharedArrays
+
+let consume i total values =
+  if i >= Array.length values then
+    total + i
+  else
+    consume (i + 1) (total + Array.unsafeGet i values) values
+
+public run : Int -> Int
+let run n =
+  let original = Array.init n identity
+  let changed = Array.map (fun value -> value + 1) original
+  consume 0 0 original + consume 0 0 changed

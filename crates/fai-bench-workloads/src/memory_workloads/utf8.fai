@@ -1,0 +1,6 @@
+module MemoryUtf8
+
+let build remaining text = if remaining <= 0 then text else build (remaining - 1) (text ++ "aéλ😀")
+
+public run : Int -> Int
+let run n = String.length (build n "")

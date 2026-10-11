@@ -98,8 +98,10 @@ pub fn rust(algorithm: &Algorithm, entry: Entry) -> Utf8PathBuf {
     assert!(output.status.success(), "{command:?}: {}", String::from_utf8_lossy(&output.stderr));
     verify_isolated(&binary).unwrap();
     let contract = benchmark_contracts::for_module(algorithm.module).unwrap();
+    let methodology =
+        if entry == Entry::Footprint { crate::memory_workloads::METHODOLOGY } else { METHODOLOGY };
     std::fs::write(directory.join("compiler-info.json"), serde_json::to_vec_pretty(&serde_json::json!({
-        "methodology": METHODOLOGY, "workload": algorithm.module, "workloadVersion": contract.version,
+        "methodology": methodology, "workload": algorithm.module, "workloadVersion": contract.version,
         "hashAlgorithm": "blake3",
         "comparison": contract.comparison.as_str(), "contract": contract.note,
         "compiler": library.version, "command": format!("{command:?}"),
@@ -122,6 +124,7 @@ pub fn rust_source(algorithm: &Algorithm, entry: Entry) -> String {
     let call = match entry {
         Entry::Once => "run_once(oracle)?;",
         Entry::Memory => "memory_process(oracle)?;",
+        Entry::Footprint => "footprint_process(oracle)?;",
         Entry::Worker => "serve(oracle, std::io::stdin().lock(), std::io::stdout().lock())?;",
     };
     format!(

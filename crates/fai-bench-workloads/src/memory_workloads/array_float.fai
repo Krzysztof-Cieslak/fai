@@ -1,0 +1,13 @@
+module MemoryArrayFloat
+
+consume : Int -> Float -> Array Float -> Float
+let consume i total values =
+  if i >= Array.length values then
+    total + Int.toFloat i
+  else
+    consume (i + 1) (total + Array.unsafeGet i values) values
+
+public runF : Int -> Float
+let runF n =
+  let values = Array.init n (fun i -> Int.toFloat i + 0.25)
+  consume 0 0.0 values

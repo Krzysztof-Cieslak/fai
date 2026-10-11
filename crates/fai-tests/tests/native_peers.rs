@@ -12,7 +12,11 @@ use fai_tests::benchmark_process::{ExpectedAnswer, Worker, spawn_checked};
 fn every_isolated_peer_matches_its_registered_answer() {
     // Registry-wide coverage is one invariant: adding a case must also provide
     // a buildable, isolated native entry on each available peer.
-    for case in ALGORITHMS.iter().chain(fai_tests::tail_components::COMPONENTS) {
+    for case in ALGORITHMS
+        .iter()
+        .chain(fai_tests::tail_components::COMPONENTS)
+        .chain(fai_tests::memory_workloads::FIXTURES)
+    {
         let expected = ExpectedAnswer::at_size(case, case.jit_size);
         let rust = fai_tests::native_peer::rust(case, Entry::Once);
         let output = spawn_checked(Command::new(&rust).arg(case.jit_size.to_string())).unwrap();

@@ -23,6 +23,8 @@ pub enum Entry {
     Worker,
     /// Read size, repetition count, and run/floor mode; report process memory.
     Memory,
+    /// Pause before work and after releasing its result for external RSS reads.
+    Footprint,
 }
 
 /// Reuses the unmodified workload definitions with a runtime-input entry point.
@@ -65,7 +67,11 @@ pub fn fai_program_from(source: &str, function: &str, floating: bool, entry: Ent
             .replace("HARNESS_MAX_INPUTS", &MAX_INPUTS.to_string())
             .replace("HARNESS_MAX_BATCH", &MAX_BATCH.to_string())
             .replace("HARNESS_MAX_SIZE", &MAX_SIZE.to_string()),
-        Entry::Memory => include_str!("benchmark_aot/memory.fai.in")
+        Entry::Memory | Entry::Footprint => (if entry == Entry::Memory {
+            include_str!("benchmark_aot/memory.fai.in")
+        } else {
+            include_str!("benchmark_aot/footprint.fai.in")
+        })
             .replace("HARNESS_TYPE", scalar)
             .replace("HARNESS_ENTRY", function)
             .replace("HARNESS_RENDER", &render)
@@ -97,6 +103,13 @@ pub fn run_once(oracle: Oracle) -> Result<(), Box<dyn std::error::Error>> {
 /// Executes checked whole-workload repetitions or the matching process floor.
 /// Output is a checksum; the floor executes no workload at any size.
 pub fn memory_process(oracle: Oracle) -> Result<(), Box<dyn std::error::Error>> {
+    let (size, count, floor) = memory_configuration()?;
+    write_answer(&mut std::io::stdout().lock(), memory_result(oracle, size, count, floor))?;
+    report_rss();
+    Ok(())
+}
+
+fn memory_configuration() -> Result<(i64, usize, bool), Box<dyn std::error::Error>> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments.len() != 3 {
         return Err("expected size, repetitions, and run/floor".into());
@@ -111,17 +124,49 @@ pub fn memory_process(oracle: Oracle) -> Result<(), Box<dyn std::error::Error>> 
         "run" => false,
         _ => return Err("expected run or floor mode".into()),
     };
-    let result =
-        match oracle {
-            Oracle::Int(f) => {
-                ExpectedAnswer::Int(fold_int(&[size], count, |n| if floor { n } else { f(n) }))
-            }
-            Oracle::Float(f) => ExpectedAnswer::Float(fold_float(&[size], count, |n| {
-                if floor { n as f64 } else { f(n) }
-            })),
-        };
-    write_answer(&mut std::io::stdout().lock(), result)?;
-    report_rss();
+    Ok((size, count, floor))
+}
+
+fn memory_result(oracle: Oracle, size: i64, count: usize, floor: bool) -> ExpectedAnswer {
+    match oracle {
+        Oracle::Int(f) => {
+            ExpectedAnswer::Int(fold_int(&[size], count, |n| if floor { n } else { f(n) }))
+        }
+        Oracle::Float(f) => {
+            ExpectedAnswer::Float(fold_float(
+                &[size],
+                count,
+                |n| {
+                    if floor { n as f64 } else { f(n) }
+                },
+            ))
+        }
+    }
+}
+
+/// Executes a footprint workload between two externally observable pauses.
+/// Each process accepts exactly `prepare`, `run`, then EOF. No collection is
+/// forced; the second pause retains the harness, but no workload result owner.
+pub fn footprint_process(oracle: Oracle) -> Result<(), Box<dyn std::error::Error>> {
+    let (size, count, floor) = memory_configuration()?;
+    let mut input = std::io::stdin().lock();
+    let mut line = String::new();
+    input.read_line(&mut line)?;
+    if line.trim_end() != "prepare" {
+        return Err("expected prepare".into());
+    }
+    println!("ready");
+    std::io::stdout().flush()?;
+    line.clear();
+    input.read_line(&mut line)?;
+    if line.trim_end() != "run" {
+        return Err("expected run".into());
+    }
+    write_answer(&mut std::io::stdout().lock(), memory_result(oracle, size, count, floor))?;
+    line.clear();
+    if input.read_line(&mut line)? != 0 {
+        return Err("expected EOF after footprint result".into());
+    }
     Ok(())
 }
 
