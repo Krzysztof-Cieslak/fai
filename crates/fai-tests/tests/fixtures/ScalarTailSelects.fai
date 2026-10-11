@@ -1,0 +1,16 @@
+module Main
+
+let count i stop values total =
+  if i >= stop then
+    total
+  else if Array.unsafeGet i values then
+    count (i + 1) stop values (total + 1)
+  else
+    count (i + 1) stop values (total - 1)
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let values = [| true, false, true |]
+  let result = count 0 3 values 9223372036854775807
+  let valid = values = [| true, false, true |] && result = -9223372036854775808
+  runtime.console.writeLine (if valid then "ok" else "wrong")

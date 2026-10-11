@@ -8004,6 +8004,9 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::If { cond, then, els } => {
                 let cv = self.expr(cond);
                 let is_true = self.truth_value(cv);
+                if self.select_recur(is_true, then, els) {
+                    return;
+                }
                 let then_b = self.builder.create_block();
                 let else_b = self.builder.create_block();
                 self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
@@ -8084,7 +8087,82 @@ impl<M: Module> Translator<'_, M> {
     /// A `Recur` back-edge: evaluate the new loop-carried values (which may read the
     /// current ones), then reassign every loop local and jump to the header.
     fn recur(&mut self, args: &[CExpr]) {
-        let mut vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+        let vals: Vec<Value> = args.iter().map(|a| self.expr(a)).collect();
+        self.recur_values(vals);
+    }
+
+    /// Chooses bounded, total integer next-state values without branching. Any
+    /// non-scalar owner must be the same already-evaluated local in both arms.
+    fn select_recur(&mut self, condition: Value, then: &CExpr, els: &CExpr) -> bool {
+        let Some(context) = &self.loop_ctx else { return false };
+        if context.params.len() > 8 {
+            return false;
+        }
+        let mut budget = 32;
+        let raw = |local| self.is_int_local(local);
+        let Some(left) = crate::scalar_select::loop_arm(then, &raw, &mut budget) else {
+            return false;
+        };
+        let Some(right) = crate::scalar_select::loop_arm(els, &raw, &mut budget) else {
+            return false;
+        };
+        if left.args.len() != context.params.len() || right.args.len() != context.params.len() {
+            return false;
+        }
+        if left
+            .bindings
+            .iter()
+            .chain(&right.bindings)
+            .any(|(local, _)| context.params.contains(local))
+            || left
+                .bindings
+                .iter()
+                .any(|(local, _)| right.bindings.iter().any(|(other, _)| local == other))
+        {
+            return false;
+        }
+        for ((a, b), param) in left.args.iter().zip(right.args).zip(&context.params) {
+            if a == b && matches!(a.kind, ExprKind::Local(_)) {
+                continue;
+            }
+            if !raw(*param)
+                || !crate::scalar_select::integer_arm(a, &raw, &mut budget)
+                || !crate::scalar_select::integer_arm(b, &raw, &mut budget)
+            {
+                return false;
+            }
+        }
+        let saved_bounds = self.bounds.clone();
+        for arm in [&left, &right] {
+            self.bounds = saved_bounds.clone();
+            for &(local, value) in &arm.bindings {
+                let result = self.expr(value);
+                self.define_var(local, result);
+                self.bce_transfer(local, value);
+            }
+        }
+        self.bounds = saved_bounds;
+        let values = left
+            .args
+            .iter()
+            .zip(right.args)
+            .map(|(a, b)| {
+                let left = self.expr(a);
+                if a == b {
+                    return left;
+                }
+                let right = self.expr(b);
+                debug_assert!(self.is_raw_int(left) && self.is_raw_int(right));
+                let selected = self.builder.ins().select(condition, left, right);
+                self.mark_raw(selected)
+            })
+            .collect();
+        self.recur_values(values);
+        true
+    }
+
+    /// Rebinds a fully evaluated next state, including auxiliary loop evidence.
+    fn recur_values(&mut self, mut vals: Vec<Value>) {
         let (header, params, fixed) = {
             let ctx = self.loop_ctx.as_ref().expect("recur inside a loop");
             (ctx.header, ctx.params.clone(), ctx.fixed_point.clone())

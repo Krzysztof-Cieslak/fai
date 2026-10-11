@@ -2688,6 +2688,11 @@ Editor integration:
     without an overflow branch. The range proof uses existing constraints and
     the array allocation ceiling; unknown and wrapping values retain ordinary
     boxing. Shadow execution validates each omitted range check.
+    A pair of self-loop back-edges can select bounded, total raw-Int arguments
+    without branching. The condition still runs once and all state is rebound
+    simultaneously. Other carried values must be the same evaluated local in
+    both arms; conditional ownership operations, effects and traps prevent the
+    rewrite. The ordinary loop evidence and release points are preserved.
     Consecutive distinct uniform-field projections ending at their owner's drop
     or reset may transfer the fields when the cell is uniquely owned. The field
     slots are cleared before the ordinary owner release, preserving each child

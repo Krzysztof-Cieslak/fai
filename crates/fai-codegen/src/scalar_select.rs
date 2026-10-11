@@ -45,6 +45,39 @@ pub(crate) fn integer_arm(
     }
 }
 
+/// A straight-line scalar prefix ending in the current loop's back-edge.
+pub(crate) struct LoopArm<'a> {
+    /// Raw integer bindings safe to evaluate before choosing the next state.
+    pub(crate) bindings: Vec<(LocalId, &'a CExpr)>,
+    /// Values passed to the next iteration, validated against the other arm.
+    pub(crate) args: &'a [CExpr],
+}
+
+/// Collects only total scalar work. Ownership operations on other values keep
+/// their control flow, even if the eventual back-edge arguments are identical.
+pub(crate) fn loop_arm<'a>(
+    mut expression: &'a CExpr,
+    raw: &impl Fn(LocalId) -> bool,
+    budget: &mut usize,
+) -> Option<LoopArm<'a>> {
+    let mut bindings = Vec::new();
+    loop {
+        *budget = budget.checked_sub(1)?;
+        match &expression.kind {
+            K::Let { local, value, body } if raw(*local) => {
+                if !integer_arm(value, raw, budget) {
+                    return None;
+                }
+                bindings.push((*local, value.as_ref()));
+                expression = body;
+            }
+            K::Dup { local, body } | K::Drop { local, body } if raw(*local) => expression = body,
+            K::Recur { args } => return Some(LoopArm { bindings, args }),
+            _ => return None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

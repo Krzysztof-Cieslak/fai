@@ -2582,6 +2582,33 @@ fn small_total_integer_branches_emit_a_select() {
 }
 
 #[test]
+fn scalar_loop_alternatives_select_the_next_state() {
+    let ir = entry_ir(
+        "module M\nlet count i stop values total = if i >= stop then total else if Array.unsafeGet i values then count (i + 1) stop values total else count (i + 1) stop values (total + 1)\n",
+        "count",
+    );
+    assert!(ir.contains("select "), "small loop-state alternatives should select:\n{ir}");
+}
+
+#[test]
+fn scalar_loop_selection_preserves_simultaneous_full_width_state() {
+    let source = "module M\nlet loop n a b = if n <= 0 then a - b else if n % 2 = 0 then loop (n - 1) b (a + 1) else loop (n - 1) (b - 1) a\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop 4 9223372036854775807 (-9223372036854775808)))\n";
+    assert_eq!(run(source), (0, "-1\n".into()));
+}
+
+#[test]
+fn scalar_loop_selection_does_not_evaluate_a_conditional_trap() {
+    let source = "module M\nlet loop n total = if n <= 0 then total else if n % 2 = 0 then loop (n - 1) (total + 1) else loop (n - 1) (total + 100 / (n - 2))\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop 2 0))\n";
+    assert_eq!(run(source), (0, "-99\n".into()));
+}
+
+#[test]
+fn scalar_loop_selection_preserves_branch_effects() {
+    let source = "module M\nlet loop n total =\n  if n <= 0 then total\n  else if n % 2 = 0 then\n    let _ = stdConsole.writeLine \"even\"\n    loop (n - 1) (total + 1)\n  else\n    let _ = stdConsole.writeLine \"odd\"\n    loop (n - 1) (total - 1)\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (Int.toString (loop 2 0))\n";
+    assert_eq!(run(source), (0, "even\nodd\n0\n".into()));
+}
+
+#[test]
 fn positive_loop_division_uses_no_signed_rounding_bias() {
     let ir = entry_ir(
         "module M\npublic halve : Int -> Int -> Int\nlet halve value count = if value <= 0 then count else halve (value / 2) (count + 1)\n",
