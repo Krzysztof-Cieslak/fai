@@ -565,8 +565,8 @@ fn build_plan(
             arity,
             abi,
             Vec::new(),
-            fai_core::BoundSig::default(),
-            fai_core::ResultSig::default(),
+            crate::backend::bounds_entry_of(db, fused.def),
+            crate::backend::bounds_result_of(db, fused.def),
         ));
     }
 
