@@ -580,6 +580,9 @@ Repeated Int values crossing uniform slots in a small straight-line region can
 share one boxed peer while arithmetic retains the raw scalar. Pure duplicate Int
 expressions are coalesced first; ownership insertion balances the shared peer.
 Branch-only uses, closures and row-offset references keep their ordinary paths.
+An Int operand proven to fit the tagged range crosses a uniform slot without an
+overflow branch. The proof includes array length limits; unbounded values retain
+their full-width boxing path, and shadow execution checks the range evidence.
 An Int field with only uniform consumers in a straight-line continuation can keep
 its original tagged or boxed word instead of unboxing and reboxing. It acquires a
 reference before the original parent releases; arithmetic consumers stay raw.

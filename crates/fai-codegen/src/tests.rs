@@ -4668,6 +4668,22 @@ fn growing_array_lengths_keep_their_memory_dependency() {
 }
 
 #[test]
+fn an_array_bounded_integer_needs_no_boxing_overflow_guard() {
+    let source = "module M\nlet append n values = if n < 0 then values else if n < Array.length values then Array.push n values else values\n";
+    let ir = entry_ir(source, "append");
+    assert!(!ir.contains("sadd_overflow"), "the array index fits a tagged integer:\n{ir}");
+}
+
+#[test]
+fn an_unbounded_array_element_keeps_its_boxing_overflow_guard() {
+    let ir = entry_ir(
+        "module M\nappend : Int -> Array Int -> Array Int\nlet append n values = Array.push n values\n",
+        "append",
+    );
+    assert!(ir.contains("sadd_overflow"), "an arbitrary Int can require a box:\n{ir}");
+}
+
+#[test]
 fn guarded_bulk_repeat_justifies_the_first_element_read() {
     let source = "module M\nlet first n =\n  let values = Array.repeat n 7\n  if n > 0 then Array.unsafeGet 0 values else 0\n";
     let ir = entry_ir(source, "first");
