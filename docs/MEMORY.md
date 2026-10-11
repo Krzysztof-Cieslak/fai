@@ -51,6 +51,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Native paths are immutable opaque byte-backed values preserving every Unix
+  filename byte and Windows UTF-16 code unit. Text conversion rejects unrepresentable
+  names; diagnostic display escapes them. Lexical operations are pure and
+  platform-native, equality is spelling-based, and resolution takes an explicit
+  absolute base without reading a process or per-drive working directory.
+
 - Kind inference does not inspect declarations for argument-free type references:
   there are no parameter slots to classify. This avoids recursively rescanning
   imported monomorphic alias graphs while preserving effect-kind propagation for

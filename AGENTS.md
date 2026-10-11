@@ -1164,6 +1164,14 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+`Path` is a lossless opaque native path value: raw filename bytes on Unix and
+little-endian UTF-16 units on Windows. Its pure lexical operations never consult
+the filesystem or working directory. Text conversion is checked; diagnostic
+display is escaped and never an operational path. Equality compares exact native
+spelling. Normalization is lexical, preserves Windows verbatim paths, and does
+not resolve symbolic links. Resolving relative paths requires an explicit
+absolute base; Windows drive-relative children are rejected.
+
 ```
 source (.fai)
   → lex                 (fai-syntax)   tokens + spans

@@ -216,6 +216,8 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::CryptoScramPassword
         | Prim::TextGraphemes
         | Prim::TextWidth
+        | Prim::PathOperation
+        | Prim::PathComponents
         | Prim::BytesSlice
         | Prim::BytesFromList
         | Prim::BytesToList

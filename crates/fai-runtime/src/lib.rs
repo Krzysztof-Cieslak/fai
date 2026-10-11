@@ -5256,6 +5256,8 @@ mod reactor;
 
 /// File-handle capabilities (progressive reading/writing over the blocking pool).
 mod io;
+mod path;
+pub use path::{fai_path_components, fai_path_operation};
 
 mod crypto;
 mod process;

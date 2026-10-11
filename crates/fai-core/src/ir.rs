@@ -773,6 +773,10 @@ pub enum Prim {
     TextGraphemes,
     /// Terminal display width, with explicit ambiguous-width policy.
     TextWidth,
+    /// Native lexical path operation returning a status and native units.
+    PathOperation,
+    /// Split native path units into lexical component buffers.
+    PathComponents,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -940,6 +944,8 @@ impl Prim {
             Prim::CryptoScramPassword => "fai_crypto_scram_password",
             Prim::TextGraphemes => "fai_text_graphemes",
             Prim::TextWidth => "fai_text_width",
+            Prim::PathOperation => "fai_path_operation",
+            Prim::PathComponents => "fai_path_components",
             Prim::BytesSlice => "fai_bytes_slice",
             Prim::BytesFromList => "fai_bytes_from_list",
             Prim::BytesToList => "fai_bytes_to_list",
@@ -984,12 +990,14 @@ impl Prim {
             | Prim::BytesIsUtf8
             | Prim::CryptoSha256
             | Prim::TextGraphemes
+            | Prim::PathComponents
             | Prim::CryptoScramPassword => 1,
             Prim::RecordUpdate
             | Prim::ArraySet
             | Prim::ArrayPut
             | Prim::StringSubstring
             | Prim::BytesSlice
+            | Prim::PathOperation
             | Prim::CryptoPbkdf2Sha256 => 3,
             _ => 2,
         }
@@ -1051,6 +1059,8 @@ impl Prim {
             "cryptoScramPassword" => Prim::CryptoScramPassword,
             "textGraphemes" => Prim::TextGraphemes,
             "textWidth" => Prim::TextWidth,
+            "pathOperation" => Prim::PathOperation,
+            "pathComponents" => Prim::PathComponents,
             "bytesSlice" => Prim::BytesSlice,
             "bytesFromList" => Prim::BytesFromList,
             "bytesToList" => Prim::BytesToList,

@@ -603,6 +603,11 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+Native `Path` values preserve Unix filename bytes and Windows UTF-16 code units.
+Use `Path.fromString` at textual boundaries, `Path.toString` for checked Unicode
+conversion, and `Path.display` only for diagnostics. Path operations are pure;
+lexical normalization does not follow symbolic links or consult the working directory.
+
 Full-screen terminal applications explicitly supply `TerminalHost.native` as a
 `TerminalHost.Terminal` capability. A session owns raw mode and the alternate
 screen until close/drop; `poll session timeoutMs` takes a positive timeout and reports typed input/resize
@@ -1121,6 +1126,21 @@ forall xs: mirror (mirror xs) = xs
 ---
 
 ## 13. Standard library reference
+
+### Path — lossless native paths
+
+`Path.fromString : String -> Result Path Path.Error` rejects embedded NULs.
+`fromNativeBytes`/`toNativeBytes` round-trip native units (Unix bytes; Windows
+little-endian UTF-16). `nativeEncoding` identifies the target encoding.
+`toString` is checked; `display` returns quoted escaped diagnostic text.
+`empty`, `isAbsolute`, `isRelative`, `parent`, `fileName`, `stem`, `extension`,
+`root`, and `components` inspect lexical structure. `join base child` follows
+native joining rules; an absolute child replaces the base. `normalize` removes
+lexical dot segments except in Windows verbatim paths. `resolve base child`
+requires an absolute base and rejects drive-relative children; `relativeTo base
+target` rejects incompatible roots. `withFileName name path` and
+`withExtension extension path` validate a single native name. `errorToString`
+renders `InvalidEncoding`, `InvalidPath`, and `IncompatibleBase`.
 
 ### Terminal and Unicode cells
 

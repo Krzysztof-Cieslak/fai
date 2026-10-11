@@ -26,6 +26,9 @@ public type Headers = Headers.Headers
 // usable unqualified. Build and query it through `Url.*`.
 public type Url = Url.Url
 
+/// A lossless native path; construct and inspect it through Path operations.
+public type Path = Path.Path
+
 // The hash-based map and set are likewise opaque types in their own modules; these
 // aliases keep their names usable unqualified. Build and query them through
 // `HashDict.*`/`HashSet.*`. Prefer them for O(1) average lookup where iteration
