@@ -131,7 +131,7 @@ fn footprint(snapshot: &Snapshot, evidence: &str) -> String {
         samples.len() / 3,
         snapshot.manifest.settings.memory_samples
     );
-    text.push_str("The tables report **process footprint**, including code, stacks, allocator retention and GC policy. They do not measure comparable cross-language live heaps. Floors use the same executable; peaks are never subtracted or converted into compiler-memory win counts.\n\n");
+    text.push_str("The tables report **process footprint**, including code, stacks, allocator retention and GC policy. Each displayed peak and floor is the maximum across fresh processes, in KiB (1,024 bytes). They do not measure comparable cross-language live heaps. Floors use the same executable; peaks are never subtracted or converted into compiler-memory win counts.\n\n");
     text.push_str(&memory::render_footprints(samples).replacen(
         "### Isolated process footprints",
         "## Current measurements",
@@ -230,7 +230,7 @@ fn runtime(snapshot: &Snapshot, evidence: &str) -> String {
 fn warm_table(cases: &[warm::Case], title: &str, text: &mut String) {
     let _ = writeln!(
         text,
-        "## {title}\n\nTimes are microseconds per invocation. Floors are measured, never subtracted. A suppressed ratio has its reason in the final column.\n\n| Workload | Input | Fai µs | Rust µs | OCaml µs | F/R | F/O | Eligibility |\n|---|---:|---:|---:|---:|---:|---:|---|"
+        "## {title}\n\nTimes are median-of-pass-medians, in microseconds per invocation. Floors are measured, never subtracted. A ratio is suppressed when either side's floor reaches 10% of its elapsed time, with the reason in the final column. Raw floors remain in the evidence.\n\n| Workload | Input | Fai µs | Rust µs | OCaml µs | F/R | F/O | Eligibility |\n|---|---:|---:|---:|---:|---:|---:|---|"
     );
     for case in cases {
         let time = |side| {
