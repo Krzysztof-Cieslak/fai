@@ -44,6 +44,34 @@ group's ownership. External code executes with its operating-system permissions.
 constructs a native implementation; a scripted `Runner {}` is usable in pure
 contracts.
 
+## Streaming and manual sessions
+
+`withOutput runtime options command consume` feeds preset input and delivers
+`Chunk { bytes, stage, stderr }` values sequentially. The callback returns
+`Ok Continue`, `Ok Stop`, or `Err error`. Its effects are forwarded. Returned
+output contains a bounded preview (default 8 KiB), with `truncated = true` when
+longer. Streaming itself is independent of the capture limit. Each pipe keeps its
+byte order; ordering between different pipes is observation order.
+
+`communicate runtime options command produce consume` runs a custom input
+producer concurrently with output consumption. Its two callbacks may perform
+different effects; their effects union through the call. The producer receives
+a scoped `Child`; returning closes stdin. Both callbacks use `Process.Error` for
+application failures. Use a command without preset input with this operation.
+
+`withChild runtime options command work` gives direct control of a live child,
+returning `Completed { value, report }`. Use `write`, `writeStream`, `endInput`,
+`next`, `status`, and `stop` inside the callback. Input begins open, and must be
+written/closed explicitly. Read concurrently with large writes. There is one
+active output reader and one active native write; overlapping operations report
+`Busy`. `status` observes exit without draining output. Callback return closes
+the session; retained aliases fail rather than extending its lifetime.
+
+`ProcessText.decoder maxLineBytes`, `feed`, and `finish` provide a pure incremental
+UTF-8 LF/CRLF decoder. Keep a separate decoder per output pipe. Split code points
+remain buffered; invalid UTF-8 and oversized lines are explicit errors. A final
+unterminated line is emitted at EOF.
+
 ```sh
 fai fmt --check -C packages process
 fai check -C packages process

@@ -1120,6 +1120,10 @@ concurrent finite-input capture, typed failures with partial output, explicit ex
 checking and an effect-carrying `Runner` record for scripted application tests.
 Native contracts run with `fai test -C packages process`. Native supervision owns
 monotonic deadlines; execution carries `{ Concurrency, ProcessHost.Process }`.
+`Process.withOutput` forwards sequential consumer effects and retains a bounded
+preview; `communicate` unions producer and consumer effects. `withChild` exposes
+manual full-duplex operations inside an expiring scope. `ProcessText` incrementally
+decodes bounded UTF-8 LF/CRLF lines independently for each output pipe.
 
 ```
 source (.fai)

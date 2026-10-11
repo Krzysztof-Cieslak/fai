@@ -1,0 +1,47 @@
+module ProcessText
+
+public type Error =
+  | InvalidLimit
+  | LineTooLong
+  | InvalidUtf8
+
+/// A bounded UTF-8 line decoder. Keep one instance per output pipe/stage.
+public opaque type Decoder = { limit : Int, pending : Bytes }
+
+public decoder : Int -> Result Decoder Error
+let decoder limit =
+  if limit < 0 then Err InvalidLimit else Ok { limit = limit, pending = Bytes.empty }
+
+let line bytes start end =
+  let end = if end > start && Bytes.unsafeGet (end - 1) bytes = 13 then end - 1 else end
+  match Bytes.toString (Bytes.slice start end bytes) with
+  | None -> Err InvalidUtf8
+  | Some text -> Ok text
+
+scan : Int -> Bytes -> Int -> Int -> List String -> Result (Decoder * List String) Error
+let scan limit bytes start index lines =
+  if index - start > limit then
+    Err LineTooLong
+  else if index >= Bytes.length bytes then
+    Ok ({ limit = limit, pending = Bytes.slice start index bytes }, List.reverse lines)
+  else if Bytes.unsafeGet index bytes = 10 then
+    match line bytes start index with
+    | Err error -> Err error
+    | Ok text -> scan limit bytes (index + 1) (index + 1) (text :: lines)
+  else
+    scan limit bytes start (index + 1) lines
+
+/// Decode complete LF/CRLF lines, preserving a partial line and split code point.
+/// The byte limit includes a CR preceding LF. Empty lines are preserved.
+public feed : Decoder -> Bytes -> Result (Decoder * List String) Error
+let feed state bytes = scan state.limit (Bytes.concat state.pending bytes) 0 0 []
+
+/// End-of-output emits an unterminated nonempty line and validates its UTF-8.
+public finish : Decoder -> Result (List String) Error
+let finish state =
+  if Bytes.isEmpty state.pending then
+    Ok []
+  else
+    match Bytes.toString state.pending with
+    | None -> Err InvalidUtf8
+    | Some text -> Ok [text]
