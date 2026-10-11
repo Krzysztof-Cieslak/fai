@@ -5,6 +5,29 @@ use std::fmt::Write as _;
 
 use super::{Error, Snapshot};
 use crate::bench_summary::{AllocationSample, escape, memory, parse_duration, warm};
+use crate::benchmark_contracts::Comparison;
+
+#[derive(Debug)]
+struct RatioStatistics {
+    count: usize,
+    geometric: f64,
+    arithmetic: f64,
+    p90: f64,
+}
+
+fn ratio_statistics(mut values: Vec<f64>) -> Option<RatioStatistics> {
+    if values.is_empty() || values.iter().any(|value| !value.is_finite() || *value <= 0.0) {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    let count = values.len();
+    Some(RatioStatistics {
+        count,
+        geometric: (values.iter().map(|value| value.ln()).sum::<f64>() / count as f64).exp(),
+        arithmetic: values.iter().sum::<f64>() / count as f64,
+        p90: values[(count * 9).div_ceil(10) - 1],
+    })
+}
 
 fn header(snapshot: &Snapshot, key: &str, title: &str, evidence: &str) -> String {
     let m = &snapshot.manifest;
@@ -132,6 +155,36 @@ fn footprint(snapshot: &Snapshot, evidence: &str) -> String {
         snapshot.manifest.settings.memory_samples
     );
     text.push_str("The tables report **process footprint**, including code, stacks, allocator retention and GC policy. Each displayed peak and floor is the maximum across fresh processes, in KiB (1,024 bytes). They do not measure comparable cross-language live heaps. Floors use the same executable; peaks are never subtracted or converted into compiler-memory win counts.\n\n");
+    text.push_str("## Process-RSS ratio summary\n\nRatios are **Fai ÷ peer; lower means a smaller process footprint**. Arithmetic and geometric means use the unrounded case ratios. Each workload/input/repetition case has equal weight, so workloads with more declared cases receive more weight. P90 is nearest-rank across case ratios, not a percentile of RSS samples. Only compatible, uninstrumented pairs with sufficient observations contribute; application cases and large floor shares remain included. These are descriptive summaries of this benchmark matrix's total process footprints.\n\n| Scope | Peer | Paired / cases | Geometric mean | Arithmetic mean | P90 |\n|---|---|---:|---:|---:|---:|\n");
+    let comparisons = memory::comparisons(samples);
+    for (label, class) in [
+        ("All cases", None),
+        ("Matched kernels", Some(Comparison::Kernel)),
+        ("Applications", Some(Comparison::Application)),
+    ] {
+        let selected: Vec<_> =
+            comparisons.iter().filter(|case| class.is_none() || case.class == class).collect();
+        for peer in ["rust", "ocaml"] {
+            let values = selected
+                .iter()
+                .filter_map(|case| if peer == "rust" { case.rust } else { case.ocaml })
+                .collect();
+            if let Some(stats) = ratio_statistics(values) {
+                let _ = writeln!(
+                    text,
+                    "| {label} | {peer} | {} / {} | {:.3}× | {:.3}× | {:.3}× |",
+                    stats.count,
+                    selected.len(),
+                    stats.geometric,
+                    stats.arithmetic,
+                    stats.p90
+                );
+            } else {
+                let _ = writeln!(text, "| {label} | {peer} | 0 / {} | — | — | — |", selected.len());
+            }
+        }
+    }
+    text.push('\n');
     text.push_str("## Comparison and floor legend\n\nThe floor is the same executable running its harness without the workload. `Process F/R` is Fai's peak RSS divided by Rust's; `Process F/O` divides it by OCaml's. Lower ratios mean a smaller observed process footprint.\n\n| Label | Meaning |\n|---|---|\n| `matched kernel` | Peers share the reviewed algorithm and logical data structures. Runtime representation and allocator costs remain observable. |\n| `application` | Algorithms, containers or implementation policies differ. Ratios still compare total process footprints, including those choices. |\n| `Floor share F/R/O` | Each language's floor divided by its workload peak, shown as a percentage. A high share describes a baseline-dominated process; it does not suppress ratios. Independent process observations can give a share above 100%. |\n| `F/R: …` or `F/O: …` | Only the named ratio is withheld because its pair is missing, incompatible, instrumented, or has fewer than five observations. |\n\n`—` denotes an unavailable value or withheld ratio, with the reason shown alongside the comparison. Floors are never subtracted. Whole-process RSS includes code, stacks, allocator retention and GC policy; live-heap efficiency and Perceus guarantees require their own evidence.\n\n");
     text.push_str(&memory::render_footprints(samples).replacen(
         "### Isolated process footprints",
@@ -164,20 +217,15 @@ fn runtime(snapshot: &Snapshot, evidence: &str) -> String {
     let matched = cases.iter().filter(|case| case.matched).count();
     text.push_str("## Warm-AOT summary\n\nRatios are **Fai ÷ peer; lower is faster**. Aggregates include only reviewed matched-kernel cases that clear the floor gate. They are point estimates for this workload set. Geometric means weight cases equally; p90 is nearest-rank across case ratios, not a latency percentile.\n\n| Peer | Eligible / matched cases | Geometric mean | Arithmetic mean | P90 |\n|---|---:|---:|---:|---:|\n");
     for peer in ["rust", "ocaml"] {
-        let mut values: Vec<_> = cases.iter().filter_map(|case| case.ratio(peer)).collect();
-        values.sort_by(f64::total_cmp);
-        if values.is_empty() {
-            let _ = writeln!(text, "| {peer} | 0 / {matched} | — | — | — |");
-        } else {
-            let geometric =
-                (values.iter().map(|n| n.ln()).sum::<f64>() / values.len() as f64).exp();
-            let arithmetic = values.iter().sum::<f64>() / values.len() as f64;
-            let p90 = values[(values.len() * 9).div_ceil(10) - 1];
+        let values = cases.iter().filter_map(|case| case.ratio(peer)).collect();
+        if let Some(stats) = ratio_statistics(values) {
             let _ = writeln!(
                 text,
-                "| {peer} | {} / {matched} | {geometric:.3}× | {arithmetic:.3}× | {p90:.3}× |",
-                values.len()
+                "| {peer} | {} / {matched} | {:.3}× | {:.3}× | {:.3}× |",
+                stats.count, stats.geometric, stats.arithmetic, stats.p90
             );
+        } else {
+            let _ = writeln!(text, "| {peer} | 0 / {matched} | — | — | — |");
         }
     }
     let _ = writeln!(
@@ -299,4 +347,29 @@ pub(super) fn reports(
         ));
     }
     Ok(reports)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ratio_means_describe_the_case_distribution() {
+        let stats = ratio_statistics(vec![0.5, 1.0, 2.0, 4.0]).unwrap();
+        assert_eq!(stats.count, 4);
+        assert!((stats.geometric - 2.0_f64.sqrt()).abs() < 1e-12);
+        assert_eq!(stats.arithmetic, 1.875);
+        assert_eq!(stats.p90, 4.0);
+    }
+
+    #[test]
+    fn p90_uses_nearest_rank_without_interpolation() {
+        let stats = ratio_statistics((1..=20).map(f64::from).rev().collect()).unwrap();
+        assert_eq!(stats.p90, 18.0);
+    }
+
+    #[test]
+    fn empty_ratios_have_no_average_or_percentile() {
+        assert!(ratio_statistics(Vec::new()).is_none());
+    }
 }

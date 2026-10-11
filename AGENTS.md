@@ -1482,6 +1482,9 @@ fixtures that grow element, node, key and body counts. Their `MEMSTAT3` protocol
 pauses native peers before work and after consuming results, while a parent reads
 current/peak RSS externally. Post-workload RSS observes natural GC/allocator
 retention; no forced collection, trimming or floor subtraction is used.
+Memory ratio summaries include arithmetic/geometric means and nearest-rank p90
+with pairwise coverage and matched/application breakdowns. Each declared case
+has equal weight; these remain descriptive process-footprint comparisons.
 
 The inference solver carries always-on thread-local **work counters** (variable
 resolution clones, occurs-check node visits, free-variable visits — see

@@ -472,8 +472,11 @@ A process ratio requires a compatible pair of uninstrumented binaries and at
 least five observations per side. Application comparisons retain their class,
 and each language's floor/peak percentage is shown without suppressing ratios.
 An unavailable third peer does not suppress a valid pair. Every ratio remains a
-**process-footprint** comparison. There is no
-"compiler memory wins" count or aggregate built from these rows. Missing RSS
+**process-footprint** comparison. Reports include arithmetic/geometric means and
+nearest-rank p90 of unrounded case ratios, with paired coverage counts and
+separate matched-kernel/application breakdowns. Each input/repetition case has
+equal weight. These describe this process-footprint matrix rather than counting
+"compiler memory wins". Missing RSS
 observations and wrong answers fail the measurement instead of becoming zeros.
 
 The source-reviewed catalog in `fai-bench-workloads/src/memory_workloads.rs`

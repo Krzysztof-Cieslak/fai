@@ -117,10 +117,17 @@ are not part of the retirement list.
 ## Interpretation
 
 Runtime ratios require reviewed matched-kernel contracts and floor qualification.
-Application rows retain absolute timings and their status. Runtime aggregate
-means are equally weighted geometric means; p90 is nearest-rank across eligible
-case ratios. End-to-end medians retain their startup/shutdown scope and do not
+Application rows retain absolute timings and their status. Runtime summaries
+show arithmetic and geometric means plus nearest-rank p90 across eligible,
+unrounded case ratios. End-to-end medians retain their startup/shutdown scope and do not
 enter warm aggregates.
+
+Memory reports show the same summary statistics for total-RSS ratios, with
+coverage counts for each peer: all compatible pairs, matched kernels, and
+application comparisons. Every workload/input/repetition case has equal weight;
+workloads with more declared cases therefore receive more weight. P90 describes
+the distribution of case ratios, not a percentile of individual RSS samples.
+These are descriptive process-footprint summaries, not compiler-memory win counts.
 
 The generated runtime report includes an **Eligibility legend** for
 `matched kernel`, `application` and `floor: <languages>`, including the pairwise
