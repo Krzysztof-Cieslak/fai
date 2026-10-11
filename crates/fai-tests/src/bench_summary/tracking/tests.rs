@@ -377,6 +377,7 @@ impl Fixture {
 fn complete_snapshot_renders_three_deterministic_bodies() {
     let fixture = Fixture::new();
     let snapshot = fixture.load().unwrap();
+    let observations = snapshot.to_json().unwrap();
     let a = snapshot.render("https://example.test/evidence").unwrap();
     assert_eq!(a, snapshot.render("https://example.test/evidence").unwrap());
     assert_eq!(a.len(), 3);
@@ -384,6 +385,7 @@ fn complete_snapshot_renders_three_deterministic_bodies() {
     assert!(a["language-runtime.md"].contains("0.500×"));
     assert!(a["perceus-memory.md"].contains("1000 → 0"));
     assert!(!a["language-memory.md"].contains("memory wins"));
+    assert_eq!(snapshot.to_json().unwrap(), observations);
 }
 
 #[test]
@@ -393,12 +395,176 @@ fn current_report_presentation_is_stable() {
     insta::assert_snapshot!("tracking_perceus", reports["perceus-memory.md"]);
     insta::assert_snapshot!(
         "tracking_runtime_header",
-        reports["language-runtime.md"].split("## Main workloads").next().unwrap()
+        reports["language-runtime.md"].split("### Warm AOT\n").next().unwrap()
     );
     insta::assert_snapshot!(
         "tracking_memory_header",
-        reports["language-memory.md"].split("## Current measurements").next().unwrap()
+        reports["language-memory.md"].split("### Peak process footprints\n").next().unwrap()
     );
+}
+
+fn section<'a>(text: &'a str, heading: &str) -> &'a str {
+    text.split_once(&format!("## {heading}\n"))
+        .expect("report section")
+        .1
+        .split("\n## ")
+        .next()
+        .unwrap()
+}
+
+fn subsection<'a>(text: &'a str, heading: &str) -> &'a str {
+    text.split_once(&format!("### {heading}\n"))
+        .expect("report table")
+        .1
+        .split("\n### ")
+        .next()
+        .unwrap()
+}
+
+type WorkloadCounts = BTreeMap<String, usize>;
+
+fn workload_counts(text: &str) -> WorkloadCounts {
+    let mut counts = BTreeMap::new();
+    for line in text.lines().filter(|line| line.starts_with("| ")) {
+        let name = line.split('|').nth(1).unwrap().trim();
+        if contracts::for_module(name).is_some() {
+            *counts.entry(name.into()).or_default() += 1;
+        }
+    }
+    counts
+}
+
+#[test]
+fn runtime_tables_keep_kernel_and_application_workloads_separate() {
+    let fixture = Fixture::new();
+    let reports = fixture.load().unwrap().render("").unwrap();
+    let text = &reports["language-runtime.md"];
+    let observed: Vec<_> = ["Matched kernels", "Application comparisons"]
+        .into_iter()
+        .map(|class| {
+            let text = section(text, class);
+            (
+                workload_counts(subsection(text, "Warm AOT")),
+                workload_counts(subsection(text, "End-to-end AOT")),
+            )
+        })
+        .collect();
+    let expected: Vec<(WorkloadCounts, WorkloadCounts)> =
+        [contracts::Comparison::Kernel, contracts::Comparison::Application]
+            .into_iter()
+            .map(|class| {
+                let names = || {
+                    algorithms::ALGORITHMS.iter().filter(|case| {
+                        contracts::for_module(case.module).unwrap().comparison == class
+                    })
+                };
+                (
+                    names().map(|case| (case.module.into(), 2)).collect(),
+                    names().map(|case| (case.module.into(), 1)).collect(),
+                )
+            })
+            .collect();
+    assert_eq!(observed, expected);
+    let applications = section(text, "Application comparisons");
+    assert!(!applications.contains("| F/R | F/O |"));
+    assert!(!applications.contains("Geometric mean"));
+    assert!(applications.contains("Floor share F/R/O"));
+}
+
+#[test]
+fn memory_tables_keep_every_observation_in_its_own_category() {
+    let fixture = Fixture::new();
+    let reports = fixture.load().unwrap().render("").unwrap();
+    let text = &reports["language-memory.md"];
+    let observed: Vec<_> = ["Matched kernels", "Application comparisons"]
+        .into_iter()
+        .map(|class| {
+            let text = section(text, class);
+            (
+                workload_counts(subsection(text, "Peak process footprints")),
+                workload_counts(subsection(text, "Post-workload resident memory")),
+                workload_counts(subsection(text, "Input axes")),
+            )
+        })
+        .collect();
+    let expected: Vec<(WorkloadCounts, WorkloadCounts, WorkloadCounts)> =
+        [contracts::Comparison::Kernel, contracts::Comparison::Application]
+            .into_iter()
+            .map(|class| {
+                let names = || {
+                    memory_workloads::algorithms().filter(|case| {
+                        contracts::for_module(case.module).unwrap().comparison == class
+                    })
+                };
+                (
+                    names()
+                        .map(|case| {
+                            (
+                                case.module.into(),
+                                memory_workloads::profile(case.module).unwrap().sizes.len() * 2,
+                            )
+                        })
+                        .collect(),
+                    names().map(|case| (case.module.into(), 2)).collect(),
+                    names().map(|case| (case.module.into(), 1)).collect(),
+                )
+            })
+            .collect();
+    assert_eq!(observed, expected);
+    assert!(!text.contains("All cases"));
+}
+
+#[test]
+fn application_rss_changes_cannot_change_kernel_tables_or_averages() {
+    let mut fixture = Fixture::new();
+    let before = fixture.load().unwrap().render("").unwrap();
+    fixture.rewrite("raw/memory.stdout", |text| {
+        text.lines()
+            .map(|line| {
+                let mut row = FootprintSample::parse(line).unwrap();
+                if row.comparison == "application" && row.side == "fai" {
+                    row.samples_kib = vec![150000; 5];
+                }
+                row.to_line()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    let after = fixture.load().unwrap().render("").unwrap();
+    assert_eq!(
+        section(&before["language-memory.md"], "Matched kernels"),
+        section(&after["language-memory.md"], "Matched kernels")
+    );
+    let applications = subsection(
+        section(&after["language-memory.md"], "Application comparisons"),
+        "Process-RSS ratio summary",
+    );
+    assert!(applications.contains("| rust | 46 / 46 | 3.000× | 3.000× | 3.000× |"));
+    assert!(applications.contains("| ocaml | 46 / 46 | 3.000× | 3.000× | 3.000× |"));
+}
+
+#[test]
+fn application_runtime_changes_cannot_change_kernel_tables_or_rankings() {
+    let mut fixture = Fixture::new();
+    let before = fixture.load().unwrap().render("").unwrap();
+    fixture.rewrite("raw/warm.stdout", |text| {
+        text.lines()
+            .map(|line| {
+                let mut row = WarmSample::parse(line).unwrap();
+                if row.comparison == "application" && row.side == "fai" {
+                    row.samples_ns = vec![1_000_000; 21];
+                }
+                row.to_line()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    let after = fixture.load().unwrap().render("").unwrap();
+    assert_eq!(
+        section(&before["language-runtime.md"], "Matched kernels"),
+        section(&after["language-runtime.md"], "Matched kernels")
+    );
+    assert!(section(&after["language-runtime.md"], "Application comparisons").contains("1000.000"));
 }
 
 #[test]

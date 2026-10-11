@@ -1912,10 +1912,14 @@ Editor integration:
     results; neither self-measurement allocations nor forced collection change
     those boundaries. Snapshot schema 2 requires the paired current-RSS records;
     retained peak-only checkpoints keep their own identities and interpretation.
-    Total-RSS summaries report arithmetic/geometric means and nearest-rank p90
-    of unrounded case ratios, with paired coverage and matched/application
-    breakdowns. Equal weighting is per workload/input/repetition case; aggregate
-    process footprints are not a count of compiler-memory wins.
+    Matched kernels and application comparisons have independent report sections.
+    Kernel runtime summaries and rankings include only qualified kernels;
+    application warm and end-to-end timings have their own tables. Total-RSS
+    summaries report arithmetic/geometric means and nearest-rank p90 of unrounded
+    case ratios with paired coverage within each category, accompanied by its
+    own peak/residency tables and input axes. There is no blended all-case average.
+    Equal weighting is per workload/input/repetition case within a category;
+    aggregate process footprints are not a count of compiler-memory wins.
     Reviewed workload contracts fix the logical algorithm, construction and
     materialization phases, and traversal order before measurement. Sorting uses
     explicit shared algorithms and general shuffled input; native library sorts

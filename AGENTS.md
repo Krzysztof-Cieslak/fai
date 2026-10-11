@@ -1482,9 +1482,13 @@ fixtures that grow element, node, key and body counts. Their `MEMSTAT3` protocol
 pauses native peers before work and after consuming results, while a parent reads
 current/peak RSS externally. Post-workload RSS observes natural GC/allocator
 retention; no forced collection, trimming or floor subtraction is used.
-Memory ratio summaries include arithmetic/geometric means and nearest-rank p90
-with pairwise coverage and matched/application breakdowns. Each declared case
-has equal weight; these remain descriptive process-footprint comparisons.
+Runtime and memory reports have independent matched-kernel and application
+sections. Runtime kernel summaries and rankings use only qualified kernels;
+application warm and end-to-end timings have their own tables. Each memory
+category owns its ratios, arithmetic/geometric means, nearest-rank p90, paired
+coverage, residency table and input axes, with no blended all-case average.
+Each declared case has equal weight within its category; memory statistics remain
+descriptive process-footprint comparisons.
 
 Benchmark contracts also pin construction, materialization and traversal phases.
 The main sorting peers share explicit algorithms; linked parser/evaluator,

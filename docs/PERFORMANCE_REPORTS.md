@@ -90,6 +90,12 @@ records algorithm/materialization contracts and per-pair implementation notes.
 Changing those contracts requires a new workload version and a fresh measurement;
 an updated renderer cannot promote historical observations into the revised set.
 
+A presentation-only refresh can render an existing validated snapshot into a
+separate output directory using the newer `performance-report` binary. Retain the
+original measurement manifest and renderer, and archive the new presentation's
+revision, renderer hash and input-manifest hash with its generated bodies. Publish
+that presentation as a new evidence revision so earlier reports remain reproducible.
+
 ## Publish and migrate
 
 ```sh
@@ -123,23 +129,30 @@ are not part of the retirement list.
 
 ## Interpretation
 
-Runtime ratios require reviewed matched-kernel contracts and floor qualification.
-Application rows retain absolute timings and their status. Runtime summaries
-show arithmetic and geometric means plus nearest-rank p90 across eligible,
-unrounded case ratios. End-to-end medians retain their startup/shutdown scope and do not
-enter warm aggregates.
+The runtime report has independent **Matched kernels** and **Application
+comparisons** sections, each with its own coverage, warm measurements and
+end-to-end table. Kernel ratios require reviewed contracts and floor
+qualification. Their summary shows arithmetic and geometric means plus
+nearest-rank p90 across eligible, unrounded case ratios. Applications retain
+absolute timings and visible floor shares; their native-library and
+representation choices are described explicitly. End-to-end medians retain their
+startup/shutdown scope and do not enter warm aggregates. Supplemental matched
+components have a third section and contribute no main-kernel summary weight.
 
-Memory reports show the same summary statistics for total-RSS ratios, with
-coverage counts for each peer: all compatible pairs, matched kernels, and
-application comparisons. Every workload/input/repetition case has equal weight;
-workloads with more declared cases therefore receive more weight. P90 describes
-the distribution of case ratios, not a percentile of individual RSS samples.
-These are descriptive process-footprint summaries, not compiler-memory win counts.
+The memory report uses the same two categories. Each owns its summary statistics,
+paired coverage, peak-RSS table, post-workload residency table and input axes.
+There is no blended all-case average: application ratios contribute only to the
+application summary, and kernel ratios only to the kernel summary. Every
+workload/input/repetition case within a category has equal weight; workloads with
+more declared cases therefore receive more weight. P90 describes the distribution
+of case ratios, not a percentile of individual RSS samples. These are descriptive
+process-footprint summaries, not compiler-memory win counts.
 
 The generated runtime report includes an **Eligibility legend** for
-`matched kernel`, `application` and `floor: <languages>`, including the pairwise
-effect on F/R and F/O. The memory report explains **comparison class and floor
-share** separately: both matched kernels and application cases retain total-RSS
+`matched kernel` and `floor: <languages>`, including the pairwise effect on F/R
+and F/O. Its application section explains that category's scope separately.
+The memory report explains **comparison class and floor share** separately:
+both matched kernels and application cases retain total-RSS
 ratios when each pair has compatible, uninstrumented observations and enough
 samples. Large baseline shares remain visible; they do not exclude a process
 comparison, and an unavailable third peer cannot suppress a valid pair. The
