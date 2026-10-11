@@ -170,6 +170,7 @@ public interface FileSystem =
   closeTemporary : Io.Temporary -> Result Unit FileSystem.Error / { FileSystem }
   closeWriter : Writer -> Result Unit FileSystem.Error / { FileSystem }
   copy : Path -> Path -> Bool -> Result Unit FileSystem.Error / { FileSystem }
+  copyPermissions : Path -> Path -> Result Unit FileSystem.Error / { FileSystem }
   createDirectories : Path -> Result Unit FileSystem.Error / { FileSystem }
   createDirectory : Path -> Result Unit FileSystem.Error / { FileSystem }
   createTemporary : Path -> Bool -> Result Io.Temporary FileSystem.Error / { FileSystem }
@@ -198,6 +199,7 @@ public interface FileSystem =
   seekReader : Reader -> Int -> Result Int FileSystem.Error / { FileSystem }
   seekWriter : Writer -> Int -> Result Int FileSystem.Error / { FileSystem }
   symlink : Path -> Path -> Bool -> Result Unit FileSystem.Error / { FileSystem }
+  syncDirectory : Path -> Result Unit FileSystem.Error / { FileSystem }
   syncWriter : Writer -> Bool -> Result Unit FileSystem.Error / { FileSystem }
   temporaryDirectory : Unit -> Result Path FileSystem.Error / { FileSystem }
   temporaryPath : Io.Temporary -> Result Path FileSystem.Error / { FileSystem }
@@ -498,6 +500,7 @@ let stdFs = { FileSystem with
   closeTemporary = fsTempClose,
   closeWriter = fileCloseWriter,
   copy source destination overwrite = fsMutate (if overwrite then 7 else 6) source destination,
+  copyPermissions = fsMutate 12,
   createDirectories path = fsMutate 1 path Path.empty,
   createDirectory path = fsMutate 0 path Path.empty,
   createTemporary = fsTempCreate,
@@ -526,6 +529,7 @@ let stdFs = { FileSystem with
   seekReader = fileSeekReader,
   seekWriter = fileSeekWriter,
   symlink target link directory = fsMutate (if directory then 9 else 8) target link,
+  syncDirectory path = fsMutate 13 path Path.empty,
   syncWriter = fileSync,
   temporaryDirectory unit = fsLocation 1 Path.empty,
   temporaryPath = fsTempPath,

@@ -195,3 +195,48 @@ fn persisted_temporary_survives_scope_and_flushes() {
         "ok\n"
     );
 }
+
+#[test]
+fn atomic_write_commits_and_cleans_the_sibling() {
+    assert_eq!(
+        run_case(
+            r#"  let first = r.fs.writeFile path "old"
+  let result = File.writeTextAtomic r { File.atomicOptions with durability = File.SyncFile } path "new"
+  let contents = r.fs.readFile path
+  let parent = Option.withDefault Path.empty (Path.parent path)
+  let entries = Directory.list r 10 parent
+  r.console.writeLine (if result.phase = File.Committed && result.outcome = Ok () && result.cleanupError = None && contents = Ok "new" && (match entries with | Ok entries -> List.length entries = 1 | _ -> false) then "ok" else "bad")"#
+        ),
+        "ok\n"
+    );
+}
+
+#[test]
+fn atomic_callback_failure_preserves_the_destination() {
+    assert_eq!(
+        run_case(
+            r#"  let first = r.fs.writeFile path "old"
+  let fail writer =
+    let written = r.fs.writeChunk writer (Bytes.fromString "partial")
+    Err "callback failed"
+  let result = File.withAtomicWriter r File.atomicOptions path fail
+  let contents = r.fs.readFile path
+  let entries = Directory.list r 10 (Option.withDefault Path.empty (Path.parent path))
+  r.console.writeLine (if result.phase = File.NotCommitted && result.outcome = Err (File.CallbackError "callback failed") && contents = Ok "old" && (match entries with | Ok entries -> List.length entries = 1 | _ -> false) then "ok" else "bad")"#
+        ),
+        "ok\n"
+    );
+}
+
+#[test]
+fn atomic_no_clobber_failure_reports_attempted_commit() {
+    assert_eq!(
+        run_case(
+            r#"  let first = r.fs.writeFile path "old"
+  let result = File.writeTextAtomic r { File.atomicOptions with overwrite = false } path "new"
+  let contents = r.fs.readFile path
+  r.console.writeLine (if result.phase = File.CommitUnknown && Result.isErr result.outcome && contents = Ok "old" && result.cleanupError = None then "ok" else "bad")"#
+        ),
+        "ok\n"
+    );
+}
