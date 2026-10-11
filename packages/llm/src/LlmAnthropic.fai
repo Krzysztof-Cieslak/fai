@@ -1,0 +1,452 @@
+module LlmAnthropic
+
+public config : String -> LlmConfig.Config
+let config key =
+  LlmConfig.create LlmTypes.Anthropic "https://api.anthropic.com/v1/" (Headers.fromList [
+    ("x-api-key", key),
+    ("anthropic-version", "2023-06-01")
+  ])
+
+let obj = LlmJson.object
+
+let str = Json.String
+
+let stringField name value = Option.withDefault "" (LlmJson.text name value)
+
+let values name value = Option.withDefault [] (LlmJson.list name value)
+
+content : LlmTypes.Content -> Json.Value
+let content part =
+  match part with
+  | LlmTypes.Text text -> obj [("type", str "text"), ("text", str text)]
+  | LlmTypes.Image (LlmTypes.ImageUrl url) -> obj [
+    ("type", str "image"),
+    ("source", obj [("type", str "url"), ("url", str url)])
+  ]
+  | LlmTypes.Image (LlmTypes.ImageBytes media bytes) -> obj [
+    ("type", str "image"),
+    ("source", obj [
+      ("type", str "base64"),
+      ("media_type", str media),
+      ("data", str (Http.base64Encode bytes))
+    ])
+  ]
+
+toolResult : LlmTypes.ToolResult -> Json.Value
+let toolResult result = obj [
+  ("type", str "tool_result"),
+  ("tool_use_id", str result.id),
+  ("content", str (Json.toString result.value)),
+  ("is_error", Json.Boolean result.isError)
+]
+
+takeResults : List LlmTypes.Item -> List Json.Value -> (List Json.Value * List LlmTypes.Item)
+let takeResults items results =
+  match items with
+  | LlmTypes.ToolOutput result :: rest -> takeResults rest (toolResult result :: results)
+  | rest -> (List.reverse results, rest)
+
+items : List LlmTypes.Item -> List Json.Value
+let items history =
+  match history with
+  | [] -> []
+  | LlmTypes.Message role parts :: rest ->
+    obj [
+      ("role", str (if role = LlmTypes.User then "user" else "assistant")),
+      ("content", LlmJson.array (List.map content parts))
+    ] :: items rest
+  | LlmTypes.Native _ value :: rest -> value :: items rest
+  | LlmTypes.ToolOutput _ :: _ ->
+    let (results, rest) = takeResults history []
+    obj [("role", str "user"), ("content", LlmJson.array results)] :: items rest
+
+tool : LlmTypes.ToolDefinition -> Json.Value
+let tool definition = obj [
+  ("name", str definition.name),
+  ("description", str definition.description),
+  ("input_schema", definition.parameters),
+  ("strict", Json.Boolean true)
+]
+
+choice : Bool -> LlmTypes.ToolChoice -> Json.Value
+let choice parallel value =
+  let base =
+    match value with
+    | LlmTypes.Auto -> obj [("type", str "auto")]
+    | LlmTypes.Disabled -> obj [("type", str "none")]
+    | LlmTypes.Required -> obj [("type", str "any")]
+    | LlmTypes.Named name -> obj [("type", str "tool"), ("name", str name)]
+  if value = LlmTypes.Disabled then
+    base
+  else
+    LlmJson.set "disable_parallel_tool_use" (Json.Boolean (not parallel)) base
+
+checked : LlmTypes.Limits -> Json.Value -> Result Json.Value LlmTypes.Error
+let checked limits body =
+  if Bytes.length (Bytes.fromString (Json.toString body)) > limits.maxRequestBytes then
+    Err (LlmTypes.error LlmTypes.LimitExceeded "request exceeds its byte limit")
+  else
+    Ok body
+
+public encode : LlmTypes.Limits -> LlmTypes.Request -> Result Json.Value LlmTypes.Error
+let encode limits request =
+  match LlmValidate.request LlmTypes.Anthropic limits request with
+  | Err error -> Err error
+  | Ok _ ->
+    let body = obj [
+      ("model", str request.model),
+      ("system", str request.instructions),
+      ("messages", LlmJson.array (items request.history)),
+      ("max_tokens", LlmJson.integer request.maxOutputTokens),
+      ("stream", Json.Boolean true)
+    ]
+    let body =
+      if request.tools = [] then
+        body
+      else
+        LlmJson.set "tool_choice" (choice request.parallelTools request.toolChoice) (LlmJson.set "tools" (LlmJson.array (List.map tool request.tools)) body)
+    let body =
+      match request.outputSchema with
+      | None -> body
+      | Some schema ->
+        LlmJson.set "output_config" (obj [
+          ("format", obj [("type", str "json_schema"), ("schema", schema)])
+        ]) body
+    let body =
+      match request.temperature with
+      | None -> body
+      | Some value ->
+        LlmJson.set "temperature" (Result.withDefault Json.Null (JsonEncode.float value)) body
+    match request.providerOptions with
+    | LlmTypes.OpenAIOptions _ ->
+      Err (LlmTypes.error LlmTypes.UnsupportedFeature "OpenAI options cannot be sent to Anthropic")
+    | LlmTypes.Defaults -> checked limits body
+    | LlmTypes.AnthropicAdaptive ->
+      checked limits (LlmJson.set "thinking" (obj [("type", str "adaptive")]) body)
+    | LlmTypes.AnthropicOptions options ->
+      match options.thinkingBudget with
+      | None -> checked limits body
+      | Some budget ->
+        if budget < 1024 || budget >= request.maxOutputTokens then
+          Err (LlmTypes.error LlmTypes.InvalidRequest "thinking budget must be at least 1024 and below maxOutputTokens")
+        else
+          checked limits (LlmJson.set "thinking" (obj [
+            ("type", str "enabled"),
+            ("budget_tokens", LlmJson.integer budget)
+          ]) body)
+
+finish : String -> LlmTypes.Finish
+let finish reason =
+  match reason with
+  | "end_turn" -> LlmTypes.Completed
+  | "stop_sequence" -> LlmTypes.Completed
+  | "tool_use" -> LlmTypes.NeedsTools
+  | "refusal" -> LlmTypes.Refused
+  | "" -> LlmTypes.InProgress
+  | other -> LlmTypes.Incomplete other
+
+decodeBlock : LlmTypes.Limits -> Int -> Json.Value -> Result LlmTypes.Block LlmTypes.Error
+let decodeBlock limits index block =
+  let key = Int.toString index
+  match stringField "type" block with
+  | "text" -> Result.map (LlmTypes.TextBlock key) (LlmJson.needText "text" block)
+  | "thinking" -> Result.map (LlmTypes.ReasoningBlock key) (LlmJson.needText "thinking" block)
+  | "tool_use" ->
+    Result.map LlmTypes.ToolBlock (LlmStream.call limits {
+      arguments = Json.toString (Option.withDefault Json.Null (LlmJson.get "input" block)),
+      id = stringField "id" block,
+      itemId = None,
+      name = stringField "name" block
+    })
+  | "" -> Err (LlmTypes.error LlmTypes.ProtocolError "content block has no type")
+  | _ -> Ok (LlmTypes.ExtensionBlock key block)
+
+decodeBlocks : LlmTypes.Limits -> Bool -> Int -> List Json.Value -> Result (List LlmTypes.Block) LlmTypes.Error
+let decodeBlocks limits incomplete index blocks =
+  match blocks with
+  | [] -> Ok []
+  | block :: rest ->
+    let decoded =
+      if incomplete && stringField "type" block = "tool_use" then
+        Ok (LlmTypes.ExtensionBlock (Int.toString index) block)
+      else
+        decodeBlock limits index block
+    match decoded with
+    | Err error -> Err error
+    | Ok value ->
+      Result.map (fun rest -> value :: rest) (decodeBlocks limits incomplete (index + 1) rest)
+
+let callOf block =
+  match block with
+  | LlmTypes.ToolBlock call -> [call]
+  | _ -> []
+
+let isIncomplete finish =
+  match finish with
+  | LlmTypes.Incomplete _ -> true
+  | _ -> false
+
+buildResponse : LlmTypes.Limits -> LlmTypes.Response -> List Json.Value -> Result LlmTypes.Response LlmTypes.Error
+let buildResponse limits response content =
+  if List.length content > limits.maxBlocks then
+    Err (LlmTypes.error LlmTypes.LimitExceeded "too many content blocks")
+  else
+    match decodeBlocks limits (isIncomplete response.finish) 0 content with
+    | Err error -> Err error
+    | Ok blocks ->
+      let calls = List.concatMap callOf blocks
+      if List.length calls > limits.maxToolCalls then
+        Err (LlmTypes.error LlmTypes.LimitExceeded "too many tool calls")
+      else if Set.size (Set.fromList (List.map (fun call ->
+        call.id) calls)) <> List.length calls then
+        Err (LlmTypes.error LlmTypes.ProtocolError "duplicate tool call ID")
+      else if response.finish = LlmTypes.NeedsTools && calls = [] then
+        Err (LlmTypes.error LlmTypes.ProtocolError "tool-use finish has no tool calls")
+      else
+        Ok { response with
+          blocks = blocks,
+          continuation = [
+            LlmTypes.Native LlmTypes.Anthropic (obj [
+              ("role", str "assistant"),
+              ("content", LlmJson.array content)
+            ])
+          ],
+          toolCalls = calls
+        }
+
+public decode : LlmTypes.Limits -> Json.Value -> Result LlmTypes.Response LlmTypes.Error
+let decode limits value =
+  match LlmStream.responseLimit limits value with
+  | Err error -> Err error
+  | Ok _ ->
+    if LlmJson.text "id" value = None || LlmJson.text "model" value = None || LlmJson.list "content" value = None then
+      Err (LlmTypes.error LlmTypes.ProtocolError "message needs id, model and content")
+    else
+      match LlmStream.usage (Option.withDefault Json.Null (LlmJson.get "usage" value)) LlmTypes.emptyUsage with
+      | Err error -> Err error
+      | Ok usage ->
+        buildResponse limits { LlmTypes.emptyResponse LlmTypes.Anthropic with
+          finish = finish (stringField "stop_reason" value),
+          id = stringField "id" value,
+          model = stringField "model" value,
+          usage = usage
+        } (values "content" value)
+
+startBlock : LlmTypes.Limits -> LlmStream.State -> Int -> Json.Value -> Result (LlmStream.State * List LlmTypes.Event) LlmTypes.Error
+let startBlock limits state index block =
+  let key = Int.toString index
+  let kind = stringField "type" block
+  if index < 0 || Dict.member index state.items || Dict.size state.items >= limits.maxBlocks then
+    Err (LlmStream.failure state LlmTypes.ProtocolError "invalid or duplicate content index")
+  else
+    let state = { state with
+      items = Dict.insert index block state.items,
+      open = Set.insert key state.open
+    }
+    if kind = "tool_use" then
+      let input = Option.withDefault (obj []) (LlmJson.get "input" block)
+      let draft = {
+        arguments = if input = obj [] then "" else Json.toString input,
+        id = stringField "id" block,
+        itemId = None,
+        name = stringField "name" block
+      }
+      Ok ({ state with
+        drafts = Dict.insert index draft state.drafts
+      }, [LlmTypes.ToolStarted draft.id draft.name])
+    else if kind = "text" || kind = "thinking" then
+      let text = stringField (if kind = "text" then "text" else "thinking") block
+      match LlmStream.addBytes limits text state with
+      | Err error -> Err error
+      | Ok state ->
+        Ok ({ state with
+          reasoning = if kind = "thinking" then Set.insert key state.reasoning else state.reasoning,
+          texts = Dict.insert key text state.texts
+        }, if text = "" then
+          []
+        else
+          [
+            if kind = "thinking" then
+              LlmTypes.ReasoningDelta key text
+            else
+              LlmTypes.TextDelta key text
+          ])
+    else if kind = "" then
+      Err (LlmStream.failure state LlmTypes.ProtocolError "content block has no type")
+    else
+      Ok (state, [LlmTypes.ExtensionEvent "content_block_start" block])
+
+changeBlock : LlmTypes.Limits -> LlmStream.State -> Int -> Json.Value -> Result (LlmStream.State * List LlmTypes.Event) LlmTypes.Error
+let changeBlock limits state index delta =
+  let key = Int.toString index
+  let kind = stringField "type" delta
+  if not (Set.member key state.open) then
+    Err (LlmStream.failure state LlmTypes.ProtocolError "delta references a missing or closed block")
+  else
+    let block = Dict.getOr Json.Null index state.items
+    if kind = "input_json_delta" then
+      match Dict.get index state.drafts with
+      | None ->
+        Err (LlmStream.failure state LlmTypes.ProtocolError "JSON delta references a non-tool block")
+      | Some draft ->
+        match LlmJson.needText "partial_json" delta with
+        | Err error -> Err error
+        | Ok text ->
+          if Bytes.length (Bytes.fromString text) > limits.maxToolArgumentBytes - Bytes.length (Bytes.fromString draft.arguments) then
+            Err (LlmStream.failure state LlmTypes.LimitExceeded "tool arguments too large")
+          else
+            match LlmStream.addBytes limits text state with
+            | Err error -> Err error
+            | Ok state ->
+              Ok ({ state with
+                drafts = Dict.insert index { draft with
+                  arguments = draft.arguments ++ text
+                } state.drafts
+              }, [LlmTypes.ToolArgumentsDelta draft.id text])
+    else if kind = "text_delta" || kind = "thinking_delta" || kind = "signature_delta" then
+      let field =
+        if kind = "text_delta" then
+          "text"
+        else if kind = "thinking_delta" then "thinking" else "signature"
+      let expected = if kind = "text_delta" then "text" else "thinking"
+      if stringField "type" block <> expected then
+        Err (LlmStream.failure state LlmTypes.ProtocolError "delta type does not match its block")
+      else
+        match LlmJson.needText field delta with
+        | Err error -> Err error
+        | Ok text ->
+          match LlmStream.addBytes limits text state with
+          | Err error -> Err error
+          | Ok state ->
+            let state = { state with
+              items = Dict.insert index (LlmJson.set field (str (stringField field block ++ text)) block) state.items
+            }
+            if kind = "signature_delta" then
+              Ok (state, [])
+            else
+              Ok ({ state with
+                texts = Dict.insert key (Dict.getOr "" key state.texts ++ text) state.texts
+              }, [
+                if kind = "text_delta" then
+                  LlmTypes.TextDelta key text
+                else
+                  LlmTypes.ReasoningDelta key text
+              ])
+    else
+      Err (LlmStream.failure state LlmTypes.UnsupportedFeature ("unsupported content delta " ++ kind))
+
+stopBlock : LlmTypes.Limits -> LlmStream.State -> Int -> Result (LlmStream.State * List LlmTypes.Event) LlmTypes.Error
+let stopBlock limits state index =
+  let key = Int.toString index
+  if not (Set.member key state.open) then
+    Err (LlmStream.failure state LlmTypes.ProtocolError "stopped unknown content block")
+  else
+    let state = { state with
+      closed = Set.insert key state.closed,
+      open = Set.remove key state.open
+    }
+    match Dict.get index state.drafts with
+    | None -> Ok (state, [LlmTypes.BlockCompleted key])
+    | Some draft -> Ok (state, [LlmTypes.BlockCompleted draft.id])
+
+readyItem : LlmTypes.Limits -> LlmStream.State -> (Int * Json.Value) -> Result Json.Value LlmTypes.Error
+let readyItem limits state entry =
+  let (index, block) = entry
+  match Dict.get index state.drafts with
+  | None -> Ok block
+  | Some draft ->
+    if isIncomplete state.response.finish then
+      Ok (LlmJson.set "partial_json" (str draft.arguments) block)
+    else
+      match LlmStream.call limits { draft with
+        arguments = if draft.arguments = "" then "{}" else draft.arguments
+      } with
+      | Err error -> Err error
+      | Ok call -> Ok (LlmJson.set "input" call.arguments block)
+
+readyResponse : LlmTypes.Limits -> LlmStream.State -> Result LlmTypes.Response LlmTypes.Error
+let readyResponse limits state =
+  match LlmJson.traverse (readyItem limits state) (Dict.toList state.items) with
+  | Err error -> Err error
+  | Ok items ->
+    match LlmStream.responseLimit limits (LlmJson.array items) with
+    | Err error -> Err error
+    | Ok _ -> buildResponse limits state.response items
+
+let pairValue pair =
+  let (_, value) = pair
+  value
+
+reduceEvent : LlmTypes.Limits -> LlmStream.State -> Json.Value -> Result (LlmStream.State * List LlmTypes.Event) LlmTypes.Error
+let reduceEvent limits state value =
+  let kind = stringField "type" value
+  let index = Option.withDefault (-1) (LlmJson.count "index" value)
+  if kind = "ping" then
+    Ok (state, [])
+  else if kind = "error" then
+    Err { LlmStream.failure state LlmTypes.ProviderError (Json.toString value) with
+      providerCode = LlmJson.text "type" (Option.withDefault Json.Null (LlmJson.get "error" value))
+    }
+  else if kind = "message_start" then
+    if state.started then
+      Err (LlmStream.failure state LlmTypes.ProtocolError "message started twice")
+    else
+      match LlmJson.get "message" value with
+      | None -> Err (LlmStream.failure state LlmTypes.ProtocolError "missing message")
+      | Some message ->
+        match decode limits message with
+        | Err error -> Err error
+        | Ok response ->
+          Ok ({ state with
+            response = response,
+            started = true
+          }, [LlmTypes.Started response.id response.model])
+  else if not state.started then
+    Err (LlmStream.failure state LlmTypes.ProtocolError "event before message start")
+  else if kind = "content_block_start" then
+    startBlock limits state index (Option.withDefault Json.Null (LlmJson.get "content_block" value))
+  else if kind = "content_block_delta" then
+    changeBlock limits state index (Option.withDefault Json.Null (LlmJson.get "delta" value))
+  else if kind = "content_block_stop" then
+    stopBlock limits state index
+  else if kind = "message_delta" then
+    let delta = Option.withDefault Json.Null (LlmJson.get "delta" value)
+    let reason =
+      match LlmJson.text "stop_reason" delta with
+      | None -> state.response.finish
+      | Some reason -> finish reason
+    match LlmStream.usage (Option.withDefault Json.Null (LlmJson.get "usage" value)) state.response.usage with
+    | Err error -> Err error
+    | Ok usage ->
+      Ok ({ state with
+        response = { state.response with finish = reason, usage = usage }
+      }, [LlmTypes.UsageUpdated usage])
+  else if kind = "message_stop" then
+    if not (Set.isEmpty state.open) || state.response.finish = LlmTypes.InProgress then
+      Err (LlmStream.failure state LlmTypes.ProtocolError "message stopped with unfinished blocks or no stop reason")
+    else
+      match readyResponse limits state with
+      | Err error -> Err error
+      | Ok response ->
+        Ok ({ state with done = true, response = response }, [LlmTypes.ResponseCompleted response])
+  else if kind = "" then
+    Err (LlmStream.failure state LlmTypes.ProtocolError "event has no type")
+  else
+    Ok (state, [LlmTypes.ExtensionEvent kind value])
+
+public reduce : LlmTypes.Limits -> LlmStream.State -> String -> Result (LlmStream.State * List LlmTypes.Event) LlmTypes.Error
+let reduce limits state data =
+  match LlmStream.accept limits state with
+  | Err error -> Err error
+  | Ok state ->
+    match LlmJson.parse data with
+    | Err error -> Err { error with partial = Some (LlmStream.partial state) }
+    | Ok value ->
+      let staged =
+        if LlmJson.text "type" value = Some "content_block_start" then
+          LlmStream.addBytes limits (Json.toString (Option.withDefault Json.Null (LlmJson.get "content_block" value))) state
+        else
+          Ok state
+      match staged with
+      | Err error -> Err error
+      | Ok state -> reduceEvent limits state value

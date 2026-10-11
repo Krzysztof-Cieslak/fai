@@ -1,0 +1,50 @@
+module LlmReplay
+
+reduce : LlmTypes.Provider -> LlmTypes.Limits -> LlmStream.State -> String -> Result LlmStream.State LlmTypes.Error
+let reduce provider limits state text =
+  let result =
+    match provider with
+    | LlmTypes.OpenAI -> LlmOpenAI.reduce limits state text
+    | LlmTypes.Anthropic -> LlmAnthropic.reduce limits state text
+  Result.map first result
+
+first : (LlmStream.State * List LlmTypes.Event) -> LlmStream.State
+let first pair =
+  let (state, _) = pair
+  state
+
+loop : LlmTypes.Provider -> LlmTypes.Limits -> Sse.Decoder -> LlmStream.State -> Bytes -> Int -> List Bytes -> Result LlmTypes.Response LlmTypes.Error
+let loop provider limits decoder state bytes index chunks =
+  if state.done then
+    Ok state.response
+  else
+    match Sse.next decoder bytes index with
+    | Err error -> Err (LlmStream.failure state LlmTypes.ProtocolError (Sse.errorToString error))
+    | Ok progress ->
+      match progress.update with
+      | Some (Sse.Dispatch event) ->
+        match reduce provider limits state event.data with
+        | Err error -> Err error
+        | Ok state -> loop provider limits progress.decoder state bytes progress.nextIndex chunks
+      | Some _ -> loop provider limits progress.decoder state bytes progress.nextIndex chunks
+      | None ->
+        match chunks with
+        | [] ->
+          Err (LlmStream.failure state LlmTypes.ProtocolError "stream ended before terminal event")
+        | chunk :: rest -> loop provider limits progress.decoder state chunk 0 rest
+
+/// Replay arbitrary transport chunks through the same SSE and provider codecs.
+public fromChunks : LlmTypes.Provider -> LlmTypes.Limits -> List Bytes -> Result LlmTypes.Response LlmTypes.Error
+let fromChunks provider limits chunks =
+  match Sse.decoder {
+    maxEventBytes = limits.maxResponseBytes,
+    maxLineBytes = limits.maxResponseBytes
+  } with
+  | Err error -> Err (LlmTypes.error LlmTypes.InvalidRequest (Sse.errorToString error))
+  | Ok decoder -> loop provider limits decoder (LlmStream.initial provider) Bytes.empty 0 chunks
+
+/// A scripted model is a pure function of the complete request, including history.
+public model : LlmTypes.Provider -> LlmTypes.Limits -> (LlmTypes.Request -> List Bytes) -> { generate : LlmTypes.Request -> Result LlmTypes.Response LlmTypes.Error }
+let model provider limits script = {
+  generate = fun request -> fromChunks provider limits (script request)
+}

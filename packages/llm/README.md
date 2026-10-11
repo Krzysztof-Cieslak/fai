@@ -40,6 +40,18 @@ OpenAI uses application-owned history and `store: false` by default. Native outp
 items, including opaque reasoning payloads, are retained in `continuation`.
 Configure `OpenAIOptions` explicitly for server storage or reasoning effort.
 
+`LlmAnthropic.config key` selects Messages with its explicit API version header.
+Content blocks are accumulated by index, usage counters are cumulative, and
+thinking signatures remain in native continuation data. `AnthropicAdaptive` and
+`AnthropicOptions` configure thinking. Tool input is parsed only after the message
+outcome is known; truncated tool input remains partial data and is not executable.
+Adjacent tool results are grouped into one user message when encoded.
+
+Both clients support MIME-tagged inline images and image URLs. Responses retain
+HTTP response headers and request IDs. `LlmReplay.fromChunks` runs the same SSE and
+provider codecs purely, including arbitrary byte boundaries; `LlmReplay.model`
+creates a pure scripted model from a function of the request.
+
 ```sh
 fai fmt --check -C packages llm
 fai check -C packages llm

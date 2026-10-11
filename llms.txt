@@ -1856,6 +1856,9 @@ effect-carrying generation port that also supports pure scripted models.
 `generate` returns a complete response and `withStream` forwards sequential event
 callbacks. Execution uses `{ Clock, Concurrency, Net, Tls }` and propagates callback
 effects. Storage defaults to false; native continuation items remain available.
+`LlmAnthropic.config` selects Messages; indexed blocks, cumulative usage and
+thinking signatures are retained. Truncated tool arguments remain partial data.
+`LlmReplay.fromChunks` and `model` provide pure protocol replay and scripted models.
 
 Including `packages/process/src` supplies `Process` and `ProcessText`. Commands
 are pure descriptions (`command`, `arguments`, `workingDirectory`, environment

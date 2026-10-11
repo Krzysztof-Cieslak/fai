@@ -108,6 +108,7 @@ annotate : HttpClient.ResponseHead -> LlmTypes.Event -> LlmTypes.Event
 let annotate head event =
   match event with
   | LlmTypes.ResponseCompleted response -> LlmTypes.ResponseCompleted { response with
+    headers = head.headers,
     requestId = requestId head
   }
   | _ -> event
@@ -134,26 +135,33 @@ let step config consume head state event =
   let reduced =
     match config.provider with
     | LlmTypes.OpenAI -> LlmOpenAI.reduce config.limits state.protocol event.data
-    | _ -> Err (LlmTypes.error LlmTypes.UnsupportedFeature "provider is not implemented")
+    | LlmTypes.Anthropic -> LlmAnthropic.reduce config.limits state.protocol event.data
   match reduced with
   | Err error -> Err { error with
     partial = Some (LlmStream.partial state.protocol),
     requestId = requestId head
   }
   | Ok (protocol, events) -> deliver head consume events { state with
-    protocol = { protocol with response = { protocol.response with requestId = requestId head } }
+    protocol = { protocol with
+      response = { protocol.response with headers = head.headers, requestId = requestId head }
+    }
   }
 
 providerError : HttpClient.EventFold State LlmTypes.Error -> HttpClient.Error -> LlmTypes.Error
 let providerError fold native =
   let error = { httpError native with
     bodyPreview = fold.preview,
-    partial = Some (LlmStream.partial fold.value.protocol)
+    partial = Some (LlmStream.partial fold.value.protocol),
+    previewTruncated = fold.truncated
   }
   let error =
     match fold.head with
     | None -> error
-    | Some head -> { error with requestId = requestId head, status = Some head.status }
+    | Some head -> { error with
+      headers = head.headers,
+      requestId = requestId head,
+      status = Some head.status
+    }
   match JsonDecode.fromBytes JsonDecode.value fold.preview with
   | Err _ -> error
   | Ok body ->
@@ -169,7 +177,7 @@ public encode : LlmConfig.Config -> LlmTypes.Request -> Result Json.Value LlmTyp
 let encode config request =
   match config.provider with
   | LlmTypes.OpenAI -> LlmOpenAI.encode config.limits request
-  | _ -> Err (LlmTypes.error LlmTypes.UnsupportedFeature "provider is not implemented")
+  | LlmTypes.Anthropic -> LlmAnthropic.encode config.limits request
 
 public withStream : Client -> LlmTypes.Request -> (LlmTypes.Event -> Result LlmTypes.Decision LlmTypes.Error / 'e) -> Result LlmTypes.StreamResult LlmTypes.Error / { Clock, Concurrency, Net, Tls | 'e }
 let withStream client request consume =

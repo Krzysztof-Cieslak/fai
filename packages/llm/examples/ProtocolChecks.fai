@@ -1,0 +1,85 @@
+module LlmProtocolChecks
+
+handle : LlmTypes.Provider -> Http.Request 'e -> Result (Http.Response { }) String / 'e
+let handle provider request =
+  match Stream.fold Bytes.concat Bytes.empty request.body with
+  | Err error -> Err error
+  | Ok bytes ->
+    let after =
+      String.contains (Option.withDefault "" (Bytes.toString bytes)) (if provider = LlmTypes.OpenAI then
+        "function_call_output"
+      else
+        "tool_use_id")
+    let body =
+      if provider = LlmTypes.OpenAI then LlmFixtures.openai after else LlmFixtures.anthropic after
+    Ok (Http.chunkedResponse 200 (Headers.fromList [
+      ("Content-Type", "text/event-stream"),
+      ("request-id", "fixture-request")
+    ]) (Http.stringBody body))
+
+let request =
+  Llm.request "fixture" |> Llm.userText "read two files" |> Llm.tools [
+    {
+      description = "read a named file",
+      name = "read_file",
+      parameters = Result.withDefault Json.Null (LlmSchema.describe (LlmSchema.field "path" LlmSchema.string))
+    }
+  ]
+
+work : Llm.Client -> Result Bool Llm.Error / { Clock, Concurrency, Net, Tls }
+let work client =
+  match Llm.generate client request with
+  | Err error -> Err error
+  | Ok first ->
+    let results =
+      List.map (fun call -> {
+        id = call.id,
+        isError = false,
+        value = Json.String ("contents-" ++ call.id)
+      }) first.toolCalls
+    match LlmMessage.continueWith first results request with
+    | Err error -> Err error
+    | Ok next ->
+      match Llm.generate client next with
+      | Err error -> Err error
+      | Ok second ->
+        Ok (List.map (fun call ->
+          call.id) first.toolCalls = [
+          "a",
+          "b"
+        ] && Llm.text second = "tools completed" && second.requestId = Some "fixture-request")
+
+session : Runtime -> LlmTypes.Provider -> Listener -> Nursery -> Result Bool Llm.Error / { Clock, Concurrency, Net, Tls }
+let session env provider listener nursery =
+  let server =
+    env.concurrency.spawn nursery (fun _ -> Http.serveListener env listener (handle provider))
+  let config =
+    if provider = LlmTypes.OpenAI then LlmOpenAI.config "test" else LlmAnthropic.config "test"
+  let config = { config with
+    http = { config.http with
+      baseUrl = "http://127.0.0.1:" ++ Int.toString (env.net.localPort listener) ++ "/"
+    }
+  }
+  let result = Llm.withClient env config work
+  let cancelled = env.concurrency.cancel server
+  result
+
+run : Runtime -> LlmTypes.Provider -> Result Bool Llm.Error / { Clock, Concurrency, Net, Tls }
+let run env provider =
+  match env.net.listen 0 with
+  | Err error -> Err (LlmTypes.error LlmTypes.TransportError error)
+  | Ok listener -> env.concurrency.scope (session env provider listener)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main env =
+  let a = run env LlmTypes.OpenAI
+  let b = run env LlmTypes.Anthropic
+  let first =
+    env.console.writeLine (match a with
+    | Ok true -> "OpenAI tools passed"
+    | Ok false -> "OpenAI tools FAILED"
+    | Err error -> Llm.errorToString error)
+  env.console.writeLine (match b with
+  | Ok true -> "Anthropic tools passed"
+  | Ok false -> "Anthropic tools FAILED"
+  | Err error -> Llm.errorToString error)
