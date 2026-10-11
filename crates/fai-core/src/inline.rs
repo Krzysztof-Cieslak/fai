@@ -57,6 +57,7 @@ pub struct PrimWrapper {
 /// keeps this independent of [`core_inlined`] (no query cycle).
 #[salsa::tracked]
 pub fn prim_wrapper(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<PrimWrapper> {
+    fai_resolve::module_defs(db, file).get(name)?;
     let lowered = core(db, file, name);
     if lowered.fns.len() != 1 {
         return None;
@@ -109,6 +110,7 @@ pub struct ForeignWrapper {
 /// where the operands are a permutation of the parameters (each used exactly once).
 #[salsa::tracked]
 pub fn foreign_wrapper(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<ForeignWrapper> {
+    fai_resolve::module_defs(db, file).get(name)?;
     let lowered = core(db, file, name);
     if lowered.fns.len() != 1 {
         return None;
@@ -150,7 +152,16 @@ pub fn foreign_wrapper(db: &dyn Db, file: SourceFile, name: Symbol) -> Option<Fo
 #[salsa::tracked]
 pub fn core_inlined(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredDef> {
     let lowered = core(db, file, name);
-    let mut next = next_free_local(&lowered);
+    match inline_lowered(db, &lowered) {
+        Some(result) => Arc::new(result),
+        None => lowered,
+    }
+}
+
+/// Applies intrinsic wrapper folding to an already lowered definition, including
+/// calls exposed by later rewrites. Generated callees have no source wrapper.
+pub(crate) fn inline_lowered(db: &dyn Db, lowered: &LoweredDef) -> Option<LoweredDef> {
+    let mut next = next_free_local(lowered);
     let mut changed = false;
     let fns: Vec<CoreFn> = lowered
         .fns
@@ -161,12 +172,12 @@ pub fn core_inlined(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<LoweredD
             body: inline_expr(db, &f.body, &mut next, &mut changed),
         })
         .collect();
-    // Nothing inlined: return the original `Arc` so salsa's pointer-equality fast
-    // path gives O(1) early cutoff for the common (no-wrapper-call) definition.
+    // Nothing inlined: let the caller keep its original value and the tracked
+    // query's pointer-equality fast path for the common no-wrapper-call case.
     if !changed {
-        return lowered;
+        return None;
     }
-    Arc::new(LoweredDef {
+    Some(LoweredDef {
         def: lowered.def,
         fns,
         entry_borrowed: lowered.entry_borrowed.clone(),

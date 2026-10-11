@@ -51,6 +51,12 @@ let emptyStringLoops n total =
     emptyStringLoops (n - 1) (total + String.length text)
 public emptyStringLoop : Int -> Int
 let emptyStringLoop n = emptyStringLoops n 0
+let intrinsicLoops n values total =
+  if n <= 0 then total else
+    let count = List.sum (List.map String.length values)
+    intrinsicLoops (n - 1) values (total + count)
+public intrinsicLoop : Int -> Int
+let intrinsicLoop n = intrinsicLoops n [Int.toString 123, "λ"] 0
 let indexLoops n original total =
   if n <= 0 then total else
     let prefix = String.take 9223372036854775807 original
@@ -185,6 +191,11 @@ fn literal_string_loops_keep_fixed_state_storage_bounded() {
 #[test]
 fn empty_string_startup_keeps_retained_storage_bounded() {
     bounded("emptyStringLoop", |n| n * 16);
+}
+
+#[test]
+fn synthesized_intrinsics_keep_retained_storage_bounded() {
+    bounded("intrinsicLoop", |n| n * 4);
 }
 
 #[test]

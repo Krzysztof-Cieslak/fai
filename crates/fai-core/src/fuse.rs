@@ -253,15 +253,22 @@ pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> 
     if !cx.changed {
         return no_fuse();
     }
-    let loops = std::mem::take(&mut cx.loops);
-    let body = prune_dead_fns(LoweredDef {
+    let mut loops = std::mem::take(&mut cx.loops);
+    for generated in &mut loops {
+        if let Some(inlined) = crate::inline::inline_lowered(db, &generated.lowered) {
+            generated.lowered = inlined;
+        }
+    }
+    let body = LoweredDef {
         def: base.def,
         fns,
         entry_borrowed: base.entry_borrowed.clone(),
         reuse_entry: base.reuse_entry.clone(),
         entry_spread_params: base.entry_spread_params.clone(),
         data_shapes: base.data_shapes.clone(),
-    });
+    };
+    let body = crate::inline::inline_lowered(db, &body).unwrap_or(body);
+    let body = prune_dead_fns(body);
     Arc::new(FuseResult { body, loops })
 }
 
@@ -2526,6 +2533,31 @@ mod tests {
         let body = fused("module M\nlet append value xs = Array.push value xs\n", "append");
         assert!(!body.contains("arrayPushReserved"), "{body}");
         assert_eq!(crate::ir::Prim::from_builtin("arrayPushReserved"), None);
+    }
+
+    #[test]
+    fn generated_loops_inline_saturated_intrinsic_callbacks() {
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source(
+            "M.fai".into(),
+            "module M\nlet total texts = List.sum (List.map String.length texts)\n".into(),
+        );
+        let result = fuse_def(&db, db.source_file(id).unwrap(), Symbol::intern("total"));
+        assert_eq!(result.loops.len(), 1);
+        let body = pretty_def(&result.loops[0].lowered);
+        assert!(body.contains("stringLength"), "{body}");
+        assert!(!body.contains("@length"), "{body}");
+    }
+
+    #[test]
+    fn unrolled_pipelines_inline_saturated_intrinsic_callbacks() {
+        let body = fused(
+            "module M\nlet total () = List.sum (List.map String.length [\"a\", \"bb\"])\n",
+            "total",
+        );
+        assert!(body.contains("stringLength"), "{body}");
+        assert!(!body.contains("@length"), "{body}");
     }
 
     #[test]
