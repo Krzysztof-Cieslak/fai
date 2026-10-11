@@ -1,0 +1,111 @@
+module LlmJson
+
+public object : List (String * Json.Value) -> Json.Value
+let object fields = Json.Object (Array.fromList fields)
+
+public array : List Json.Value -> Json.Value
+let array items = Json.Array (Array.fromList items)
+
+public integer : Int -> Json.Value
+let integer value = Json.Number (JsonNumber.fromInt value)
+
+public get : String -> Json.Value -> Option Json.Value
+let get name value =
+  match value with
+  | Json.Object fields ->
+    Option.map (fun pair ->
+      letValue pair) (List.find (fun pair -> letName pair = name) (Array.toList fields))
+  | _ -> None
+
+let letName pair =
+  let (name, _) = pair
+  name
+
+let letValue pair =
+  let (_, value) = pair
+  value
+
+public string : Json.Value -> Option String
+let string value =
+  match value with
+  | Json.String text -> Some text
+  | _ -> None
+
+public text : String -> Json.Value -> Option String
+let text name value =
+  match get name value with
+  | Some value -> string value
+  | None -> None
+
+public number : Json.Value -> Option Int
+let number value =
+  match value with
+  | Json.Number number -> Result.toOption (JsonNumber.toInt number)
+  | _ -> None
+
+public count : String -> Json.Value -> Option Int
+let count name value =
+  match get name value with
+  | Some value -> number value
+  | None -> None
+
+public items : Json.Value -> Option (List Json.Value)
+let items value =
+  match value with
+  | Json.Array items -> Some (Array.toList items)
+  | _ -> None
+
+public list : String -> Json.Value -> Option (List Json.Value)
+let list name value =
+  match get name value with
+  | Some value -> items value
+  | None -> None
+
+public needText : String -> Json.Value -> Result String LlmTypes.Error
+let needText name value =
+  match text name value with
+  | Some value -> Ok value
+  | None -> Err (LlmTypes.error LlmTypes.ProtocolError ("expected string field " ++ name))
+
+public parse : String -> Result Json.Value LlmTypes.Error
+let parse text =
+  match JsonDecode.fromString JsonDecode.value text with
+  | Ok value -> Ok value
+  | Err detail -> Err { LlmTypes.error LlmTypes.InvalidJson (JsonDecode.readErrorToString detail) with
+    detail = Some detail
+  }
+
+public set : String -> Json.Value -> Json.Value -> Json.Value
+let set name value object =
+  match object with
+  | Json.Object fields ->
+    Json.Object (Array.fromList (List.append (List.filter (fun pair ->
+      letName pair <> name) (Array.toList fields)) [(name, value)]))
+  | _ -> object
+
+public fields : Json.Value -> List (String * Json.Value)
+let fields value =
+  match value with
+  | Json.Object fields -> Array.toList fields
+  | _ -> []
+
+public traverse : ('a -> Result 'b 'error) -> List 'a -> Result (List 'b) 'error
+let traverse f items = traverseInto f items []
+
+let traverseInto f items result =
+  match items with
+  | [] -> Ok (List.reverse result)
+  | x :: rest ->
+    (match f x with
+    | Err error -> Err error
+    | Ok value -> traverseInto f rest (value :: result))
+
+public optional : String -> (Json.Value -> Option 'a) -> Json.Value -> Result (Option 'a) LlmTypes.Error
+let optional name decode value =
+  match get name value with
+  | None -> Ok None
+  | Some Json.Null -> Ok None
+  | Some value ->
+    (match decode value with
+    | Some value -> Ok (Some value)
+    | None -> Err (LlmTypes.error LlmTypes.ProtocolError ("invalid field " ++ name)))

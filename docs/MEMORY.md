@@ -41,6 +41,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- LLM conversations preserve provider-native continuation items alongside typed
+  text, image and tool data. Requests remain pure and model IDs stay open strings.
+  Typed schemas pair their wire shape with local decoding; refinements remain
+  explicit local checks, and nullable fields do not silently become optional.
+
 - Stateful SSE folding retains application state and typed consumer failures
   independently of transport failures. A scoped worker publishes its final state
   under cancellation-masked cleanup; callers recover it after deadline or
