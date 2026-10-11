@@ -16,6 +16,19 @@ use fai_tests::{Revision, assert_incremental_matches_clean};
 use indoc::indoc;
 
 #[test]
+fn array_layout_preservation_edits_match_clean_objects() {
+    let source = "module M\nlet copy n source target = if n <= 0 then target else copy (n - 1) source (Array.unsafeSet (n - 1) (Array.unsafeGet (n - 1) source) target)\n";
+    let edited = source.replace("source (Array.unsafeSet", "target (Array.unsafeSet");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)], &[("M.fai", source)]],
+        |db, files| {
+            (*object_code(db, db.source_file(files[0]).unwrap(), Symbol::intern("copy"), false))
+                .clone()
+        },
+    );
+}
+
+#[test]
 fn scalar_tail_choice_edits_match_clean_native_objects() {
     let source = "module M\nlet loop n total = if n <= 0 then total else if n % 2 = 0 then loop (n - 1) (total + 1) else loop (n - 1) (total - 1)\n";
     let edited = source.replace("total - 1", "total / n");

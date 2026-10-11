@@ -15,6 +15,19 @@ use indoc::indoc;
 static RUN_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn invariant_array_layout_keeps_worker_shared_and_float_values() {
+    let dir = workspace(&[("Main.fai", include_str!("fixtures/ArrayLayoutLoop.fai"))]);
+    let session = Session::open(dir).unwrap();
+    let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
+    let rebuilt = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let _guard = RUN_LOCK.lock().unwrap();
+    fai_runtime::capture_start();
+    let exit = jit_run_bundle(&rebuilt);
+    let text = fai_runtime::capture_take();
+    assert_eq!((exit, text.as_str()), (0, "ok\n"));
+}
+
+#[test]
 fn scalar_tail_selection_preserves_worker_values() {
     let dir = workspace(&[("Main.fai", include_str!("fixtures/ScalarTailSelects.fai"))]);
     let session = Session::open(dir).unwrap();

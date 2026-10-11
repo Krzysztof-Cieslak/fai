@@ -4695,6 +4695,17 @@ fn growing_array_lengths_keep_their_memory_dependency() {
 }
 
 #[test]
+fn layout_preserving_array_loops_load_descriptors_once() {
+    let source = "module M\nlet copy n source target = if n <= 0 then target else copy (n - 1) source (Array.unsafeSet (n - 1) (Array.unsafeGet (n - 1) source) target)\n";
+    let ir = entry_ir(source, "copy");
+    let reads = ir
+        .lines()
+        .filter(|line| line.contains("load.i64") && line.trim_end().ends_with("+8"))
+        .count();
+    assert_eq!(reads, 2, "both array layouts survive every back-edge:\n{ir}");
+}
+
+#[test]
 fn an_array_bounded_integer_needs_no_boxing_overflow_guard() {
     let source = "module M\nlet append n values = if n < 0 then values else if n < Array.length values then Array.push n values else values\n";
     let ir = entry_ir(source, "append");

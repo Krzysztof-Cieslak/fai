@@ -9,6 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use indoc::{formatdoc, indoc};
 
 #[test]
+fn invariant_array_layout_keeps_native_shared_and_float_values() {
+    assert_eq!(
+        build_and_run(include_str!("fixtures/ArrayLayoutLoop.fai")),
+        ("ok\n".into(), Some(0))
+    );
+}
+
+#[test]
 fn scalar_tail_selection_preserves_native_values() {
     assert_eq!(
         build_and_run(include_str!("fixtures/ScalarTailSelects.fai")),

@@ -4319,6 +4319,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   structural type-variable fields may be supplied in raw-Float slots. Unknown
   shapes retain runtime decoding, and cross-file function bodies remain behind
   the signature firewall.
+  A bounded tail loop reuses an array's entry layout predicate when every
+  back-edge preserves its origin through aliases, set/put or unique-copy
+  operations. Growth and unknown replacements retain per-iteration reads, and
+  nested loops remain conservative. Only the scalar predicate is carried; no
+  extra owner or delayed release is introduced.
   Array slots used only for data inspection may borrow from a retained array.
   A bounded post-ownership proof checks each read against the array's lifetime;
   escaped slots, representation conversions and uncertain cases stay owned.
