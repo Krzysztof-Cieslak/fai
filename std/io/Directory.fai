@@ -1,0 +1,238 @@
+module Directory
+
+public type Order =
+  | NativeOrder
+  | SortedOrder
+
+public type ErrorPolicy =
+  | StopOnError
+  | SkipErrors
+
+public type WalkOptions = {
+  errorPolicy : ErrorPolicy,
+  followLinks : Bool,
+  maxDepth : Int,
+  maxEntries : Int,
+  maxOpenDirectories : Int,
+  order : Order
+}
+
+/// Bounded traversal with native enumeration order and no symlink following.
+public walkOptions : WalkOptions
+let walkOptions = {
+  errorPolicy = StopOnError,
+  followLinks = false,
+  maxDepth = 256,
+  maxEntries = 1000000,
+  maxOpenDirectories = 64,
+  order = NativeOrder
+}
+example: walkOptions.followLinks = false
+
+public type Decision =
+  | Continue
+  | SkipChildren
+  | Stop
+
+public type WalkEnd =
+  | Exhausted
+  | Stopped
+
+public type WalkError 'error =
+  | FileError FileSystem.Error
+  | CallbackError 'error
+
+/// The last committed state survives failure; cleanup failure is independent.
+public type WalkResult 'state 'error = {
+  cleanupError : Option FileSystem.Error,
+  outcome : Result WalkEnd (WalkError 'error),
+  skippedErrors : Int,
+  value : 'state,
+  visited : Int
+}
+
+type Frame = {
+  cursor : Option Io.DirectoryCursor,
+  depth : Int,
+  entries : List FileSystem.Entry,
+  identity : Bytes
+}
+
+let failed path message = FileSystem.error FileSystem.TooLarge "walk" (Some path) message
+
+collect : FileSystem -> Io.DirectoryCursor -> Int -> List FileSystem.Entry -> Result (List FileSystem.Entry) FileSystem.Error / { FileSystem }
+let collect fs cursor remaining entries =
+  match fs.nextDirectory cursor with
+  | Err error -> Err error
+  | Ok None -> Ok (List.reverse entries)
+  | Ok (Some entry) ->
+    if remaining <= 0 then
+      Err (failed entry.path "directory entry limit exceeded")
+    else
+      collect fs cursor (remaining - 1) (entry :: entries)
+
+/// Collect at most limit entries in deterministic native-spelling order.
+public list : { concurrency : Concurrency, fs : FileSystem | _ } -> Int -> Path -> Result (List FileSystem.Entry) (FileSystem.ScopeError FileSystem.Error) / { Concurrency, FileSystem }
+let list env limit path =
+  if limit < 0 then
+    Err (FileSystem.OpenError (FileSystem.error FileSystem.InvalidArgument "list" (Some path) "negative entry limit"))
+  else
+    match env.fs.openDirectory path with
+    | Err error -> Err (FileSystem.OpenError error)
+    | Ok cursor ->
+      let result = collect env.fs cursor limit []
+      let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeDirectory cursor)
+      FileSystem.scopeResult (Result.map (List.sortBy (fun a b ->
+        compare a.name b.name)) result) closed
+
+openFrame : { concurrency : Concurrency, fs : FileSystem | _ } -> WalkOptions -> Int -> Int -> Path -> Bytes -> Result Frame FileSystem.Error / { Concurrency, FileSystem }
+let openFrame env options depth remaining path identity =
+  match env.fs.openDirectory path with
+  | Err error -> Err error
+  | Ok cursor ->
+    if options.order = NativeOrder then
+      Ok { cursor = Some cursor, depth = depth, entries = [], identity = identity }
+    else
+      let result = collect env.fs cursor remaining []
+      let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeDirectory cursor)
+      match (result, closed) with
+      | (Ok entries, Ok _) -> Ok {
+        cursor = None,
+        depth = depth,
+        entries = List.sortBy (fun a b -> compare a.name b.name) entries,
+        identity = identity
+      }
+      | (Err error, _) -> Err error
+      | (_, Err error) -> Err error
+
+closeFrame : FileSystem -> Frame -> Result Unit FileSystem.Error / { FileSystem }
+let closeFrame fs frame =
+  match frame.cursor with
+  | None -> Ok ()
+  | Some cursor -> fs.closeDirectory cursor
+
+closeFrames : FileSystem -> List Frame -> Option FileSystem.Error -> Option FileSystem.Error / { FileSystem }
+let closeFrames fs frames first =
+  match frames with
+  | [] -> first
+  | frame :: rest ->
+    let closed = closeFrame fs frame
+    closeFrames fs rest (match (first, closed) with
+    | (None, Err error) -> Some error
+    | _ -> first)
+
+finish : { concurrency : Concurrency, fs : FileSystem | _ } -> List Frame -> WalkResult 'state 'error -> WalkResult 'state 'error / { Concurrency, FileSystem }
+let finish env frames result = { result with
+  cleanupError = Wire.cleanup env.concurrency (fun _ ->
+    closeFrames env.fs frames result.cleanupError)
+}
+
+nextEntry : FileSystem -> Frame -> Result (Option FileSystem.Entry * Frame) FileSystem.Error / { FileSystem }
+let nextEntry fs frame =
+  match frame.cursor with
+  | Some cursor -> Result.map (fun item -> (item, frame)) (fs.nextDirectory cursor)
+  | None ->
+    match frame.entries with
+    | [] -> Ok (None, frame)
+    | entry :: rest -> Ok (Some entry, { frame with entries = rest })
+
+walkLoop : { concurrency : Concurrency, fs : FileSystem | _ } -> WalkOptions -> (Int -> FileSystem.Entry -> 'state -> Result ('state * Decision) 'error / 'e) -> List Frame -> WalkResult 'state 'error -> WalkResult 'state 'error / { Concurrency, FileSystem | 'e }
+let walkLoop env options step frames result =
+  match frames with
+  | [] -> result
+  | frame :: rest ->
+    match nextEntry env.fs frame with
+    | Err error ->
+      if options.errorPolicy = StopOnError || error.kind = FileSystem.Cancelled then
+        finish env frames { result with outcome = Err (FileError error) }
+      else
+        let closed = Wire.cleanup env.concurrency (fun _ -> closeFrame env.fs frame)
+        let result = { result with
+          cleanupError = match closed with
+          | Ok _ -> result.cleanupError
+          | Err error -> Some error,
+          skippedErrors = result.skippedErrors + 1
+        }
+        walkLoop env options step rest result
+    | Ok (None, _) ->
+      let closed = Wire.cleanup env.concurrency (fun _ -> closeFrame env.fs frame)
+      match closed with
+      | Err error -> finish env rest { result with outcome = Err (FileError error) }
+      | Ok _ -> walkLoop env options step rest result
+    | Ok (Some entry, updated) ->
+      let frames = updated :: rest
+      if result.visited >= options.maxEntries then
+        finish env frames { result with
+          outcome = Err (FileError (failed entry.path "walk entry limit exceeded"))
+        }
+      else
+        match step (frame.depth + 1) entry result.value with
+        | Err error -> finish env frames { result with outcome = Err (CallbackError error) }
+        | Ok (value, decision) ->
+          let result = { result with value = value, visited = result.visited + 1 }
+          if decision = Stop then
+            finish env frames { result with outcome = Ok Stopped }
+          else if decision = SkipChildren || frame.depth + 1 >= options.maxDepth then
+            walkLoop env options step frames result
+          else
+            descend env options step frames result entry (frame.depth + 1)
+
+descend : { concurrency : Concurrency, fs : FileSystem | _ } -> WalkOptions -> (Int -> FileSystem.Entry -> 'state -> Result ('state * Decision) 'error / 'e) -> List Frame -> WalkResult 'state 'error -> FileSystem.Entry -> Int -> WalkResult 'state 'error / { Concurrency, FileSystem | 'e }
+let descend env options step frames result entry depth =
+  let info =
+    if options.followLinks then env.fs.metadata entry.path else env.fs.linkMetadata entry.path
+  match info with
+  | Err error -> handleError env options step frames result error
+  | Ok info ->
+    if info.kind <> FileSystem.Directory then
+      walkLoop env options step frames result
+    else if List.any (fun frame -> frame.identity = info.identity) frames then
+      handleError env options step frames result (FileSystem.error FileSystem.TooManyLinks "walk" (Some entry.path) "directory cycle")
+    else if options.order = NativeOrder && List.length frames >= options.maxOpenDirectories then
+      finish env frames { result with
+        outcome = Err (FileError (failed entry.path "open-directory limit exceeded"))
+      }
+    else
+      match openFrame env options depth (options.maxEntries - result.visited) entry.path info.identity with
+      | Err error -> handleError env options step frames result error
+      | Ok frame -> walkLoop env options step (frame :: frames) result
+
+handleError : { concurrency : Concurrency, fs : FileSystem | _ } -> WalkOptions -> (Int -> FileSystem.Entry -> 'state -> Result ('state * Decision) 'error / 'e) -> List Frame -> WalkResult 'state 'error -> FileSystem.Error -> WalkResult 'state 'error / { Concurrency, FileSystem | 'e }
+let handleError env options step frames result error =
+  if options.errorPolicy = SkipErrors && error.kind <> FileSystem.Cancelled && error.kind <> FileSystem.TooLarge then
+    walkLoop env options step frames { result with skippedErrors = result.skippedErrors + 1 }
+  else
+    finish env frames { result with outcome = Err (FileError error) }
+
+/// Depth-first fold over a directory's descendants (children have depth one).
+/// Limits never silently truncate entries; maxDepth deliberately prunes deeper
+/// descendants. Sorted traversal buffers bounded directory entries; native order
+/// holds at most maxOpenDirectories cursors. Enumeration is not a snapshot.
+public walk : { concurrency : Concurrency, fs : FileSystem | _ } -> WalkOptions -> Path -> 'state -> (Int -> FileSystem.Entry -> 'state -> Result ('state * Decision) 'error / 'e) -> WalkResult 'state 'error / { Concurrency, FileSystem | 'e }
+let walk env options path initial step =
+  let result = {
+    cleanupError = None,
+    outcome = Ok Exhausted,
+    skippedErrors = 0,
+    value = initial,
+    visited = 0
+  }
+  if options.maxDepth < 0 || options.maxEntries < 0 || options.maxOpenDirectories <= 0 then
+    { result with
+      outcome = Err (FileError (FileSystem.error FileSystem.InvalidArgument "walk" (Some path) "invalid traversal limits"))
+    }
+  else
+    let metadata = if options.followLinks then env.fs.metadata path else env.fs.linkMetadata path
+    match metadata with
+    | Err error -> { result with outcome = Err (FileError error) }
+    | Ok info ->
+      if info.kind <> FileSystem.Directory then
+        { result with
+          outcome = Err (FileError (FileSystem.error FileSystem.NotDirectory "walk" (Some path) "root is not a directory"))
+        }
+      else if options.maxDepth = 0 then
+        result
+      else
+        match openFrame env options 0 options.maxEntries path info.identity with
+        | Err error -> { result with outcome = Err (FileError error) }
+        | Ok frame -> walkLoop env options step [frame] result

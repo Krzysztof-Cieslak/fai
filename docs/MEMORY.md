@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Directory traversal uses an explicit frame stack, scoped native cursors and
+  ancestor-only cycle detection. Entry, depth and open-directory limits are
+  explicit. Native order streams; sorted order buffers each bounded directory.
+  Early stop and callback/IO failure retain the last committed accumulator.
+
 - Directory entry names retain their native encoding through enumeration and
   reopening. Metadata carries native identity and nanosecond timestamp values.
   Renaming without replacement uses native atomic no-clobber operations; copy

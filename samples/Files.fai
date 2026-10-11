@@ -8,3 +8,9 @@ let readConfig env path = File.readText env.fs 65536 path
 /// the entry changes after this observation.
 public size : { fs : FileSystem | _ } -> Path -> Result Int FileSystem.Error / { FileSystem }
 let size env path = Result.map (fun info -> info.length) (env.fs.metadata path)
+
+/// A bounded depth-first traversal. The accumulator survives early exit or error.
+public countEntries : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> Directory.WalkResult Int String / { Concurrency, FileSystem }
+let countEntries env root =
+  Directory.walk env Directory.walkOptions root 0 (fun depth entry count ->
+    Ok (count + 1, Directory.Continue))

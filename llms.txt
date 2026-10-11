@@ -1139,6 +1139,14 @@ forall xs: mirror (mirror xs) = xs
 
 ### FileSystem and File — native file I/O
 
+`Directory.list env limit path` returns a sorted, bounded listing and preserves
+scope cleanup errors. `Directory.walk env options root initial step` folds over
+descendants, with children at depth one. `step depth entry state` returns a new
+state and `Continue`/`SkipChildren`/`Stop`, or a typed error. `WalkResult` retains
+state, visited/skipped-error counts, outcome and a separate cleanup error. Options
+select native/sorted order, symlink following, error policy, maxDepth, maxEntries,
+and maxOpenDirectories; depth prunes intentionally, other limits fail explicitly.
+
 The capability also provides `metadata` (follow links), `linkMetadata`,
 `sameFile`, `canonicalize`, `currentDirectory`, `temporaryDirectory`, `readLink`,
 `createDirectory`, `createDirectories`, `removeFile`, `removeDirectory`,
