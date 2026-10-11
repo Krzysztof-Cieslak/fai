@@ -1,4 +1,4 @@
-//! Reference Rust implementations of the well-known algorithms the runtime
+//! Compiler-independent Rust implementations of the algorithms the runtime
 //! benchmarks compare against Fai, plus the registry tying each to its Fai sample
 //! module and workload sizes.
 //!
@@ -19,28 +19,52 @@ use std::rc::Rc;
 
 /// A persistent, reference-counted singly-linked list — the faithful Rust twin of
 /// Fai's `List` (immutable cons cells shared through `Rc`, refcounted like Fai's,
-/// so prepending is O(1) and sharing is free). The backtracking and parser oracles
+/// so prepending is O(1) and sharing allocates nothing). The backtracking and parser oracles
 /// hold their data in one of these rather than a contiguous `Vec`, matching their
 /// Fai samples: prepend-and-scan stacks (`nqueens`), permutation generation and
 /// reversal (`fannkuch`), and a token stream consumed by a recursive-descent
 /// parser (`expr_eval`).
-enum PList<T> {
-    /// The empty list.
-    Nil,
-    /// A head element and the (shared) tail.
-    Cons(T, Rc<PList<T>>),
+struct PList<T>(Option<Rc<ListNode<T>>>);
+
+struct ListNode<T> {
+    head: T,
+    tail: PList<T>,
 }
 
-/// Release a long, uniquely-owned `PList` iteratively. The compiler's default drop
-/// recurses one frame per cons cell, which overflows a small stack (e.g. a Windows
-/// test thread) on a list thousands long; peeling it with `try_unwrap` frees one
-/// node per loop iteration instead. A still-shared tail is left to its other
-/// owners (it is not this caller's to free).
-fn drop_list<T>(mut link: Rc<PList<T>>) {
-    while let Ok(node) = Rc::try_unwrap(link) {
-        match node {
-            PList::Cons(_, rest) => link = rest,
-            PList::Nil => return,
+enum ListView<'a, T> {
+    Nil,
+    Cons(&'a T, &'a PList<T>),
+}
+
+impl<T> PList<T> {
+    fn empty() -> Self {
+        Self(None)
+    }
+
+    fn cons(head: T, tail: Self) -> Self {
+        Self(Some(Rc::new(ListNode { head, tail })))
+    }
+
+    fn view(&self) -> ListView<'_, T> {
+        match &self.0 {
+            None => ListView::Nil,
+            Some(node) => ListView::Cons(&node.head, &node.tail),
+        }
+    }
+}
+
+impl<T> Clone for PList<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> Drop for PList<T> {
+    fn drop(&mut self) {
+        let mut current = self.0.take();
+        while let Some(node) = current {
+            let Ok(mut node) = Rc::try_unwrap(node) else { break };
+            current = node.tail.0.take();
         }
     }
 }
@@ -89,24 +113,24 @@ pub fn merge_sort_sum(n: i64) -> i64 {
     v.iter().enumerate().map(|(i, x)| i as i64 * x).sum()
 }
 
-/// A full binary tree, mirroring the Fai sample's heap structure.
-enum Tree {
-    Leaf,
-    Node(Box<Tree>, Box<Tree>),
+/// One internal node. An empty child is a null niche, as on the Fai/OCaml peers.
+struct TreeNode {
+    left: Option<Box<TreeNode>>,
+    right: Option<Box<TreeNode>>,
 }
 
-fn build_tree(depth: i64) -> Tree {
+fn build_tree(depth: i64) -> Option<Box<TreeNode>> {
     if depth <= 0 {
-        Tree::Leaf
+        None
     } else {
-        Tree::Node(Box::new(build_tree(depth - 1)), Box::new(build_tree(depth - 1)))
+        Some(Box::new(TreeNode { left: build_tree(depth - 1), right: build_tree(depth - 1) }))
     }
 }
 
-fn count(tree: &Tree) -> i64 {
+fn count(tree: &Option<Box<TreeNode>>) -> i64 {
     match tree {
-        Tree::Leaf => 0,
-        Tree::Node(left, right) => 1 + count(left) + count(right),
+        None => 0,
+        Some(node) => 1 + count(&node.left) + count(&node.right),
     }
 }
 
@@ -283,28 +307,28 @@ pub fn vec_mat(n: i64) -> f64 {
 /// `Vec` would copy, so backtracking is the linked structure's natural shape.
 #[must_use]
 pub fn nqueens(n: i64) -> i64 {
-    use PList::{Cons, Nil};
+    use ListView::{Cons, Nil};
     // Whether column `c` is safe against the placed queens, `d` rows away from the
     // nearest (1 for the immediately previous row).
     fn safe_from(c: i64, d: i64, placed: &PList<i64>) -> bool {
-        match placed {
+        match placed.view() {
             Nil => true,
             Cons(q, rest) => *q != c && q - c != d && c - q != d && safe_from(c, d + 1, rest),
         }
     }
-    fn solve(size: i64, row: i64, placed: &Rc<PList<i64>>) -> i64 {
+    fn solve(size: i64, row: i64, placed: &PList<i64>) -> i64 {
         if row >= size {
             return 1;
         }
         let mut count = 0;
         for c in 0..size {
             if safe_from(c, 1, placed) {
-                count += solve(size, row + 1, &Rc::new(Cons(c, Rc::clone(placed))));
+                count += solve(size, row + 1, &PList::cons(c, placed.clone()));
             }
         }
         count
     }
-    solve(n, 0, &Rc::new(Nil))
+    solve(n, 0, &PList::empty())
 }
 
 /// The sum of all entries of the `n`-by-`n` product `A·B`, with `A(i,j)=(i+j)%7`
@@ -366,7 +390,7 @@ pub fn levenshtein(n: i64) -> i64 {
 }
 
 /// The live-cell count after `n` Conway generations from the R-pentomino seed.
-/// Deterministic, so the BST-ordered Fai version and this hashed reference agree.
+/// Deterministic, so the Fai hash containers and this reference agree.
 #[must_use]
 pub fn game_of_life(n: i64) -> i64 {
     const OFFSETS: [(i64, i64); 8] =
@@ -482,8 +506,8 @@ pub fn prng_xorshift(n: i64) -> i64 {
 /// matched in both representation and algorithm.
 #[must_use]
 pub fn expr_eval(n: i64) -> i64 {
-    use PList::{Cons, Nil};
-    type TokList = Rc<PList<Token>>;
+    use ListView::Cons;
+    type TokList = PList<Token>;
     type Parsed = Option<(Expr, TokList)>;
 
     enum Token {
@@ -514,12 +538,12 @@ pub fn expr_eval(n: i64) -> i64 {
     // `count` numbers separated by cycling operators: the list the Fai `genTokens`
     // builds, assembled back-to-front so a long stream does not recurse.
     fn gen_tokens(count: i64) -> TokList {
-        let mut list = Rc::new(Nil);
+        let mut list = PList::empty();
         let mut i = count - 1;
         while i >= 0 {
-            list = Rc::new(Cons(Token::Num(num(i)), list));
+            list = PList::cons(Token::Num(num(i)), list);
             if i > 0 {
-                list = Rc::new(Cons(op_for(i - 1), list));
+                list = PList::cons(op_for(i - 1), list);
             }
             i -= 1;
         }
@@ -528,8 +552,8 @@ pub fn expr_eval(n: i64) -> i64 {
 
     // A factor is a single number.
     fn parse_factor(tokens: &TokList) -> Parsed {
-        match &**tokens {
-            Cons(Token::Num(k), rest) => Some((Expr::Num(*k), Rc::clone(rest))),
+        match tokens.view() {
+            Cons(Token::Num(k), rest) => Some((Expr::Num(*k), rest.clone())),
             _ => None,
         }
     }
@@ -540,8 +564,8 @@ pub fn expr_eval(n: i64) -> i64 {
     fn parse_term(tokens: &TokList) -> Parsed {
         let (mut left, mut rest) = parse_factor(tokens)?;
         loop {
-            let more = match &*rest {
-                Cons(Token::Star, more) => Rc::clone(more),
+            let more = match rest.view() {
+                Cons(Token::Star, more) => more.clone(),
                 _ => return Some((left, rest)),
             };
             let (right, rest2) = parse_factor(&more)?;
@@ -553,9 +577,9 @@ pub fn expr_eval(n: i64) -> i64 {
     fn parse_expr(tokens: &TokList) -> Parsed {
         let (mut left, mut rest) = parse_term(tokens)?;
         loop {
-            let (subtract, more) = match &*rest {
-                Cons(Token::Plus, more) => (false, Rc::clone(more)),
-                Cons(Token::Minus, more) => (true, Rc::clone(more)),
+            let (subtract, more) = match rest.view() {
+                Cons(Token::Plus, more) => (false, more.clone()),
+                Cons(Token::Minus, more) => (true, more.clone()),
                 _ => return Some((left, rest)),
             };
             let (right, rest2) = parse_term(&more)?;
@@ -604,7 +628,7 @@ pub fn expr_eval(n: i64) -> i64 {
         Some((e, _)) => eval(e),
         None => 0,
     };
-    drop_list(tokens);
+    drop(tokens);
     result
 }
 
@@ -804,31 +828,31 @@ pub fn nbody(n: i64) -> f64 {
 /// `n!` permutations, not because of the representation.
 #[must_use]
 pub fn fannkuch(n: i64) -> i64 {
-    use PList::{Cons, Nil};
-    type Perm = Rc<PList<i64>>;
-    type Perms = Rc<PList<Perm>>;
+    use ListView::{Cons, Nil};
+    type Perm = PList<i64>;
+    type Perms = PList<Perm>;
 
     fn take(k: i64, xs: &Perm) -> Perm {
-        match &**xs {
-            Cons(h, t) if k > 0 => Rc::new(Cons(*h, take(k - 1, t))),
-            _ => Rc::new(Nil),
+        match xs.view() {
+            Cons(h, t) if k > 0 => PList::cons(*h, take(k - 1, t)),
+            _ => PList::empty(),
         }
     }
     fn drop(k: i64, xs: &Perm) -> Perm {
-        match &**xs {
+        match xs.view() {
             Cons(_, t) if k > 0 => drop(k - 1, t),
-            _ => Rc::clone(xs),
+            _ => xs.clone(),
         }
     }
     fn reverse(xs: &Perm) -> Perm {
-        let mut acc = Rc::new(Nil);
-        let mut cur = Rc::clone(xs);
+        let mut acc = PList::empty();
+        let mut cur = xs.clone();
         loop {
-            let next = match &*cur {
+            let next = match cur.view() {
                 Nil => break,
                 Cons(h, t) => {
-                    acc = Rc::new(Cons(*h, acc));
-                    Rc::clone(t)
+                    acc = PList::cons(*h, acc);
+                    t.clone()
                 }
             };
             cur = next;
@@ -836,9 +860,9 @@ pub fn fannkuch(n: i64) -> i64 {
         acc
     }
     fn append(xs: &Perm, ys: &Perm) -> Perm {
-        match &**xs {
-            Nil => Rc::clone(ys),
-            Cons(h, t) => Rc::new(Cons(*h, append(t, ys))),
+        match xs.view() {
+            Nil => ys.clone(),
+            Cons(h, t) => PList::cons(*h, append(t, ys)),
         }
     }
     // Reverse the first `k` elements: `reverse (take k xs) ++ drop k xs`.
@@ -847,56 +871,56 @@ pub fn fannkuch(n: i64) -> i64 {
     }
     // Flip the leading run until the head reaches 1, counting the flips.
     fn flips_from(acc: i64, perm: &Perm) -> i64 {
-        match &**perm {
+        match perm.view() {
             Cons(first, _) if *first > 1 => flips_from(acc + 1, &reverse_first(*first, perm)),
             _ => acc,
         }
     }
     // Remove the first occurrence of `y`.
     fn remove_first(y: i64, xs: &Perm) -> Perm {
-        match &**xs {
-            Nil => Rc::new(Nil),
+        match xs.view() {
+            Nil => PList::empty(),
             Cons(x, rest) => {
                 if *x == y {
-                    Rc::clone(rest)
+                    rest.clone()
                 } else {
-                    Rc::new(Cons(*x, remove_first(y, rest)))
+                    PList::cons(*x, remove_first(y, rest))
                 }
             }
         }
     }
     // Prepend `x` to every permutation in `ps`.
     fn prepend_each(x: i64, ps: &Perms) -> Perms {
-        match &**ps {
-            Nil => Rc::new(Nil),
-            Cons(p, rest) => Rc::new(Cons(Rc::new(Cons(x, Rc::clone(p))), prepend_each(x, rest))),
+        match ps.view() {
+            Nil => PList::empty(),
+            Cons(p, rest) => PList::cons(PList::cons(x, p.clone()), prepend_each(x, rest)),
         }
     }
     fn concat(xss: &Perms, ys: &Perms) -> Perms {
-        match &**xss {
-            Nil => Rc::clone(ys),
-            Cons(p, rest) => Rc::new(Cons(Rc::clone(p), concat(rest, ys))),
+        match xss.view() {
+            Nil => ys.clone(),
+            Cons(p, rest) => PList::cons(p.clone(), concat(rest, ys)),
         }
     }
     // Every permutation of `xs`: for each element, prepend it to every permutation
     // of the rest, concatenating the results (the Fai `concatMap`).
     fn perms(xs: &Perm) -> Perms {
-        match &**xs {
-            Nil => Rc::new(Cons(Rc::new(Nil), Rc::new(Nil))),
+        match xs.view() {
+            Nil => PList::cons(PList::empty(), PList::empty()),
             Cons(_, _) => {
                 let mut elems = Vec::new();
-                let mut cur = Rc::clone(xs);
+                let mut cur = xs.clone();
                 loop {
-                    let next = match &*cur {
+                    let next = match cur.view() {
                         Nil => break,
                         Cons(h, t) => {
                             elems.push(*h);
-                            Rc::clone(t)
+                            t.clone()
                         }
                     };
                     cur = next;
                 }
-                let mut out = Rc::new(Nil);
+                let mut out = PList::empty();
                 for &x in elems.iter().rev() {
                     out = concat(&prepend_each(x, &perms(&remove_first(x, xs))), &out);
                 }
@@ -905,9 +929,9 @@ pub fn fannkuch(n: i64) -> i64 {
         }
     }
     fn range(lo: i64, hi: i64) -> Perm {
-        let mut xs = Rc::new(Nil);
+        let mut xs = PList::empty();
         for v in (lo..hi).rev() {
-            xs = Rc::new(Cons(v, xs));
+            xs = PList::cons(v, xs);
         }
         xs
     }
@@ -916,11 +940,11 @@ pub fn fannkuch(n: i64) -> i64 {
     let mut acc = 0;
     let mut cur = perms(&range(1, n + 1));
     loop {
-        let next = match &*cur {
+        let next = match cur.view() {
             Nil => break,
             Cons(p, rest) => {
                 acc = acc.max(flips_from(0, p));
-                Rc::clone(rest)
+                rest.clone()
             }
         };
         cur = next;
@@ -1152,7 +1176,7 @@ mod evaluator_tests {
 }
 
 /// Follow "next pointer" chains through a lookup table, summing visited keys. The
-/// `HashMap` stands in for the Fai linear association list (keys are unique, so
+/// `HashMap` stands in for the Fai `HashDict` (keys are unique, so
 /// the looked-up value is identical); a missing key is the niche `None`, ending
 /// the walk, and a per-walk fuel bounds the (cyclic) table so it terminates.
 #[must_use]
@@ -1565,5 +1589,66 @@ pub fn source(module: &str) -> &'static str {
         "ListSort" => include_str!("../../../samples/algorithms/ListSort.fai"),
         other => crate::tail_components::source(other)
             .unwrap_or_else(|| panic!("unknown algorithm module: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod representation_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn empty_tree_and_list_fit_in_the_pointer_niche() {
+        assert_eq!(std::mem::size_of::<Option<Box<TreeNode>>>(), std::mem::size_of::<usize>());
+        assert_eq!(std::mem::size_of::<PList<i64>>(), std::mem::size_of::<usize>());
+    }
+
+    #[test]
+    fn full_tree_retains_every_internal_node_and_empty_child() {
+        fn shape(tree: &Option<Box<TreeNode>>) -> (usize, usize, usize) {
+            match tree {
+                None => (0, 1, 0),
+                Some(node) => {
+                    let (ln, ll, lh) = shape(&node.left);
+                    let (rn, rl, rh) = shape(&node.right);
+                    (ln + rn + 1, ll + rl, lh.max(rh) + 1)
+                }
+            }
+        }
+        assert_eq!(shape(&build_tree(8)), (255, 256, 8));
+        assert_eq!(tree_count(8), 255);
+    }
+
+    #[test]
+    fn dropping_a_prefix_preserves_its_shared_tail() {
+        struct Probe(Rc<Cell<usize>>);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let drops = Rc::new(Cell::new(0));
+        let tail = PList::cons(Probe(drops.clone()), PList::empty());
+        let prefix = PList::cons(Probe(drops.clone()), tail.clone());
+        drop(prefix);
+        assert_eq!(drops.get(), 1);
+        drop(tail);
+        assert_eq!(drops.get(), 2);
+    }
+
+    #[test]
+    fn long_list_release_is_iterative() {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(|| {
+                let mut list = PList::empty();
+                for value in 0..100000 {
+                    list = PList::cons(value, list);
+                }
+                drop(list);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

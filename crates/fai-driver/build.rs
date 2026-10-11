@@ -18,6 +18,8 @@
 //! mirroring it keeps the native executables' end-of-run leak check working under
 //! `cargo test` while a release/bench build links a counter-free (faster)
 //! runtime. Cargo exposes the driver's setting as `CARGO_CFG_DEBUG_ASSERTIONS`.
+//! The optional `allocation-stats` feature is forwarded independently, so an
+//! optimized diagnostic build can account for allocations without debug assertions.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -47,8 +49,11 @@ fn main() {
     let debug_assertions = std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
 
     let mut cmd = Command::new(&cargo);
-    cmd.arg("rustc")
-        .arg("--manifest-path")
+    cmd.arg("rustc");
+    if std::env::var_os("CARGO_FEATURE_ALLOCATION_STATS").is_some() {
+        cmd.args(["--features", "allocation-stats"]);
+    }
+    cmd.arg("--manifest-path")
         .arg(&runtime_manifest)
         .arg("--lib")
         .arg("--crate-type")

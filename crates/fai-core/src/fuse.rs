@@ -216,7 +216,7 @@ pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> 
         if Arc::ptr_eq(&base, &expanded) { base } else { local_constructors::reduce(db, expanded) }
     };
     let no_fuse = || Arc::new(FuseResult { body: (*base).clone(), loops: Vec::new() });
-    if file.is_std(db) {
+    if file.is_std(db) || fai_db::allocation_control(db) == fai_db::AllocationControl::NoFusion {
         return no_fuse();
     }
     let Some(defs) = fusion_defs(db) else { return no_fuse() };
@@ -255,6 +255,7 @@ pub fn fuse_def(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FuseResult> 
     }
     let mut loops = std::mem::take(&mut cx.loops);
     for generated in &mut loops {
+        generated.abi = crate::abi::controlled(db, generated.abi.clone());
         if let Some(inlined) = crate::inline::inline_lowered(db, &generated.lowered) {
             generated.lowered = inlined;
         }

@@ -13,7 +13,12 @@ scopes and are reported separately.
   languages execute native AOT programs in persistent workers, with runtime input
   windows, identical batches and explicit harness-floor measurements.
 - **End-to-end AOT:** `algorithms_aot` includes process startup, one runtime-sized
-  workload, output and exit. `algorithms_mem` measures its peak process RSS.
+  workload, output and exit. `algorithms_mem` measures isolated processes at both
+  registered sizes and multiple whole-workload repetition counts, with a matched
+  floor execution of each exact binary.
+- **Compiler allocation attribution:** `allocation_design` compiles identical Fai
+  source with one optimization disabled. Optimized instrumented AOT executions
+  expose allocation requests, live object storage, backing storage and copies.
 - **Fai JIT regression:** `algorithms_jit` tracks Fai's execution route for
   `run`/contracts. Rust is an untimed correctness oracle. Historical Rust timing
   rows were real AOT function calls, not a simulated Rust JIT, and remain labelled
@@ -24,6 +29,77 @@ relevant size. Startup and footprint issues use the end-to-end/RSS measurements.
 Floor-limited or inconsistent results do not establish parity; neither does a
 favorable result in a different scope. Preserve previous JIT measurements under
 their original labels when refreshing an issue.
+
+## Attribution contract: `isolated-aot-v2`
+
+Every current cross-language peer contains one statically selected workload.
+Rust workloads and the worker protocol live in the compiler-independent
+`crates/fai-bench-workloads` crate. The builder links no compiler/test library,
+checks the resulting symbol table for compiler/Salsa registrations, and records
+the actual compiler command, configuration, source and executable hashes. OCaml
+peers contain only the selected fixture declarations and their explicit support
+dependencies. Fai retains one native executable per workload.
+
+`crates/fai-bench-workloads/src/contracts.rs` fixes each workload's source version,
+comparison eligibility and representation notes **before measurement**. Matched
+kernels use the same algorithm and logical data; compiler transformations may
+still eliminate allocations or choose different physical layouts. Application
+comparisons include different library sorts, hash policies, graph/JSON containers
+or evaluation staging. Their absolute measurements remain useful, but cannot
+enter a compiler-kernel ratio merely because their output checksum agrees.
+Changes to workload algorithms, data construction, or sharing require a new
+contract version and matching structural/answer checks. Current artifact content
+identities use BLAKE3; historical SHA-256 manifests retain their original scheme.
+
+`WARMSTAT2` identifies the methodology, workload version and complete executable
+set as well as raw batches/floors. Different versions or executable sets never
+form a pair. The renderer suppresses unreviewed/application and floor-limited
+kernel ratios. Legacy `WARMSTAT` and `MEMSTAT` observations remain historical,
+unqualified records; correcting a peer or packaging is a methodology change,
+not a compiler improvement.
+
+The Rust tree peer allocates only internal nodes (`Option<Box<Node>>` children),
+and persistent lists use an allocation-free empty value with one `Rc` per cons.
+Their older boxed-leaf/boxed-empty versions must not be spliced into the new
+`unallocated-leaves-v2` / `unallocated-empty-list-v2` results. Explicit sharing,
+all required construction and the complete logical tree are still observed.
+
+### Evidence for a compiler mechanism
+
+Run the source-identical allocation experiments separately from timing:
+
+```sh
+FAI_BENCH_ARTIFACT_DIR=target/allocation-evidence \
+  cargo bench -p fai-tests --features allocation-stats --bench allocation_design
+cargo bench -p fai-tests --bench algorithms_mem -- --module BinaryTrees --size both
+cargo bench -p fai-tests --bench algorithms_mem -- --module MapSumShared --input 8000000 --repeats 1,16
+```
+
+The opt-in `allocation-stats` feature enables the same object and backing counters
+used by debug guards, **without enabling debug assertions or changing the release
+optimization level**. Generated inline allocations and runtime fallbacks share
+the counters. The embedded AOT runtime receives the feature too; instrumentation
+is part of native cache identity. Uninstrumented builds remain the timing source.
+
+`allocation_design` emits `ALLOCSTAT` for unique/shared list reuse, pipeline fusion,
+and aggregate scalar replacement. Each pair shares a source hash, compiler build
+and runtime input; only one tracked database control changes. Restoring the control
+must restore incremental output and behavior. The disabled-reuse control covers
+compiler reset/token forwarding, not the array/string runtime's uniqueness rules.
+
+The `fai-object-storage-v1` domain counts logical Fai object-allocation requests,
+including their headers even when serviced from recycled cells. Reset/reuse avoids
+a request. Live object bytes exclude dead cache cells; backing bytes include whole
+owned slabs and mappings. These counters exclude host Rust temporaries, allocator
+arena overhead and OS page rounding. They establish **within-Fai causal changes**,
+not a universal cross-language live-heap metric. Optional OCaml GC observations
+have a separate `ocaml-gc-v1` domain, use natural collection policy and include
+counter-read overhead; their reserved major heap is never treated as Fai live bytes.
+
+Read allocation-free results as zero allocations, rather than a percentage win
+over a peer's fixed RSS. Test multiple growing datasets and fixed-state iteration
+counts, including retained snapshots. Normal optimization remains unrestricted;
+structural fixtures and independent answers verify the required source work.
 
 ## What a comparison establishes
 
@@ -74,8 +150,8 @@ Published results should also account for:
 - **Memory and lifetime.** Peak RSS includes touched code, stacks, allocator
   retention and the GC heap. RC/Rust destruction and OCaml collection have
   different schedules; one short process is not a steady-state memory test.
-  Fai builds one executable per workload, while each Rust/OCaml dispatcher
-  contains the whole suite, another difference in the delivered image.
+  Earlier comparisons used Rust/OCaml suite dispatchers against one Fai
+  executable per workload. Current isolated peers remove that packaging difference.
   Report absolute RSS and separate live-heap/allocation measurements. Do not
   describe an RSS ratio as a per-value or peak-live-heap ratio.
 - **Coverage and uncertainty.** Include multiple sizes/distributions and unseen
@@ -240,7 +316,7 @@ side. The persistent-worker comparison excludes process startup; the delivered
 comparison includes it. The memory comparison uses the same runtime-input entry
 shape. Fai JIT is retained as a separate regression surface for tooling.
 
-The idiomatic Rust references live in `crates/fai-tests/src/algorithms.rs`, each
+The idiomatic Rust references live in `crates/fai-bench-workloads/src/algorithms.rs`, each
 paired with its Fai sample under `samples/algorithms/` and two workload sizes in
 the `ALGORITHMS` registry. The suite deliberately spans many runtime shapes so a
 performance change is measured broadly rather than against a handful of cases:
@@ -341,11 +417,11 @@ durations. The CI artifact retains worker executables, source and compiler data.
 - **Fai side**: built once with `build_native` (untimed), using an argv-reading
   wrapper around the workload, then **spawned** with the registered size as an
   argument in the timed loop.
-- **Rust side**: spawns the `algo-baseline` release binary
-  (`crates/fai-tests/src/bin/algo-baseline.rs`) as a subprocess.
-- **OCaml side**: spawns the `ocamlopt`-compiled baseline
-  (`crates/fai-tests/ocaml/baseline.ml`, compiled once in untimed setup by
-  `fai_tests::ocaml::baseline`) as a subprocess. Skipped — with no row, not a
+- **Rust side**: spawns a release-optimized executable with one selected function
+  from `fai-bench-workloads`, built by `fai_tests::native_peer` in untimed setup.
+- **OCaml side**: spawns an `ocamlopt -O3` executable containing the selected
+  declarations from `crates/fai-tests/ocaml/baseline.ml`, built in untimed setup by
+  `fai_tests::ocaml::isolated`. Skipped — with no row, not a
   failure — when `ocamlopt` is not on `PATH`, so the bench runs without OCaml
   installed; the Benchmarks workflow installs it.
 
@@ -367,37 +443,35 @@ and Float results, zero batches, errors and repeated requests.
 
 ### `algorithms_mem` — delivered binaries, peak memory
 
-`crates/fai-tests/benches/algorithms_mem.rs` is the **memory** side of the same
-delivered-binaries experiment: instead of timing the spawned processes, it records
-each one's **peak resident set size** at the AOT workload. It is not a divan timing
-loop (peak memory is not a per-iteration measurement); each binary is run a few
-times and the maximum peak is kept.
+`crates/fai-tests/benches/algorithms_mem.rs` measures **process footprints**, not
+compiler-allocation wins. The default runs both registered input sizes, each at
+1 and 16 whole-workload invocations per fresh process. Five observations per peer
+are interleaved with floor executions of the same binary. Size, repetition count
+and run/floor mode arrive through argv. Floor mode never invokes the workload,
+even for inputs whose actual computation would be expensive.
 
 All three sides are measured **identically by self-reporting**: with
 `FAI_REPORT_RSS` set in the child's environment, the Fai runtime (`run_entry`),
-the `algo-baseline` binary, and the OCaml baseline each read their own peak RSS
+the isolated Rust peer, and the isolated OCaml peer each read their own peak RSS
 from `/proc/self/status` (`VmHWM`, the high-water mark) and print a
-`fai-peak-rss-kib:` line to stderr. The harness parses that and emits a
-`MEMSTAT\t<algorithm>\t<side>\t<kib>` line (`<side>` one of `fai`/`rust`/`ocaml`),
-which `bench-summary` renders into a **"memory: Fai vs Rust + OCaml (peak RSS)"**
-table (the `fai/rust` and `fai/ocaml` ratios; lower is better) and includes in
-`bench-results.json`. divan's parser ignores the `MEMSTAT` lines, so they ride
-safely in the shared output stream. (The OCaml rows are absent when `ocamlopt` is
-not installed, collapsing the table back to Fai vs Rust.)
+`fai-peak-rss-kib:` line to stderr. The harness emits `MEMSTAT2` JSON records containing every raw RSS and
+floor observation, input size, repetition count, workload version and paired
+executable identity. `bench-summary` renders the absolute footprints and floors.
+A process ratio requires a reviewed matched kernel, uninstrumented binaries, at
+least five observations per side and every measured floor below 10% of its peak.
+Even an eligible ratio remains a **process-footprint** comparison. There is no
+"compiler memory wins" count or aggregate built from these rows. Missing RSS
+self-reports and wrong answers fail the measurement instead of becoming zeros.
 
 Reading peak RSS:
 
 - **Peak RSS is the whole-process footprint**, so it includes fixed overhead — the
   linked runtime/std, code pages, allocator slack — that **dominates the small-heap
   workloads** (`fib`, `collatz`, `pi` bottom out near the runtime's baseline, and
-  the Fai binary can even read *lower* than Rust there). The **heap-heavy**
-  workloads carry the real signal: `map_sum` builds a 1.5M-element `Array` (a large
-  transient heap) where idiomatic Rust runs an allocation-free loop, so its ratio
-  is large and expected; `merge_sort` sorts an `Array` vs a `Vec`; `binary_trees`
-  builds a comparably large structure on both sides, so its peak is near-even. As
-  with the timing benches this is a **progress metric, not a fair fight** (boxed,
-  reference-counted values vs unboxed) — watch whether the gap shrinks as the
-  backend improves.
+  the Fai binary can even read *lower* than Rust there). `MapSum` can be entirely
+  allocation-free through fusion, whereas `MapSumShared` retains one materialized
+  source. Large tree and shared-array sizes expose scaling beyond startup. Never
+  subtract one process's peak RSS from another peak and call it live-heap usage.
 - **Linux-only.** Peak RSS is read from `/proc`, so the table is populated by the
   Linux Benchmarks workflow; on other platforms (and on Windows, which also skips
   the build/link + spawn path) the bench prints a skip note and reports no rows.
@@ -405,13 +479,11 @@ Reading peak RSS:
 
 ### The OCaml baseline
 
-The delivered-binary benches add a third side: a single OCaml program,
-`crates/fai-tests/ocaml/baseline.ml` (the OCaml twin of `algo-baseline`), that
-dispatches on `baseline <module> <n>`, computes the algorithm, and prints the
-result. `fai_tests::ocaml::baseline` compiles it **once** with `ocamlopt` into a
-scratch directory and hands the path to both benches; the build is cached per
-process, and a present-but-broken source is a loud panic rather than a silent
-skip.
+The delivered-binary benches select each OCaml workload and its support
+declarations from `crates/fai-tests/ocaml/baseline.ml`, replacing the dispatcher
+with an isolated argv or persistent-worker entry. The full dispatcher remains
+available for existing validation and application fixtures. A present-but-broken
+compiler or source fails explicitly; only an absent implicit compiler is skipped.
 
 **Why OCaml.** It is a native, strict, statically typed ML-family language whose
 `ocamlopt` emits native code with no VM and a sub-millisecond startup — the closest
@@ -421,9 +493,7 @@ rather than against a different runtime model. The `ocaml/rust` gap visible in t
 table also anchors how a mature native FP compiler itself compares to Rust, which
 contextualizes Fai's gap.
 
-**Matched representations.** As with the Rust oracle, each OCaml implementation
-uses the data representation its Fai sample uses, so the ratio reflects the
-compiler/runtime rather than a data-structure mismatch: a contiguous `array` where
+**Representation audit.** Many OCaml implementations use a contiguous `array` where
 the Fai sample uses `Array` (and `Buffer` for incremental strings), a persistent
 `list` where it uses the linked `List` (the backtracking and parser workloads —
 `nqueens`, `fannkuch`, `expr_eval`), `Hashtbl` for the hash containers, and the
@@ -436,10 +506,9 @@ the Fai sample uses `Array` (and `Buffer` for incremental strings), a persistent
   `fib_memo` (i64 wrapping over thousands of Fibonacci sums) — use the boxed
   `Int64` module to reproduce the oracle's two's-complement result. Every other
   workload fits native `int`.
-- **Optimization level.** The baseline is built with plain `ocamlopt` (array
-  bounds checks on, matching Fai and Rust release; no flambda `-O3`), so this is
-  not OCaml's peak achievable speed — just as Fai's portable AOT build targets a
-  baseline ISA where the JIT does not.
+- **Optimization level.** Current comparisons use OCaml 5.5.1 with upstream
+  Flambda and `-O3`, with bounds checks on. Retain the exact compiler/GC
+  configuration with each report; older non-Flambda rows describe another peer.
 
 **Correctness.** Every delivered Fai, Rust, and available OCaml binary is checked
 against the registered Rust oracle at the AOT workload size. `algorithms_aot`
@@ -459,7 +528,7 @@ registered sizes without changing compilation route. Two effects compounded.
 
 **1. Different workload sizes.** Each algorithm registers two sizes: a small
 `jit_size` (for stable in-process medians) and a large `aot_size` (to amortize
-process startup), from `crates/fai-tests/src/algorithms.rs` (a representative
+process startup), from `crates/fai-bench-workloads/src/algorithms.rs` (a representative
 subset; the registry is the full list):
 
 | algorithm | `jit_size` | `aot_size` | size factor |

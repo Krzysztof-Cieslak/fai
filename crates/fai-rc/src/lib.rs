@@ -213,7 +213,11 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         // Recycle a dead data cell into a same-size construction where one follows.
         let data = data_typed_locals(&body);
         let data = reuse_candidates::ReuseCandidates::new(&body, data);
-        let mut body = reuse_pass(body, &data, &mut next);
+        let mut body = if fai_db::allocation_control(db) == fai_db::AllocationControl::NoReuse {
+            body
+        } else {
+            reuse_pass(body, &data, &mut next)
+        };
         // Drop parameters that the body never mentions (drop-early, at entry) —
         // but never a borrowed parameter (the caller owns and releases it) nor a
         // spread-parameter anchor (it carries no runtime value; its components are

@@ -1,0 +1,26 @@
+foreign "fai_benchmark_begin" benchmarkHarnessBegin : Int -> Int / { Console }
+foreign "fai_benchmark_end" benchmarkHarnessEnd : Int -> Int / { Console }
+
+benchmarkHarnessAdd : HARNESS_TYPE -> HARNESS_TYPE -> HARNESS_TYPE
+let benchmarkHarnessAdd total value =
+  HARNESS_ADD
+
+let benchmarkHarnessMemory remaining size floor total =
+  if remaining <= 0 then total else
+    let value = if floor then HARNESS_FLOOR else HARNESS_ENTRY size
+    benchmarkHarnessMemory (remaining - 1) size floor (benchmarkHarnessAdd total value)
+
+public main : Runtime -> Unit / { Console, Env }
+let main runtime =
+  match runtime.env.args () with
+  | [argument, repetitions, mode] ->
+    match (Int.fromString argument, Int.fromString repetitions) with
+    | (Some size, Some count) ->
+      if size >= 0 && size <= HARNESS_MAX_SIZE && count >= 0 && count <= HARNESS_MAX_BATCH && (mode = "run" || mode = "floor") then
+        let _ = benchmarkHarnessBegin 0
+        let answer = benchmarkHarnessMemory count size (mode = "floor") HARNESS_ZERO
+        let _ = benchmarkHarnessEnd 0
+        runtime.console.writeLine (HARNESS_RENDER answer)
+      else runtime.console.writeLine "error: memory arguments out of range"
+    | _ -> runtime.console.writeLine "error: invalid memory arguments"
+  | _ -> runtime.console.writeLine "error: expected size, repetitions, and run/floor"

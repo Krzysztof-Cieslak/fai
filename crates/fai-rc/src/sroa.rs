@@ -65,6 +65,9 @@ pub fn sroa_fn(
     params: &[LocalId],
     next: &mut usize,
 ) -> (CExpr, Vec<Option<Vec<LocalId>>>) {
+    if fai_db::allocation_control(db) == fai_db::AllocationControl::NoScalarReplacement {
+        return (body, Vec::new());
+    }
     let mut cx = Sroa { db, comps: FxHashMap::default(), boxed: FxHashMap::default(), next };
     let mut spread_params: Vec<Option<Vec<LocalId>>> = vec![None; params.len()];
     for (p, &param) in params.iter().enumerate() {

@@ -7,9 +7,13 @@ rust-version.workspace = true
 publish = false
 license.workspace = true
 
+[features]
+allocation-stats = ["fai-driver/allocation-stats", "fai-codegen/allocation-stats", "fai-runtime/allocation-stats"]
+
 # The library target carries the reusable incremental-verifier harness; the
 # golden/e2e tests live under `tests/`.
 [dependencies]
+fai-bench-workloads.workspace = true
 fai-span.workspace = true
 fai-db.workspace = true
 fai-diagnostics.workspace = true
@@ -18,6 +22,11 @@ fai-syntax.workspace = true
 fai-types.workspace = true
 camino.workspace = true
 wait-timeout.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+blake3.workspace = true
+tempfile.workspace = true
+object.workspace = true
 
 [dev-dependencies]
 fai-cli.workspace = true
@@ -34,7 +43,6 @@ fai-runtime.workspace = true
 fai-contracts.workspace = true
 indoc.workspace = true
 insta.workspace = true
-serde_json.workspace = true
 proptest.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
@@ -42,7 +50,6 @@ divan.workspace = true
 rayon.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
-tempfile.workspace = true
 
 [[bench]]
 name = "inference"
@@ -103,6 +110,11 @@ harness = false
 [[bench]]
 name = "algorithms_mem"
 harness = false
+
+[[bench]]
+name = "allocation_design"
+harness = false
+required-features = ["allocation-stats"]
 
 [[bench]]
 name = "sort_patterns"

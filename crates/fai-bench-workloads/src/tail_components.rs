@@ -1,4 +1,4 @@
-//! Matched supplemental workloads, kept separate from the main algorithm registry.
+//! Matched supplemental workloads with their own source-version identity.
 
 use crate::algorithms::{Algorithm, Oracle};
 

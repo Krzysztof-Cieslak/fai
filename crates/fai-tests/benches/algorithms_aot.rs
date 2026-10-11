@@ -77,11 +77,11 @@ fn bench_fai_binary(bencher: Bencher, module: &str) {
 /// Times the Rust release binary running the same workload.
 fn bench_rust_binary(bencher: Bencher, module: &str) {
     let algo = by_module(module).expect("registered algorithm");
-    let baseline = env!("CARGO_BIN_EXE_algo-baseline");
+    let baseline = fai_tests::native_peer::rust(algo, Entry::Once);
     let size = algo.aot_size.to_string();
-    let first = spawn(Command::new(baseline).args([module, size.as_str()]));
+    let first = spawn(Command::new(&baseline).arg(&size));
     verify(algo, "rust", &first);
-    bencher.bench(|| divan::black_box(spawn(Command::new(baseline).args([module, size.as_str()]))));
+    bencher.bench(|| divan::black_box(spawn(Command::new(&baseline).arg(&size))));
 }
 
 /// Times the OCaml release binary running the same workload, or skips when the
@@ -90,16 +90,16 @@ fn bench_rust_binary(bencher: Bencher, module: &str) {
 /// run still works without OCaml installed; the Benchmarks workflow installs it.
 fn bench_ocaml_binary(bencher: Bencher, module: &str) {
     let algo = by_module(module).expect("registered algorithm");
-    let Some(exe) = fai_tests::ocaml::baseline() else {
+    let Some(exe) = fai_tests::ocaml::isolated(algo, Entry::Once) else {
         return;
     };
     let size = algo.aot_size.to_string();
     // Confirm it runs cleanly and agrees with the Rust oracle once (untimed), so a
     // wrong OCaml implementation fails the bench rather than reporting a
     // meaningless timing.
-    let first = spawn(Command::new(exe).args([module, size.as_str()]));
+    let first = spawn(Command::new(&exe).arg(&size));
     verify(algo, "ocaml", &first);
-    bencher.bench(|| divan::black_box(spawn(Command::new(exe).args([module, size.as_str()]))));
+    bencher.bench(|| divan::black_box(spawn(Command::new(&exe).arg(&size))));
 }
 
 /// Uses the same answer check for every language and the memory suite.

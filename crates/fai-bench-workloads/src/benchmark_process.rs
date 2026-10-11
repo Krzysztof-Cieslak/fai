@@ -1,4 +1,4 @@
-//! Correctness checks shared by delivered-binary runtime and memory benchmarks.
+//! Compiler-independent process and answer checks for native benchmarks.
 
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};

@@ -1,155 +1,288 @@
-//! Memory comparison of the *delivered binaries*: the peak resident set size of
-//! a `fai build` native executable vs the Rust release binary, running the same
-//! AOT workload. The companion `algorithms_aot` bench compares their wall-clock
-//! time; this is the memory side of the same "delivered binaries" experiment.
-//!
-//! Unlike the divan benches, this is not a timing loop — peak memory is not a
-//! per-iteration measurement. Each binary is run a few times with
-//! `FAI_REPORT_RSS` set; both the Fai runtime and the `algo-baseline` binary then
-//! print their peak RSS (Linux `/proc/self/status` `VmHWM`) to stderr, and the
-//! maximum across runs is reported as a `MEMSTAT` line that the `bench-summary`
-//! tool renders into a "Fai vs Rust — peak RSS" table (divan's parser ignores the
-//! line, so it is safe in the shared benchmark output stream).
-//!
-//! Peak RSS includes fixed process overhead (the linked runtime/std, code pages,
-//! allocator slack), so the small-heap workloads (fib, collatz, pi) are dominated
-//! by that floor; the heap-heavy ones (map_sum, merge_sort, binary_trees) carry
-//! the real signal. As with the timing benches the boxed, reference-counted
-//! representation makes this a progress metric, not a fair fight.
-//!
-//! Linux-only: peak RSS is read from `/proc`, and the build/link + spawn path is
-//! skipped on Windows (it would need the MSVC environment, mirroring
-//! `algorithms_aot`). The bench still compiles everywhere so `--all-targets`
-//! keeps it from bitrotting, and the Benchmarks workflow runs on Linux. Run with
-//! `cargo bench -p fai-tests --bench algorithms_mem`.
+//! Isolated native process footprints across dataset sizes and repetition counts.
 
 fn main() {
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     measure::run();
+    #[cfg(not(target_os = "linux"))]
+    eprintln!("algorithms_mem: Linux /proc footprint measurement is unavailable");
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 mod measure {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    use camino::Utf8PathBuf;
-    use fai_db::{Db, FaiDatabase};
-    use fai_driver::build_native;
-    use fai_tests::algorithms::{ALGORITHMS, Algorithm};
-    use fai_tests::benchmark_aot::{Entry, fai_program};
+    use fai_db::Db;
+    use fai_tests::algorithms::{ALGORITHMS, Algorithm, Oracle};
+    use fai_tests::bench_summary::FootprintSample;
+    use fai_tests::benchmark_aot::{self as aot, Entry};
+    use fai_tests::benchmark_contracts::{self as contracts, METHODOLOGY};
     use fai_tests::benchmark_process::{ExpectedAnswer, spawn_checked};
+    use fai_tests::native_peer;
 
-    /// How many times each binary runs. Peak RSS is a deterministic high-water
-    /// mark, so a handful of repeats and the maximum absorb any scheduler or
-    /// allocator jitter.
-    const RUNS: usize = 5;
+    struct Config {
+        modules: BTreeSet<String>,
+        inputs: BTreeSet<i64>,
+        sizes: String,
+        repeats: Vec<usize>,
+        samples: usize,
+        test: bool,
+        list: bool,
+    }
 
-    /// Measures and reports the peak RSS of each algorithm's two delivered
-    /// binaries, or explains why it cannot on this platform.
-    pub fn run() {
-        if !cfg!(target_os = "linux") {
-            println!(
-                "algorithms_mem: peak RSS is read from /proc (Linux-only); skipping on this platform"
+    impl Config {
+        fn read() -> Self {
+            let mut result = Self {
+                modules: BTreeSet::new(),
+                inputs: BTreeSet::new(),
+                sizes: "both".into(),
+                repeats: vec![1, 16],
+                samples: 5,
+                test: false,
+                list: false,
+            };
+            let mut args = std::env::args().skip(1);
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--bench" => {}
+                    "--module" => {
+                        result.modules.insert(args.next().expect("module"));
+                    }
+                    "--input" => {
+                        result.inputs.insert(
+                            args.next().expect("input size").parse().expect("integer size"),
+                        );
+                    }
+                    "--size" => result.sizes = args.next().expect("small, large or both"),
+                    "--repeats" => {
+                        result.repeats = args
+                            .next()
+                            .expect("comma-separated repetition counts")
+                            .split(',')
+                            .map(|s| s.parse().expect("repetition count"))
+                            .collect()
+                    }
+                    "--samples" => {
+                        result.samples =
+                            args.next().expect("sample count").parse().expect("sample count")
+                    }
+                    "--test" => result.test = true,
+                    "--list" => result.list = true,
+                    "--help" | "-h" => {
+                        println!(
+                            "algorithms_mem [--module NAME] [--size small|large|both] [--input N] [--repeats 1,16] [--samples 5] [--test] [--list]"
+                        );
+                        std::process::exit(0);
+                    }
+                    _ => panic!("unknown memory argument: {arg}"),
+                }
+            }
+            assert!(result.samples > 0 && !result.repeats.is_empty());
+            assert!(result.repeats.iter().all(|&n| n <= aot::MAX_BATCH));
+            assert!(result.inputs.iter().all(|n| (0..=aot::MAX_SIZE).contains(n)));
+            assert!(matches!(result.sizes.as_str(), "small" | "large" | "both"));
+            assert!(
+                result.modules.iter().all(|name| ALGORITHMS.iter().any(|a| a.module == name)),
+                "unknown memory workload"
             );
-            return;
+            if result.test {
+                result.samples = 1;
+            }
+            result
         }
-        let baseline = env!("CARGO_BIN_EXE_algo-baseline");
-        // The OCaml baseline is compiled once (or absent, when `ocamlopt` is not
-        // installed — then its rows are simply skipped, like the Rust/Fai split).
-        let ocaml = fai_tests::ocaml::baseline();
-        for algo in ALGORITHMS {
-            let expected = ExpectedAnswer::for_algorithm(algo);
-            let exe = build_fai_binary(algo);
-            let size = algo.aot_size.to_string();
-            let fai = peak_rss(algo.module, "fai", expected, || {
-                let mut command = Command::new(&exe);
-                command.arg(&size);
-                command
-            });
-            let _ = std::fs::remove_file(&exe);
 
-            let rust = peak_rss(algo.module, "rust", expected, || {
-                let mut cmd = Command::new(baseline);
-                cmd.args([algo.module, size.as_str()]);
-                cmd
-            });
-            let ocaml = ocaml.map(|exe| {
-                peak_rss(algo.module, "ocaml", expected, || {
-                    let mut cmd = Command::new(exe);
-                    cmd.args([algo.module, size.as_str()]);
-                    cmd
-                })
-            });
-
-            // Sentinel lines `bench-summary` parses into the memory table.
-            if let Some(kib) = fai {
-                println!("MEMSTAT\t{}\tfai\t{kib}", algo.module);
+        fn inputs(&self, algorithm: &Algorithm) -> BTreeSet<i64> {
+            if !self.inputs.is_empty() {
+                return self.inputs.clone();
             }
-            if let Some(kib) = rust {
-                println!("MEMSTAT\t{}\trust\t{kib}", algo.module);
-            }
-            if let Some(Some(kib)) = ocaml {
-                println!("MEMSTAT\t{}\tocaml\t{kib}", algo.module);
+            match self.sizes.as_str() {
+                "small" => BTreeSet::from([algorithm.jit_size]),
+                "large" => BTreeSet::from([algorithm.aot_size]),
+                _ => BTreeSet::from([algorithm.jit_size, algorithm.aot_size]),
             }
         }
     }
 
-    /// Runs `make()` `RUNS` times with `FAI_REPORT_RSS` set, parsing the peak RSS
-    /// each binary prints to stderr and returning the maximum (the stable peak),
-    /// or `None` if no run reported one.
-    fn peak_rss(
-        module: &str,
-        language: &str,
+    struct Peer {
+        side: &'static str,
+        executable: PathBuf,
+        hash: String,
+        instrumented: bool,
+    }
+
+    fn measure(
+        peer: &Peer,
+        size: i64,
+        repeats: usize,
+        floor: bool,
         expected: ExpectedAnswer,
-        make: impl Fn() -> Command,
-    ) -> Option<u64> {
-        let mut peak: Option<u64> = None;
-        let label = format!("{module} {language}");
-        for _ in 0..RUNS {
-            let mut cmd = make();
-            cmd.env("FAI_REPORT_RSS", "1");
-            let output = spawn_checked(&mut cmd).unwrap_or_else(|error| panic!("{error}"));
-            expected.verify(&label, &output).unwrap_or_else(|error| panic!("{error}"));
-            if let Some(kib) = parse_rss(&output.stderr) {
-                peak = Some(peak.map_or(kib, |p| p.max(kib)));
-            }
-        }
-        peak
+    ) -> u64 {
+        let mut command = Command::new(&peer.executable);
+        command
+            .args([
+                size.to_string(),
+                repeats.to_string(),
+                if floor { "floor" } else { "run" }.into(),
+            ])
+            .env("FAI_REPORT_RSS", "1")
+            .env_remove("FAI_REPORT_ALLOCATIONS");
+        let output = spawn_checked(&mut command).unwrap();
+        expected.verify(peer.side, &output).unwrap();
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("fai-peak-rss-kib:").and_then(|value| value.trim().parse().ok())
+            })
+            .filter(|&value| value > 0)
+            .expect("native peer must report a positive peak RSS")
     }
 
-    /// Parses the `fai-peak-rss-kib: <n>` line both binaries print to stderr.
-    fn parse_rss(stderr: &[u8]) -> Option<u64> {
-        let text = std::str::from_utf8(stderr).ok()?;
-        for line in text.lines() {
-            if let Some(rest) = line.strip_prefix("fai-peak-rss-kib:") {
-                return rest.trim().parse().ok();
-            }
-        }
-        None
-    }
-
-    /// A unique temporary path for a built executable.
-    fn unique_exe(module: &str) -> Utf8PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).expect("temp dir is UTF-8");
-        dir.join(format!(
-            "fai-algo-mem-{module}-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-
-    /// Links the workload with the same runtime-input entry as the timing suite.
-    fn build_fai_binary(algo: &Algorithm) -> Utf8PathBuf {
-        let mut db = FaiDatabase::new();
+    fn build(algorithm: &Algorithm, folder: &Path) -> Vec<Peer> {
+        std::fs::create_dir_all(folder).unwrap();
+        let source = aot::fai_program(algorithm, Entry::Memory);
+        std::fs::write(folder.join("memory.fai"), &source).unwrap();
+        let mut db = fai_db::FaiDatabase::new();
         fai_types::std_lib::load_std(&mut db);
-        let id =
-            db.add_source(format!("{}.fai", algo.module).into(), fai_program(algo, Entry::Once));
-        let file = db.source_file(id).expect("sample source registered");
-        let outcome = build_native(&db, file, &unique_exe(algo.module));
-        outcome
-            .artifact
-            .unwrap_or_else(|| panic!("{} failed to build a native executable", algo.module))
+        let id = db.add_source(format!("{}.fai", algorithm.module).into(), source);
+        let fai = camino::Utf8PathBuf::from_path_buf(folder.join("fai-memory")).unwrap();
+        let outcome = fai_driver::build_native(&db, db.source_file(id).unwrap(), &fai);
+        assert!(outcome.ok, "{}: {:?}", algorithm.module, outcome.diagnostics);
+        let rust = native_peer::rust(algorithm, Entry::Memory);
+        let rust_target = folder.join("rust-memory");
+        std::fs::copy(&rust, &rust_target).unwrap();
+        std::fs::copy(rust.with_file_name("peer.rs"), folder.join("rust-memory.rs")).unwrap();
+        std::fs::copy(
+            rust.with_file_name("compiler-info.json"),
+            folder.join("rust-compiler-info.json"),
+        )
+        .unwrap();
+        let mut peers = vec![
+            Peer {
+                side: "fai",
+                hash: native_peer::hash(fai.as_std_path()),
+                executable: fai.into_std_path_buf(),
+                instrumented: fai_runtime::ALLOCATION_STATS_ENABLED,
+            },
+            Peer {
+                side: "rust",
+                hash: native_peer::hash(&rust_target),
+                executable: rust_target,
+                instrumented: false,
+            },
+        ];
+        if let Some(ocaml) = fai_tests::ocaml::isolated(algorithm, Entry::Memory) {
+            let target = folder.join("ocaml-memory");
+            std::fs::copy(&ocaml, &target).unwrap();
+            std::fs::copy(ocaml.with_file_name("baseline.ml"), folder.join("memory.ml")).unwrap();
+            std::fs::copy(
+                ocaml.with_file_name("compiler-info.txt"),
+                folder.join("ocaml-compiler-info.txt"),
+            )
+            .unwrap();
+            peers.push(Peer {
+                side: "ocaml",
+                hash: native_peer::hash(&target),
+                executable: target,
+                instrumented: false,
+            });
+        }
+        let contract = contracts::for_module(algorithm.module).unwrap();
+        let environment: std::collections::BTreeMap<_, _> =
+            ["GLIBC_TUNABLES", "MALLOC_ARENA_MAX", "OCAMLRUNPARAM", "OCAMLPARAM", "RUSTFLAGS"]
+                .into_iter()
+                .map(|key| (key, std::env::var(key).ok()))
+                .collect();
+        let identity = serde_json::json!({
+            "methodology": METHODOLOGY, "algorithm": algorithm.module,
+            "hashAlgorithm": "blake3", "faiCompiler": fai_driver::build_info(),
+            "environment": environment,
+            "workloadVersion": contract.version, "comparison": contract.comparison.as_str(), "contract": contract.note,
+            "peers": peers.iter().map(|p| serde_json::json!({"side": p.side, "path": p.executable, "hash": p.hash, "instrumented": p.instrumented})).collect::<Vec<_>>(),
+        });
+        std::fs::write(folder.join("identity.json"), serde_json::to_vec_pretty(&identity).unwrap())
+            .unwrap();
+        println!("AOTARTIFACT\t{identity}");
+        peers
+    }
+
+    pub fn run() {
+        let config = Config::read();
+        assert!(
+            !cfg!(debug_assertions) || config.test,
+            "use an optimized build for memory comparisons"
+        );
+        let temporary = tempfile::Builder::new().prefix("fai-memory-").tempdir().unwrap();
+        let directory = std::env::var_os("FAI_BENCH_ARTIFACT_DIR")
+            .map_or_else(|| temporary.path().to_path_buf(), PathBuf::from);
+        let directory = std::env::current_dir().unwrap().join(directory);
+        for algorithm in ALGORITHMS
+            .iter()
+            .filter(|a| config.modules.is_empty() || config.modules.contains(a.module))
+        {
+            if config.list {
+                for size in config.inputs(algorithm) {
+                    println!("{} / n={size} / repeats={:?}", algorithm.module, config.repeats);
+                }
+                continue;
+            }
+            let peers = build(algorithm, &directory.join(algorithm.module));
+            let comparison_id = blake3::hash(
+                peers.iter().map(|p| p.hash.as_str()).collect::<Vec<_>>().join(":").as_bytes(),
+            )
+            .to_hex()
+            .to_string();
+            let contract = contracts::for_module(algorithm.module).unwrap();
+            for size in config.inputs(algorithm) {
+                let answer = ExpectedAnswer::at_size(algorithm, size);
+                let floor = match algorithm.oracle {
+                    Oracle::Int(_) => ExpectedAnswer::Int(size),
+                    Oracle::Float(_) => ExpectedAnswer::Float(size as f64),
+                };
+                for &iterations in &config.repeats {
+                    let expected = aot::checksum(&[answer], iterations);
+                    let floor_expected = aot::checksum(&[floor], iterations);
+                    let mut observations: Vec<Vec<u64>> =
+                        peers.iter().map(|_| Vec::new()).collect();
+                    let mut floors = observations.clone();
+                    for sample in 0..config.samples {
+                        for offset in 0..peers.len() {
+                            let index = (sample + offset) % peers.len();
+                            let peer = &peers[index];
+                            let (peak, base) = if sample.is_multiple_of(2) {
+                                let base = measure(peer, size, iterations, true, floor_expected);
+                                (measure(peer, size, iterations, false, expected), base)
+                            } else {
+                                let peak = measure(peer, size, iterations, false, expected);
+                                (peak, measure(peer, size, iterations, true, floor_expected))
+                            };
+                            observations[index].push(peak);
+                            floors[index].push(base);
+                        }
+                    }
+                    for (index, peer) in peers.iter().enumerate() {
+                        println!(
+                            "{}",
+                            FootprintSample {
+                                methodology: METHODOLOGY.into(),
+                                algorithm: algorithm.module.into(),
+                                workload_version: contract.version.into(),
+                                comparison: contract.comparison.as_str().into(),
+                                comparison_id: comparison_id.clone(),
+                                side: peer.side.into(),
+                                executable_hash: peer.hash.clone(),
+                                size,
+                                iterations,
+                                samples_kib: std::mem::take(&mut observations[index]),
+                                floor_kib: std::mem::take(&mut floors[index]),
+                                instrumented: peer.instrumented,
+                            }
+                            .to_line()
+                        );
+                    }
+                }
+            }
+        }
     }
 }

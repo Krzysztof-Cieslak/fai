@@ -23,7 +23,8 @@ pub struct BuildInfo {
     pub target: &'static str,
     /// Profile used to build the compiler.
     pub profile: &'static str,
-    /// Whether runtime leak checking and compiler assertions are present.
+    /// Whether debug assertions are present. Allocation accounting can also be
+    /// enabled independently through the allocation-stats feature.
     pub debug_assertions: bool,
     /// Rust compiler version used to build the executable.
     pub rustc_version: &'static str,

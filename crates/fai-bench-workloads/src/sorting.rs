@@ -1,4 +1,4 @@
-//! Shared deterministic sorting distributions and order-sensitive checksums.
+//! Compiler-independent sorting distributions and order-sensitive checksums.
 
 /// Fai peer for the distribution benchmark, also used for untimed validation.
 pub const SOURCE: &str = include_str!("../../../samples/algorithms/SortPatterns.fai");

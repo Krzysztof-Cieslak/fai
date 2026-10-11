@@ -1,0 +1,14 @@
+module AllocationSharedList
+
+let step xs =
+  match xs with
+  | [] -> []
+  | x :: rest -> (x + 1) :: step rest
+
+let iterate n xs = if n <= 0 then xs else iterate (n - 1) (step xs)
+
+public run : Int -> Int
+let run n =
+  let original = List.range 0 32
+  let changed = iterate n original
+  List.sum changed + List.sum original

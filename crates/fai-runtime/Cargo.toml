@@ -46,6 +46,7 @@ windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_Syst
 # the single-`$RUSTC` archive build are unaffected.
 [features]
 fuzzing = []
+allocation-stats = []
 
 # Dev-only; not part of the staticlib/rlib, so the runtime stays dependency-free
 # for the single-`$RUSTC` archive build.

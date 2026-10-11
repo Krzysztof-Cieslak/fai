@@ -138,6 +138,34 @@ fn one_native_binary_observes_changed_argv_sizes() {
 }
 
 #[test]
+fn memory_entry_observes_repetition_count_and_exact_binary_floor() {
+    let program = build(by_module("MapSum").unwrap(), Entry::Memory);
+    let actual = Command::new(&program.path).args(["6", "3", "run"]).output().unwrap();
+    ExpectedAnswer::Int(90).verify("repeated workload", &actual).unwrap();
+    let floor = Command::new(&program.path).args(["6", "3", "floor"]).output().unwrap();
+    ExpectedAnswer::Int(18).verify("same-binary floor", &floor).unwrap();
+    let empty = Command::new(&program.path).args(["6", "0", "run"]).output().unwrap();
+    ExpectedAnswer::Int(0).verify("zero invocations", &empty).unwrap();
+}
+
+#[test]
+fn native_allocation_window_covers_the_fused_workload_before_output() {
+    if !fai_runtime::ALLOCATION_STATS_ENABLED {
+        return;
+    }
+    let program = build(by_module("MapSum").unwrap(), Entry::Memory);
+    let output = Command::new(&program.path)
+        .args(["1000", "2", "run"])
+        .env("FAI_REPORT_ALLOCATIONS", "1")
+        .output()
+        .unwrap();
+    ExpectedAnswer::Int(1_998_000).verify("instrumented native workload", &output).unwrap();
+    let counters = fai_tests::allocation_design::counters(&output.stderr).unwrap();
+    assert_eq!(counters["allocations"], 0, "{counters}");
+    assert_eq!(counters["allocatedBytes"], 0, "{counters}");
+}
+
+#[test]
 fn full_width_results_survive_raw_and_batched_protocols() {
     let algorithm = by_module("FibMemo").unwrap();
     let value = ExpectedAnswer::at_size(algorithm, 93);

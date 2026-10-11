@@ -7,16 +7,16 @@
 //! so this guards the correctness of early cutoff and invalidation as later
 //! phases add real queries.
 
-pub mod algorithms;
+pub use fai_bench_workloads::{
+    algorithms, benchmark_aot, benchmark_process, contracts as benchmark_contracts, sorting,
+    tail_components, tree_lookup,
+};
+pub mod allocation_design;
 pub mod bench_summary;
-pub mod benchmark_aot;
 pub mod benchmark_fixture;
-pub mod benchmark_process;
 mod checker;
+pub mod native_peer;
 pub mod ocaml;
-pub mod sorting;
-pub mod tail_components;
-pub mod tree_lookup;
 
 pub use checker::{
     CheckOutcome, check_named, check_source, local_type, local_types, run_annotated, sym, type_of,

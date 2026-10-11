@@ -113,6 +113,9 @@ pub fn reuse_class(db: &dyn Db, ty: &Ty) -> Option<u32> {
 /// forms a salsa cycle resolved by the monotone fixpoint declared here.
 #[salsa::tracked(cycle_fn = reuse_recover, cycle_initial = reuse_initial)]
 pub fn reuse_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> ReuseSig {
+    if fai_db::allocation_control(db) == fai_db::AllocationControl::NoReuse {
+        return ReuseSig::default();
+    }
     let def = DefId::new(file.source(db), name);
     // Row-polymorphic entries are reached only curried through `apply_n`, never as
     // a saturated direct call, so a token-taking entry could never be exploited.

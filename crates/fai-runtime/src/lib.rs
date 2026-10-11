@@ -51,11 +51,19 @@ use std::sync::atomic::{AtomicU64, Ordering, fence};
 // The leak/allocation counters use `AtomicI64`, compiled in only under
 // `debug_assertions` (a release build references it nowhere and must not carry an
 // unused import); `Ordering` is shared with the reference-count path above.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 use std::sync::atomic::AtomicI64;
 
 /// A Fai value: a tagged 64-bit word (see the crate docs).
 pub type Value = i64;
+
+/// Whether object/allocation accounting is present in this runtime build.
+/// The explicit feature keeps normal release optimization and assertion settings.
+pub const ALLOCATION_STATS_ENABLED: bool =
+    cfg!(any(debug_assertions, feature = "allocation-stats"));
+
+mod benchmark_stats;
+pub use benchmark_stats::{fai_benchmark_begin, fai_benchmark_end};
 
 // ---------------------------------------------------------------------------
 // Object layout (shared with fai-codegen, which emits static strings/closures
@@ -726,30 +734,30 @@ unsafe fn rc_dec_is_dead(p: *mut u8) -> bool {
 // Allocation & the live-object counter.
 // ---------------------------------------------------------------------------
 //
-// The live-object and cumulative-allocation counters exist only to detect leaks
-// (the end-of-run check in `run_entry`) and to make reuse observable in tests, so
-// they are compiled in only under `debug_assertions` — a release build pays none
-// of the per-alloc/free atomics. With the counters absent, `live_count` and
-// `allocations` report zero and the leak check is a no-op. (`debug_assertions` is
-// on for `cargo test`/dev and off for release/bench; an optimized build can opt
-// the counters back in with `[profile.release] debug-assertions = true`.)
+// Debug builds and the explicit allocation-stats feature account for Fai object
+// storage. Ordinary release builds eliminate the counters. Instrumented release
+// builds retain the normal optimizer and assertion settings, letting allocation
+// diagnostics cover the same inline and runtime paths as deployed code.
 
 /// The number of heap objects currently allocated (debug leak detection).
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static LIVE: AtomicI64 = AtomicI64::new(0);
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static LIVE_BYTES: AtomicI64 = AtomicI64::new(0);
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static PEAK_LIVE: AtomicI64 = AtomicI64::new(0);
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static PEAK_LIVE_BYTES: AtomicI64 = AtomicI64::new(0);
 
 /// The cumulative number of heap allocations since the last reset. Unlike [`LIVE`]
 /// it never decreases, so reuse (which writes in place rather than allocating) is
 /// observable as allocations that did *not* happen.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static ALLOCATIONS: AtomicI64 = AtomicI64::new(0);
+
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
+static ALLOCATED_BYTES: AtomicI64 = AtomicI64::new(0);
 
 /// The cumulative number of times an array operation duplicated the whole buffer
 /// because the array was *shared* (`rc != 1`) at the mutation point — the
@@ -759,7 +767,7 @@ static ALLOCATIONS: AtomicI64 = AtomicI64::new(0);
 /// to the allocation *count* yet shows up here as copies that scale with the
 /// length. The expected, amortized capacity growth of a *unique* array is not a
 /// copy and is not counted. Never decreases until reset.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static ARRAY_COPIES: AtomicI64 = AtomicI64::new(0);
 
 /// The cumulative number of times [`fai_string_concat`] duplicated the whole
@@ -771,7 +779,7 @@ static ARRAY_COPIES: AtomicI64 = AtomicI64::new(0);
 /// with the build. The amortized capacity growth of a *unique* builder (the
 /// grow-and-double path) is not a uniqueness-loss copy and is not counted.
 /// Never decreases until reset.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static STRING_COPIES: AtomicI64 = AtomicI64::new(0);
 
 /// The cumulative number of borrowing substring **views** created (the zero-copy
@@ -781,7 +789,7 @@ static STRING_COPIES: AtomicI64 = AtomicI64::new(0);
 /// shares the base's bytes, where a copy allocates and writes the piece's bytes;
 /// this counter is the observable signal that the borrowing path was taken. Never
 /// decreases until reset.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static STRING_VIEWS: AtomicI64 = AtomicI64::new(0);
 
 /// The cumulative number of closure cells heap-allocated by [`fai_make_closure`].
@@ -790,91 +798,84 @@ static STRING_VIEWS: AtomicI64 = AtomicI64::new(0);
 /// that were heap-allocated rather than elided. Distinct from [`ALLOCATIONS`],
 /// which counts every object kind; this isolates closure cells. Never decreases
 /// until reset.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static CLOSURE_ALLOCS: AtomicI64 = AtomicI64::new(0);
 
 /// The cumulative number of partial-application cells heap-allocated by
 /// [`make_pap`]. A non-escaping under-application builds its cell on the stack and
 /// allocates nothing, so this isolates the partial applications that were
 /// heap-allocated rather than elided. Never decreases until reset.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "allocation-stats"))]
 static PAP_ALLOCS: AtomicI64 = AtomicI64::new(0);
 
-/// Records one heap allocation in the debug counters. Compiled to nothing in a
-/// release build (the counters are absent there).
+/// Records one Fai object request when allocation accounting is enabled.
 #[inline(always)]
 fn note_alloc(size: usize) {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         let live = LIVE.fetch_add(1, Ordering::Relaxed) + 1;
         let bytes = LIVE_BYTES.fetch_add(size as i64, Ordering::Relaxed) + size as i64;
         PEAK_LIVE.fetch_max(live, Ordering::Relaxed);
         PEAK_LIVE_BYTES.fetch_max(bytes, Ordering::Relaxed);
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        ALLOCATED_BYTES.fetch_add(size as i64, Ordering::Relaxed);
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     let _ = size;
 }
 
-/// Records one closure-cell heap allocation. Compiled to nothing in a release
-/// build (the counter is absent there).
+/// Records one closure-cell allocation when allocation accounting is enabled.
 #[inline(always)]
 fn note_closure_alloc() {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     CLOSURE_ALLOCS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Records one partial-application-cell heap allocation. Compiled to nothing in a
-/// release build (the counter is absent there).
+/// Records one partial-application allocation when accounting is enabled.
 #[inline(always)]
 fn note_pap_alloc() {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     PAP_ALLOCS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Records one shared-array buffer copy (a uniqueness-loss duplication). Compiled
-/// to nothing in a release build (the counter is absent there).
+/// Records one shared-array buffer copy when allocation accounting is enabled.
 #[inline(always)]
 fn note_array_copy() {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     ARRAY_COPIES.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Records one shared-string buffer copy (a uniqueness-loss duplication in
-/// [`fai_string_concat`]). Compiled to nothing in a release build (the counter is
-/// absent there).
+/// Records one shared-string buffer copy when allocation accounting is enabled.
 #[inline(always)]
 fn note_string_copy() {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     STRING_COPIES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Records one borrowing substring view created (the zero-copy slice path).
-/// Compiled to nothing in a release build (the counter is absent there).
+/// Compiled to nothing when allocation accounting is disabled.
 #[inline(always)]
 fn note_string_view() {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     STRING_VIEWS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Records one heap free in the debug counters. Compiled to nothing in a release
-/// build (the counters are absent there).
+/// Records one object release when allocation accounting is enabled.
 #[inline(always)]
 fn note_free(size: usize) {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         LIVE.fetch_sub(1, Ordering::Relaxed);
         LIVE_BYTES.fetch_sub(size as i64, Ordering::Relaxed);
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     let _ = size;
 }
 
 /// Records one heap allocation performed *inline* by generated code (the inlined
 /// array-construction / push-grow fast path pops a pooled cell without calling the
 /// runtime allocator), keeping the debug counters balanced with the eventual
-/// release. Generated code emits this call only in a debug build; it is a no-op in
-/// a release build (the counters are absent there).
+/// release. Generated code emits this call only when allocation accounting is enabled.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_note_alloc(size: usize) {
     note_alloc(size);
@@ -883,151 +884,162 @@ pub extern "C" fn fai_note_alloc(size: usize) {
 /// Records one heap free performed *inline* by generated code (the inlined
 /// push-grow fast path pushes the moved-out old buffer back onto its free list
 /// without calling the runtime), the counter peer of [`fai_note_alloc`]. A no-op
-/// in a release build (the counters are absent there).
+/// when allocation accounting is disabled.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_note_free(size: usize) {
     note_free(size);
 }
 
 /// Returns the number of live heap objects (used by the leak check and tests).
-/// Always zero in a release build, where the counter is compiled out.
+/// Zero when allocation accounting is disabled.
 #[must_use]
 pub fn live_count() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         LIVE.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
 }
 
 /// Live object storage in bytes, excluding the allocator's free cache. Zero in
-/// release builds. Used to check bounded auxiliary memory independently of RSS.
+/// uninstrumented builds. Used to check bounded auxiliary memory independently of RSS.
 #[must_use]
 pub fn live_bytes() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         LIVE_BYTES.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
 }
 
-/// Maximum live object count since [`reset_allocations`]. Zero in release builds.
+/// Maximum live object count since [`reset_allocations`]. Zero without accounting.
 #[must_use]
 pub fn peak_live_count() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         PEAK_LIVE.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
 }
 
 /// Maximum live object bytes since [`reset_allocations`]. Includes both inline
-/// native allocations and runtime fallbacks. Zero in release builds.
+/// native allocations and runtime fallbacks. Zero without accounting.
 #[must_use]
 pub fn peak_live_bytes() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         PEAK_LIVE_BYTES.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
 }
 
 /// Returns the cumulative allocation count (used by reuse benchmarks and tests).
-/// Always zero in a release build, where the counter is compiled out.
+/// Zero when allocation accounting is disabled.
 #[must_use]
 pub fn allocations() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         ALLOCATIONS.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
+    {
+        0
+    }
+}
+
+/// Cumulative Fai object-allocation bytes, including headers and pooled requests.
+/// Reset/reuse construction adds no allocation. Slab backing is counted separately
+/// by `allocation_stats`; host Rust temporaries and OS rounding are excluded.
+#[must_use]
+pub fn allocated_bytes() -> i64 {
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
+    {
+        ALLOCATED_BYTES.load(Ordering::Relaxed)
+    }
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
 }
 
 /// Returns the cumulative count of shared-array buffer copies (uniqueness-loss
-/// duplications in `set`/`push`). Always zero in a release build, where the
-/// counter is compiled out.
+/// duplications in `set`/`push`). Zero when allocation accounting is disabled.
 #[must_use]
 pub fn array_copies() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         ARRAY_COPIES.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
 }
 
 /// Returns the cumulative count of shared-string buffer copies (uniqueness-loss
-/// duplications in `fai_string_concat`). Always zero in a release build, where the
-/// counter is compiled out.
+/// duplications in `fai_string_concat`). Zero when allocation accounting is disabled.
 #[must_use]
 pub fn string_copies() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         STRING_COPIES.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
 }
 
 /// Returns the cumulative count of borrowing substring views created (the
-/// zero-copy slice path). Always zero in a release build, where the counter is
-/// compiled out.
+/// zero-copy slice path). Zero when allocation accounting is disabled.
 #[must_use]
 pub fn string_views() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         STRING_VIEWS.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
 }
 
 /// Returns the cumulative count of closure cells heap-allocated (a non-capturing
-/// lambda elides its cell and is not counted). Always zero in a release build,
-/// where the counter is compiled out.
+/// lambda elides its cell and is not counted). Zero when accounting is disabled.
 #[must_use]
 pub fn closure_allocations() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         CLOSURE_ALLOCS.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
 }
 
 /// Returns the cumulative count of partial-application cells heap-allocated (a
-/// non-escaping under-application stack-allocates and is not counted). Always zero
-/// in a release build, where the counter is compiled out.
+/// non-escaping under-application stack-allocates and is not counted). Zero when
+/// allocation accounting is disabled.
 #[must_use]
 pub fn pap_allocations() -> i64 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         PAP_ALLOCS.load(Ordering::Relaxed)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "allocation-stats")))]
     {
         0
     }
@@ -1035,13 +1047,13 @@ pub fn pap_allocations() -> i64 {
 
 /// Resets the cumulative allocation, array-copy, string-copy, string-view, and
 /// closure-allocation counters and live/allocator-storage high-water marks.
-/// Call when no other program is running. A no-op in a release build,
-/// where the counters are compiled out.
+/// Call when no other program is running. A no-op when accounting is disabled.
 pub fn reset_allocations() {
     allocation_stats::reset_peak();
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "allocation-stats"))]
     {
         ALLOCATIONS.store(0, Ordering::Relaxed);
+        ALLOCATED_BYTES.store(0, Ordering::Relaxed);
         ARRAY_COPIES.store(0, Ordering::Relaxed);
         STRING_COPIES.store(0, Ordering::Relaxed);
         STRING_VIEWS.store(0, Ordering::Relaxed);

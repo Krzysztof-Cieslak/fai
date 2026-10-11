@@ -7,6 +7,9 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+allocation-stats = ["fai-runtime/allocation-stats", "fai-codegen/allocation-stats"]
+
 [dependencies]
 fai-span.workspace = true
 fai-diagnostics.workspace = true

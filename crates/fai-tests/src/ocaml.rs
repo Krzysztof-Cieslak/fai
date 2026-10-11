@@ -47,13 +47,117 @@ pub fn tree_baseline() -> Option<&'static Utf8PathBuf> {
 /// A persistent native worker with one statically selected registered workload.
 #[must_use]
 pub fn worker_baseline(algorithm: &crate::algorithms::Algorithm) -> Option<Utf8PathBuf> {
-    let definitions = if crate::tail_components::by_module(algorithm.module).is_some() {
+    isolated(algorithm, crate::benchmark_aot::Entry::Worker)
+}
+
+/// Builds a peer containing only its selected workload and required declarations.
+pub fn isolated(
+    algorithm: &crate::algorithms::Algorithm,
+    entry: crate::benchmark_aot::Entry,
+) -> Option<Utf8PathBuf> {
+    build(&format!("isolated-{}-{entry:?}", algorithm.module), &isolated_source(algorithm, entry))
+}
+
+/// Source-level selection avoids retaining the whole suite through a dispatcher.
+#[must_use]
+pub fn isolated_source(
+    algorithm: &crate::algorithms::Algorithm,
+    entry: crate::benchmark_aot::Entry,
+) -> String {
+    use crate::algorithms::Oracle;
+    use crate::benchmark_aot::Entry;
+    let contract =
+        crate::benchmark_contracts::for_module(algorithm.module).expect("reviewed OCaml workload");
+    let source = if crate::tail_components::by_module(algorithm.module).is_some() {
         include_str!("../ocaml/tail_components.ml")
     } else {
-        SOURCE.split_once("\nlet () =").expect("OCaml baseline entry").0
+        SOURCE
     };
-    let worker = include_str!("../ocaml/worker.ml").replace("HARNESS_MODULE", algorithm.module);
-    build(&format!("worker-{}", algorithm.module), &format!("{definitions}\n{worker}"))
+    let mut names = contract.ocaml_support.to_vec();
+    if !contract.ocaml_entry.starts_with('(') {
+        names.push(contract.ocaml_entry);
+    }
+    let mut result = select_declarations(source, &names);
+    let int64 = matches!(algorithm.module, "FibMemo" | "PrngXorshift");
+    let floating = matches!(algorithm.oracle, Oracle::Float(_));
+    let kind = if floating {
+        "WFloat"
+    } else if int64 {
+        "WInt64"
+    } else {
+        "WInt"
+    };
+    let format = if floating {
+        "%.17g"
+    } else if int64 {
+        "%Ld"
+    } else {
+        "%d"
+    };
+    match entry {
+        Entry::Worker => {
+            result.push_str(&select_declaration(SOURCE, "type workload ="));
+            result.push_str(&include_str!("../ocaml/worker.ml").replace(
+                "workload \"HARNESS_MODULE\"",
+                &format!("{kind} {}", contract.ocaml_entry),
+            ));
+        }
+        Entry::Once => {
+            result.push_str(&select_declarations(SOURCE, &["first_int", "peak_rss_kib"]));
+            result.push_str(&format!("\nlet () =\n  if Array.length Sys.argv <> 2 then invalid_arg \"expected one workload size\";\n  Printf.printf \"{format}\\n\" ({} (int_of_string Sys.argv.(1)));\n  if Sys.getenv_opt \"FAI_REPORT_RSS\" <> None then\n    match peak_rss_kib () with Some kib -> Printf.eprintf \"fai-peak-rss-kib: %d\\n\" kib | None -> ()\n", contract.ocaml_entry));
+        }
+        Entry::Memory => {
+            result.push_str(&select_declarations(SOURCE, &["first_int", "peak_rss_kib"]));
+            let value = if int64 {
+                format!("Int64.to_int (Int64.rem ({} size) 1000000007L)", contract.ocaml_entry)
+            } else {
+                format!("{} size", contract.ocaml_entry)
+            };
+            result.push_str(&include_str!("../ocaml/memory.ml")
+                .replace("HARNESS_VALUE", &value)
+                .replace("HARNESS_FLOOR", if floating { "float_of_int size" } else { "size" })
+                .replace("HARNESS_ZERO", if floating { "0.0" } else { "0" })
+                .replace("HARNESS_ADD", if floating { "!total +. value" } else { "(!total + ((value mod 1000000007 + 1000000007) mod 1000000007)) mod 1000000007" })
+                .replace("HARNESS_FORMAT", if floating { "%.17g" } else { "%d" }));
+        }
+    }
+    result
+}
+
+/// Slices checked internal fixtures at column-zero declaration boundaries.
+/// This is not a parser for arbitrary user OCaml; each selected peer is compiled
+/// and answer-validated before measurement.
+fn select_declarations(source: &str, names: &[&str]) -> String {
+    let mut result = String::new();
+    for name in names {
+        let prefixes = [
+            format!("let {name} "),
+            format!("let rec {name} "),
+            format!("type {name} "),
+            format!("module {name} "),
+        ];
+        let prefix = prefixes
+            .iter()
+            .find(|prefix| source.lines().any(|line| line.starts_with(prefix.as_str())))
+            .unwrap_or_else(|| panic!("missing OCaml declaration {name}"));
+        result.push_str(&select_declaration(source, prefix));
+        result.push('\n');
+    }
+    result
+}
+
+fn select_declaration(source: &str, prefix: &str) -> String {
+    let mut lines = source.lines().skip_while(|line| !line.starts_with(prefix));
+    let first = lines.next().expect("selected OCaml declaration");
+    let mut result = format!("{first}\n");
+    for line in lines {
+        if ["let ", "type ", "module "].iter().any(|prefix| line.starts_with(prefix)) {
+            break;
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
 }
 
 /// Probes a compiler, allowing only an absent implicit default to be skipped.

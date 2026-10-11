@@ -9,6 +9,14 @@ use super::{is_side, json_str, ratio_cell};
 /// request round trip; compilation, process startup and input setup are excluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WarmSample {
+    /// Version of packaging and measurement boundaries.
+    pub methodology: String,
+    /// Reviewed source-level workload version.
+    pub workload_version: String,
+    /// Matched kernel or application comparison, fixed before measurement.
+    pub comparison: String,
+    /// Identity of the complete set of paired executable hashes.
+    pub comparison_id: String,
     /// Registered workload name.
     pub algorithm: String,
     /// Runtime-supplied workload size.
@@ -34,7 +42,11 @@ impl WarmSample {
         let durations =
             |values: &[u64]| values.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
         format!(
-            "WARMSTAT\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "WARMSTAT2\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            self.methodology,
+            self.workload_version,
+            self.comparison,
+            self.comparison_id,
             self.algorithm,
             self.size,
             self.side,
@@ -47,7 +59,22 @@ impl WarmSample {
     }
 
     pub(super) fn parse(line: &str) -> Option<Self> {
-        let fields: Vec<_> = line.strip_prefix("WARMSTAT\t")?.split('\t').collect();
+        let (metadata, payload) = if let Some(payload) = line.strip_prefix("WARMSTAT2\t") {
+            let parts: Vec<_> = payload.splitn(5, '\t').collect();
+            let [method, version, comparison, identity, rest] = parts.as_slice() else {
+                return None;
+            };
+            if [method, version, comparison, identity].iter().any(|field| field.is_empty()) {
+                return None;
+            }
+            ([*method, *version, *comparison, *identity], *rest)
+        } else {
+            (
+                ["legacy", "unversioned", "historical", "unidentified"],
+                line.strip_prefix("WARMSTAT\t")?,
+            )
+        };
+        let fields: Vec<_> = payload.split('\t').collect();
         let [algorithm, size, side, batch, pass, passes, samples, floor] = fields.as_slice() else {
             return None;
         };
@@ -57,6 +84,10 @@ impl WarmSample {
             (!values.is_empty() && values.iter().all(|&value| value > 0)).then_some(values)
         };
         let value = Self {
+            methodology: metadata[0].into(),
+            workload_version: metadata[1].into(),
+            comparison: metadata[2].into(),
+            comparison_id: metadata[3].into(),
             algorithm: (*algorithm).into(),
             size: size.parse().ok()?,
             side: (*side).into(),
@@ -79,7 +110,11 @@ impl WarmSample {
 
     pub(super) fn json(&self) -> String {
         format!(
-            "{{\"algorithm\":{},\"size\":{},\"side\":{},\"batch\":{},\"pass\":{},\"passes\":{},\"samplesNs\":{:?},\"floorNs\":{:?}}}",
+            "{{\"methodology\":{},\"workloadVersion\":{},\"comparison\":{},\"comparisonId\":{},\"algorithm\":{},\"size\":{},\"side\":{},\"batch\":{},\"pass\":{},\"passes\":{},\"samplesNs\":{:?},\"floorNs\":{:?}}}",
+            json_str(&self.methodology),
+            json_str(&self.workload_version),
+            json_str(&self.comparison),
+            json_str(&self.comparison_id),
             json_str(&self.algorithm),
             self.size,
             json_str(&self.side),
@@ -117,18 +152,34 @@ pub(super) fn render(samples: &[WarmSample]) -> String {
     if samples.is_empty() {
         return String::new();
     }
-    let mut cases: BTreeMap<(&str, i64), Vec<&WarmSample>> = BTreeMap::new();
+    let mut cases: BTreeMap<(&str, i64, &str, &str, &str), Vec<&WarmSample>> = BTreeMap::new();
     for sample in samples {
-        cases.entry((&sample.algorithm, sample.size)).or_default().push(sample);
+        cases
+            .entry((
+                &sample.algorithm,
+                sample.size,
+                &sample.methodology,
+                &sample.workload_version,
+                &sample.comparison_id,
+            ))
+            .or_default()
+            .push(sample);
     }
     let mut out = String::from(
-        "### Warm AOT — primary compute comparison\n\nAll sides execute AOT code in persistent workers. Times are median-of-pass-medians **per invocation**, including the batched harness. Startup, input setup and compilation are excluded. Floors are measured, never subtracted. A ratio is suppressed when either side's harness floor is at least 10% of its elapsed time, or the case is incomplete/incompatible. Such rows cannot establish compute parity.\n\n| Workload | Size | Batch | Fai ns/call | Rust ns/call | OCaml ns/call | Fai/Rust | Fai/OCaml | Floor F/R/O | Status |\n|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n",
+        "### Warm AOT — qualified kernel comparison\n\nAll sides execute AOT code in isolated persistent workers. Times are median-of-pass-medians **per invocation**, including the batched harness. Startup, input setup and compilation are excluded. Floors are measured, never subtracted. Ratios require matching workload versions/executable sets and a reviewed kernel contract. Application and historical rows retain absolute observations. A ratio is also suppressed when either side's floor is at least 10% of elapsed time or the case is incomplete. Values are point estimates, not statistically established win counts.\n\n| Workload | Size | Batch | Fai ns/call | Rust ns/call | OCaml ns/call | Fai/Rust | Fai/OCaml | Floor F/R/O | Status |\n|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n",
     );
-    for ((algorithm, size), records) in cases {
+    for ((algorithm, size, methodology, version, _), records) in cases {
         let batch = records[0].batch;
         let passes = records[0].passes;
         let mut complete =
             records.iter().all(|record| record.batch == batch && record.passes == passes);
+        let contract = crate::benchmark_contracts::for_module(algorithm);
+        let matched = methodology == crate::benchmark_contracts::METHODOLOGY
+            && contract.is_some_and(|contract| {
+                contract.version == version
+                    && contract.comparison == crate::benchmark_contracts::Comparison::Kernel
+            })
+            && records.iter().all(|record| record.comparison == "matched-kernel");
         let mut sides = BTreeMap::new();
         for side in ["fai", "rust", "ocaml"] {
             let selected: Vec<_> = records.iter().filter(|record| record.side == side).collect();
@@ -161,14 +212,23 @@ pub(super) fn render(samples: &[WarmSample]) -> String {
             )
         };
         let ratio = |peer| match (sides.get("fai"), sides.get(peer)) {
-            (Some(fai), Some(peer)) if complete && !fai.limited() && !peer.limited() => {
+            (Some(fai), Some(peer)) if matched && complete && !fai.limited() && !peer.limited() => {
                 ratio_cell(Some(fai.time / peer.time))
             }
             _ => "—".into(),
         };
         let limited: Vec<_> =
             sides.iter().filter(|(_, value)| value.limited()).map(|(side, _)| *side).collect();
-        let status = if !complete {
+        let status = if !matched {
+            format!(
+                "{}: {version}",
+                if methodology == "legacy" {
+                    "historical/unqualified"
+                } else {
+                    "application/unqualified"
+                }
+            )
+        } else if !complete {
             "incomplete/incompatible".into()
         } else if !limited.is_empty() {
             format!("floor-limited: {}", limited.join(", "))
@@ -199,6 +259,10 @@ mod tests {
 
     fn sample(side: &str, time: u64, floor: u64) -> WarmSample {
         WarmSample {
+            methodology: crate::benchmark_contracts::METHODOLOGY.into(),
+            workload_version: crate::benchmark_contracts::for_module("Fib").unwrap().version.into(),
+            comparison: "matched-kernel".into(),
+            comparison_id: "fixture-binaries".into(),
             algorithm: "Fib".into(),
             size: 28,
             side: side.into(),
@@ -272,6 +336,34 @@ mod tests {
     #[test]
     fn unknown_language_is_rejected() {
         assert!(WarmSample::parse("WARMSTAT\tFib\t28\tunknown\t4\t1\t1\t10\t1").is_none());
+    }
+
+    #[test]
+    fn different_executable_sets_never_form_a_comparison() {
+        let text = render(&[
+            sample("fai", 10000, 10),
+            WarmSample { comparison_id: "other-build".into(), ..sample("rust", 20000, 10) },
+        ]);
+        assert!(!text.contains("0.50×"));
+        assert!(text.contains("incomplete/incompatible"));
+    }
+
+    #[test]
+    fn application_rows_do_not_become_compiler_ratios() {
+        let app = |side| WarmSample {
+            algorithm: "ListSort".into(),
+            comparison: "application".into(),
+            ..sample(side, 10000, 10)
+        };
+        let text = render(&[app("fai"), app("rust")]);
+        assert!(text.contains("application/unqualified"));
+        assert!(!text.contains("1.00×"));
+    }
+
+    #[test]
+    fn unversioned_observations_remain_historical() {
+        let row = WarmSample::parse("WARMSTAT\tFib\t28\tfai\t4\t1\t1\t10000\t10").unwrap();
+        assert!(render(&[row]).contains("historical/unqualified"));
     }
 
     #[test]

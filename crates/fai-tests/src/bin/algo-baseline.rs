@@ -10,7 +10,7 @@
 //! its peak resident set size to stderr (the same line the Fai runtime emits), so
 //! the memory comparison harness can measure both binaries the same way.
 
-use fai_tests::algorithms::{Oracle, by_module};
+use fai_bench_workloads::algorithms::{Oracle, by_module};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -20,8 +20,10 @@ fn main() {
         .expect("usage: algo-baseline <module> <n>")
         .parse()
         .expect("n must be an integer");
-    if let Some(pattern) = fai_tests::sorting::PATTERNS.iter().position(|&name| name == module) {
-        println!("{}", fai_tests::sorting::run(pattern, n.max(0) as usize));
+    if let Some(pattern) =
+        fai_bench_workloads::sorting::PATTERNS.iter().position(|&name| name == module)
+    {
+        println!("{}", fai_bench_workloads::sorting::run(pattern, n.max(0) as usize));
         return;
     }
     let algo = by_module(&module).unwrap_or_else(|| panic!("unknown algorithm module: {module}"));
@@ -34,7 +36,7 @@ fn main() {
     // Self-report peak memory in the same format the Fai runtime uses, so the
     // memory comparison measures both delivered binaries identically.
     if std::env::var_os("FAI_REPORT_RSS").is_some()
-        && let Some(kib) = fai_tests::peak_rss_kib()
+        && let Some(kib) = fai_bench_workloads::peak_rss_kib()
     {
         eprintln!("fai-peak-rss-kib: {kib}");
     }

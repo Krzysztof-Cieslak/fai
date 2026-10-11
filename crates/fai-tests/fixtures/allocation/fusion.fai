@@ -1,0 +1,4 @@
+module AllocationFusion
+
+public run : Int -> Int
+let run n = List.sum (List.map (fun x -> x * 3 + 1) (List.range 0 n))
