@@ -41,6 +41,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Process stdio policies are explicit per descriptor: piped, inherited or
+  discarded. Only pipeline boundary descriptors and stage stderr can change mode.
+  Inherited streams retain OS byte behavior and do not populate captured output.
+  Partial startup errors retain already-started stage exit statuses.
+
 - Process pipelines connect adjacent stages with native pipes, start consumers
   first, and close unused inherited endpoints promptly. Capture observes final
   stdout and each stage's stderr, with all exit statuses retained in declaration

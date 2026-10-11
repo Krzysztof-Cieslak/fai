@@ -4,10 +4,19 @@ use super::Spec;
 use mio::{Interest, Registry, Token};
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 
 pub(super) struct Pipe(File);
+
+pub(super) fn inherit(index: u8) -> io::Result<File> {
+    let handle = match index {
+        0 => std::io::stdin().as_fd().try_clone_to_owned(),
+        1 => std::io::stdout().as_fd().try_clone_to_owned(),
+        _ => std::io::stderr().as_fd().try_clone_to_owned(),
+    }?;
+    Ok(File::from(handle))
+}
 
 pub(super) fn pipe() -> io::Result<(File, File)> {
     let (read, write) = std::io::pipe()?;

@@ -24,6 +24,9 @@ struct Spec {
     directory: String,
     inherit: bool,
     edits: Vec<(String, Option<String>)>,
+    stdin: i64,
+    stdout: i64,
+    stderr: i64,
 }
 
 impl Spec {
@@ -84,7 +87,10 @@ impl Spec {
         Ok(command)
     }
     fn validate(&self) -> bool {
-        !self.executable.is_empty()
+        (0..=2).contains(&self.stdin)
+            && (0..=2).contains(&self.stdout)
+            && (0..=2).contains(&self.stderr)
+            && !self.executable.is_empty()
             && !self.executable.contains('\0')
             && !self.directory.contains('\0')
             && self.arguments.iter().all(|s| !s.contains('\0'))
@@ -126,6 +132,9 @@ fn env_equal(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
         use std::os::windows::ffi::OsStrExt;
         let a: Vec<_> = a.encode_wide().collect();
         let b: Vec<_> = b.encode_wide().collect();
+        if a.len() > i32::MAX as usize || b.len() > i32::MAX as usize {
+            return false;
+        }
         // SAFETY: both UTF-16 buffers remain valid for their explicit lengths.
         unsafe {
             windows_sys::Win32::Globalization::CompareStringOrdinal(
@@ -152,10 +161,11 @@ struct Error {
     code: i64,
     stage: i64,
     message: String,
+    exits: Vec<Option<Exit>>,
 }
 
 fn error(kind: i64, stage: usize, message: impl Into<String>) -> Error {
-    Error { kind, code: 0, stage: stage as i64, message: message.into() }
+    Error { kind, code: 0, stage: stage as i64, message: message.into(), exits: Vec::new() }
 }
 fn os_error(kind: i64, stage: usize, err: io::Error) -> Error {
     Error {
@@ -163,6 +173,7 @@ fn os_error(kind: i64, stage: usize, err: io::Error) -> Error {
         code: i64::from(err.raw_os_error().unwrap_or(0)),
         stage: stage as i64,
         message: err.to_string(),
+        exits: Vec::new(),
     }
 }
 
@@ -266,6 +277,11 @@ impl Session {
         if specs.is_empty() || specs.len() > 1024 || specs.iter().any(|s| !s.validate()) {
             return Err(error(1, 0, "invalid command or pipeline"));
         }
+        if specs.iter().enumerate().any(|(i, spec)| {
+            (i > 0 && spec.stdin != 0) || (i + 1 < specs.len() && spec.stdout != 0)
+        }) {
+            return Err(error(1, 0, "intermediate pipeline endpoints must be piped"));
+        }
         let poll = mio::Poll::new().map_err(|e| os_error(2, 0, e))?;
         let wake =
             mio::Waker::new(poll.registry(), mio::Token(0)).map_err(|e| os_error(2, 0, e))?;
@@ -325,8 +341,9 @@ impl Session {
         }
         let failure = state.failure.clone();
         drop(state);
-        if let Some(failure) = failure {
+        if let Some(mut failure) = failure {
             session.close();
+            failure.exits = lock(&session.shared.state).exits.clone();
             Err(failure)
         } else {
             Ok(session)
@@ -412,6 +429,7 @@ impl Session {
     }
     fn stop(&self) {
         let mut state = lock(&self.shared.state);
+        self.check_deadline(&mut state);
         state.stop = true;
         state.input_closed = true;
         let _ = self.shared.wake.wake();
@@ -459,14 +477,32 @@ struct Reader {
     stderr: bool,
 }
 
+fn endpoint(
+    mode: i64,
+    index: u8,
+    token: usize,
+    poll: &mio::Poll,
+) -> io::Result<(Option<platform::Pipe>, std::fs::File)> {
+    if mode == 0 {
+        let (mut parent, child) = platform::endpoint(index != 0)?;
+        parent.register(poll.registry(), token, index != 0)?;
+        Ok((Some(parent), child))
+    } else if mode == 1 {
+        Ok((None, platform::inherit(index)?))
+    } else {
+        let path = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        Ok((None, std::fs::OpenOptions::new().read(index == 0).write(index != 0).open(path)?))
+    }
+}
+
 fn setup(
     specs: &[Spec],
     poll: &mio::Poll,
     children: &mut Vec<(usize, platform::Child)>,
     shared: &Shared,
-) -> Result<(platform::Pipe, Vec<Reader>), Error> {
-    let (mut input, child_input) = platform::endpoint(false).map_err(|e| os_error(2, 0, e))?;
-    input.register(poll.registry(), 1, false).map_err(|e| os_error(2, 0, e))?;
+) -> Result<(Option<platform::Pipe>, Vec<Reader>), Error> {
+    let (input, child_input) =
+        endpoint(specs[0].stdin, 0, 1, poll).map_err(|e| os_error(2, 0, e))?;
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
     inputs.push(Some(child_input));
@@ -475,18 +511,20 @@ fn setup(
         outputs.push(Some(write));
         inputs.push(Some(read));
     }
-    let (mut output, child_output) =
-        platform::endpoint(true).map_err(|e| os_error(2, specs.len() - 1, e))?;
-    output.register(poll.registry(), 2, true).map_err(|e| os_error(2, 0, e))?;
+    let last = specs.len() - 1;
+    let (output, child_output) =
+        endpoint(specs[last].stdout, 1, 2, poll).map_err(|e| os_error(2, last, e))?;
     outputs.push(Some(child_output));
-    let mut readers = vec![Reader { pipe: output, stage: specs.len() - 1, stderr: false }];
+    let mut readers = Vec::new();
+    if let Some(pipe) = output {
+        readers.push(Reader { pipe, stage: last, stderr: false });
+    }
     for stage in (0..specs.len()).rev() {
         if lock(&shared.state).stop {
             return Err(error(5, stage, "process startup cancelled"));
         }
-        let (mut stderr, child_error) =
-            platform::endpoint(true).map_err(|e| os_error(2, stage, e))?;
-        stderr.register(poll.registry(), stage + 3, true).map_err(|e| os_error(2, stage, e))?;
+        let (stderr, child_error) =
+            endpoint(specs[stage].stderr, 2, stage + 3, poll).map_err(|e| os_error(2, stage, e))?;
         let child = platform::spawn(
             &specs[stage],
             inputs[stage].take().expect("pipeline input"),
@@ -495,7 +533,9 @@ fn setup(
         )
         .map_err(|e| os_error(2, stage, e))?;
         children.push((stage, child));
-        readers.push(Reader { pipe: stderr, stage, stderr: true });
+        if let Some(pipe) = stderr {
+            readers.push(Reader { pipe, stage, stderr: true });
+        }
     }
     Ok((input, readers))
 }
@@ -505,7 +545,7 @@ fn supervise(shared: Arc<Shared>, mut poll: mio::Poll, specs: Vec<Spec>, options
     let mut children = Vec::new();
     let setup = setup(&specs, &poll, &mut children, &shared);
     let (mut input, mut readers) = match setup {
-        Ok((input, readers)) => (Some(input), readers),
+        Ok(value) => value,
         Err(e) => {
             let mut state = lock(&shared.state);
             state.failure = Some(e);
@@ -522,6 +562,7 @@ fn supervise(shared: Arc<Shared>, mut poll: mio::Poll, specs: Vec<Spec>, options
     {
         let mut state = lock(&shared.state);
         state.ready = true;
+        state.input_closed = input.is_none();
         shared.notify(&mut state);
     }
     loop {
@@ -550,13 +591,16 @@ fn supervise(shared: Arc<Shared>, mut poll: mio::Poll, specs: Vec<Spec>, options
             }
             readers.clear();
         }
+        let mut status_failed = false;
         for (stage, child) in &mut children {
             if state.exits[*stage].is_none() {
                 match child.status() {
                     Ok(status) => state.exits[*stage] = status,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                     Err(e) => {
                         state.failure.get_or_insert_with(|| os_error(3, *stage, e));
                         state.stop = true;
+                        status_failed = true;
                     }
                 }
             }
@@ -653,7 +697,7 @@ fn supervise(shared: Arc<Shared>, mut poll: mio::Poll, specs: Vec<Spec>, options
             }
         }
         shared.notify(&mut state);
-        if all_exited && readers.is_empty() {
+        if status_failed || (all_exited && readers.is_empty()) {
             break;
         }
         // Readiness is a hint: retry all endpoints after a bounded wait, including

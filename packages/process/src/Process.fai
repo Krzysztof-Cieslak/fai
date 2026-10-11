@@ -9,6 +9,11 @@ public type Description = { input : Bytes, launch : ProcessHost.Command }
 public opaque type Command =
   | Command Description
 
+public type Stdio =
+  | Pipe
+  | Inherit
+  | Discard
+
 public type Options = {
   bufferBytes : Int,
   chunkBytes : Int,
@@ -99,7 +104,10 @@ let command executable arguments = Command {
     directory = "",
     edits = [],
     executable = executable,
-    inherit = true
+    inherit = true,
+    stderrMode = 0,
+    stdinMode = 0,
+    stdoutMode = 0
   }
 }
 
@@ -152,6 +160,29 @@ let stdinBytes bytes command = Command { describe command with input = bytes }
 public stdinText : String -> Command -> Command
 let stdinText text command = stdinBytes (Bytes.fromString text) command
 
+let mode stdio =
+  match stdio with
+  | Pipe -> 0
+  | Inherit -> 1
+  | Discard -> 2
+
+/// Configure stdin inheritance, a managed pipe, or an immediate null-device EOF.
+public stdin : Stdio -> Command -> Command
+let stdin stdio command =
+  let value = describe command
+  Command { value with launch = { value.launch with stdinMode = mode stdio } }
+
+/// Configure stdout as a managed pipe, inherited descriptor, or null device.
+public stdout : Stdio -> Command -> Command
+let stdout stdio command =
+  let value = describe command
+  Command { value with launch = { value.launch with stdoutMode = mode stdio } }
+
+public stderr : Stdio -> Command -> Command
+let stderr stdio command =
+  let value = describe command
+  Command { value with launch = { value.launch with stderrMode = mode stdio } }
+
 let noNul text = not (String.contains text "\u{0}")
 
 let positiveOptional value =
@@ -170,6 +201,8 @@ let validate options command =
     | None -> true
     | Some value -> noNul value)) value.edits) then
     Err (error InvalidInput "invalid executable, argument, directory or environment edit")
+  else if value.stdinMode <> 0 && not (Bytes.isEmpty (describe command).input) then
+    Err (error InvalidInput "preset input requires piped stdin")
   else
     Ok ()
 
@@ -196,7 +229,10 @@ let nativeError native =
     | 9 -> Busy
     | 10 -> CleanupFailure
     | _ -> IoFailure
-  { error kind native.message with native = Some native }
+  { error kind native.message with
+    native = Some native,
+    partial = { emptyOutput with exits = native.exits }
+  }
 
 /// Test the complete native status, preserving nonzero exits as ordinary data.
 public succeeded : Exit -> Bool
@@ -284,8 +320,8 @@ let writeAll host session chunkSize bytes offset =
     match host.write session (Bytes.slice offset (offset + amount) bytes) with
     | Err failure -> Err (nativeError failure)
     | Ok count ->
-      if count <= 0 then
-        Err (error IoFailure "process input made no progress")
+      if count <= 0 || count > amount then
+        Err (error IoFailure "process input returned an invalid write count")
       else
         writeAll host session chunkSize bytes (offset + count)
 
@@ -539,6 +575,10 @@ let validatePipeline options pipeline =
       Err (error InvalidInput "pipeline stage limit exceeded")
     else if List.any (fun command -> not (Bytes.isEmpty (describe command).input)) rest then
       Err (error InvalidInput "only the first pipeline stage accepts preset input")
+    else if List.any (fun command ->
+      (describe command).launch.stdinMode <> 0) rest || List.any (fun command ->
+      (describe command).launch.stdoutMode <> 0) (List.take (List.length (stages pipeline) - 1) (stages pipeline)) then
+      Err (error InvalidInput "intermediate pipeline endpoints must be piped")
     else
       List.foldl (validateStage options) (Ok ()) (first :: rest)
 

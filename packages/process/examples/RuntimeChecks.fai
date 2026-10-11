@@ -205,11 +205,31 @@ let checks env python fixture =
     report env.console "deadline includes consumer" (match slow with
     | Err failure -> failure.kind = Process.DeadlineExceeded
     | Ok _ -> false)
-  a && b && c && d && e && f && g && h && i && j && k && l && m && n && o && p && q && r
+  let discarded =
+    Process.run env settings (command python fixture "args" [
+      "discarded"
+    ] |> Process.stdout Process.Discard)
+  let s = report env.console "discard output" (outputIs Bytes.empty discarded)
+  let nullInput =
+    Process.run env settings (command python fixture "echo" [] |> Process.stdin Process.Discard)
+  let t = report env.console "discard input" (outputIs Bytes.empty nullInput)
+  let inherited =
+    Process.run env settings (command python fixture "args" [
+      "inherited-marker\n"
+    ] |> Process.stdout Process.Inherit)
+  let u = report env.console "inherit output" (outputIs Bytes.empty inherited)
+  a && b && c && d && e && f && g && h && i && j && k && l && m && n && o && p && q && r && s && t && u
 
 public main : R -> Unit / { Clock, Concurrency, Console, Env, ProcessHost.Process }
 let main env =
   match env.env.args () with
+  | [python, fixture, "inherit-stdin"] ->
+    let result =
+      Process.run env settings (command python fixture "echo" [] |> Process.stdin Process.Inherit)
+    env.console.writeLine (if outputIs (Bytes.fromList (List.range 0 256)) result then
+      "inherited input ok"
+    else
+      "inherited input FAILED")
   | [python, fixture] ->
     env.console.writeLine (if checks env python fixture then
       "process checks passed"

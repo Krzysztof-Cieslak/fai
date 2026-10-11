@@ -1103,8 +1103,6 @@ revision-checked async errors. Submit commands reveal the first invalid field.
 `TuiMarkdown` caches completed display lines and reparses only the unfinished
 line on append, providing an indexed source for virtualized agent transcripts.
 
-## 6. Compiler pipeline
-
 `ProcessHost` supplies an explicit native `Process` capability. A supervised
 session owns one child or a connected pipeline, with bounded tagged stdout/stderr,
 chunked stdin writes, structured exit statuses and configurable monotonic deadlines.
@@ -1128,6 +1126,11 @@ decodes bounded UTF-8 LF/CRLF lines independently for each output pipe.
 `withPipelineOutput` retain ordered stage exits and tagged stderr. Every stage is
 validated before launch, partial startup closes the started stages, and explicit
 all-stage or last-stage success policies interpret nonzero exits.
+Process stdio can be piped, inherited or discarded. Intermediate pipeline links
+stay piped. Startup failures retain statuses of already-started stages; explicit
+stop also observes an expired operation deadline before beginning cleanup.
+
+## 6. Compiler pipeline
 
 ```
 source (.fai)

@@ -1,5 +1,17 @@
 module ProcessPipelineSpec
 
+example: Process.validatePipeline Process.defaults (Process.pipeline [
+  Process.command "a" [] |> Process.stdout Process.Discard,
+  Process.command "b" []
+]) |> Result.isErr
+example: Process.validatePipeline Process.defaults (Process.pipeline [
+  Process.command "a" [],
+  Process.command "b" [] |> Process.stdin Process.Inherit
+]) |> Result.isErr
+example: Process.validatePipeline Process.defaults (Process.pipeline [
+  Process.command "a" [],
+  Process.command "b" [] |> Process.stdout Process.Discard
+]) = Ok ()
 example: Process.validatePipeline Process.defaults (Process.pipeline []) |> Result.isErr
 example: Process.validatePipeline Process.defaults (Process.pipeline [
   Process.command "a" []
