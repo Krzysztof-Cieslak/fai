@@ -87,7 +87,7 @@ fn relative_to(base: &Path, target: &Path) -> Result<PathBuf, i64> {
         return Err(3);
     }
     let common = a.iter().zip(&b).take_while(|(a, b)| a == b).count();
-    if a[common..].iter().any(|p| *p == Component::ParentDir) {
+    if a[common..].contains(&Component::ParentDir) {
         return Err(3);
     }
     let mut result = PathBuf::new();
