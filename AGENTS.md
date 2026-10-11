@@ -1183,6 +1183,11 @@ Directory cursors retain lossless entry names and close through the same shared
 state protocol. Metadata includes native identity and optional nanosecond Instants.
 Rename is no-clobber; replacement and overwrite-copy are explicit. Copies reject
 source/destination identity before truncation and do not follow destination links.
+`Directory.list` bounds and sorts a collected listing; `Directory.walk` threads
+state through a depth-first traversal with explicit entry, depth and open-cursor
+limits, optional sorted order, link following and error policy. Stop, skipped
+children and failures retain committed state; all active cursors close under
+cancellation-masked cleanup. Cycle checks retain only ancestor identities.
 
 ```
 source (.fai)

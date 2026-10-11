@@ -131,3 +131,34 @@ fn enumerated_native_name_reopens_without_unicode_conversion() {
         "ok\n"
     );
 }
+
+#[test]
+fn directory_walk_threads_state_and_sorted_names() {
+    assert_eq!(
+        run_case(
+            r#"  let root = Option.withDefault Path.empty (Path.parent path)
+  let sub = Path.join root (Result.withDefault Path.empty (Path.fromString "sub"))
+  let made = r.fs.createDirectory sub
+  let first = r.fs.writeFile path "a"
+  let second = r.fs.writeFile (Path.join sub (Result.withDefault Path.empty (Path.fromString "leaf"))) "b"
+  let names = Directory.list r 10 root
+  let result = Directory.walk r { Directory.walkOptions with order = Directory.SortedOrder } root 0 (fun depth entry count -> Ok (count + 1, Directory.Continue))
+  r.console.writeLine (if result.value = 3 && result.visited = 3 && result.outcome = Ok Directory.Exhausted && (match names with | Ok entries -> List.length entries = 2 | _ -> false) then "ok" else "bad")"#
+        ),
+        "ok\n"
+    );
+}
+
+#[test]
+fn directory_stop_and_limit_retain_committed_state() {
+    assert_eq!(
+        run_case(
+            r#"  let root = Option.withDefault Path.empty (Path.parent path)
+  let made = r.fs.writeFile path "a"
+  let stopped = Directory.walk r Directory.walkOptions root 0 (fun depth entry count -> Ok (count + 1, Directory.Stop))
+  let limited = Directory.walk r { Directory.walkOptions with maxEntries = 0 } root 7 (fun depth entry count -> Ok (count + 1, Directory.Continue))
+  r.console.writeLine (if stopped.value = 1 && stopped.outcome = Ok Directory.Stopped && limited.value = 7 && Result.isErr limited.outcome && stopped.cleanupError = None then "ok" else "bad")"#
+        ),
+        "ok\n"
+    );
+}
