@@ -41,6 +41,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Process pipelines connect adjacent stages with native pipes, start consumers
+  first, and close unused inherited endpoints promptly. Capture observes final
+  stdout and each stage's stderr, with all exit statuses retained in declaration
+  order. Success policy is explicit: all stages or last stage. Partial startup
+  and infrastructure failures stop the complete managed scope.
+
 - Process streaming owns one sequential output consumer and an independent input
   producer. Their effects propagate through ordinary function arguments. Stopping
   output consumption initiates scoped shutdown. Streaming previews have a separate

@@ -1124,6 +1124,10 @@ monotonic deadlines; execution carries `{ Concurrency, ProcessHost.Process }`.
 preview; `communicate` unions producer and consumer effects. `withChild` exposes
 manual full-duplex operations inside an expiring scope. `ProcessText` incrementally
 decodes bounded UTF-8 LF/CRLF lines independently for each output pipe.
+`Process.pipeline` connects commands through native pipes; `runPipeline` and
+`withPipelineOutput` retain ordered stage exits and tagged stderr. Every stage is
+validated before launch, partial startup closes the started stages, and explicit
+all-stage or last-stage success policies interpret nonzero exits.
 
 ```
 source (.fai)
