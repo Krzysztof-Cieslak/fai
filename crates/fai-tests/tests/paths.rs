@@ -12,7 +12,7 @@ let main r =
   let base = Result.withDefault Path.empty (Path.fromString "a/b")
   let child = Result.withDefault Path.empty (Path.fromString "../c")
   let path = Path.normalize (Path.join base child)
-  let expected = Result.withDefault Path.empty (Path.fromString "a/c")
+  let expected = Path.normalize (Result.withDefault Path.empty (Path.fromString "a/c"))
   let roundTrip = Path.fromNativeBytes (Path.toNativeBytes path) = Ok path
   let firstClass = List.map Path.normalize [path, base]
   let ok = path = expected && roundTrip && List.length firstClass = 2 && Array.length (Path.components path) = 2

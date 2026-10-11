@@ -43,6 +43,7 @@ example: fromNativeBytes Bytes.empty = fromString ""
 /// The exact native encoding; suitable for round trips on the same platform.
 public toNativeBytes : Path -> Bytes
 let toNativeBytes path = path
+example: toNativeBytes empty = Bytes.empty
 example: Result.map (fun path ->
   fromNativeBytes (toNativeBytes path)) (fromString "é") = Result.map Ok (fromString "é")
 

@@ -173,7 +173,7 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "textWidth" => Scheme::mono(Ty::arrows([Ty::bool(), Ty::Con(Con::String)], Ty::int())),
         "pathOperation" => Scheme::mono(Ty::arrows(
             [Ty::int(), Ty::Con(Con::Bytes), Ty::Con(Con::Bytes)],
-            Ty::Tuple(vec![Ty::int(), Ty::Con(Con::Bytes)].into()),
+            Ty::Tuple(vec![Ty::int(), Ty::Con(Con::Bytes)]),
         )),
         "pathComponents" => {
             Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::array(Ty::Con(Con::Bytes))))
