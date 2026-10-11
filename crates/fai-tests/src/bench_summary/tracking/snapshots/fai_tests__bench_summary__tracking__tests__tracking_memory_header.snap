@@ -21,14 +21,15 @@ expression: "reports[\"language-memory.md\"].split(\"## Current measurements\").
 
 The tables report **process footprint**, including code, stacks, allocator retention and GC policy. Each displayed peak and floor is the maximum across fresh processes, in KiB (1,024 bytes). They do not measure comparable cross-language live heaps. Floors use the same executable; peaks are never subtracted or converted into compiler-memory win counts.
 
-## Status legend
+## Comparison and floor legend
 
-The floor is the same executable running its harness without the workload. `Process F/R` compares Fai's peak RSS with Rust's; `Process F/O` compares it with OCaml's. Lower ratios mean a smaller observed process footprint.
+The floor is the same executable running its harness without the workload. `Process F/R` is Fai's peak RSS divided by Rust's; `Process F/O` divides it by OCaml's. Lower ratios mean a smaller observed process footprint.
 
-| Status | Meaning |
+| Label | Meaning |
 |---|---|
-| `application/unqualified` | Peers differ in algorithms, containers or implementation policies. Absolute RSS is shown; both ratios are withheld. |
-| `floor-limited` | At least one peer's floor reaches 10% of its workload peak RSS. Both memory ratios are withheld. |
-| `process footprint only` | The reviewed matched kernel uses uninstrumented peers, at least five observations per peer, and every peer's floor is below 10% of its peak. Ratios qualify as whole-process RSS comparisons. |
+| `matched kernel` | Peers share the reviewed algorithm and logical data structures. Runtime representation and allocator costs remain observable. |
+| `application` | Algorithms, containers or implementation policies differ. Ratios still compare total process footprints, including those choices. |
+| `Floor share F/R/O` | Each language's floor divided by its workload peak, shown as a percentage. A high share describes a baseline-dominated process; it does not suppress ratios. Independent process observations can give a share above 100%. |
+| `F/R: …` or `F/O: …` | Only the named ratio is withheld because its pair is missing, incompatible, instrumented, or has fewer than five observations. |
 
-`—` means a ratio was excluded by these rules; the underlying measurements remain in the table and evidence. Whole-process RSS includes code, stacks, allocator retention and GC policy. Live-heap efficiency and Perceus guarantees require their own evidence.
+`—` denotes an unavailable value or withheld ratio, with the reason shown alongside the comparison. Floors are never subtracted. Whole-process RSS includes code, stacks, allocator retention and GC policy; live-heap efficiency and Perceus guarantees require their own evidence.

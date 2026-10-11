@@ -1902,6 +1902,10 @@ Editor integration:
     bodies. Prior snapshots live in versioned evidence archives. The configured
     superseded trackers close only after all three replacements are verified;
     concrete bug and implementation issues remain separate work items.
+    Process-memory ratios retain application cases and baseline-dominated
+    observations as explicitly labelled whole-process comparisons. Eligibility
+    is pairwise provenance, instrumentation and sample coverage; floor share is
+    descriptive. The timing report keeps its separate matched-kernel/floor gate.
   - **`edit→test` measured at two levels.** The contract loop is benched both
     in-process (`fai-tests`' `contracts` bench — front end + synthesize + JIT +
     run, scaling to large workspaces) and end-to-end through the real binary and
