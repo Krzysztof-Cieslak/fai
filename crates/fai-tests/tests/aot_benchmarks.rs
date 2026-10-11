@@ -149,7 +149,7 @@ fn memory_entry_observes_repetition_count_and_exact_binary_floor() {
 }
 
 #[test]
-fn native_allocation_window_covers_the_fused_workload_before_output() {
+fn memory_allocation_window_covers_the_fused_workload_before_output() {
     if !fai_runtime::ALLOCATION_STATS_ENABLED {
         return;
     }
@@ -163,6 +163,10 @@ fn native_allocation_window_covers_the_fused_workload_before_output() {
     let counters = fai_tests::allocation_design::counters(&output.stderr).unwrap();
     assert_eq!(counters["allocations"], 0, "{counters}");
     assert_eq!(counters["allocatedBytes"], 0, "{counters}");
+    assert_eq!(
+        counters["baselineLiveBytes"], counters["finalLiveBytes"],
+        "input owners must be released before the measured window: {counters}"
+    );
 }
 
 #[test]
