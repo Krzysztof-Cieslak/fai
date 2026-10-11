@@ -753,6 +753,13 @@ has `{ Concurrency, ProcessHost.Process }` effects. Output is binary and preserv
 exit statuses; `expectSuccess` checks them and `stdoutText` validates UTF-8.
 Failures keep partial output and cleanup details. `Process.Runner 'e` is an
 effect-carrying function record for applications and pure scripted tests.
+`withOutput` delivers tagged byte chunks to a sequential consumer returning
+`Continue`/`Stop`. `communicate` runs a custom input producer concurrently with that
+consumer and forwards both effects. `withChild` exposes `write`/`writeStream`,
+`endInput`, `next`, `status`, and `stop` inside an expiring callback scope.
+Streaming results retain only a configurable preview and report truncation.
+`ProcessText.decoder`/`feed`/`finish` decode bounded UTF-8 LF/CRLF lines; maintain
+separate decoder state for each pipe.
 
 `ProcessHost.Process` is the native subprocess capability. Add
 `process = ProcessHost.native` to a custom runtime record. `start` takes a nonempty

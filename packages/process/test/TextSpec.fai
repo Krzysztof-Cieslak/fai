@@ -1,0 +1,32 @@
+module ProcessTextSpec
+
+let decode limit bytes =
+  match ProcessText.decoder limit with
+  | Err error -> Err error
+  | Ok decoder ->
+    match ProcessText.feed decoder bytes with
+    | Err error -> Err error
+    | Ok (decoder, lines) -> Result.map (List.append lines) (ProcessText.finish decoder)
+
+let splitDecode bytes index =
+  match ProcessText.decoder 4096 with
+  | Err error -> Err error
+  | Ok decoder ->
+    match ProcessText.feed decoder (Bytes.slice 0 index bytes) with
+    | Err error -> Err error
+    | Ok (decoder, first) ->
+      match ProcessText.feed decoder (Bytes.slice index (Bytes.length bytes) bytes) with
+      | Err error -> Err error
+      | Ok (decoder, second) ->
+        Result.map (List.append (List.append first second)) (ProcessText.finish decoder)
+example: decode 20 (Bytes.fromString "one\r\ntwo\n\nlast") = Ok ["one", "two", "", "last"]
+example: decode 0 Bytes.empty = Ok []
+example: decode 0 (Bytes.fromString "\n") = Ok [""]
+example: decode 2 (Bytes.fromString "abc") = Err ProcessText.LineTooLong
+example: decode 2 (Bytes.fromString "ab\ncd\n") = Ok ["ab", "cd"]
+example: decode 20 (Bytes.fromList [255, 10]) = Err ProcessText.InvalidUtf8
+example: decode 20 (Bytes.fromList [195]) = Err ProcessText.InvalidUtf8
+example: splitDecode (Bytes.fromString "é😀\n") 1 = Ok ["é😀"]
+example: splitDecode (Bytes.fromString "é😀\n") 4 = Ok ["é😀"]
+example: decode 20 (Bytes.fromString "a\r") = Ok ["a\r"]
+forall text index: splitDecode (Bytes.fromString text) index = decode 4096 (Bytes.fromString text)

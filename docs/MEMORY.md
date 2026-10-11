@@ -41,6 +41,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Process streaming owns one sequential output consumer and an independent input
+  producer. Their effects propagate through ordinary function arguments. Stopping
+  output consumption initiates scoped shutdown. Streaming previews have a separate
+  bound from captured execution. Manual child aliases expire at callback return;
+  UTF-8 line decoding is pure, incremental, and bounded per line.
+
 - The source process runner separates pure command descriptions from execution.
   Captured output retains binary data and ordered per-stage statuses. Nonzero
   exits are data until explicitly checked. A bounded capture limit returns a

@@ -16,6 +16,7 @@ public type Options = {
   graceMs : Int,
   maxCaptureBytes : Int,
   maxPipelineStages : Int,
+  maxPreviewBytes : Int,
   pollMs : Int,
   timeoutMs : Option Int
 }
@@ -29,6 +30,7 @@ let defaults = {
   graceMs = 1000,
   maxCaptureBytes = 16777216,
   maxPipelineStages = 64,
+  maxPreviewBytes = 8192,
   pollMs = 10,
   timeoutMs = None
 }
@@ -39,7 +41,8 @@ public type Output = {
   exits : List (Option Exit),
   stderr : List Bytes,
   stdout : Bytes,
-  stopped : Bool
+  stopped : Bool,
+  truncated : Bool
 }
 
 public type ErrorKind =
@@ -67,7 +70,13 @@ public type Error = {
 }
 
 public emptyOutput : Output
-let emptyOutput = { exits = [], stderr = [], stdout = Bytes.empty, stopped = false }
+let emptyOutput = {
+  exits = [],
+  stderr = [],
+  stdout = Bytes.empty,
+  stopped = false,
+  truncated = false
+}
 
 public error : ErrorKind -> String -> Error
 let error kind message = {
@@ -154,7 +163,7 @@ let positiveOptional value =
 public validate : Options -> Command -> Result Unit Error
 let validate options command =
   let value = (describe command).launch
-  if options.bufferBytes <= 0 || options.bufferBytes > 1073741824 || options.chunkBytes <= 0 || options.chunkBytes > options.bufferBytes || options.maxCaptureBytes < 0 || options.maxPipelineStages <= 0 || options.maxPipelineStages > 1024 || options.graceMs < 0 || options.pollMs <= 0 || options.pollMs > 1000 || not (positiveOptional options.timeoutMs) || not (positiveOptional options.drainTimeoutMs) then
+  if options.bufferBytes <= 0 || options.bufferBytes > 1073741824 || options.chunkBytes <= 0 || options.chunkBytes > options.bufferBytes || options.maxCaptureBytes < 0 || options.maxPreviewBytes < 0 || options.maxPipelineStages <= 0 || options.maxPipelineStages > 1024 || options.graceMs < 0 || options.pollMs <= 0 || options.pollMs > 1000 || not (positiveOptional options.timeoutMs) || not (positiveOptional options.drainTimeoutMs) then
     Err (error InvalidInput "invalid process buffer, stage or duration limit")
   else if value.executable = "" || not (noNul value.executable) || not (noNul value.directory) || not (List.all noNul value.arguments) || not (List.all (fun edit ->
     edit.name <> "" && noNul edit.name && not (String.contains edit.name "=") && (match edit.value with
@@ -225,10 +234,15 @@ let join chunks =
   | [one] -> one
   | _ -> join (pairs chunks)
 
-type Capture = { count : Int, stderr : Dict Int (List Bytes), stdout : List Bytes }
+type Capture = {
+  count : Int,
+  stderr : Dict Int (List Bytes),
+  stdout : List Bytes,
+  truncated : Bool
+}
 
 emptyCapture : Capture
-let emptyCapture = { count = 0, stderr = Dict.empty, stdout = [] }
+let emptyCapture = { count = 0, stderr = Dict.empty, stdout = [], truncated = false }
 
 captured : Int -> Capture -> Output
 let captured stages state = {
@@ -236,7 +250,8 @@ let captured stages state = {
   stderr = List.map (fun stage ->
     join (List.reverse (Dict.getOr [] stage state.stderr))) (List.range 0 stages),
   stdout = join (List.reverse state.stdout),
-  stopped = false
+  stopped = false,
+  truncated = state.truncated
 }
 
 collect : Int -> ProcessHost.Chunk -> Capture -> Capture
@@ -248,7 +263,10 @@ let collect limit chunk state =
     else
       chunk.bytes
   let count = state.count + Bytes.length bytes
-  if chunk.stderr then
+  let state = { state with truncated = state.truncated || Bytes.length chunk.bytes > available }
+  if Bytes.isEmpty bytes then
+    state
+  else if chunk.stderr then
     { state with
       count = count,
       stderr = Dict.insert chunk.stage (bytes :: Dict.getOr [] chunk.stage state.stderr) state.stderr
@@ -324,7 +342,7 @@ let cleanupResult env session input result unit =
     | Err failure -> Err failure
     | Ok output ->
       (match fed with
-      | Err failure -> Err { failure with partial = output }
+      | Err failure -> if output.stopped then Ok output else Err { failure with partial = output }
       | Ok _ -> Ok output)
   finish report result
 
@@ -357,3 +375,152 @@ public type Runner 'e = { run : Options -> Command -> Result Output Error / 'e }
 
 public runner : { concurrency : Concurrency, process : ProcessHost.Process | _ } -> Runner { Concurrency, ProcessHost.Process }
 let runner env = { run = fun options command -> run env options command }
+
+/// A live session borrowed for one callback. Retained aliases expire on return.
+public opaque type Child = {
+  chunkSize : Int,
+  host : ProcessHost.Process,
+  session : ProcessHost.Session
+}
+
+public type Chunk = ProcessHost.Chunk
+
+public type Control =
+  | Continue
+  | Stop
+
+public type Completed 'a = { report : ProcessHost.Report, value : 'a }
+
+/// Read one tagged binary chunk. A session accepts one active output reader.
+public next : Child -> Result (Option Chunk) Error / { ProcessHost.Process }
+let next child = Result.mapError nativeError (child.host.next child.session)
+
+/// Write all bytes in bounded pieces. Concurrent writes return Busy.
+public write : Child -> Bytes -> Result Unit Error / { ProcessHost.Process }
+let write child bytes = writeAll child.host child.session child.chunkSize bytes 0
+
+/// Signal input EOF without closing output or the process scope.
+public endInput : Child -> Result Unit Error / { ProcessHost.Process }
+let endInput child = Result.mapError nativeError (child.host.endInput child.session)
+
+/// Request shutdown; the enclosing scope still joins and reaps the child.
+public stop : Child -> Unit / { ProcessHost.Process }
+let stop child = child.host.stop child.session
+
+/// Observe exit statuses without consuming output or blocking for completion.
+public status : Child -> List (Option Exit) / { ProcessHost.Process }
+let status child = child.host.status child.session
+
+/// Forward a stream with its effects preserved. Successful completion sends EOF.
+public writeStream : Child -> Stream Bytes 'e -> Result Unit Error / { ProcessHost.Process | 'e }
+let writeStream child stream =
+  match Stream.uncons stream with
+  | Err message -> Err (error ConsumerFailure message)
+  | Ok None -> endInput child
+  | Ok (Some (bytes, rest)) ->
+    match write child bytes with
+    | Err failure -> Err failure
+    | Ok _ -> writeStream child rest
+
+closeValue : Child -> Result 'a Error -> Result (Completed 'a) Error / { ProcessHost.Process }
+let closeValue child result =
+  let report = child.host.close child.session
+  match result with
+  | Err failure -> Err { failure with
+    cleanup = report.cleanup,
+    partial = { failure.partial with exits = report.exits }
+  }
+  | Ok value ->
+    match finish report (Ok emptyOutput) with
+    | Err failure -> Err failure
+    | Ok _ -> Ok { report = report, value = value }
+
+useChild : Child -> (Child -> Result 'a Error / 'e) -> Result (Completed 'a) Error / { ProcessHost.Process | 'e }
+let useChild child work =
+  let result = work child
+  closeValue child result
+
+/// Full-duplex manual scope. Input starts open; the callback controls writes/EOF.
+/// Use a command without preset input, and consume output alongside large writes.
+public withChild : { process : ProcessHost.Process | _ } -> Options -> Command -> (Child -> Result 'a Error / 'e) -> Result (Completed 'a) Error / { ProcessHost.Process | 'e }
+let withChild env options command work =
+  match validate options command with
+  | Err failure -> Err failure
+  | Ok _ ->
+    if not (Bytes.isEmpty (describe command).input) then
+      Err (error InvalidInput "withChild takes manual input; write it through the child")
+    else
+      match env.process.start [(describe command).launch] (hostOptions options) with
+      | Err failure -> Err (nativeError failure)
+      | Ok session ->
+        useChild { chunkSize = options.chunkBytes, host = env.process, session = session } work
+
+watch : Child -> Options -> Int -> (Chunk -> Result Control Error / 'e) -> Capture -> Result Output Error / { ProcessHost.Process | 'e }
+let watch child options stages consume state =
+  match next child with
+  | Err failure -> Err { failure with partial = captured stages state }
+  | Ok None -> Ok (captured stages state)
+  | Ok (Some chunk) ->
+    let preview = collect options.maxPreviewBytes chunk state
+    match consume chunk with
+    | Err failure -> Err { failure with partial = captured stages preview }
+    | Ok Stop -> Ok { captured stages preview with stopped = true }
+    | Ok Continue -> watch child options stages consume preview
+
+feedProducer : Child -> (Child -> Result Unit Error / 'e) -> Unit -> Result Unit Error / { ProcessHost.Process | 'e }
+let feedProducer child produce unit =
+  let result = produce child
+  let closed = endInput child
+  match result with
+  | Err failure ->
+    let stopped = stop child
+    Err failure
+  | Ok _ -> closed
+
+streamInScope : Services -> Options -> Int -> Child -> (Child -> Result Unit Error / 'e) -> (Chunk -> Result Control Error / 'e) -> Nursery -> Result Output Error / { Concurrency, ProcessHost.Process | 'e }
+let streamInScope env options stages child produce consume nursery =
+  let input = env.concurrency.spawn nursery (feedProducer child produce)
+  let result = watch child options stages consume emptyCapture
+  Wire.cleanup env.concurrency (cleanupResult env child.session input result)
+
+streamCommands : Services -> Options -> List Command -> (Child -> Result Unit Error / 'e) -> (Chunk -> Result Control Error / 'e) -> Result Output Error / { Concurrency, ProcessHost.Process | 'e }
+let streamCommands env options commands produce consume =
+  match env.process.start (List.map (fun command ->
+    (describe command).launch) commands) (hostOptions options) with
+  | Err failure -> Err (nativeError failure)
+  | Ok session ->
+    env.concurrency.scope (streamInScope env options (List.length commands) {
+      chunkSize = options.chunkBytes,
+      host = env.process,
+      session = session
+    } produce consume)
+
+/// Full-duplex callbacks: input and output run concurrently and union their effects.
+/// Successful input completion closes stdin. Output callbacks are sequential.
+public communicate : { concurrency : Concurrency, process : ProcessHost.Process | _ } -> Options -> Command -> (Child -> Result Unit Error / 'e) -> (Chunk -> Result Control Error / 'e) -> Result Output Error / { Concurrency, ProcessHost.Process | 'e }
+let communicate env options command produce consume =
+  match validate options command with
+  | Err failure -> Err failure
+  | Ok _ ->
+    if not (Bytes.isEmpty (describe command).input) then
+      Err (error InvalidInput "communicate takes a producer instead of preset input")
+    else
+      streamCommands {
+        concurrency = env.concurrency,
+        process = env.process
+      } options [command] produce consume
+
+writePreset : Bytes -> Child -> Result Unit Error / { ProcessHost.Process }
+let writePreset bytes child = write child bytes
+
+/// Stream output while feeding preset input. The returned bytes are a bounded
+/// preview, marked truncated when longer than maxPreviewBytes; Stop is explicit.
+public withOutput : { concurrency : Concurrency, process : ProcessHost.Process | _ } -> Options -> Command -> (Chunk -> Result Control Error / { ProcessHost.Process | 'e }) -> Result Output Error / { Concurrency, ProcessHost.Process | 'e }
+let withOutput env options command consume =
+  match validate options command with
+  | Err failure -> Err failure
+  | Ok _ ->
+    streamCommands {
+      concurrency = env.concurrency,
+      process = env.process
+    } options [command] (writePreset (describe command).input) consume
