@@ -1116,6 +1116,7 @@ dependencies = [
  "fai-span",
  "fai-syntax",
  "fai-types",
+ "flate2",
  "indoc",
  "insta",
  "lsp-server",
@@ -1127,6 +1128,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "wait-timeout",
 ]

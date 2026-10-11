@@ -1892,6 +1892,16 @@ Editor integration:
     the parser in Rust (rather than a shell/Python script) keeps it covered by the
     normal test suite; it degrades gracefully (an unrecognized line is skipped)
     so a divan format change thins the report instead of failing the job.
+  - **Generated current-state trackers.** A strict `performance-report` layer
+    validates complete snapshots before generating the Perceus allocation/space,
+    cross-language process-memory and cross-language runtime issue bodies. It
+    reuses the benchmark parser and eligibility policy, rejects missing/corrupt
+    observations, and retains explicit source, executable and instrumentation
+    identities. `scripts/performance.py` pins a freshly fetched main revision,
+    runs suites serially, supports same-snapshot resumption and publishes verified
+    bodies. Prior snapshots live in versioned evidence archives. The configured
+    superseded trackers close only after all three replacements are verified;
+    concrete bug and implementation issues remain separate work items.
   - **`edit→test` measured at two levels.** The contract loop is benched both
     in-process (`fai-tests`' `contracts` bench — front end + synthesize + JIT +
     run, scaling to large workspaces) and end-to-end through the real binary and

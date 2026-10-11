@@ -137,21 +137,38 @@ fn median(mut values: Vec<f64>) -> f64 {
     }
 }
 
-struct Side {
-    time: f64,
-    floor: f64,
+pub(super) struct Side {
+    pub time: f64,
+    pub floor: f64,
 }
 
 impl Side {
-    fn limited(&self) -> bool {
+    pub fn limited(&self) -> bool {
         self.floor >= self.time * 0.1
     }
 }
 
-pub(super) fn render(samples: &[WarmSample]) -> String {
-    if samples.is_empty() {
-        return String::new();
+pub(super) struct Case {
+    pub algorithm: String,
+    pub size: i64,
+    pub batch: u64,
+    pub methodology: String,
+    pub version: String,
+    pub sides: BTreeMap<String, Side>,
+    pub complete: bool,
+    pub matched: bool,
+}
+
+impl Case {
+    pub fn ratio(&self, peer: &str) -> Option<f64> {
+        let fai = self.sides.get("fai")?;
+        let peer = self.sides.get(peer)?;
+        (self.complete && self.matched && !fai.limited() && !peer.limited())
+            .then_some(fai.time / peer.time)
     }
+}
+
+pub(super) fn summarize(samples: &[WarmSample]) -> Vec<Case> {
     let mut cases: BTreeMap<(&str, i64, &str, &str, &str), Vec<&WarmSample>> = BTreeMap::new();
     for sample in samples {
         cases
@@ -165,9 +182,7 @@ pub(super) fn render(samples: &[WarmSample]) -> String {
             .or_default()
             .push(sample);
     }
-    let mut out = String::from(
-        "### Warm AOT — qualified kernel comparison\n\nAll sides execute AOT code in isolated persistent workers. Times are median-of-pass-medians **per invocation**, including the batched harness. Startup, input setup and compilation are excluded. Floors are measured, never subtracted. Ratios require matching workload versions/executable sets and a reviewed kernel contract. Application and historical rows retain absolute observations. A ratio is also suppressed when either side's floor is at least 10% of elapsed time or the case is incomplete. Values are point estimates, not statistically established win counts.\n\n| Workload | Size | Batch | Fai ns/call | Rust ns/call | OCaml ns/call | Fai/Rust | Fai/OCaml | Floor F/R/O | Status |\n|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n",
-    );
+    let mut result = Vec::new();
     for ((algorithm, size, methodology, version, _), records) in cases {
         let batch = records[0].batch;
         let passes = records[0].passes;
@@ -200,9 +215,32 @@ pub(super) fn render(samples: &[WarmSample]) -> String {
                         .collect(),
                 )
             };
-            sides.insert(side, Side { time: value(false), floor: value(true) });
+            sides.insert(side.to_owned(), Side { time: value(false), floor: value(true) });
         }
         complete &= sides.contains_key("fai") && sides.contains_key("rust");
+        result.push(Case {
+            algorithm: algorithm.into(),
+            size,
+            batch,
+            methodology: methodology.into(),
+            version: version.into(),
+            sides,
+            complete,
+            matched,
+        });
+    }
+    result
+}
+
+pub(super) fn render(samples: &[WarmSample]) -> String {
+    if samples.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "### Warm AOT — qualified kernel comparison\n\nAll sides execute AOT code in isolated persistent workers. Times are median-of-pass-medians **per invocation**, including the batched harness. Startup, input setup and compilation are excluded. Floors are measured, never subtracted. Ratios require matching workload versions/executable sets and a reviewed kernel contract. Application and historical rows retain absolute observations. A ratio is also suppressed when either side's floor is at least 10% of elapsed time or the case is incomplete. Values are point estimates, not statistically established win counts.\n\n| Workload | Size | Batch | Fai ns/call | Rust ns/call | OCaml ns/call | Fai/Rust | Fai/OCaml | Floor F/R/O | Status |\n|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n",
+    );
+    for case in summarize(samples) {
+        let Case { algorithm, size, batch, methodology, version, sides, complete, matched } = &case;
         let time =
             |side| sides.get(side).map_or_else(|| "—".into(), |value| format!("{:.3}", value.time));
         let floor = |side| {
@@ -211,15 +249,13 @@ pub(super) fn render(samples: &[WarmSample]) -> String {
                 |value| format!("{:.1}%", 100.0 * value.floor / value.time),
             )
         };
-        let ratio = |peer| match (sides.get("fai"), sides.get(peer)) {
-            (Some(fai), Some(peer)) if matched && complete && !fai.limited() && !peer.limited() => {
-                ratio_cell(Some(fai.time / peer.time))
-            }
-            _ => "—".into(),
-        };
-        let limited: Vec<_> =
-            sides.iter().filter(|(_, value)| value.limited()).map(|(side, _)| *side).collect();
-        let status = if !matched {
+        let ratio = |peer| ratio_cell(case.ratio(peer));
+        let limited: Vec<_> = sides
+            .iter()
+            .filter(|(_, value)| value.limited())
+            .map(|(side, _)| side.as_str())
+            .collect();
+        let status = if !*matched {
             format!(
                 "{}: {version}",
                 if methodology == "legacy" {
@@ -228,7 +264,7 @@ pub(super) fn render(samples: &[WarmSample]) -> String {
                     "application/unqualified"
                 }
             )
-        } else if !complete {
+        } else if !*complete {
             "incomplete/incompatible".into()
         } else if !limited.is_empty() {
             format!("floor-limited: {}", limited.join(", "))

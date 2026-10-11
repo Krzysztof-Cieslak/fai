@@ -1,0 +1,22 @@
+---
+source: crates/fai-tests/src/bench_summary/tracking/tests.rs
+expression: "reports[\"language-memory.md\"].split(\"## Current measurements\").next().unwrap()"
+---
+<!-- fai-performance-tracker:memory -->
+# Native process memory: Fai / Rust / OCaml
+
+**Snapshot:** `fixture-checkpoint` · **Completed:** 2026-10-12T00:00:01Z
+
+**Measured main revision:** [`aaaaaaaaaaaa`](https://github.com/example/fai/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · **Method:** `isolated-aot-v2`
+
+**Host:** fixture / fixture · **CPU:** fixture
+
+**Peers:** fixture · OCaml fixture (Flambda, `-O3`)
+
+[Raw data, identities and reproducibility record](https://example.test/evidence)
+
+## Current coverage
+
+**40 workloads · 160 size/repetition cases · 5 fresh processes per side and mode.** Both registered input sizes and 1/16 whole-workload repetitions are included. Every peer is an isolated, uninstrumented executable.
+
+The tables report **process footprint**, including code, stacks, allocator retention and GC policy. They do not measure comparable cross-language live heaps. Floors use the same executable; peaks are never subtracted or converted into compiler-memory win counts.

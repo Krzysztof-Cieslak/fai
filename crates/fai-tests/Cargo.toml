@@ -27,6 +27,8 @@ serde.workspace = true
 blake3.workspace = true
 tempfile.workspace = true
 object.workspace = true
+sha2.workspace = true
+flate2.workspace = true
 
 [dev-dependencies]
 fai-cli.workspace = true

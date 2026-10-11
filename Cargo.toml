@@ -69,6 +69,8 @@ rcgen = "0.13"
 blake3 = "1"
 # Portable compiler-bundle source fingerprints (also computed by Python tooling).
 sha2 = "0.10"
+# Lossless compression for retained benchmark snapshots.
+flate2 = "1"
 ring = "0.17"
 subtle = "2.6"
 stringprep = "0.1.5"
