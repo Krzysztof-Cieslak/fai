@@ -31,8 +31,12 @@ let configuration env =
     match env.env.get "FAI_PG_ROOT" with
     | None -> Ok options
     | Some path ->
-      Result.map (fun text ->
-        Postgres.verifiedTls (Some (Bytes.fromString text)) options) (Result.mapError (Sql.error Sql.InvalidInput "roots") (env.fs.readFile path))
+      match Path.fromString path with
+      | Err error -> Err (Sql.error Sql.InvalidInput "roots" (Path.errorToString error))
+      | Ok path ->
+        Result.map (fun text ->
+          Postgres.verifiedTls (Some (Bytes.fromString text)) options) (Result.mapError (fun error ->
+          Sql.error Sql.InvalidInput "roots" (FileSystem.errorToString error)) (env.fs.readFile path))
 
 let work session =
   SqlDecode.query (SqlDecode.field "value" SqlDecode.int) session (Sql.statement "select $1::bigint as value" [|

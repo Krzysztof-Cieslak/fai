@@ -3225,11 +3225,12 @@ fn file_system_write_then_read_runs() {
 
         public main : Runtime -> Unit / {{ Console, FileSystem }}
         let main r =
-          match r.fs.writeFile "{path}" "round-trip" with
-          | Err e -> r.console.writeLine e
+          let path = Result.withDefault Path.empty (Path.fromString "{path}")
+          match r.fs.writeFile path "round-trip" with
+          | Err e -> r.console.writeLine (FileSystem.errorToString e)
           | Ok u ->
-            match r.fs.readFile "{path}" with
-            | Err e -> r.console.writeLine e
+            match r.fs.readFile path with
+            | Err e -> r.console.writeLine (FileSystem.errorToString e)
             | Ok c -> r.console.writeLine c
     "#};
     let (code, out) = run(&src);

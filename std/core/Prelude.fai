@@ -164,15 +164,22 @@ public interface Random =
   nextInt : Int -> Int / { Random }
 
 public interface FileSystem =
-  closeReader : Reader -> Unit / { FileSystem }
-  closeWriter : Writer -> Result Unit String / { FileSystem }
-  openAppend : String -> Result Writer String / { FileSystem }
-  openRead : String -> Result Reader String / { FileSystem }
-  openWrite : String -> Result Writer String / { FileSystem }
-  readChunk : Reader -> Int -> Result Bytes String / { FileSystem }
-  readFile : String -> Result String String / { FileSystem }
-  writeChunk : Writer -> Bytes -> Result Unit String / { FileSystem }
-  writeFile : String -> String -> Result Unit String / { FileSystem }
+  closeReader : Reader -> Result Unit FileSystem.Error / { FileSystem }
+  closeWriter : Writer -> Result Unit FileSystem.Error / { FileSystem }
+  flushWriter : Writer -> Result Unit FileSystem.Error / { FileSystem }
+  openAppend : Path -> Result Writer FileSystem.Error / { FileSystem }
+  openRead : Path -> Result Reader FileSystem.Error / { FileSystem }
+  openWrite : Path -> Result Writer FileSystem.Error / { FileSystem }
+  openWriter : Path -> FileSystem.WriteMode -> Result Writer FileSystem.Error / { FileSystem }
+  readBytes : Path -> Int -> Result Bytes FileSystem.Error / { FileSystem }
+  readChunk : Reader -> Int -> Result Bytes FileSystem.Error / { FileSystem }
+  readFile : Path -> Result String FileSystem.Error / { FileSystem }
+  seekReader : Reader -> Int -> Result Int FileSystem.Error / { FileSystem }
+  seekWriter : Writer -> Int -> Result Int FileSystem.Error / { FileSystem }
+  syncWriter : Writer -> Bool -> Result Unit FileSystem.Error / { FileSystem }
+  writeBytes : Path -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
+  writeChunk : Writer -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
+  writeFile : Path -> String -> Result Unit FileSystem.Error / { FileSystem }
 
 public interface Env =
   args : Unit -> List String / { Env }
@@ -288,30 +295,43 @@ foreign "fai_sleep" clockSleep : Int -> Unit / { Clock }
 
 foreign "fai_random_next_int" randomNextInt : Int -> Int / { Random }
 
-// The file-system and environment hosts return a `(Bool * String)` — a
-// success/found flag and a payload (contents, value, or error message) — which
-// the helpers below wrap into the `Result`/`Option` the interfaces expose.
-foreign "fai_file_read" fileRead : String -> (Bool * String) / { FileSystem }
+// File hosts return structured errors with lossless paths. Environment lookup
+// separately uses a found flag and a Unicode payload.
+foreign "fai_file_read" fileRead : Path -> Result String FileSystem.Error / { FileSystem }
 
-foreign "fai_file_write" fileWrite : String -> String -> (Bool * String) / { FileSystem }
+foreign "fai_file_write" fileWrite : Path -> String -> Result Unit FileSystem.Error / { FileSystem }
 
 // The progressive file-handle primitives. Each returns the `Result` it declares
 // (built by the runtime), so the standard instance binds them directly. A
 // blocking read/write is offloaded to the blocking pool inside a task (the task
 // parks) and run inline otherwise. `readChunk` returns an empty `Bytes` at EOF.
-foreign "fai_file_open_read" fileOpenRead : String -> Result Reader String / { FileSystem }
+foreign "fai_file_open_read" fileOpenRead : Path -> Result Reader FileSystem.Error / { FileSystem }
 
-foreign "fai_file_open_write" fileOpenWrite : String -> Result Writer String / { FileSystem }
+foreign "fai_file_open_write" fileOpenWrite : Path -> Result Writer FileSystem.Error / { FileSystem }
 
-foreign "fai_file_open_append" fileOpenAppend : String -> Result Writer String / { FileSystem }
+foreign "fai_file_open_append" fileOpenAppend : Path -> Result Writer FileSystem.Error / { FileSystem }
 
-foreign "fai_file_read_chunk" fileReadChunk : Reader -> Int -> Result Bytes String / { FileSystem }
+foreign "fai_file_read_chunk" fileReadChunk : Reader -> Int -> Result Bytes FileSystem.Error / { FileSystem }
 
-foreign "fai_file_write_chunk" fileWriteChunk : Writer -> Bytes -> Result Unit String / { FileSystem }
+foreign "fai_file_write_chunk" fileWriteChunk : Writer -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
 
-foreign "fai_file_close_reader" fileCloseReader : Reader -> Unit / { FileSystem }
+foreign "fai_file_close_reader" fileCloseReader : Reader -> Result Unit FileSystem.Error / { FileSystem }
 
-foreign "fai_file_close_writer" fileCloseWriter : Writer -> Result Unit String / { FileSystem }
+foreign "fai_file_close_writer" fileCloseWriter : Writer -> Result Unit FileSystem.Error / { FileSystem }
+
+foreign "fai_file_open_writer" fileOpenWriter : Path -> FileSystem.WriteMode -> Result Writer FileSystem.Error / { FileSystem }
+
+foreign "fai_file_read_bytes" fileReadBytes : Path -> Int -> Result Bytes FileSystem.Error / { FileSystem }
+
+foreign "fai_file_write_bytes" fileWriteBytes : Path -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
+
+foreign "fai_file_flush" fileFlush : Writer -> Result Unit FileSystem.Error / { FileSystem }
+
+foreign "fai_file_sync" fileSync : Writer -> Bool -> Result Unit FileSystem.Error / { FileSystem }
+
+foreign "fai_file_seek" fileSeekReader : Reader -> Int -> Result Int FileSystem.Error / { FileSystem }
+
+foreign "fai_file_seek" fileSeekWriter : Writer -> Int -> Result Int FileSystem.Error / { FileSystem }
 
 foreign "fai_env_get" envGet : String -> (Bool * String) / { Env }
 
@@ -417,14 +437,6 @@ let stdClock = { Clock with
 public stdRandom : Random
 let stdRandom = { Random with nextInt n = randomNextInt n }
 
-let readFileHost path =
-  match fileRead path with
-  | (ok, contents) -> if ok then Ok contents else Err contents
-
-let writeFileHost path contents =
-  match fileWrite path contents with
-  | (ok, message) -> if ok then Ok () else Err message
-
 let envGetHost name =
   match envGet name with
   | (found, value) -> if found then Some value else None
@@ -433,13 +445,20 @@ public stdFs : FileSystem
 let stdFs = { FileSystem with
   closeReader = fileCloseReader,
   closeWriter = fileCloseWriter,
+  flushWriter = fileFlush,
   openAppend = fileOpenAppend,
   openRead = fileOpenRead,
   openWrite = fileOpenWrite,
+  openWriter = fileOpenWriter,
+  readBytes = fileReadBytes,
   readChunk = fileReadChunk,
-  readFile = readFileHost,
+  readFile = fileRead,
+  seekReader = fileSeekReader,
+  seekWriter = fileSeekWriter,
+  syncWriter = fileSync,
+  writeBytes = fileWriteBytes,
   writeChunk = fileWriteChunk,
-  writeFile = writeFileHost
+  writeFile = fileWrite
 }
 
 public stdEnv : Env

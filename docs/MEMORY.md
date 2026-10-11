@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Filesystem APIs consistently use native Path values and structured errors.
+  File handles have shared closed state: explicit close expires all aliases,
+  and a failed final writer flush does not leave an open handle. Scoped helpers
+  preserve callback and cleanup errors under cancellation-masked cleanup.
+
 - Native paths are immutable opaque byte-backed values preserving every Unix
   filename byte and Windows UTF-16 code unit. Text conversion rejects unrepresentable
   names; diagnostic display escapes them. Lexical operations are pure and

@@ -135,6 +135,12 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_file_write_chunk", rt::fai_file_write_chunk);
     sym!("fai_file_close_reader", rt::fai_file_close_reader);
     sym!("fai_file_close_writer", rt::fai_file_close_writer);
+    sym!("fai_file_open_writer", rt::fai_file_open_writer);
+    sym!("fai_file_read_bytes", rt::fai_file_read_bytes);
+    sym!("fai_file_write_bytes", rt::fai_file_write_bytes);
+    sym!("fai_file_flush", rt::fai_file_flush);
+    sym!("fai_file_sync", rt::fai_file_sync);
+    sym!("fai_file_seek", rt::fai_file_seek);
     sym!("fai_env_get", rt::fai_env_get);
     sym!("fai_env_args", rt::fai_env_args);
     sym!("fai_record_update", rt::fai_record_update);

@@ -27,19 +27,19 @@ public type Observation =
 
 type RunInput = { arguments : List String, directory : Option String, executable : String }
 
-path : Settings -> String -> String
+path : Settings -> String -> Result Path String
 let path settings name =
-  if String.take 1 name = "/" || String.take 1 name = "\\" || String.substring 1 1 name = ":" then
-    name
-  else
-    settings.workspace ++ "/" ++ name
+  match Path.fromString settings.workspace with
+  | Err error -> Err (Path.errorToString error)
+  | Ok base ->
+    Result.map (Path.join base) (Result.mapError Path.errorToString (Path.fromString name))
 
 readChunks : FileSystem -> Reader -> Int -> Bytes -> Result String String / { FileSystem }
 let readChunks fs reader limit bytes =
   let remaining = limit - Bytes.length bytes
   let count = if remaining >= 65536 then 65536 else remaining + 1
   match fs.readChunk reader count with
-  | Err error -> Err error
+  | Err error -> Err (FileSystem.errorToString error)
   | Ok chunk ->
     if Bytes.length chunk > remaining then
       Err "file exceeds tool output limit"
@@ -52,17 +52,19 @@ let readChunks fs reader limit bytes =
 
 readFile : Services -> Settings -> String -> Result String String / { FileSystem }
 let readFile env settings name =
-  match env.fs.openRead (path settings name) with
+  match path settings name with
   | Err error -> Err error
-  | Ok reader ->
-    let result = readChunks env.fs reader settings.toolBytes Bytes.empty
-    let closed = env.fs.closeReader reader
-    result
+  | Ok path ->
+    Result.mapError FileSystem.errorToString (File.readText env.fs settings.toolBytes path)
 
 writeFile : Services -> Settings -> (String * String) -> Result String String / { FileSystem }
 let writeFile env settings input =
   let (name, text) = input
-  Result.map (fun _ -> "written") (env.fs.writeFile (path settings name) text)
+  match path settings name with
+  | Err error -> Err error
+  | Ok path ->
+    Result.map (fun _ ->
+      "written") (Result.mapError FileSystem.errorToString (env.fs.writeFile path text))
 
 runCommand : Services -> Settings -> RunInput -> Result Json.Value String / { Concurrency, ProcessHost.Process }
 let runCommand env settings input =

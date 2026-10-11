@@ -408,16 +408,16 @@ public ofReader : { fs : FileSystem | _ } -> Reader -> Int -> Stream Bytes { Fil
 let ofReader env reader size =
   MkStream (fun u ->
     match env.fs.readChunk reader size with
-    | Err e -> Fail e
+    | Err e -> Fail (FileSystem.errorToString e)
     | Ok chunk -> if Bytes.length chunk = 0 then Done else Yield chunk (ofReader env reader size))
 
 /// Opens `path` and streams its bytes in chunks of up to `size` bytes. Pure to
 /// build; the file opens on first consumption and an open error becomes `Fail`.
-public fileBytes : { fs : FileSystem | _ } -> String -> Int -> Stream Bytes { FileSystem }
+public fileBytes : { fs : FileSystem | _ } -> Path -> Int -> Stream Bytes { FileSystem }
 let fileBytes env path size =
   defer (fun u ->
     match env.fs.openRead path with
-    | Err e -> failed e
+    | Err e -> failed (FileSystem.errorToString e)
     | Ok reader -> ofReader env reader size)
 
 let indexOfNewline b i =
@@ -456,7 +456,7 @@ let decodeUtf8Lines src = MkStream (fun u -> decodeStep src Bytes.empty)
 
 /// Opens `path` and streams its UTF-8 lines (64 KiB chunks). Lazy and resource-safe
 /// like `fileBytes`.
-public fileLines : { fs : FileSystem | _ } -> String -> Stream String { FileSystem }
+public fileLines : { fs : FileSystem | _ } -> Path -> Stream String { FileSystem }
 let fileLines env path = decodeUtf8Lines (fileBytes env path 65536)
 
 /// Streams lines read from standard input until end of input.
@@ -478,35 +478,42 @@ let toWriter env writer s =
   | Fail e -> Err e
   | Yield chunk rest ->
     match env.fs.writeChunk writer chunk with
-    | Err e -> Err e
+    | Err e -> Err (FileSystem.errorToString e)
     | Ok written -> toWriter env writer rest
 
 /// Writes a byte stream to `path` (creating/truncating it), flushing and closing.
-public toFile : { fs : FileSystem | _ } -> String -> Stream Bytes 'e -> Result Unit String / { FileSystem | 'e }
+public toFile : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> Stream Bytes 'e -> Result Unit String / { Concurrency, FileSystem | 'e }
 let toFile env path s =
   match env.fs.openWrite path with
-  | Err e -> Err e
+  | Err e -> Err (FileSystem.errorToString e)
   | Ok writer ->
-    match toWriter env writer s with
-    | Err e -> Err e
-    | Ok written -> env.fs.closeWriter writer
+    let result = toWriter env writer s
+    let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeWriter writer)
+    renderFileResult result closed
 
 /// Writes a byte stream to the end of `path` (creating it if absent).
-public appendToFile : { fs : FileSystem | _ } -> String -> Stream Bytes 'e -> Result Unit String / { FileSystem | 'e }
+public appendToFile : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> Stream Bytes 'e -> Result Unit String / { Concurrency, FileSystem | 'e }
 let appendToFile env path s =
   match env.fs.openAppend path with
-  | Err e -> Err e
+  | Err e -> Err (FileSystem.errorToString e)
   | Ok writer ->
-    match toWriter env writer s with
-    | Err e -> Err e
-    | Ok written -> env.fs.closeWriter writer
+    let result = toWriter env writer s
+    let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeWriter writer)
+    renderFileResult result closed
+
+let renderFileResult result closed =
+  match (result, closed) with
+  | (Ok _, Ok _) -> Ok ()
+  | (Err error, Ok _) -> Err error
+  | (Ok _, Err error) -> Err (FileSystem.errorToString error)
+  | (Err first, Err last) -> Err (first ++ "; cleanup: " ++ FileSystem.errorToString last)
 
 /// Writes a text stream to `path` as UTF-8 (each element written verbatim).
-public toFileText : { fs : FileSystem | _ } -> String -> Stream String 'e -> Result Unit String / { FileSystem | 'e }
+public toFileText : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> Stream String 'e -> Result Unit String / { Concurrency, FileSystem | 'e }
 let toFileText env path s = toFile env path (map Bytes.fromString s)
 
 /// Writes a text stream to `path`, one element per line (a `\n` after each).
-public writeLinesToFile : { fs : FileSystem | _ } -> String -> Stream String 'e -> Result Unit String / { FileSystem | 'e }
+public writeLinesToFile : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> Stream String 'e -> Result Unit String / { Concurrency, FileSystem | 'e }
 let writeLinesToFile env path s =
   toFile env path (map (fun line -> Bytes.fromString (line ++ "\n")) s)
 

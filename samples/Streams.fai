@@ -19,7 +19,7 @@ example: Stream.head (Stream.iterate (fun n -> 1 / 0) 42) = Ok (Some 42)
 // to stdout — constant memory however large the file. The file opens on first
 // consumption and closes when the stream is dropped (reference counting); an open
 // or read error becomes the `Err` of the returned `Result`.
-public grep : { console : Console, fs : FileSystem | _ } -> String -> String -> Result Unit String / { Console, FileSystem }
+public grep : { console : Console, fs : FileSystem | _ } -> String -> Path -> Result Unit String / { Console, FileSystem }
 let grep env needle path =
   Stream.fileLines env path |> Stream.filter (fun line ->
     String.contains line needle) |> Stream.toStdoutLines env

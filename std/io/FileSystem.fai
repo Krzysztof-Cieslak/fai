@@ -1,0 +1,71 @@
+module FileSystem
+
+/// Stable categories shared by file, directory, and temporary-resource operations.
+public type ErrorKind =
+  | NotFound
+  | AlreadyExists
+  | PermissionDenied
+  | NotDirectory
+  | IsDirectory
+  | DirectoryNotEmpty
+  | InvalidPath
+  | InvalidArgument
+  | InvalidEncoding
+  | Closed
+  | Unsupported
+  | CrossDevice
+  | TooManyLinks
+  | TooLarge
+  | Cancelled
+  | IoFailure
+
+public type Error = {
+  destination : Option Path,
+  kind : ErrorKind,
+  message : String,
+  nativeCode : Option Int,
+  operation : String,
+  path : Option Path
+}
+
+/// Construct a portable error; host failures additionally retain native codes.
+public error : ErrorKind -> String -> Option Path -> String -> Error
+let error kind operation path message = {
+  destination = None,
+  kind = kind,
+  message = message,
+  nativeCode = None,
+  operation = operation,
+  path = path
+}
+example: (error Closed "read" None "closed").kind = Closed
+
+public errorToString : Error -> String
+let errorToString error =
+  error.operation ++ (match error.path with
+  | None -> ""
+  | Some path -> " " ++ Path.display path) ++ ": " ++ error.message
+example: errorToString (error Closed "read" None "closed") = "read: closed"
+
+/// CreateNew is exclusive; Truncate/Append create if missing; Existing never creates.
+public type WriteMode =
+  | CreateNew
+  | Truncate
+  | Append
+  | Existing
+
+/// Scope failures preserve both the callback failure and a failed cleanup.
+public type ScopeError 'error =
+  | OpenError Error
+  | BodyError 'error
+  | CloseError Error
+  | BodyAndCloseError 'error Error
+
+public scopeResult : Result 'a 'error -> Result Unit Error -> Result 'a (ScopeError 'error)
+let scopeResult body cleanup =
+  match (body, cleanup) with
+  | (Ok value, Ok _) -> Ok value
+  | (Err error, Ok _) -> Err (BodyError error)
+  | (Ok _, Err error) -> Err (CloseError error)
+  | (Err first, Err last) -> Err (BodyAndCloseError first last)
+example: scopeResult (Ok 3) (Ok ()) = Ok 3
