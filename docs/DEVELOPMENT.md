@@ -123,6 +123,11 @@ existing semantic cache boundary.
 
 ## Tooling checks
 
+Filesystem changes also run `scripts/tests/filesystem_toolchain.py --fai
+/path/to/fai`: a relocated-compiler JIT/AOT fixture covering native paths,
+temporary scopes, cancellation, metadata/links, and atomic replacement. API and
+migration details are in [FILESYSTEM.md](FILESYSTEM.md).
+
 ```sh
 python3 -m unittest discover -s scripts/tests -v
 python3 scripts/tests/smoke_compiler.py --fai /path/to/fai

@@ -542,4 +542,15 @@ mod tests {
         assert_eq!(read_all(&path, 3, &cancellation_probe()).unwrap_err().kind, Kind::TooLarge);
         assert_eq!(read_all(&path, 4, &cancellation_probe()).unwrap(), b"four");
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn flush_failure_still_expires_the_writer() {
+        let mut writer = BufWriter::new(File::create("/dev/full").unwrap());
+        writer.write_all(b"buffered").unwrap();
+        let mut state = FileState::Writer(Some(writer));
+        assert!(close_state(&mut state).is_err());
+        assert!(matches!(state, FileState::Writer(None)));
+        assert!(close_state(&mut state).is_ok());
+    }
 }

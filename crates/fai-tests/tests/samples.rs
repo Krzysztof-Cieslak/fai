@@ -112,6 +112,8 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "CustomCapability.fai",
     "DateTime.fai",
     "Effects.fai",
+    "Files.fai",
+    "Paths.fai",
     "Funcs.fai",
     "Geometry.fai",
     "Greet.fai",

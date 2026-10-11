@@ -1647,20 +1647,21 @@ fold : ('acc -> 'a -> 'acc / 'e) -> 'acc -> Stream 'a 'e -> Result 'acc String /
 forEach / toList / toArray / drain / length / find / any / all / head / last
 // I/O sources (lazy; open + read errors become Fail; handle closes on drop)
 ofReader        : { fs : FileSystem | _ } -> Reader -> Int -> Stream Bytes { FileSystem }
-fileBytes       : { fs : FileSystem | _ } -> String -> Int -> Stream Bytes { FileSystem }
-fileLines       : { fs : FileSystem | _ } -> String -> Stream String { FileSystem }
+fileBytes       : { fs : FileSystem | _ } -> Path -> Int -> Stream Bytes { FileSystem }
+fileLines       : { fs : FileSystem | _ } -> Path -> Stream String { FileSystem }
 stdinLines      : { console : Console | _ } -> Stream String { Console }
 decodeUtf8Lines : Stream Bytes 'e -> Stream String 'e   // buffers UTF-8 across chunks
 // I/O sinks (Result Unit String)
-toWriter / toFile / appendToFile : { fs : FileSystem | _ } -> … -> Stream Bytes 'e -> Result Unit String / { FileSystem | 'e }
-toFileText / writeLinesToFile    : { fs : FileSystem | _ } -> String -> Stream String 'e -> Result Unit String / { FileSystem | 'e }
+toWriter        : { fs : FileSystem | _ } -> Writer -> Stream Bytes 'e -> Result Unit String / { FileSystem | 'e }
+toFile / appendToFile : { fs : FileSystem, concurrency : Concurrency | _ } -> Path -> Stream Bytes 'e -> Result Unit String / { FileSystem, Concurrency | 'e }
+toFileText / writeLinesToFile : { fs : FileSystem, concurrency : Concurrency | _ } -> Path -> Stream String 'e -> Result Unit String / { FileSystem, Concurrency | 'e }
 toStdout / toStdoutLines / toStderr : { console : Console | _ } -> Stream String 'e -> Result Unit String / { Console | 'e }
 ```
 
 Example — a `grep` in constant memory:
 
 ```fai
-Stream.fileLines runtime "log.txt"
+Stream.fileLines runtime (Result.withDefault Path.empty (Path.fromString "log.txt"))
   |> Stream.filter (fun line -> String.contains line needle)
   |> Stream.toStdoutLines runtime
 ```

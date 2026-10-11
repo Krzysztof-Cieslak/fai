@@ -240,3 +240,20 @@ fn atomic_no_clobber_failure_reports_attempted_commit() {
         "ok\n"
     );
 }
+
+#[test]
+fn seek_repositions_a_reader_and_rejects_negative_offsets() {
+    assert_eq!(
+        run_case(
+            r#"  let written = r.fs.writeFile path "abcd"
+  match r.fs.openRead path with
+  | Err _ -> r.console.writeLine "open failed"
+  | Ok reader ->
+    let at = r.fs.seekReader reader 2
+    let tail = r.fs.readChunk reader 9223372036854775807
+    let invalid = r.fs.seekReader reader (-9223372036854775807 - 1)
+    r.console.writeLine (if at = Ok 2 && tail = Ok (Bytes.fromString "cd") && (match invalid with | Err error -> error.kind = FileSystem.InvalidArgument | _ -> false) then "ok" else "bad")"#
+        ),
+        "ok\n"
+    );
+}
