@@ -512,6 +512,9 @@ in bounds emits the direct store without an unreachable fallback branch.
 Bounds inference includes the generated loops in its file-local caller graph,
 including their first-class function references. A callback moved into a loop
 therefore cannot disappear from a private helper's bounds-check proof.
+Generated loops retain these entry and result facts in AOT objects and in run
+and contract worker bundles, matching direct JIT compilation. Their existing
+ownership signatures and release points remain the same.
 Helpers referenced by contracts keep conservative entry assumptions: generated
 contract inputs are independent of the module's ordinary call sites.
 

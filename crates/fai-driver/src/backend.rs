@@ -288,7 +288,7 @@ fn bce_shadow() -> bool {
     BCE_SHADOW.load(Ordering::Relaxed)
 }
 
-/// This definition's inferred entry-fact signature (empty for a synthetic loop):
+/// This definition's inferred entry-fact signature, including generated fusion loops:
 /// difference constraints over its parameters that bounds-check elimination seeds
 /// at the function entry.
 pub(crate) fn bounds_entry_of(db: &dyn Db, def: DefId) -> fai_core::BoundSig {
@@ -296,7 +296,7 @@ pub(crate) fn bounds_entry_of(db: &dyn Db, def: DefId) -> fai_core::BoundSig {
         .map_or_else(fai_core::BoundSig::default, |f| (*entry_bounds(db, f, def.name)).clone())
 }
 
-/// A definition's inferred result-fact signature (empty for a synthetic loop): its
+/// A definition's inferred result-fact signature, including fusion builders: its
 /// result's length/bounds relative to its parameters, consulted at a call site.
 pub(crate) fn bounds_result_of(db: &dyn Db, def: DefId) -> fai_core::ResultSig {
     db.source_file(def.file)
@@ -739,9 +739,9 @@ pub fn build_native_with_deps(
             borrows_of(db, d)
         }
     };
-    // Synthetic definitions (wrappers, combined loops, fused loops) have no source
-    // file, hence no interprocedural bounds facts; intra-procedural elision still
-    // applies within them.
+    // Wrappers and combined loops use synthetic parameter layouts, so retain
+    // only their intra-procedural facts. Fusion loops participate directly in the
+    // owning file's caller graph and keep its inferred entry/result facts.
     let synth_bce = fai_codegen::Bce::synthetic(concurrent);
     for (member, wrapper) in &groups.wrappers {
         objects.push((
@@ -755,10 +755,18 @@ pub fn build_native_with_deps(
             object_for_def(combined, &namer, &arity, &abi, &borrows, &synth_bce),
         ));
     }
+    let fused_entry = |d: DefId| bounds_entry_of(db, d);
+    let fused_result = |d: DefId| bounds_result_of(db, d);
+    let fused_bce = fai_codegen::Bce {
+        entry_of: &fused_entry,
+        result_of: &fused_result,
+        shadow: false,
+        concurrent,
+    };
     for fused in &fusion.loops {
         objects.push((
             symbol_base(db, fused.def),
-            object_for_def(fused, &namer, &arity, &abi, &borrows, &synth_bce),
+            object_for_def(fused, &namer, &arity, &abi, &borrows, &fused_bce),
         ));
     }
     // Link a token-taking specialized entry for each definition a reachable caller
@@ -1226,8 +1234,8 @@ pub fn build_run_bundle_with_deps(
             arity,
             abi,
             Vec::new(),
-            fai_core::BoundSig::default(),
-            fai_core::ResultSig::default(),
+            bounds_entry_of(db, fused.def),
+            bounds_result_of(db, fused.def),
         ));
     }
 

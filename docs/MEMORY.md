@@ -3649,6 +3649,11 @@ Editor integration:
     untouched, so the `CODEGEN_CONFIG` stamp gains a `bounds-check-elim` token and
     the on-disk key mixes in the definition's entry facts and its callees' result
     facts; the wire bundle carries both so a daemon worker elides identically.
+    Generated fusion loops use their owning file's inferred facts when emitting
+    AOT objects, and both run and contract bundles retain those same facts.
+    Synthetic wrappers and combined functions with different parameter layouts
+    retain conservative metadata. Bounds propagation does not change ownership
+    signatures or release points.
   - **Validated** by codegen IR-shape tests (the redundant `ult` gone for the safe
     `get`/`set`, a `0 .. length` loop, and a masked bucket index; kept for an
     unguarded or partially guarded access), a **shadow-check** soundness net (a
