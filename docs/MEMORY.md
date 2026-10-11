@@ -41,6 +41,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Anthropic streaming retains indexed content blocks and thinking signatures.
+  Usage updates replace cumulative counters. Tool JSON is validated after the
+  terminal outcome is known, so truncated arguments never become executable calls.
+  Provider-native continuation data is replayed without cross-provider coercion.
+
 - Native model adapters separate pure request/event codecs from scoped transport.
   OpenAI Responses retains opaque output items for client-owned continuation,
   explicitly disables storage by default, and reconciles final snapshots without

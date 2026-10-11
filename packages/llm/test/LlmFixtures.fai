@@ -1,0 +1,164 @@
+module LlmFixtures
+
+let obj = LlmJson.object
+
+let str = Json.String
+
+let num = LlmJson.integer
+
+let frame value = "data: " ++ Json.toString value ++ "\n\n"
+
+let textPart = obj [("type", str "output_text"), ("text", str "tools completed")]
+
+let function id name args = obj [
+  ("id", str ("item-" ++ id)),
+  ("type", str "function_call"),
+  ("call_id", str id),
+  ("name", str name),
+  ("arguments", str args),
+  ("status", str "completed")
+]
+
+let openaiOutput after =
+  if after then
+    [
+      obj [
+        ("id", str "text"),
+        ("type", str "message"),
+        ("role", str "assistant"),
+        ("content", LlmJson.array [textPart])
+      ]
+    ]
+  else
+    [function "a" "read_file" "{\"path\":\"a\"}", function "b" "read_file" "{\"path\":\"b\"}"]
+
+let response after = obj [
+  ("id", str (if after then "answer" else "tools")),
+  ("model", str "fixture"),
+  ("status", str "completed"),
+  ("output", LlmJson.array (openaiOutput after)),
+  ("usage", obj [("input_tokens", num 10), ("output_tokens", num 5)])
+]
+
+let output index item = obj [
+  ("type", str "response.output_item.added"),
+  ("output_index", num index),
+  ("item", item)
+]
+
+let argument index text = obj [
+  ("type", str "response.function_call_arguments.delta"),
+  ("output_index", num index),
+  ("delta", str text)
+]
+
+let argumentDone index text = obj [
+  ("type", str "response.function_call_arguments.done"),
+  ("output_index", num index),
+  ("arguments", str text)
+]
+
+public openai : Bool -> String
+let openai after =
+  let created = obj [
+    ("type", str "response.created"),
+    ("response", obj [("id", str (if after then "answer" else "tools")), ("model", str "fixture")])
+  ]
+  let events =
+    if after then
+      [
+        output 0 (obj [("id", str "text"), ("type", str "message")]),
+        obj [
+          ("type", str "response.content_part.added"),
+          ("output_index", num 0),
+          ("content_index", num 0)
+        ],
+        obj [
+          ("type", str "response.output_text.delta"),
+          ("output_index", num 0),
+          ("content_index", num 0),
+          ("delta", str "tools completed")
+        ],
+        obj [
+          ("type", str "response.content_part.done"),
+          ("output_index", num 0),
+          ("content_index", num 0)
+        ]
+      ]
+    else
+      [
+        output 0 (function "a" "read_file" ""),
+        output 1 (function "b" "read_file" ""),
+        argument 0 "{\"path\":",
+        argument 1 "{\"path\":",
+        argument 0 "\"a\"}",
+        argument 1 "\"b\"}",
+        argumentDone 0 "{\"path\":\"a\"}",
+        argumentDone 1 "{\"path\":\"b\"}"
+      ]
+  String.join "" (List.map frame (created :: List.append events [
+    obj [("type", str "response.completed"), ("response", response after)]
+  ]))
+
+let anthropicBlock index block = obj [
+  ("type", str "content_block_start"),
+  ("index", num index),
+  ("content_block", block)
+]
+
+let anthropicDelta index delta = obj [
+  ("type", str "content_block_delta"),
+  ("index", num index),
+  ("delta", delta)
+]
+
+let anthropicStop index = obj [("type", str "content_block_stop"), ("index", num index)]
+
+let tool id = obj [
+  ("type", str "tool_use"),
+  ("id", str id),
+  ("name", str "read_file"),
+  ("input", obj [])
+]
+
+let args text = obj [("type", str "input_json_delta"), ("partial_json", str text)]
+
+public anthropic : Bool -> String
+let anthropic after =
+  let created = obj [
+    ("type", str "message_start"),
+    ("message", obj [
+      ("id", str "message"),
+      ("model", str "fixture"),
+      ("content", LlmJson.array []),
+      ("stop_reason", Json.Null),
+      ("usage", obj [("input_tokens", num 10), ("output_tokens", num 1)])
+    ])
+  ]
+  let events =
+    if after then
+      [
+        anthropicBlock 0 (obj [("type", str "text"), ("text", str "")]),
+        anthropicDelta 0 (obj [("type", str "text_delta"), ("text", str "tools completed")]),
+        anthropicStop 0
+      ]
+    else
+      [
+        anthropicBlock 0 (tool "a"),
+        anthropicBlock 1 (tool "b"),
+        anthropicDelta 0 (args "{\"path\":"),
+        anthropicDelta 1 (args "{\"path\":"),
+        anthropicDelta 0 (args "\"a\"}"),
+        anthropicDelta 1 (args "\"b\"}"),
+        anthropicStop 0,
+        anthropicStop 1
+      ]
+  let ended = [
+    obj [
+      ("type", str "message_delta"),
+      ("delta", obj [("stop_reason", str (if after then "end_turn" else "tool_use"))]),
+      ("usage", obj [("output_tokens", num 5)])
+    ],
+    obj [("type", str "message_stop")]
+  ]
+  String.join "" (List.map frame (created :: List.append events ended))

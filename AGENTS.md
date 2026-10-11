@@ -1140,6 +1140,9 @@ Tool-result continuation checks IDs and preserves native item order.
 `LlmOpenAI` implements the native Responses protocol with pure encoding and event
 reduction. Scoped `Llm.generate`/`withStream` use existing networking capabilities,
 preserve request IDs and native continuation items, and reject premature EOF.
+`LlmAnthropic` accumulates indexed Messages blocks and cumulative usage, retaining
+thinking signatures and grouping adjacent tool results. Truncated argument JSON
+remains partial data. `LlmReplay` exercises both codecs with pure transport chunks.
 
 `HttpClient.foldEvents` threads application state through scoped SSE callbacks,
 retaining typed callback errors, response metadata and bounded error bodies.

@@ -1,0 +1,141 @@
+module LlmAnthropicSpec
+
+let obj = LlmJson.object
+
+let str = Json.String
+
+let num = LlmJson.integer
+
+let initial = obj [
+  ("id", str "msg"),
+  ("model", str "fixture"),
+  ("content", LlmJson.array []),
+  ("usage", obj [("input_tokens", num 10), ("output_tokens", num 1)])
+]
+
+let started = obj [("type", str "message_start"), ("message", initial)]
+
+let block = obj [
+  ("type", str "content_block_start"),
+  ("index", num 0),
+  ("content_block", obj [("type", str "text"), ("text", str "")])
+]
+
+let delta text = obj [
+  ("type", str "content_block_delta"),
+  ("index", num 0),
+  ("delta", obj [("type", str "text_delta"), ("text", str text)])
+]
+
+let stopped = obj [("type", str "content_block_stop"), ("index", num 0)]
+
+let usage count reason = obj [
+  ("type", str "message_delta"),
+  ("usage", obj [("output_tokens", num count)]),
+  ("delta", obj [("stop_reason", str reason)])
+]
+
+let ended = obj [("type", str "message_stop")]
+
+first : (LlmStream.State * List LlmTypes.Event) -> LlmStream.State
+let first pair =
+  let (state, _) = pair
+  state
+
+step : Result LlmStream.State LlmTypes.Error -> Json.Value -> Result LlmStream.State LlmTypes.Error
+let step result event =
+  match result with
+  | Err error -> Err error
+  | Ok state -> Result.map first (LlmAnthropic.reduce Llm.limits state (Json.toString event))
+
+run : List Json.Value -> Result LlmStream.State LlmTypes.Error
+let run events = List.foldl step (Ok (LlmStream.initial LlmTypes.Anthropic)) events
+example: (run [
+  started,
+  block,
+  delta "hel",
+  delta "lo",
+  stopped,
+  usage 2 "end_turn",
+  ended
+] |> Result.map (fun state -> Llm.text state.response)) = Ok "hello"
+example: (run [
+  started,
+  block,
+  delta "a",
+  stopped,
+  usage 2 "end_turn",
+  usage 5 "end_turn",
+  ended
+] |> Result.map (fun state -> state.response.usage.outputTokens)) = Ok (Some 5)
+example: run [started, delta "missing"] |> Result.isErr
+example: run [started, block, block] |> Result.isErr
+example: run [started, block, ended] |> Result.isErr
+example: run [started, usage 1 "end_turn", ended, ended] |> Result.isErr
+example: run [obj [("type", str "ping")], started, usage 1 "end_turn", ended] |> Result.isOk
+example: run [started, obj [("type", str "future_event")], usage 1 "end_turn", ended] |> Result.isOk
+example: run [
+  started,
+  obj [("type", str "error"), ("error", obj [("type", str "overloaded_error")])]
+] |> Result.isErr
+
+let tool = obj [
+  ("type", str "content_block_start"),
+  ("index", num 0),
+  ("content_block", obj [
+    ("type", str "tool_use"),
+    ("id", str "call"),
+    ("name", str "read_file"),
+    ("input", obj [])
+  ])
+]
+
+let args text = obj [
+  ("type", str "content_block_delta"),
+  ("index", num 0),
+  ("delta", obj [("type", str "input_json_delta"), ("partial_json", str text)])
+]
+example: (run [
+  started,
+  tool,
+  args "{\"path\":",
+  args "\"a\"}",
+  stopped,
+  usage 5 "tool_use",
+  ended
+] |> Result.map (fun state -> List.length state.response.toolCalls)) = Ok 1
+example: run [started, tool, args "{broken", stopped, usage 5 "tool_use", ended] |> Result.isErr
+example: (run [
+  started,
+  tool,
+  args "{partial",
+  stopped,
+  usage 5 "max_tokens",
+  ended
+] |> Result.map (fun state -> state.response.toolCalls)) = Ok []
+
+let thinking = obj [
+  ("type", str "content_block_start"),
+  ("index", num 0),
+  ("content_block", obj [("type", str "thinking"), ("thinking", str ""), ("signature", str "")])
+]
+
+let signature = obj [
+  ("type", str "content_block_delta"),
+  ("index", num 0),
+  ("delta", obj [("type", str "signature_delta"), ("signature", str "opaque-signature")])
+]
+
+retained : Result LlmStream.State LlmTypes.Error -> Bool
+let retained result =
+  match result with
+  | Err _ -> false
+  | Ok state ->
+    match state.response.continuation with
+    | [LlmTypes.Native LlmTypes.Anthropic value] ->
+      String.contains (Json.toString value) "opaque-signature"
+    | _ -> false
+example: retained (run [started, thinking, signature, stopped, usage 5 "end_turn", ended])
+example: LlmAnthropic.encode Llm.limits { Llm.request "fixture" with
+  providerOptions = LlmTypes.OpenAIOptions { reasoningEffort = None, store = false }
+} |> Result.isErr

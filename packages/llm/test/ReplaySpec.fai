@@ -1,0 +1,23 @@
+module LlmReplaySpec
+
+let openai = Bytes.fromString (LlmFixtures.openai true)
+
+let anthropic = Bytes.fromString (LlmFixtures.anthropic true)
+
+let split bytes index = [Bytes.slice 0 index bytes, Bytes.slice index (Bytes.length bytes) bytes]
+example: (LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [
+  openai
+] |> Result.map Llm.text) = Ok "tools completed"
+example: (LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [
+  anthropic
+] |> Result.map Llm.text) = Ok "tools completed"
+example: LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [
+  Bytes.fromString "data: {}\n\n"
+] |> Result.isErr
+example: LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [] |> Result.isErr
+forall index: LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits (split openai index) = LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [
+  openai
+]
+forall index: LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits (split anthropic index) = LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [
+  anthropic
+]

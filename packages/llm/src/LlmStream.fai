@@ -36,7 +36,19 @@ let partial state =
   if state.done then
     state.response
   else
-    { state.response with blocks = List.map (textBlock state.reasoning) (Dict.toList state.texts) }
+    { state.response with
+      blocks = List.append (List.map (textBlock state.reasoning) (Dict.toList state.texts)) (List.map draftBlock (Dict.toList state.drafts))
+    }
+
+draftBlock : (Int * Draft) -> LlmTypes.Block
+let draftBlock entry =
+  let (_, draft) = entry
+  LlmTypes.ExtensionBlock draft.id (LlmJson.object [
+    ("type", Json.String "partial_tool_call"),
+    ("id", Json.String draft.id),
+    ("name", Json.String draft.name),
+    ("arguments", Json.String draft.arguments)
+  ])
 
 let textBlock reasoning pair =
   let (key, text) = pair
@@ -121,7 +133,12 @@ let nested name field value previous =
 
 public responseLimit : LlmTypes.Limits -> Json.Value -> Result Unit LlmTypes.Error
 let responseLimit limits value =
-  if Bytes.length (Bytes.fromString (Json.toString value)) > limits.maxResponseBytes then
-    Err (LlmTypes.error LlmTypes.LimitExceeded "final response exceeds its byte limit")
-  else
-    Ok ()
+  match JsonDecode.decode JsonDecode.value value with
+  | Err detail -> Err { LlmTypes.error LlmTypes.InvalidJson (JsonDecode.errorToString detail) with
+    detail = Some (JsonDecode.Data detail)
+  }
+  | Ok _ ->
+    if Bytes.length (Bytes.fromString (Json.toString value)) > limits.maxResponseBytes then
+      Err (LlmTypes.error LlmTypes.LimitExceeded "final response exceeds its byte limit")
+    else
+      Ok ()

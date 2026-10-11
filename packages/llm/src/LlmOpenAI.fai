@@ -95,6 +95,8 @@ let encode limits request =
     match request.providerOptions with
     | LlmTypes.AnthropicOptions _ ->
       Err (LlmTypes.error LlmTypes.UnsupportedFeature "Anthropic options cannot be sent to OpenAI")
+    | LlmTypes.AnthropicAdaptive ->
+      Err (LlmTypes.error LlmTypes.UnsupportedFeature "Anthropic options cannot be sent to OpenAI")
     | LlmTypes.Defaults -> checked limits body
     | LlmTypes.OpenAIOptions options ->
       let body = LlmJson.set "store" (Json.Boolean options.store) body
@@ -377,4 +379,12 @@ let reduce limits state data =
   | Ok state ->
     match LlmJson.parse data with
     | Err error -> Err { error with partial = Some (LlmStream.partial state) }
-    | Ok value -> reduceEvent limits state value
+    | Ok value ->
+      let staged =
+        if LlmJson.text "type" value = Some "response.output_item.added" then
+          LlmStream.addBytes limits (Json.toString (Option.withDefault Json.Null (LlmJson.get "item" value))) state
+        else
+          Ok state
+      match staged with
+      | Err error -> Err error
+      | Ok state -> reduceEvent limits state value
