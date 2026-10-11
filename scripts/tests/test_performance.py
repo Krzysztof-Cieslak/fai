@@ -175,6 +175,20 @@ class PerformanceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pinned revision"):
                 performance.environment(manifest, self.root)
 
+    def test_identical_executable_archives_share_storage_without_changing_contents(self):
+        folder = self.root / "artifacts"
+        folder.mkdir()
+        data = b"\x7fELF" + b"retained executable" * 100
+        (folder / "first").write_bytes(data)
+        (folder / "second").write_bytes(data)
+        state = {"compressed": {}}
+        performance.compress_artifacts(self.root, folder, state)
+        first, second = folder / "first.gz", folder / "second.gz"
+        self.assertEqual(gzip.decompress(first.read_bytes()), data)
+        self.assertEqual(first.read_bytes(), second.read_bytes())
+        self.assertEqual(first.stat().st_ino, second.stat().st_ino)
+        self.assertEqual(len(state["compressed"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

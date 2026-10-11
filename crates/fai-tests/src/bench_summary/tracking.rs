@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use super::Report;
 
 /// Version of the retained snapshot and generated report contract.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// One immutable file in a snapshot. Hash algorithms are explicit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,7 +197,9 @@ impl Snapshot {
 
 /// Lists the current source-reviewed matrix for runners and reporting clients.
 pub fn catalog() -> serde_json::Value {
-    use crate::{algorithms, allocation_design, benchmark_contracts, tail_components};
+    use crate::{
+        algorithms, allocation_design, benchmark_contracts, memory_workloads, tail_components,
+    };
     let describe = |a: &algorithms::Algorithm| {
         let c = benchmark_contracts::for_module(a.module).expect("registered contract");
         serde_json::json!({"name": a.module, "small": a.jit_size, "large": a.aot_size,
@@ -206,6 +208,14 @@ pub fn catalog() -> serde_json::Value {
     serde_json::json!({"schemaVersion": SCHEMA_VERSION, "methodology": benchmark_contracts::METHODOLOGY,
         "workloads": algorithms::ALGORITHMS.iter().map(describe).collect::<Vec<_>>(),
         "components": tail_components::COMPONENTS.iter().map(describe).collect::<Vec<_>>(),
+        "memoryMethodology": memory_workloads::METHODOLOGY,
+        "memoryWorkloads": memory_workloads::algorithms().map(|a| {
+            let profile = memory_workloads::profile(a.module).expect("memory profile");
+            let contract = benchmark_contracts::for_module(a.module).expect("memory contract");
+            serde_json::json!({"name": a.module, "sizes": profile.sizes, "unit": profile.unit,
+                "scale": profile.scale, "version": contract.version,
+                "comparison": contract.comparison.as_str(), "note": contract.note})
+        }).collect::<Vec<_>>(),
         "allocations": allocation_design::CASES.iter().map(|c| serde_json::json!({"name": c.name, "control": c.control_name, "inputs": c.inputs})).collect::<Vec<_>>()})
 }
 

@@ -1477,6 +1477,11 @@ Process-memory ratios are pairwise total-RSS comparisons. Application cases and
 large floor shares retain ratios, with comparison class and floor percentages
 reported explicitly. Missing/incompatible, instrumented or undersampled peers
 exclude only their own pair; the 10% floor gate is specific to runtime timings.
+Memory workloads have independent, source-reviewed size curves and ten storage
+fixtures that grow element, node, key and body counts. Their `MEMSTAT3` protocol
+pauses native peers before work and after consuming results, while a parent reads
+current/peak RSS externally. Post-workload RSS observes natural GC/allocator
+retention; no forced collection, trimming or floor subtraction is used.
 
 The inference solver carries always-on thread-local **work counters** (variable
 resolution clones, occurs-check node visits, free-variable visits — see

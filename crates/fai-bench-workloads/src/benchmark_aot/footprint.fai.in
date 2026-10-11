@@ -1,0 +1,35 @@
+benchmarkHarnessAdd : HARNESS_TYPE -> HARNESS_TYPE -> HARNESS_TYPE
+let benchmarkHarnessAdd total value =
+  HARNESS_ADD
+
+let benchmarkHarnessMemory remaining size floor total =
+  if remaining <= 0 then total else
+    let value = if floor then HARNESS_FLOOR else HARNESS_ENTRY size
+    benchmarkHarnessMemory (remaining - 1) size floor (benchmarkHarnessAdd total value)
+
+benchmarkHarnessObserve : Console -> Int -> Int -> Bool -> Unit / { Console }
+let benchmarkHarnessObserve console size count floor =
+  match console.readLine () with
+  | Ok (Some "prepare") ->
+    let _ = console.writeLine "ready"
+    match console.readLine () with
+    | Ok (Some "run") ->
+      let answer = benchmarkHarnessMemory count size floor HARNESS_ZERO
+      let _ = console.writeLine (HARNESS_RENDER answer)
+      match console.readLine () with
+      | Ok None -> ()
+      | _ -> console.writeLine "error: expected EOF after footprint result"
+    | _ -> console.writeLine "error: expected run"
+  | _ -> console.writeLine "error: expected prepare"
+
+public main : Runtime -> Unit / { Console, Env }
+let main runtime =
+  match runtime.env.args () with
+  | [argument, repetitions, mode] ->
+    match (Int.fromString argument, Int.fromString repetitions) with
+    | (Some size, Some count) ->
+      if size >= 0 && size <= HARNESS_MAX_SIZE && count >= 0 && count <= HARNESS_MAX_BATCH && (mode = "run" || mode = "floor") then
+        benchmarkHarnessObserve runtime.console size count (mode = "floor")
+      else runtime.console.writeLine "error: memory arguments out of range"
+    | _ -> runtime.console.writeLine "error: invalid memory arguments"
+  | _ -> runtime.console.writeLine "error: expected size, repetitions, and run/floor"

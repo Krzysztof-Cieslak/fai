@@ -1,0 +1,12 @@
+module MemoryArrayInt
+
+let consume i total values =
+  if i >= Array.length values then
+    total + i
+  else
+    consume (i + 1) (total + Array.unsafeGet i values) values
+
+public run : Int -> Int
+let run n =
+  let values = Array.init n identity
+  consume 0 0 values

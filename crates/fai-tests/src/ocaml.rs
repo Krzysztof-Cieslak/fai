@@ -68,7 +68,9 @@ pub fn isolated_source(
     use crate::benchmark_aot::Entry;
     let contract =
         crate::benchmark_contracts::for_module(algorithm.module).expect("reviewed OCaml workload");
-    let source = if crate::tail_components::by_module(algorithm.module).is_some() {
+    let source = if crate::memory_workloads::by_module(algorithm.module).is_some() {
+        include_str!("../ocaml/memory_workloads.ml")
+    } else if crate::tail_components::by_module(algorithm.module).is_some() {
         include_str!("../ocaml/tail_components.ml")
     } else {
         SOURCE
@@ -106,14 +108,18 @@ pub fn isolated_source(
             result.push_str(&select_declarations(SOURCE, &["first_int", "peak_rss_kib"]));
             result.push_str(&format!("\nlet () =\n  if Array.length Sys.argv <> 2 then invalid_arg \"expected one workload size\";\n  Printf.printf \"{format}\\n\" ({} (int_of_string Sys.argv.(1)));\n  if Sys.getenv_opt \"FAI_REPORT_RSS\" <> None then\n    match peak_rss_kib () with Some kib -> Printf.eprintf \"fai-peak-rss-kib: %d\\n\" kib | None -> ()\n", contract.ocaml_entry));
         }
-        Entry::Memory => {
+        Entry::Memory | Entry::Footprint => {
             result.push_str(&select_declarations(SOURCE, &["first_int", "peak_rss_kib"]));
             let value = if int64 {
                 format!("Int64.to_int (Int64.rem ({} size) 1000000007L)", contract.ocaml_entry)
             } else {
                 format!("{} size", contract.ocaml_entry)
             };
-            result.push_str(&include_str!("../ocaml/memory.ml")
+            result.push_str(&(if entry == Entry::Memory {
+                include_str!("../ocaml/memory.ml")
+            } else {
+                include_str!("../ocaml/footprint.ml")
+            })
                 .replace("HARNESS_VALUE", &value)
                 .replace("HARNESS_FLOOR", if floating { "float_of_int size" } else { "size" })
                 .replace("HARNESS_ZERO", if floating { "0.0" } else { "0" })
@@ -133,6 +139,8 @@ fn select_declarations(source: &str, names: &[&str]) -> String {
         let prefixes = [
             format!("let {name} "),
             format!("let rec {name} "),
+            format!("let[@inline never] {name} "),
+            format!("let[@inline never] rec {name} "),
             format!("type {name} "),
             format!("module {name} "),
         ];
@@ -151,7 +159,7 @@ fn select_declaration(source: &str, prefix: &str) -> String {
     let first = lines.next().expect("selected OCaml declaration");
     let mut result = format!("{first}\n");
     for line in lines {
-        if ["let ", "type ", "module "].iter().any(|prefix| line.starts_with(prefix)) {
+        if ["let ", "let[", "type ", "module "].iter().any(|prefix| line.starts_with(prefix)) {
             break;
         }
         result.push_str(line);

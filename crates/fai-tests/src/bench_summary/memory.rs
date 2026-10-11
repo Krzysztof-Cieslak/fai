@@ -5,6 +5,20 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+/// Paired current-RSS observations around workload execution, before process exit.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReclamationSample {
+    /// The actual workload process paused before execution.
+    pub before_kib: Vec<u64>,
+    /// The same process paused after its workload result has been consumed.
+    pub after_kib: Vec<u64>,
+    /// Matching no-workload processes paused before execution.
+    pub floor_before_kib: Vec<u64>,
+    /// Matching no-workload processes paused after execution.
+    pub floor_after_kib: Vec<u64>,
+}
+
 /// Raw repetitions from one isolated process-footprint comparison.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -33,17 +47,44 @@ pub struct FootprintSample {
     pub floor_kib: Vec<u64>,
     /// Allocation counters were compiled into the measured runtime.
     pub instrumented: bool,
+    /// Absent in historical self-reported peak-only observations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclamation: Option<ReclamationSample>,
 }
 
 impl FootprintSample {
     /// Emits a versioned record that cannot be mistaken for legacy MEMSTAT.
     pub fn to_line(&self) -> String {
-        format!("MEMSTAT2\t{}", serde_json::to_string(self).unwrap())
+        format!(
+            "{}\t{}",
+            if self.reclamation.is_some() { "MEMSTAT3" } else { "MEMSTAT2" },
+            serde_json::to_string(self).unwrap()
+        )
     }
 
     pub(super) fn parse(line: &str) -> Option<Self> {
-        let value: Self = serde_json::from_str(line.strip_prefix("MEMSTAT2\t")?).ok()?;
-        (super::is_side(&value.side)
+        let (body, current) = line
+            .strip_prefix("MEMSTAT3\t")
+            .map(|body| (body, true))
+            .or_else(|| line.strip_prefix("MEMSTAT2\t").map(|body| (body, false)))?;
+        let value: Self = serde_json::from_str(body).ok()?;
+        let reclamation_valid = match (&value.reclamation, current) {
+            (None, false) => true,
+            (Some(row), true) => {
+                let valid = |values: &[u64], peaks: &[u64]| {
+                    values.len() == peaks.len()
+                        && values.iter().zip(peaks).all(|(&n, &peak)| n > 0 && n <= peak)
+                };
+                value.methodology == crate::memory_workloads::METHODOLOGY
+                    && valid(&row.before_kib, &value.samples_kib)
+                    && valid(&row.after_kib, &value.samples_kib)
+                    && valid(&row.floor_before_kib, &value.floor_kib)
+                    && valid(&row.floor_after_kib, &value.floor_kib)
+            }
+            _ => false,
+        };
+        (reclamation_valid
+            && super::is_side(&value.side)
             && !value.algorithm.is_empty()
             && !value.methodology.is_empty()
             && !value.workload_version.is_empty()
@@ -150,7 +191,9 @@ pub(super) fn render_footprints(samples: &[FootprintSample]) -> String {
         let peak = |side| sides.get(side).map(|row| *row.samples_kib.iter().max().unwrap());
         let floor = |side| sides.get(side).map(|row| *row.floor_kib.iter().max().unwrap());
         let contract = crate::benchmark_contracts::for_module(name).filter(|contract| {
-            method == crate::benchmark_contracts::METHODOLOGY && contract.version == version
+            (method == crate::benchmark_contracts::METHODOLOGY
+                || method == crate::memory_workloads::METHODOLOGY)
+                && contract.version == version
         });
         let mut status = match contract.as_ref().map(|c| c.comparison) {
             Some(crate::benchmark_contracts::Comparison::Kernel) => "matched kernel",
@@ -206,6 +249,63 @@ pub(super) fn render_footprints(samples: &[FootprintSample]) -> String {
             floor_share("ocaml"),
             super::ratio_cell(rust.ok()),
             super::ratio_cell(ocaml.ok())
+        );
+    }
+    out.push('\n');
+    out
+}
+
+pub(super) fn render_reclamation(samples: &[FootprintSample]) -> String {
+    let mut largest = BTreeMap::new();
+    for row in samples.iter().filter(|row| row.reclamation.is_some()) {
+        largest
+            .entry((&row.algorithm, &row.methodology, &row.workload_version, &row.comparison_id))
+            .and_modify(|n: &mut i64| *n = (*n).max(row.size))
+            .or_insert(row.size);
+    }
+    if largest.is_empty() {
+        return String::new();
+    }
+    let mut groups = BTreeMap::<_, BTreeMap<_, _>>::new();
+    for row in samples.iter().filter(|row| {
+        largest.get(&(&row.algorithm, &row.methodology, &row.workload_version, &row.comparison_id))
+            == Some(&row.size)
+    }) {
+        if let Some(value) = &row.reclamation {
+            groups
+                .entry((
+                    &row.algorithm,
+                    row.size,
+                    row.iterations,
+                    &row.methodology,
+                    &row.workload_version,
+                    &row.comparison_id,
+                ))
+                .or_default()
+                .insert(row.side.as_str(), value);
+        }
+    }
+    let mut out = String::from(
+        "## Post-workload resident memory\n\nLargest measured input per workload, at each repetition count. Values are maximum current RSS across fresh processes, in KiB. **Before** is the ready harness; **after** is the same process after consuming its result and releasing workload roots, while still alive. **Floor after** is the matching no-workload process. Raw before/peak/after observations remain paired in the evidence. GC and allocator policies run normally, with no forced collection or trimming; after-RSS can therefore retain unreachable objects or recycling storage.\n\n| Workload | Input | Repeats | Before F/R/O KiB | After F/R/O KiB | Floor after F/R/O KiB |\n|---|---:|---:|---|---|---|\n",
+    );
+    for ((name, size, iterations, _, _, _), sides) in groups {
+        let column = |field: fn(&ReclamationSample) -> &[u64]| {
+            ["fai", "rust", "ocaml"]
+                .map(|side| {
+                    sides
+                        .get(side)
+                        .and_then(|row| field(row).iter().max())
+                        .map_or_else(|| "—".into(), u64::to_string)
+                })
+                .join("/")
+        };
+        let _ = writeln!(
+            out,
+            "| {} | {size} | {iterations} | {} | {} | {} |",
+            super::escape(name),
+            column(|r| &r.before_kib),
+            column(|r| &r.after_kib),
+            column(|r| &r.floor_after_kib)
         );
     }
     out.push('\n');
@@ -288,6 +388,7 @@ mod tests {
             samples_kib: vec![peak; 5],
             floor_kib: vec![floor; 5],
             instrumented: false,
+            reclamation: None,
         }
     }
 
@@ -394,6 +495,48 @@ mod tests {
     fn missing_floor_samples_are_rejected() {
         let row = FootprintSample { floor_kib: Vec::new(), ..footprint("fai", 1, 1) };
         assert!(FootprintSample::parse(&row.to_line()).is_none());
+    }
+
+    fn synchronized() -> FootprintSample {
+        FootprintSample {
+            methodology: crate::memory_workloads::METHODOLOGY.into(),
+            reclamation: Some(ReclamationSample {
+                before_kib: vec![1000; 5],
+                after_kib: vec![4000; 5],
+                floor_before_kib: vec![1000; 5],
+                floor_after_kib: vec![2000; 5],
+            }),
+            ..footprint("fai", 10000, 2000)
+        }
+    }
+
+    #[test]
+    fn synchronized_observations_round_trip_with_distinct_current_and_peak_rss() {
+        let row = synchronized();
+        assert!(row.to_line().starts_with("MEMSTAT3\t"));
+        assert_eq!(FootprintSample::parse(&row.to_line()), Some(row));
+    }
+
+    #[test]
+    fn missing_after_observations_are_rejected() {
+        let mut row = synchronized();
+        row.reclamation.as_mut().unwrap().after_kib.pop();
+        assert!(FootprintSample::parse(&row.to_line()).is_none());
+    }
+
+    #[test]
+    fn current_rss_cannot_exceed_its_own_process_peak() {
+        let mut row = synchronized();
+        row.reclamation.as_mut().unwrap().before_kib[2] = 10001;
+        assert!(FootprintSample::parse(&row.to_line()).is_none());
+    }
+
+    #[test]
+    fn historical_peaks_do_not_invent_reclamation_observations() {
+        let row = footprint("fai", 10000, 2000);
+        assert!(row.to_line().starts_with("MEMSTAT2\t"));
+        assert_eq!(FootprintSample::parse(&row.to_line()).unwrap().reclamation, None);
+        assert!(render_reclamation(&[row]).is_empty());
     }
 
     fn allocation() -> AllocationSample {

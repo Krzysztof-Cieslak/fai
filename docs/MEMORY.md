@@ -1906,6 +1906,12 @@ Editor integration:
     observations as explicitly labelled whole-process comparisons. Eligibility
     is pairwise provenance, instrumentation and sample coverage; floor share is
     descriptive. The timing report keeps its separate matched-kernel/floor gate.
+    Memory schema `isolated-memory-v3` uses independently declared input curves
+    and additional materialized-storage fixtures. A parent observes current and
+    peak RSS while native children pause before work and after consuming their
+    results; neither self-measurement allocations nor forced collection change
+    those boundaries. Snapshot schema 2 requires the paired current-RSS records;
+    retained peak-only checkpoints keep their own identities and interpretation.
   - **`edit→test` measured at two levels.** The contract loop is benched both
     in-process (`fai-tests`' `contracts` bench — front end + synthesize + JIT +
     run, scaling to large workspaces) and end-to-end through the real binary and

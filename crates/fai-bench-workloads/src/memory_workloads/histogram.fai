@@ -1,0 +1,15 @@
+module MemoryHistogram
+
+let build i n values =
+  if i >= n * 4 then
+    values
+  else
+    build (i + 1) n (HashDict.updateOr 0 (fun value -> value + 1) (i % n) values)
+
+public run : Int -> Int
+let run n =
+  if n <= 0 then
+    0
+  else
+    let values = build 0 n HashDict.empty
+    HashDict.size values + HashDict.getOr 0 0 values + HashDict.getOr 0 (n - 1) values

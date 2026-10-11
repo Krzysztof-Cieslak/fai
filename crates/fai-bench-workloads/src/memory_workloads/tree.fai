@@ -1,0 +1,17 @@
+module MemoryTree
+
+type Tree =
+  | Empty
+  | Node Int Tree Tree
+
+let build depth = if depth <= 0 then Empty else Node depth (build (depth - 1)) (build (depth - 1))
+
+let consume tree =
+  match tree with
+  | Empty -> 0
+  | Node value left right -> value + 1 + consume left + consume right
+
+public run : Int -> Int
+let run depth =
+  let tree = build depth
+  consume tree

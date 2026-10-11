@@ -114,6 +114,11 @@ pub struct Worker {
 }
 
 impl Worker {
+    /// Process identity, held alive by this worker until checked teardown.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Starts the child, sends its input-window configuration and awaits `ready`.
     pub fn start(mut command: Command, configuration: &str) -> Result<Self, Failure> {
         let mut child = command

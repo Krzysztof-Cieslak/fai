@@ -1,0 +1,15 @@
+module MemorySet
+
+let build i n values =
+  if i >= n * 4 then values else build (i + 1) n (HashSet.insert (i % n) values)
+
+public run : Int -> Int
+let run n =
+  if n <= 0 then
+    0
+  else
+    let values = build 0 n HashSet.empty
+    HashSet.size values + (if HashSet.member 0 values then
+      1
+    else
+      0) + (if HashSet.member (n - 1) values then 1 else 0)

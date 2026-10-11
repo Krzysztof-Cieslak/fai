@@ -8,8 +8,8 @@
 //! phases add real queries.
 
 pub use fai_bench_workloads::{
-    algorithms, benchmark_aot, benchmark_process, contracts as benchmark_contracts, sorting,
-    tail_components, tree_lookup,
+    algorithms, benchmark_aot, benchmark_process, contracts as benchmark_contracts, footprint,
+    memory_workloads, sorting, tail_components, tree_lookup,
 };
 pub mod allocation_design;
 pub mod bench_summary;

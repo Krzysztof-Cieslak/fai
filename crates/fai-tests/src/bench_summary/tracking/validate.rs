@@ -8,7 +8,10 @@ use sha2::{Digest, Sha256};
 
 use super::{Artifact, Error, Manifest, SCHEMA_VERSION, Snapshot, Step};
 use crate::bench_summary::{AllocationSample, FootprintSample, Report, WarmSample};
-use crate::{algorithms, allocation_design, benchmark_aot, benchmark_contracts, tail_components};
+use crate::{
+    algorithms, allocation_design, benchmark_aot, benchmark_contracts, memory_workloads,
+    tail_components,
+};
 
 fn require(value: bool, message: impl Into<String>) -> Result<(), Error> {
     if value { Ok(()) } else { Err(Error(message.into())) }
@@ -132,7 +135,7 @@ fn strict_report(text: &str) -> Result<Report, Error> {
     for (i, line) in text.lines().enumerate() {
         let valid = if line.starts_with("WARMSTAT2") {
             WarmSample::parse(line).is_some()
-        } else if line.starts_with("MEMSTAT2") {
+        } else if line.starts_with("MEMSTAT2") || line.starts_with("MEMSTAT3") {
             FootprintSample::parse(line).is_some()
         } else if line.starts_with("ALLOCSTAT") {
             AllocationSample::parse(line).is_some()
@@ -162,10 +165,11 @@ fn validate_rust_peer(
     info: &serde_json::Value,
     executable: &Artifact,
     source: &Artifact,
+    methodology: &str,
 ) -> Result<(), Error> {
     let contract = benchmark_contracts::for_module(algorithm.module).expect("reviewed workload");
     require(
-        info["methodology"] == manifest.methodology
+        info["methodology"] == methodology
             && info["workload"] == algorithm.module
             && info["workloadVersion"] == contract.version
             && info["executableHash"] == executable.blake3
@@ -211,6 +215,11 @@ fn validate_peer_sources(
         &files.json(&format!("{folder}/rust-compiler-info.json"))?,
         files.artifact(&format!("{folder}/rust-{mode}"))?,
         files.artifact(&rust_source)?,
+        if entry == benchmark_aot::Entry::Footprint {
+            memory_workloads::METHODOLOGY
+        } else {
+            &manifest.methodology
+        },
     )?;
     validate_ocaml_peer(manifest, &files.text(&format!("{folder}/ocaml-compiler-info.txt"))?)
 }
@@ -314,24 +323,31 @@ fn validate_memory(
 ) -> Result<(), Error> {
     let mut expected = BTreeSet::new();
     let mut identities = BTreeMap::new();
-    for algorithm in algorithms::ALGORITHMS {
+    for algorithm in memory_workloads::algorithms() {
         let name = algorithm.module;
         validate_peer_sources(
             manifest,
             files,
             &step.artifacts,
             algorithm,
-            benchmark_aot::Entry::Memory,
+            benchmark_aot::Entry::Footprint,
             "memory",
         )?;
         files.source(
             &format!("{}/{name}/memory.fai", step.artifacts),
-            &benchmark_aot::fai_program(algorithm, benchmark_aot::Entry::Memory),
+            &benchmark_aot::fai_program(algorithm, benchmark_aot::Entry::Footprint),
         )?;
         let info = files.json(&format!("{}/{name}/identity.json", step.artifacts))?;
+        let profile = memory_workloads::profile(name).expect("memory profile");
+        require(
+            info["methodology"] == memory_workloads::METHODOLOGY
+                && info["memoryProfile"]
+                    == serde_json::json!({"unit": profile.unit, "scale": profile.scale, "sizes": profile.sizes}),
+            "memory profile mismatch",
+        )?;
         require(compiler_id(&info["faiCompiler"])? == compiler, "mixed memory compiler builds")?;
         identities.insert(name, files.peers(&step.artifacts, name, "memory")?);
-        for size in BTreeSet::from([algorithm.jit_size, algorithm.aot_size]) {
+        for &size in profile.sizes {
             for repeat in &manifest.settings.memory_repeats {
                 for side in ["fai", "rust", "ocaml"] {
                     expected.insert((name.to_owned(), size, *repeat, side.to_owned()));
@@ -344,12 +360,13 @@ fn validate_memory(
         let contract = benchmark_contracts::for_module(&row.algorithm)
             .ok_or_else(|| Error("unknown memory workload".into()))?;
         require(
-            row.methodology == manifest.methodology
+            row.methodology == memory_workloads::METHODOLOGY
                 && row.workload_version == contract.version
                 && row.comparison == contract.comparison.as_str(),
             "memory contract mismatch",
         )?;
         require(!row.instrumented, "instrumented binary in process comparison")?;
+        require(row.reclamation.is_some(), "missing before/after memory observations")?;
         require(
             identities.get(row.algorithm.as_str()) == Some(&row.comparison_id),
             "memory executable-set mismatch",
@@ -537,6 +554,7 @@ fn validate_aot(
                 &info["details"],
                 artifact,
                 files.artifact(&source)?,
+                &manifest.methodology,
             )?;
         } else {
             files.source(

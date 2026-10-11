@@ -1,0 +1,26 @@
+module MemoryBodies
+
+type Body = { vx : Float, vy : Float, x : Float, y : Float }
+
+consume : Int -> Float -> Array Body -> Float
+let consume i total values =
+  if i >= Array.length values then
+    total
+  else
+    let body = Array.unsafeGet i values
+    consume (i + 1) (total + body.x + body.y) values
+
+advance : Int -> Array Body -> Array Body
+let advance remaining values =
+  if remaining <= 0 then
+    values
+  else
+    advance (remaining - 1) (Array.map (fun body -> { body with
+      x = body.x + body.vx,
+      y = body.y + body.vy
+    }) values)
+
+public runF : Int -> Float
+let runF n =
+  let values = Array.init n (fun i -> { vx = 0.25, vy = 0.5, x = Int.toFloat i, y = 0.0 })
+  consume 0 0.0 (advance 4 values)
