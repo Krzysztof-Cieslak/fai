@@ -160,41 +160,101 @@ impl AllocationSample {
     }
 }
 
-pub(super) fn render_footprints(samples: &[FootprintSample]) -> String {
-    if samples.is_empty() {
-        return String::new();
-    }
+type FootprintKey<'a> = (&'a str, i64, usize, &'a str, &'a str, &'a str);
+type FootprintGroups<'a> = BTreeMap<FootprintKey<'a>, Vec<&'a FootprintSample>>;
+
+fn footprint_groups(samples: &[FootprintSample]) -> FootprintGroups<'_> {
     let mut groups = BTreeMap::<_, Vec<_>>::new();
     for sample in samples {
         groups
             .entry((
-                &sample.algorithm,
+                sample.algorithm.as_str(),
                 sample.size,
                 sample.iterations,
-                &sample.methodology,
-                &sample.workload_version,
-                &sample.comparison_id,
+                sample.methodology.as_str(),
+                sample.workload_version.as_str(),
+                sample.comparison_id.as_str(),
             ))
             .or_default()
             .push(sample);
     }
+    groups
+}
+
+fn reviewed_contract(sample: &FootprintSample) -> Option<crate::benchmark_contracts::Contract> {
+    crate::benchmark_contracts::for_module(&sample.algorithm).filter(|contract| {
+        (sample.methodology == crate::benchmark_contracts::METHODOLOGY
+            || sample.methodology == crate::memory_workloads::METHODOLOGY)
+            && contract.version == sample.workload_version
+    })
+}
+
+fn paired_ratio(
+    records: &[&FootprintSample],
+    peer: &str,
+    contract: Option<&crate::benchmark_contracts::Contract>,
+) -> Result<f64, &'static str> {
+    let Some(contract) = contract else { return Err("unreviewed/incompatible") };
+    let unique = |side| {
+        let mut rows = records.iter().copied().filter(|row| row.side == side);
+        let row = rows.next().ok_or("missing peer")?;
+        if rows.next().is_some() {
+            return Err("incomplete/incompatible");
+        }
+        Ok(row)
+    };
+    let fai = unique("fai")?;
+    let peer = unique(peer)?;
+    if fai.comparison != contract.comparison.as_str()
+        || peer.comparison != contract.comparison.as_str()
+    {
+        return Err("incomplete/incompatible");
+    }
+    if fai.instrumented || peer.instrumented {
+        return Err("instrumented diagnostic");
+    }
+    if fai.samples_kib.len() < 5 || peer.samples_kib.len() < 5 {
+        return Err("insufficient observations");
+    }
+    super::mem_ratio(fai.samples_kib.iter().copied().max(), peer.samples_kib.iter().copied().max())
+        .ok_or("invalid peak")
+}
+
+pub(super) struct FootprintComparison {
+    pub class: Option<crate::benchmark_contracts::Comparison>,
+    pub rust: Option<f64>,
+    pub ocaml: Option<f64>,
+}
+
+pub(super) fn comparisons(samples: &[FootprintSample]) -> Vec<FootprintComparison> {
+    footprint_groups(samples)
+        .into_values()
+        .map(|records| {
+            let contract = reviewed_contract(records[0]);
+            FootprintComparison {
+                class: contract.as_ref().map(|c| c.comparison),
+                rust: paired_ratio(&records, "rust", contract.as_ref()).ok(),
+                ocaml: paired_ratio(&records, "ocaml", contract.as_ref()).ok(),
+            }
+        })
+        .collect()
+}
+
+pub(super) fn render_footprints(samples: &[FootprintSample]) -> String {
+    if samples.is_empty() {
+        return String::new();
+    }
     let mut out = String::from(
         "### Isolated process footprints\n\nPeak RSS includes images, stacks, allocator retention and GC policy. Floors are measured in the **same executable** and never subtracted. These are deployment footprints, not live-heap or compiler-win counts. Each ratio requires compatible, uninstrumented observations for that pair and at least five samples per side. Application comparisons and large floor shares retain their total-RSS ratios; the labels describe their scope.\n\n| Workload | Size | Repeats | Fai KiB | Rust KiB | OCaml KiB | Floor F/R/O KiB | Floor share F/R/O | Process F/R | Process F/O | Comparison / omitted ratios |\n|---|---:|---:|---:|---:|---:|---|---|---:|---:|---|\n",
     );
-    for ((name, size, iterations, method, version, _), records) in groups {
+    for ((name, size, iterations, _, _, _), records) in footprint_groups(samples) {
         let mut sides = BTreeMap::new();
-        let mut counts = BTreeMap::<_, usize>::new();
         for record in &records {
             sides.insert(record.side.as_str(), *record);
-            *counts.entry(record.side.as_str()).or_default() += 1;
         }
         let peak = |side| sides.get(side).map(|row| *row.samples_kib.iter().max().unwrap());
         let floor = |side| sides.get(side).map(|row| *row.floor_kib.iter().max().unwrap());
-        let contract = crate::benchmark_contracts::for_module(name).filter(|contract| {
-            (method == crate::benchmark_contracts::METHODOLOGY
-                || method == crate::memory_workloads::METHODOLOGY)
-                && contract.version == version
-        });
+        let contract = reviewed_contract(records[0]);
         let mut status = match contract.as_ref().map(|c| c.comparison) {
             Some(crate::benchmark_contracts::Comparison::Kernel) => "matched kernel",
             Some(crate::benchmark_contracts::Comparison::Application) => "application",
@@ -207,28 +267,8 @@ pub(super) fn render_footprints(samples: &[FootprintSample]) -> String {
             }
             _ => "—".into(),
         };
-        let ratio = |side| {
-            let Some(contract) = &contract else { return Err("unreviewed/incompatible") };
-            let (Some(fai), Some(peer)) = (sides.get("fai"), sides.get(side)) else {
-                return Err("missing peer");
-            };
-            if counts.get("fai") != Some(&1)
-                || counts.get(side) != Some(&1)
-                || fai.comparison != contract.comparison.as_str()
-                || peer.comparison != contract.comparison.as_str()
-            {
-                return Err("incomplete/incompatible");
-            }
-            if fai.instrumented || peer.instrumented {
-                return Err("instrumented diagnostic");
-            }
-            if fai.samples_kib.len() < 5 || peer.samples_kib.len() < 5 {
-                return Err("insufficient observations");
-            }
-            super::mem_ratio(peak("fai"), peak(side)).ok_or("invalid peak")
-        };
-        let rust = ratio("rust");
-        let ocaml = ratio("ocaml");
+        let rust = paired_ratio(&records, "rust", contract.as_ref());
+        let ocaml = paired_ratio(&records, "ocaml", contract.as_ref());
         for (label, result) in [("F/R", rust), ("F/O", ocaml)] {
             if let Err(reason) = result {
                 let _ = write!(status, "; {label}: {reason}");
@@ -460,6 +500,41 @@ mod tests {
         ]);
         assert!(text.contains("0.80× | —"));
         assert!(text.contains("F/O: insufficient observations"));
+    }
+
+    #[test]
+    fn summary_ratios_keep_precision_beyond_display_rounding() {
+        let cases = comparisons(&[footprint("fai", 1004, 1000), footprint("rust", 1000, 1000)]);
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].rust, Some(1.004));
+        assert_eq!(cases[0].ocaml, None);
+    }
+
+    #[test]
+    fn summary_excludes_only_the_instrumented_pair() {
+        let cases = comparisons(&[
+            footprint("fai", 40000, 3000),
+            footprint("rust", 50000, 2000),
+            FootprintSample { instrumented: true, ..footprint("ocaml", 30000, 4000) },
+        ]);
+        assert_eq!(cases[0].rust, Some(0.8));
+        assert_eq!(cases[0].ocaml, None);
+    }
+
+    #[test]
+    fn summary_retains_the_application_comparison_class() {
+        let application = |side, peak| FootprintSample {
+            algorithm: "ListSort".into(),
+            workload_version: crate::benchmark_contracts::for_module("ListSort")
+                .unwrap()
+                .version
+                .into(),
+            comparison: "application".into(),
+            ..footprint(side, peak, 2000)
+        };
+        let cases = comparisons(&[application("fai", 3000), application("rust", 4000)]);
+        assert_eq!(cases[0].class, Some(crate::benchmark_contracts::Comparison::Application));
+        assert_eq!(cases[0].rust, Some(0.75));
     }
 
     #[test]

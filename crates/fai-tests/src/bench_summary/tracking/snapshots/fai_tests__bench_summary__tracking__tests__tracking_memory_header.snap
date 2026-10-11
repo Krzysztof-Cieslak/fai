@@ -21,6 +21,19 @@ expression: "reports[\"language-memory.md\"].split(\"## Current measurements\").
 
 The tables report **process footprint**, including code, stacks, allocator retention and GC policy. Each displayed peak and floor is the maximum across fresh processes, in KiB (1,024 bytes). They do not measure comparable cross-language live heaps. Floors use the same executable; peaks are never subtracted or converted into compiler-memory win counts.
 
+## Process-RSS ratio summary
+
+Ratios are **Fai ÷ peer; lower means a smaller process footprint**. Arithmetic and geometric means use the unrounded case ratios. Each workload/input/repetition case has equal weight, so workloads with more declared cases receive more weight. P90 is nearest-rank across case ratios, not a percentile of RSS samples. Only compatible, uninstrumented pairs with sufficient observations contribute; application cases and large floor shares remain included. These are descriptive summaries of this benchmark matrix's total process footprints.
+
+| Scope | Peer | Paired / cases | Geometric mean | Arithmetic mean | P90 |
+|---|---|---:|---:|---:|---:|
+| All cases | rust | 254 / 254 | 1.000× | 1.000× | 1.000× |
+| All cases | ocaml | 254 / 254 | 1.000× | 1.000× | 1.000× |
+| Matched kernels | rust | 142 / 142 | 1.000× | 1.000× | 1.000× |
+| Matched kernels | ocaml | 142 / 142 | 1.000× | 1.000× | 1.000× |
+| Applications | rust | 112 / 112 | 1.000× | 1.000× | 1.000× |
+| Applications | ocaml | 112 / 112 | 1.000× | 1.000× | 1.000× |
+
 ## Comparison and floor legend
 
 The floor is the same executable running its harness without the workload. `Process F/R` is Fai's peak RSS divided by Rust's; `Process F/O` divides it by OCaml's. Lower ratios mean a smaller observed process footprint.

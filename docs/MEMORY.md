@@ -1912,6 +1912,10 @@ Editor integration:
     results; neither self-measurement allocations nor forced collection change
     those boundaries. Snapshot schema 2 requires the paired current-RSS records;
     retained peak-only checkpoints keep their own identities and interpretation.
+    Total-RSS summaries report arithmetic/geometric means and nearest-rank p90
+    of unrounded case ratios, with paired coverage and matched/application
+    breakdowns. Equal weighting is per workload/input/repetition case; aggregate
+    process footprints are not a count of compiler-memory wins.
   - **`edit→test` measured at two levels.** The contract loop is benched both
     in-process (`fai-tests`' `contracts` bench — front end + synthesize + JIT +
     run, scaling to large workspaces) and end-to-end through the real binary and
