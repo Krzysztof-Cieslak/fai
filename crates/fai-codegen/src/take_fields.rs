@@ -32,12 +32,14 @@ fn group(mut e: &CExpr) -> Option<(LocalId, Vec<u32>)> {
     }
 }
 
-/// The marked fields are never observed through their owner after extraction.
+/// Every read of a marked field belongs to a group immediately followed by its
+/// owner's release. Alternative branches may each contain such a group, but a
+/// single read outside one keeps the field ordinary at every site.
 pub(crate) fn collect(body: &CExpr) -> FxHashSet<(LocalId, u32)> {
     fn visit(
         e: &CExpr,
-        result: &mut FxHashSet<(LocalId, u32)>,
-        reads: &mut FxHashMap<(LocalId, u32), usize>,
+        reads: &mut FxHashMap<(LocalId, u32), bool>,
+        grouped: bool,
         budget: &mut usize,
     ) {
         if *budget == 0 {
@@ -47,16 +49,16 @@ pub(crate) fn collect(body: &CExpr) -> FxHashSet<(LocalId, u32)> {
         if let K::DataField { base, index: FieldIndex::Const(index), .. } = &e.kind
             && let K::Local(root) = base.kind
         {
-            *reads.entry((root, *index)).or_default() += 1;
+            *reads.entry((root, *index)).or_insert(true) &= grouped;
         }
-        if let Some((root, fields)) = group(e) {
-            result.extend(fields.into_iter().map(|index| (root, index)));
+        if let K::Let { value, body, .. } = &e.kind {
+            visit(value, reads, group(e).is_some(), budget);
+            visit(body, reads, false, budget);
+            return;
         }
-        let mut next = |child: &CExpr| visit(child, result, reads, budget);
+        let mut next = |child: &CExpr| visit(child, reads, false, budget);
         match &e.kind {
-            K::Let { value, body, .. }
-            | K::LetMany { value, body, .. }
-            | K::Reset { value, body, .. } => {
+            K::LetMany { value, body, .. } | K::Reset { value, body, .. } => {
                 next(value);
                 next(body);
             }
@@ -86,12 +88,13 @@ pub(crate) fn collect(body: &CExpr) -> FxHashSet<(LocalId, u32)> {
             _ => {}
         }
     }
-    let mut result = FxHashSet::default();
     let mut reads = FxHashMap::default();
     let mut budget = 1024;
-    visit(body, &mut result, &mut reads, &mut budget);
-    result.retain(|field| budget > 0 && reads.get(field) == Some(&1));
-    result
+    visit(body, &mut reads, false, &mut budget);
+    reads
+        .into_iter()
+        .filter_map(|(field, grouped)| (budget > 0 && grouped).then_some(field))
+        .collect()
 }
 
 #[cfg(test)]
@@ -99,6 +102,19 @@ mod tests {
     use super::*;
     use fai_core::ir::{Lit, Prim};
     use fai_types::Ty;
+
+    #[test]
+    fn recursive_tree_branches_expose_their_dying_children() {
+        use fai_db::{Db, FaiDatabase};
+        use fai_syntax::Symbol;
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), "module M\ntype Tree = | Leaf Int | Add Tree Tree | Mul Tree Tree\nlet eval tree = match tree with | Leaf n -> n | Add a b -> eval a + eval b | Mul a b -> eval a * eval b\n".into());
+        let lowered = fai_rc::rc(&db, db.source_file(id).unwrap(), Symbol::intern("eval"));
+        let fields = collect(&lowered.entry().body);
+        assert!(fields.iter().any(|(_, field)| *field == 0), "{fields:?}");
+        assert!(fields.iter().any(|(_, field)| *field == 1), "{fields:?}");
+    }
 
     fn root() -> LocalId {
         LocalId::from_index(0)
@@ -135,6 +151,49 @@ mod tests {
     fn distinct_fields_before_owner_death_can_move() {
         let body = field(1, 0, field(2, 1, released()));
         assert_eq!(collect(&body), FxHashSet::from_iter([(root(), 0), (root(), 1)]));
+    }
+
+    #[test]
+    fn alternative_death_groups_can_move_the_same_fields() {
+        let body = CExpr::new(
+            K::If {
+                cond: Box::new(CExpr::new(K::Lit(Lit::Bool(true)), Ty::bool())),
+                then: Box::new(field(1, 0, field(2, 1, released()))),
+                els: Box::new(field(3, 0, field(4, 1, released()))),
+            },
+            Ty::Unit,
+        );
+        assert_eq!(collect(&body), FxHashSet::from_iter([(root(), 0), (root(), 1)]));
+    }
+
+    #[test]
+    fn a_nonterminal_read_on_another_path_keeps_the_field_ordinary() {
+        let body = CExpr::new(
+            K::If {
+                cond: Box::new(CExpr::new(K::Lit(Lit::Bool(true)), Ty::bool())),
+                then: Box::new(field(1, 0, released())),
+                els: Box::new(field(2, 0, value())),
+            },
+            Ty::Unit,
+        );
+        assert!(collect(&body).is_empty());
+    }
+
+    #[test]
+    fn an_earlier_condition_read_is_not_moved() {
+        let condition = match field(1, 0, released()).kind {
+            K::Let { value, .. } => value,
+            _ => unreachable!(),
+        };
+        let body = CExpr::new(
+            K::If {
+                cond: condition,
+                then: Box::new(field(2, 0, released())),
+                els: Box::new(field(3, 1, released())),
+            },
+            Ty::Unit,
+        );
+        assert_eq!(collect(&body), FxHashSet::from_iter([(root(), 1)]));
     }
 
     #[test]

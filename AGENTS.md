@@ -587,6 +587,9 @@ Distinct consecutive uniform-field extractions immediately followed by their
 owner's release can move fields out of a unique cell. Cleared slots prevent the
 owner from releasing the transferred references. Shared, borrowed, concurrent,
 scalar-converting and uncertain projections retain ordinary ownership.
+Mutually exclusive branches may each transfer the same fields when every read
+belongs to such a death-point group. A read outside a group keeps that field's
+ordinary projection, so earlier inspections and surviving owners remain intact.
 After ownership insertion, a field projection immediately followed by discarding
 its result is removed while its parent stays live. Parent releases and intervening
 operations retain their original order.

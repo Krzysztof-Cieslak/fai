@@ -2688,7 +2688,10 @@ Editor integration:
     or reset may transfer the fields when the cell is uniquely owned. The field
     slots are cleared before the ordinary owner release, preserving each child
     reference. Shared and borrowed owners, concurrent execution, scalar conversions
-    and uncertain layouts retain ordinary projections; repeated reads are excluded.
+    and uncertain layouts retain ordinary projections. Alternative branches may
+    transfer the same field only when every read belongs to a valid death-point
+    group. A repeated or earlier read outside such a group keeps that field's
+    ordinary projection at all sites. Release points are unchanged.
     Uniform descendants of borrowed parameters may remain loans until a consuming
     use acquires a reference. The caller retains the original owner throughout the
     call; scalar/niche conversions and uncertain physical layouts stay owned.
