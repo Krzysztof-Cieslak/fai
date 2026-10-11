@@ -27,6 +27,28 @@ let command python fixture mode args = Process.command python (fixture :: mode :
 
 let good output = Process.expectSuccess output |> Result.isOk
 
+describeNative : ProcessHost.Error -> String
+let describeNative native =
+  Int.toString native.kind ++ ":" ++ Int.toString native.code ++ ":" ++ native.message
+
+describeExit : Option ProcessHost.Exit -> String
+let describeExit exit =
+  match exit with
+  | None -> "pending"
+  | Some (ProcessHost.Exited code) -> "exit " ++ Int.toString code
+  | Some (ProcessHost.Signaled signal core) -> "signal " ++ Int.toString signal
+
+debugResult : Console -> Result Process.Output Process.Error -> Unit / { Console }
+let debugResult console result =
+  match result with
+  | Ok output ->
+    console.writeLine ("process result: " ++ String.join "," (List.map describeExit output.exits) ++ " stdout=" ++ Option.withDefault "<binary>" (Bytes.toString output.stdout))
+  | Err failure ->
+    console.writeLine ("process error: " ++ failure.message ++ " native=" ++ (match failure.native with
+    | None -> "none"
+    | Some native ->
+      describeNative native) ++ " cleanup=" ++ String.join "," (List.map describeNative failure.cleanup) ++ " exits=" ++ String.join "," (List.map describeExit failure.partial.exits))
+
 let outputIs bytes result =
   match result with
   | Ok output -> good output && output.stdout = bytes
@@ -48,11 +70,41 @@ let writeInput bytes child = Process.write child bytes
 
 let continueOutput chunk = Ok Process.Continue
 
-checks : R -> String -> String -> Bool / { Concurrency, Console, ProcessHost.Process }
+waitInput : Concurrency -> Channel Unit -> Process.Child -> Result Unit Process.Error / { Concurrency }
+let waitInput concurrency gate child =
+  let waited = concurrency.recv gate
+  Ok ()
+
+notifyOutput : Concurrency -> Channel Unit -> Process.Chunk -> Result Process.Control Process.Error / { Concurrency }
+let notifyOutput concurrency ready chunk =
+  let sent = concurrency.send ready ()
+  Ok Process.Continue
+
+cancelledWork : R -> String -> String -> Channel Unit -> Unit -> Result Process.Output Process.Error / { Concurrency, ProcessHost.Process }
+let cancelledWork env python fixture ready unit =
+  Process.withOutput env settings (command python fixture "hold" []) (notifyOutput env.concurrency ready)
+
+cancelInScope : R -> String -> String -> Nursery -> Bool / { Concurrency, ProcessHost.Process }
+let cancelInScope env python fixture nursery =
+  let ready = env.concurrency.channel 1
+  let task = env.concurrency.spawn nursery (cancelledWork env python fixture ready)
+  let started = env.concurrency.recv ready
+  let cancelled = env.concurrency.cancel task
+  match env.concurrency.await task with
+  | Err failure -> failure.kind = Process.Cancelled
+  | Ok _ -> false
+
+slowOutput : Clock -> Process.Chunk -> Result Process.Control Process.Error / { Clock }
+let slowOutput clock chunk =
+  let waited = clock.sleep 600
+  Ok Process.Continue
+
+checks : R -> String -> String -> Bool / { Clock, Concurrency, Console, ProcessHost.Process }
 let checks env python fixture =
   let binary = Bytes.fromList (List.range 0 256)
   let echoed =
     Process.run env settings (command python fixture "echo" [] |> Process.stdinBytes binary)
+  let debug = debugResult env.console echoed
   let a = report env.console "binary echo" (outputIs binary echoed)
   let args = ["", "a b", "a\"b", "trailing\\", "hé😀"]
   let b =
@@ -128,9 +180,34 @@ let checks env python fixture =
     report env.console "partial pipeline startup" (match partial with
     | Err failure -> failure.kind = Process.SpawnFailure
     | Ok _ -> false)
-  a && b && c && d && e && f && g && h && i && j && k && l && m && n
+  let gate = env.concurrency.channel 1
+  let early =
+    Process.communicate env settings (command python fixture "hold" []) (waitInput env.concurrency gate) stopOutput
+  let o =
+    report env.console "early stop cancels producer" (match early with
+    | Ok output -> output.stopped
+    | Err _ -> false)
+  let p =
+    report env.console "task cancellation" (env.concurrency.scope (cancelInScope env python fixture))
+  let inherited =
+    Process.run env { settings with
+      drainTimeoutMs = Some 100
+    } (command python fixture "descendant" [])
+  let q =
+    report env.console "descendant pipe cleanup" (match inherited with
+    | Err failure -> failure.kind = Process.DrainDeadlineExceeded
+    | Ok _ -> false)
+  let slow =
+    Process.withOutput env { settings with
+      timeoutMs = Some 500
+    } (command python fixture "args" ["ready"]) (slowOutput env.clock)
+  let r =
+    report env.console "deadline includes consumer" (match slow with
+    | Err failure -> failure.kind = Process.DeadlineExceeded
+    | Ok _ -> false)
+  a && b && c && d && e && f && g && h && i && j && k && l && m && n && o && p && q && r
 
-public main : R -> Unit / { Concurrency, Console, Env, ProcessHost.Process }
+public main : R -> Unit / { Clock, Concurrency, Console, Env, ProcessHost.Process }
 let main env =
   match env.env.args () with
   | [python, fixture] ->

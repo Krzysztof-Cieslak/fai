@@ -15,6 +15,13 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Process package contracts run directly with `fai test -C packages process`.
+`scripts/tests/process_toolchain.py --fai /path/to/fai` runs real binary-pipe,
+full-duplex, cancellation and pipeline fixtures through JIT and AOT and verifies
+callback effects. `.github/actions/process` selects these checks for process
+changes and uses the exact cached compiler. The interactive task runner is
+`fai run -C packages process/examples/TaskRunner.fai -- git status --short`.
+
 Use the compiler directly. Package tests are ordinary Fai `example` and `forall`
 declarations, including those in each package's `test/` directory:
 

@@ -18,23 +18,27 @@ let line bytes start end =
   | None -> Err InvalidUtf8
   | Some text -> Ok text
 
-scan : Int -> Bytes -> Int -> Int -> List String -> Result (Decoder * List String) Error
-let scan limit bytes start index lines =
-  if index - start > limit then
+scan : Int -> Bytes -> Bytes -> Int -> Int -> List String -> Result (Decoder * List String) Error
+let scan limit prefix bytes start index lines =
+  if index - start > limit - Bytes.length prefix then
     Err LineTooLong
   else if index >= Bytes.length bytes then
-    Ok ({ limit = limit, pending = Bytes.slice start index bytes }, List.reverse lines)
+    Ok ({
+      limit = limit,
+      pending = Bytes.concat prefix (Bytes.slice start index bytes)
+    }, List.reverse lines)
   else if Bytes.unsafeGet index bytes = 10 then
-    match line bytes start index with
+    let complete = Bytes.concat prefix (Bytes.slice start index bytes)
+    match line complete 0 (Bytes.length complete) with
     | Err error -> Err error
-    | Ok text -> scan limit bytes (index + 1) (index + 1) (text :: lines)
+    | Ok text -> scan limit Bytes.empty bytes (index + 1) (index + 1) (text :: lines)
   else
-    scan limit bytes start (index + 1) lines
+    scan limit prefix bytes start (index + 1) lines
 
 /// Decode complete LF/CRLF lines, preserving a partial line and split code point.
 /// The byte limit includes a CR preceding LF. Empty lines are preserved.
 public feed : Decoder -> Bytes -> Result (Decoder * List String) Error
-let feed state bytes = scan state.limit (Bytes.concat state.pending bytes) 0 0 []
+let feed state bytes = scan state.limit state.pending bytes 0 0 []
 
 /// End-of-output emits an unterminated nonempty line and validates its UTF-8.
 public finish : Decoder -> Result (List String) Error
