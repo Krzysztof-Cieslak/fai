@@ -1473,6 +1473,10 @@ checkpoint. The Rust `performance-report` tool strictly validates source/build
 identity, raw observations, coverage and accounting domains before rendering.
 Publication replaces the configured issue bodies and retains historical
 snapshots in versioned evidence archives. See `docs/PERFORMANCE_REPORTS.md`.
+Process-memory ratios are pairwise total-RSS comparisons. Application cases and
+large floor shares retain ratios, with comparison class and floor percentages
+reported explicitly. Missing/incompatible, instrumented or undersampled peers
+exclude only their own pair; the 10% floor gate is specific to runtime timings.
 
 The inference solver carries always-on thread-local **work counters** (variable
 resolution clones, occurs-check node visits, free-variable visits — see

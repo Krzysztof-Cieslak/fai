@@ -138,52 +138,62 @@ pub(super) fn render_footprints(samples: &[FootprintSample]) -> String {
             .push(sample);
     }
     let mut out = String::from(
-        "### Isolated process footprints\n\nPeak RSS includes images, stacks, allocator retention and GC policy. Floors are measured in the **same executable** and never subtracted. These are deployment footprints, not live-heap or compiler-win counts. Ratios require a reviewed matched kernel, uninstrumented peers, at least five observations per side, and every peer's floor below 10% of its peak; otherwise absolute observations remain visible.\n\n| Workload | Size | Repeats | Fai KiB | Rust KiB | OCaml KiB | Floor F/R/O KiB | Process F/R | Process F/O | Status |\n|---|---:|---:|---:|---:|---:|---|---:|---:|---|\n",
+        "### Isolated process footprints\n\nPeak RSS includes images, stacks, allocator retention and GC policy. Floors are measured in the **same executable** and never subtracted. These are deployment footprints, not live-heap or compiler-win counts. Each ratio requires compatible, uninstrumented observations for that pair and at least five samples per side. Application comparisons and large floor shares retain their total-RSS ratios; the labels describe their scope.\n\n| Workload | Size | Repeats | Fai KiB | Rust KiB | OCaml KiB | Floor F/R/O KiB | Floor share F/R/O | Process F/R | Process F/O | Comparison / omitted ratios |\n|---|---:|---:|---:|---:|---:|---|---|---:|---:|---|\n",
     );
     for ((name, size, iterations, method, version, _), records) in groups {
         let mut sides = BTreeMap::new();
-        let mut complete = true;
+        let mut counts = BTreeMap::<_, usize>::new();
         for record in &records {
-            complete &= sides.insert(record.side.as_str(), *record).is_none();
+            sides.insert(record.side.as_str(), *record);
+            *counts.entry(record.side.as_str()).or_default() += 1;
         }
-        complete &= sides.contains_key("fai") && sides.contains_key("rust");
         let peak = |side| sides.get(side).map(|row| *row.samples_kib.iter().max().unwrap());
         let floor = |side| sides.get(side).map(|row| *row.floor_kib.iter().max().unwrap());
-        let matched = method == crate::benchmark_contracts::METHODOLOGY
-            && crate::benchmark_contracts::for_module(name).is_some_and(|contract| {
-                contract.version == version
-                    && contract.comparison == crate::benchmark_contracts::Comparison::Kernel
-            })
-            && records.iter().all(|row| row.comparison == "matched-kernel");
-        let instrumented = records.iter().any(|row| row.instrumented);
-        let enough = records.iter().all(|row| row.samples_kib.len() >= 5);
-        let limited = records.iter().any(|row| {
-            let peak = *row.samples_kib.iter().max().unwrap() as f64;
-            *row.floor_kib.iter().max().unwrap() as f64 >= peak * 0.1
+        let contract = crate::benchmark_contracts::for_module(name).filter(|contract| {
+            method == crate::benchmark_contracts::METHODOLOGY && contract.version == version
         });
-        let status = if !complete {
-            "incomplete/incompatible"
-        } else if instrumented {
-            "instrumented diagnostic"
-        } else if !matched {
-            "application/unqualified"
-        } else if !enough {
-            "insufficient observations"
-        } else if limited {
-            "floor-limited"
-        } else {
-            "process footprint only"
+        let mut status = match contract.as_ref().map(|c| c.comparison) {
+            Some(crate::benchmark_contracts::Comparison::Kernel) => "matched kernel",
+            Some(crate::benchmark_contracts::Comparison::Application) => "application",
+            None => "unreviewed/incompatible",
+        }
+        .to_owned();
+        let floor_share = |side| match (floor(side), peak(side)) {
+            (Some(floor), Some(peak)) if peak > 0 => {
+                format!("{:.1}%", 100.0 * floor as f64 / peak as f64)
+            }
+            _ => "—".into(),
         };
         let ratio = |side| {
-            if complete && matched && !instrumented && enough && !limited {
-                super::ratio_cell(super::mem_ratio(peak("fai"), peak(side)))
-            } else {
-                "—".into()
+            let Some(contract) = &contract else { return Err("unreviewed/incompatible") };
+            let (Some(fai), Some(peer)) = (sides.get("fai"), sides.get(side)) else {
+                return Err("missing peer");
+            };
+            if counts.get("fai") != Some(&1)
+                || counts.get(side) != Some(&1)
+                || fai.comparison != contract.comparison.as_str()
+                || peer.comparison != contract.comparison.as_str()
+            {
+                return Err("incomplete/incompatible");
             }
+            if fai.instrumented || peer.instrumented {
+                return Err("instrumented diagnostic");
+            }
+            if fai.samples_kib.len() < 5 || peer.samples_kib.len() < 5 {
+                return Err("insufficient observations");
+            }
+            super::mem_ratio(peak("fai"), peak(side)).ok_or("invalid peak")
         };
+        let rust = ratio("rust");
+        let ocaml = ratio("ocaml");
+        for (label, result) in [("F/R", rust), ("F/O", ocaml)] {
+            if let Err(reason) = result {
+                let _ = write!(status, "; {label}: {reason}");
+            }
+        }
         let _ = writeln!(
             out,
-            "| {} | {size} | {iterations} | {} | {} | {} | {}/{}/{} | {} | {} | {status} |",
+            "| {} | {size} | {iterations} | {} | {} | {} | {}/{}/{} | {}/{}/{} | {} | {} | {status} |",
             super::escape(name),
             super::kib_cell(peak("fai")),
             super::kib_cell(peak("rust")),
@@ -191,8 +201,11 @@ pub(super) fn render_footprints(samples: &[FootprintSample]) -> String {
             super::kib_cell(floor("fai")),
             super::kib_cell(floor("rust")),
             super::kib_cell(floor("ocaml")),
-            ratio("rust"),
-            ratio("ocaml")
+            floor_share("fai"),
+            floor_share("rust"),
+            floor_share("ocaml"),
+            super::ratio_cell(rust.ok()),
+            super::ratio_cell(ocaml.ok())
         );
     }
     out.push('\n');
@@ -279,11 +292,12 @@ mod tests {
     }
 
     #[test]
-    fn small_process_floors_do_not_create_memory_wins() {
+    fn small_process_footprints_keep_ratios_and_visible_floor_shares() {
         let text =
             render_footprints(&[footprint("fai", 2600, 2500), footprint("rust", 3300, 3200)]);
-        assert!(text.contains("floor-limited"));
-        assert!(!text.contains('×'));
+        assert!(text.contains("96.2%/97.0%/—"));
+        assert!(text.contains("0.79×"));
+        assert!(text.contains("deployment footprints"));
     }
 
     #[test]
@@ -291,7 +305,60 @@ mod tests {
         let text =
             render_footprints(&[footprint("fai", 50000, 2000), footprint("rust", 100000, 3000)]);
         assert!(text.contains("0.50×"));
-        assert!(text.contains("process footprint only"));
+        assert!(text.contains("matched kernel"));
+    }
+
+    #[test]
+    fn an_ocaml_floor_does_not_hide_any_total_rss_ratio() {
+        let text = render_footprints(&[
+            footprint("fai", 40000, 3000),
+            footprint("rust", 50000, 2000),
+            footprint("ocaml", 30000, 4000),
+        ]);
+        assert!(text.contains("0.80× | 1.33×"));
+        assert!(text.contains("7.5%/4.0%/13.3%"));
+    }
+
+    #[test]
+    fn an_instrumented_third_peer_does_not_hide_the_clean_pair() {
+        let text = render_footprints(&[
+            footprint("fai", 40000, 3000),
+            footprint("rust", 50000, 2000),
+            FootprintSample { instrumented: true, ..footprint("ocaml", 30000, 4000) },
+        ]);
+        assert!(text.contains("0.80× | —"));
+        assert!(text.contains("F/O: instrumented diagnostic"));
+    }
+
+    #[test]
+    fn application_ratios_keep_their_comparison_class() {
+        let application = |side, peak| FootprintSample {
+            algorithm: "ListSort".into(),
+            workload_version: crate::benchmark_contracts::for_module("ListSort")
+                .unwrap()
+                .version
+                .into(),
+            comparison: "application".into(),
+            ..footprint(side, peak, 2000)
+        };
+        let text = render_footprints(&[application("fai", 3000), application("rust", 4000)]);
+        assert!(text.contains("0.75×"));
+        assert!(text.contains("application; F/O: missing peer"));
+    }
+
+    #[test]
+    fn an_incomplete_third_peer_does_not_hide_the_clean_pair() {
+        let text = render_footprints(&[
+            footprint("fai", 40000, 3000),
+            footprint("rust", 50000, 2000),
+            FootprintSample {
+                samples_kib: vec![30000],
+                floor_kib: vec![4000],
+                ..footprint("ocaml", 30000, 4000)
+            },
+        ]);
+        assert!(text.contains("0.80× | —"));
+        assert!(text.contains("F/O: insufficient observations"));
     }
 
     #[test]
@@ -302,7 +369,7 @@ mod tests {
         };
         let text = render_footprints(&[footprint("fai", 50000, 2000), changed]);
         assert!(!text.contains('×'));
-        assert!(text.contains("incomplete/incompatible"));
+        assert!(text.contains("missing peer") && text.contains("unreviewed/incompatible"));
     }
 
     #[test]

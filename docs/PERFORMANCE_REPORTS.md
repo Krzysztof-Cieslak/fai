@@ -116,11 +116,13 @@ enter warm aggregates.
 
 The generated runtime report includes an **Eligibility legend** for
 `matched kernel`, `application` and `floor: <languages>`, including the pairwise
-effect on F/R and F/O. The memory report includes a **Status legend** for
-`application/unqualified`, `floor-limited` and `process footprint only`.
-Memory's floor gate applies to every peer together, while runtime ratios are
-qualified per pair. Both reports explain the ratio abbreviations, the 10% floor
-threshold and withheld-ratio dashes next to their measurement tables.
+effect on F/R and F/O. The memory report explains **comparison class and floor
+share** separately: both matched kernels and application cases retain total-RSS
+ratios when each pair has compatible, uninstrumented observations and enough
+samples. Large baseline shares remain visible; they do not exclude a process
+comparison, and an unavailable third peer cannot suppress a valid pair. The
+10% floor exclusion applies only to timing. Both reports explain abbreviations
+and withheld-ratio dashes next to their measurement tables.
 
 RSS is process footprint, not a common live-heap measure or a compiler-memory
 win count. Perceus evidence uses its own Fai object/backing accounting domain.

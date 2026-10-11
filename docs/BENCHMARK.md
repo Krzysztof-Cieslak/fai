@@ -464,9 +464,11 @@ from `/proc/self/status` (`VmHWM`, the high-water mark) and print a
 `fai-peak-rss-kib:` line to stderr. The harness emits `MEMSTAT2` JSON records containing every raw RSS and
 floor observation, input size, repetition count, workload version and paired
 executable identity. `bench-summary` renders the absolute footprints and floors.
-A process ratio requires a reviewed matched kernel, uninstrumented binaries, at
-least five observations per side and every measured floor below 10% of its peak.
-Even an eligible ratio remains a **process-footprint** comparison. There is no
+A process ratio requires a compatible pair of uninstrumented binaries and at
+least five observations per side. Application comparisons retain their class,
+and each language's floor/peak percentage is shown without suppressing ratios.
+An unavailable third peer does not suppress a valid pair. Every ratio remains a
+**process-footprint** comparison. There is no
 "compiler memory wins" count or aggregate built from these rows. Missing RSS
 self-reports and wrong answers fail the measurement instead of becoming zeros.
 
