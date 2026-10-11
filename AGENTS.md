@@ -1132,6 +1132,11 @@ stop also observes an expired operation deadline before beginning cleanup.
 
 ## 6. Compiler pipeline
 
+`HttpClient.foldEvents` threads application state through scoped SSE callbacks,
+retaining typed callback errors, response metadata and bounded error bodies.
+Cancellation and deadlines retain the final committed state after worker cleanup;
+read-idle time excludes callback execution.
+
 ```
 source (.fai)
   → lex                 (fai-syntax)   tokens + spans

@@ -1,0 +1,83 @@
+module EventFoldChecks
+
+type Case = { reject : Bool, slow : Bool, status : Int, stop : Bool, total : Option Int }
+
+let basic = { reject = false, slow = false, status = 200, stop = false, total = None }
+
+handle : Case -> Http.Request 'e -> Result (Http.Response { }) String
+let handle case request =
+  Ok (Http.chunkedResponse case.status (Headers.fromList [
+    ("Content-Type", if case.status = 200 then "text/event-stream" else "application/json"),
+    ("X-Request-Id", "fold-request")
+  ]) (Http.stringBody (if case.status = 200 then
+    "data:a\n\ndata:b\n\n"
+  else
+    "{\"error\":\"rejected\"}")))
+
+step : Runtime -> Case -> HttpClient.ResponseHead -> String -> Sse.Event -> Result (String * HttpClient.EventDecision) String / { Clock }
+let step r case head state event =
+  let sleep = if case.slow then r.clock.sleep 100 else ()
+  if case.reject && event.data = "b" then
+    Err "typed rejection"
+  else
+    Ok (state ++ event.data, if case.stop then HttpClient.StopEvents else HttpClient.ContinueEvents)
+
+useClient : Runtime -> Case -> HttpClient.Client -> Result (HttpClient.EventFold String String) HttpClient.Error / { Clock, Concurrency, Net, Tls }
+let useClient r case client =
+  Ok (HttpClient.foldEvents client { HttpClient.eventOptions with
+    subscriptionTimeoutMs = case.total
+  } "" (step r case) (HttpClient.post ""))
+
+session : Runtime -> Case -> Listener -> Nursery -> Result (HttpClient.EventFold String String) HttpClient.Error / { Clock, Concurrency, Net, Tls }
+let session r case listener nursery =
+  let server = r.concurrency.spawn nursery (fun _ -> Http.serveListener r listener (handle case))
+  let cfg =
+    HttpClient.config ("http://127.0.0.1:" ++ Int.toString (r.net.localPort listener) ++ "/")
+  let result = HttpClient.withClient r { cfg with maxErrorBytes = 8 } (useClient r case)
+  let cancelled = r.concurrency.cancel server
+  result
+
+run : Runtime -> Case -> Result (HttpClient.EventFold String String) HttpClient.Error / { Clock, Concurrency, Net, Tls }
+let run r case =
+  match r.net.listen 0 with
+  | Err message -> Err (HttpClient.Transport message)
+  | Ok listener -> r.concurrency.scope (session r case listener)
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main r =
+  let normal = run r basic
+  let good =
+    match normal with
+    | Ok result ->
+      result.value = "ab" && result.outcome = Ok HttpClient.EventEof && (match result.head with
+      | Some head -> Headers.get "X-Request-Id" head.headers = Some "fold-request"
+      | _ -> false)
+    | _ -> false
+  let stopped = run r { basic with stop = true }
+  let stoppedGood =
+    match stopped with
+    | Ok result -> result.value = "a" && result.outcome = Ok HttpClient.EventStopped
+    | _ -> false
+  let rejected = run r { basic with reject = true }
+  let rejectedGood =
+    match rejected with
+    | Ok result ->
+      result.value = "a" && result.outcome = Err (HttpClient.FoldConsumerError "typed rejection")
+    | _ -> false
+  let status = run r { basic with status = 429 }
+  let statusGood =
+    match status with
+    | Ok result ->
+      result.truncated && Bytes.length result.preview = 8 && (match result.outcome with
+      | Err (HttpClient.FoldHttpError (HttpClient.EventStatus head)) -> head.status = 429
+      | _ -> false)
+    | _ -> false
+  let timeout = run r { basic with slow = true, total = Some 50 }
+  let timeoutGood =
+    match timeout with
+    | Ok result -> result.outcome = Err (HttpClient.FoldHttpError HttpClient.DeadlineExceeded)
+    | _ -> false
+  r.console.writeLine (if good && stoppedGood && rejectedGood && statusGood && timeoutGood then
+    "event fold checks passed"
+  else
+    "event fold checks FAILED")
