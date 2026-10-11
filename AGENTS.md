@@ -780,6 +780,10 @@ and re-box at their uniform boundary; every Float bit pattern is preserved.
 Lengths of already-borrowed array parameters carry read-only memory evidence,
 allowing invariant loads to move out of loops without retaining an extra owner.
 Growing or otherwise consumed arrays keep ordinary memory dependencies.
+A bounded tail loop can also reuse an array's entry layout predicate when every
+back-edge preserves that parameter through aliases, set/put or unique-copy
+operations. Growth, replacement and nested loops keep ordinary layout reads;
+all reference-count operations and owner release positions remain in place.
 Known `Array Bool`, `Array Char`, `Array Unit` and raw `Array Float` values
 release their final buffer without scanning element slots. Their element class
 survives the worker wire form. Int arrays, unknown elements and nested arrays

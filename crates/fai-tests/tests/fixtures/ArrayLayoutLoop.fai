@@ -1,0 +1,25 @@
+module Main
+
+public copy : Int -> Array 'a -> Array 'a -> Array 'a
+let copy n source target =
+  if n <= 0 then
+    target
+  else
+    copy (n - 1) source (Array.unsafeSet (n - 1) (Array.unsafeGet (n - 1) source) target)
+
+public swap : Int -> Array 'a -> Array 'a -> Array 'a
+let swap n first second = if n <= 0 then first else swap (n - 1) second first
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let integers = [| 9223372036854775807, -9223372036854775808 |]
+  let target = [| 0, 1 |]
+  let changed = copy 2 integers target
+  let floats = [| Float.fromBits 0xfff8000000002345, -0.0, 1.5 |]
+  let floatTarget = [| 0.0, 0.0, 0.0 |]
+  let floatCopy = copy 3 floats floatTarget
+  let empty = copy 0 [||] [||]
+  let switched = swap 2 floats empty
+  let valid = changed = integers && target = [| 0, 1 |] && floatCopy = floats
+  let shared = floatTarget = [| 0.0, 0.0, 0.0 |] && switched = floats && Array.length empty = 0
+  runtime.console.writeLine (if valid && shared then "ok" else "wrong")

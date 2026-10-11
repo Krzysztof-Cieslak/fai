@@ -7789,6 +7789,17 @@ impl<M: Module> Translator<'_, M> {
         reentry: Option<Block>,
     ) -> Value {
         let saved_tags = std::mem::take(&mut self.known_tags);
+        let mut layout_tags = FxHashMap::default();
+        if self.array_tag_cacheable && !self.concurrent {
+            let stable = crate::array_layout::invariant(params, body);
+            for &param in params {
+                if stable.contains(&param) && self.var_ty(param).is_some_and(is_generic_array) {
+                    let base = self.use_var(param);
+                    let tag = self.array_float_tag_for(base);
+                    layout_tags.insert(param, tag);
+                }
+            }
+        }
         let mut affine = Vec::new();
         if !self.concurrent {
             for predicate in crate::affine_predicates::plan(params, body) {
@@ -7853,7 +7864,8 @@ impl<M: Module> Translator<'_, M> {
         // accesses reuse one descriptor load instead of one per element touch. Only
         // when the body re-tags no buffer (see [`Self::array_float_tag`]); the key is
         // this loop's value, so it neither conflicts with the entry cache nor leaks
-        // to post-loop code (those use other values).
+        // to post-loop code (those use other values). A proven layout-preserving
+        // back-edge reuses its entry predicate without retaining an array owner.
         if self.array_tag_cacheable {
             let carried: Vec<LocalId> = params
                 .iter()
@@ -7862,7 +7874,7 @@ impl<M: Module> Translator<'_, M> {
                 .collect();
             for p in carried {
                 let base = self.use_var(p);
-                let tag = self.array_is_float(base);
+                let tag = layout_tags.get(&p).copied().unwrap_or_else(|| self.array_is_float(base));
                 self.array_float_tag.insert(base, tag);
             }
         }
