@@ -1,0 +1,105 @@
+module LlmTool
+
+/// Definitions are serializable data; handlers remain latent effectful functions.
+public opaque type Tool 'e =
+  | Tool LlmTypes.ToolDefinition (Json.Value -> Result (Json.Value * Bool) LlmTypes.Error / 'e) (Option LlmTypes.Error)
+
+public opaque type Registry 'e =
+  | Registry (List (Tool 'e))
+
+invoke : LlmSchema.Schema 'a -> JsonEncode.Encoder 'b -> ('a -> Result 'b String / 'e) -> Json.Value -> Result (Json.Value * Bool) LlmTypes.Error / 'e
+let invoke schema encode handler input =
+  match LlmSchema.decode schema input with
+  | Err detail -> Err { LlmTypes.error LlmTypes.InvalidToolArguments (JsonDecode.errorToString detail) with
+    detail = Some (JsonDecode.Data detail)
+  }
+  | Ok value ->
+    match handler value with
+    | Err message -> Ok (LlmJson.object [("error", Json.String message)], true)
+    | Ok value ->
+      match encode value with
+      | Err error -> Err (LlmTypes.error LlmTypes.SchemaError error.message)
+      | Ok value -> Ok (value, false)
+
+/// Construct a typed tool without running its handler.
+public define : String -> String -> LlmSchema.Schema 'a -> JsonEncode.Encoder 'b -> ('a -> Result 'b String / 'e) -> Tool 'e
+let define name description schema encode handler =
+  let checked = LlmSchema.describe schema
+  let issue =
+    if not (LlmValidate.toolName name) then
+      Some (LlmTypes.error LlmTypes.InvalidRequest "invalid tool name")
+    else
+      (match checked with
+      | Err message -> Some (LlmTypes.error LlmTypes.SchemaError message)
+      | Ok _ -> None)
+  Tool {
+    description = description,
+    name = name,
+    parameters = Result.withDefault Json.Null checked
+  } (invoke schema encode handler) issue
+
+public empty : Registry 'e
+let empty = Registry []
+
+public singleton : Tool 'e -> Registry 'e
+let singleton tool = Registry [tool]
+
+/// Argument effect subsumption unions the effects of separately built tool groups.
+public combine : Registry 'e -> Registry 'e -> Registry 'e
+let combine first second =
+  let (Registry a) = first
+  let (Registry b) = second
+  Registry (List.append a b)
+
+describeAll : List (Tool 'e) -> Set String -> List LlmTypes.ToolDefinition -> Result (List LlmTypes.ToolDefinition) LlmTypes.Error
+let describeAll tools seen output =
+  match tools with
+  | [] -> Ok (List.reverse output)
+  | Tool definition _ issue :: rest ->
+    match issue with
+    | Some error -> Err error
+    | None ->
+      if Set.member definition.name seen then
+        Err (LlmTypes.error LlmTypes.InvalidRequest "duplicate tool name")
+      else
+        describeAll rest (Set.insert definition.name seen) (definition :: output)
+
+public definitions : Registry 'e -> Result (List LlmTypes.ToolDefinition) LlmTypes.Error
+let definitions registry =
+  let (Registry tools) = registry
+  describeAll tools Set.empty []
+
+dispatch : List (Tool 'e) -> LlmTypes.ToolCall -> Result LlmTypes.ToolResult LlmTypes.Error / 'e
+let dispatch tools call =
+  match tools with
+  | [] -> Err (LlmTypes.error LlmTypes.InvalidToolArguments ("unknown tool " ++ call.name))
+  | Tool definition run _ :: rest ->
+    if definition.name = call.name then
+      Result.map (fun pair -> resultFor call.id pair) (run call.arguments)
+    else
+      dispatch rest call
+
+resultFor : String -> (Json.Value * Bool) -> LlmTypes.ToolResult
+let resultFor id pair =
+  let (value, failed) = pair
+  { id = id, isError = failed, value = value }
+
+/// Validate the registry and arguments before invoking exactly one handler.
+public execute : Registry 'e -> LlmTypes.ToolCall -> Result LlmTypes.ToolResult LlmTypes.Error / 'e
+let execute registry call =
+  if call.id = "" then
+    Err (LlmTypes.error LlmTypes.InvalidToolArguments "tool call needs an ID")
+  else
+    match definitions registry with
+    | Err error -> Err error
+    | Ok _ ->
+      let (Registry tools) = registry
+      dispatch tools call
+
+/// Explicitly turn a local validation failure into a tool result for the next turn.
+public failureResult : LlmTypes.ToolCall -> LlmTypes.Error -> LlmTypes.ToolResult
+let failureResult call error = {
+  id = call.id,
+  isError = true,
+  value = LlmJson.object [("error", Json.String error.message)]
+}

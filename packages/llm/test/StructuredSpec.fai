@@ -1,0 +1,32 @@
+module LlmStructuredSpec
+
+let schema =
+  LlmSchema.object0 (fun name count -> {
+    count = count,
+    name = name
+  }) |> LlmSchema.andMap (LlmSchema.field "name" LlmSchema.string) |> LlmSchema.andMap (LlmSchema.field "count" LlmSchema.int)
+
+let response text = { LlmTypes.emptyResponse LlmTypes.OpenAI with
+  blocks = [LlmTypes.TextBlock "text" text],
+  finish = LlmTypes.Completed
+}
+example: (Llm.decodeStructured schema (response "{\"name\":\"test\",\"count\":3}") |> Result.map (fun result ->
+  result.value)) = Ok { count = 3, name = "test" }
+example: Llm.decodeStructured schema (response "{\"name\":\"test\",\"count\":3,\"extra\":true}") |> Result.isErr
+example: Llm.decodeStructured schema (response "{\"name\":\"test\",\"count\":1e100}") |> Result.isErr
+example: Llm.decodeStructured schema { response "{partial" with
+  finish = LlmTypes.Incomplete "max_tokens"
+} |> Result.isErr
+example: Llm.decodeStructured schema { response "refused" with
+  finish = LlmTypes.Refused
+} |> Result.isErr
+example: LlmSchema.decode (LlmSchema.field "optional" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object [
+  ("optional", Json.Null)
+]) = Ok None
+example: LlmSchema.decode (LlmSchema.field "optional" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object []) |> Result.isErr
+
+let positive =
+  LlmSchema.field "count" (LlmSchema.refine (fun n ->
+    if n > 0 then Ok n else Err "positive count required") LlmSchema.int)
+example: LlmSchema.decode positive (LlmJson.object [("count", LlmJson.integer 0)]) |> Result.isErr
+example: LlmSchema.describe positive = LlmSchema.describe (LlmSchema.field "count" LlmSchema.int)

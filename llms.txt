@@ -1859,6 +1859,10 @@ effects. Storage defaults to false; native continuation items remain available.
 `LlmAnthropic.config` selects Messages; indexed blocks, cumulative usage and
 thinking signatures are retained. Truncated tool arguments remain partial data.
 `LlmReplay.fromChunks` and `model` provide pure protocol replay and scripted models.
+`LlmTool.define` pairs an input schema, output encoder and effectful handler.
+Registries combine explicitly; `definitions` supplies wire data, and `execute`
+validates and runs one complete call. `generateStructured` returns a typed value
+with its response; `decodeStructured` performs the same final decoding purely.
 
 Including `packages/process/src` supplies `Process` and `ProcessText`. Commands
 are pure descriptions (`command`, `arguments`, `workingDirectory`, environment

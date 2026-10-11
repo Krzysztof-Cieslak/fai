@@ -24,6 +24,19 @@ let int = scalar "integer" JsonDecode.int
 public float : Schema Float
 let float = scalar "number" JsonDecode.float
 
+/// Begin an object schema, including a typed empty object or curried constructor.
+public object0 : 'a -> Schema 'a
+let object0 value = {
+  decoder = JsonDecode.succeed value,
+  issue = None,
+  json = LlmJson.object [
+    ("type", Json.String "object"),
+    ("properties", LlmJson.object []),
+    ("required", LlmJson.array []),
+    ("additionalProperties", Json.Boolean false)
+  ]
+}
+
 public map : ('a -> 'b) -> Schema 'a -> Schema 'b
 let map f schema = {
   decoder = JsonDecode.map f schema.decoder,
@@ -116,6 +129,9 @@ let refine check schema = { schema with
     | Ok value -> JsonDecode.succeed value
     | Err message -> JsonDecode.fail message) schema.decoder
 }
+
+public andMap : Schema 'a -> Schema ('a -> 'b) -> Schema 'b
+let andMap argument constructor = map2 (fun f value -> f value) constructor argument
 
 public describe : Schema 'a -> Result Json.Value String
 let describe schema =
