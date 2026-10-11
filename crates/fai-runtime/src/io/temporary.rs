@@ -14,10 +14,10 @@ pub(super) struct Temporary {
 
 impl Temporary {
     fn close_writer(&mut self) -> Result<()> {
-        if let Some(writer) = self.writer.take() {
-            if let Err(error) = close_state(&mut writer.state.lock().expect("temporary writer")) {
-                self.failure = Some(error);
-            }
+        if let Some(writer) = self.writer.take()
+            && let Err(error) = close_state(&mut writer.state.lock().expect("temporary writer"))
+        {
+            self.failure = Some(error);
         }
         self.failure.clone().map_or(Ok(()), Err)
     }
