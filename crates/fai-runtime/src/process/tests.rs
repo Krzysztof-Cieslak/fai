@@ -24,6 +24,9 @@ fn fixture(mode: &str) -> Spec {
         directory: String::new(),
         inherit: true,
         edits: vec![("FAI_PROCESS_FIXTURE".into(), Some(mode.into()))],
+        stdin: 0,
+        stdout: 0,
+        stderr: 0,
     }
 }
 
@@ -124,7 +127,12 @@ fn partial_pipeline_startup_reaps_started_children() {
     let mut missing = fixture("hold");
     missing.executable = "/fai-does-not-exist/program".into();
     let result = Session::start(vec![missing, fixture("hold")], options());
-    assert!(result.is_err());
+    let failure = match result {
+        Err(failure) => failure,
+        Ok(_) => panic!("missing executable succeeded"),
+    };
+    assert_eq!(failure.exits.len(), 2);
+    assert!(failure.exits[0].is_none() && failure.exits[1].is_some());
 }
 
 #[test]
@@ -148,6 +156,25 @@ fn invalid_command_is_rejected_before_start() {
     let mut command = fixture("exit");
     command.arguments.push("bad\0argument".into());
     assert!(Session::start(vec![command], options()).is_err());
+}
+
+#[test]
+fn discarded_stdio_completes_without_output_buffers() {
+    let mut command = fixture("echo");
+    command.stdin = 2;
+    command.stdout = 2;
+    command.stderr = 2;
+    let session = Session::start(vec![command], options()).unwrap();
+    assert!(session.next().unwrap().is_none());
+    session.close();
+    assert_eq!(lock(&session.shared.state).exits, [Some(Exit::Code(0))]);
+}
+
+#[test]
+fn conflicting_pipeline_stdio_is_rejected_before_launch() {
+    let mut command = fixture("echo");
+    command.stdout = 2;
+    assert!(Session::start(vec![command, fixture("echo")], options()).is_err());
 }
 
 #[test]

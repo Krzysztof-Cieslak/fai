@@ -5,13 +5,22 @@ use mio::{Interest, Registry, Token};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicU64, Ordering};
 use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle};
 use windows_sys::Win32::System::JobObjects::*;
 use windows_sys::Win32::System::Threading::*;
 
 pub(super) struct Pipe(mio::windows::NamedPipe);
+
+pub(super) fn inherit(index: u8) -> io::Result<File> {
+    let handle = match index {
+        0 => std::io::stdin().as_handle().try_clone_to_owned(),
+        1 => std::io::stdout().as_handle().try_clone_to_owned(),
+        _ => std::io::stderr().as_handle().try_clone_to_owned(),
+    }?;
+    Ok(File::from(handle))
+}
 
 pub(super) fn pipe() -> io::Result<(File, File)> {
     let (read, write) = std::io::pipe()?;

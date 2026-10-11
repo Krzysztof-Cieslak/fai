@@ -1,5 +1,8 @@
 module CommandSpec
 
+example: (Process.describe (Process.command "x" [] |> Process.stdout Process.Discard)).launch.stdoutMode = 2
+example: (Process.describe (Process.command "x" [] |> Process.stdin Process.Inherit)).launch.stdinMode = 1
+example: Process.validate Process.defaults (Process.command "x" [] |> Process.stdinText "data" |> Process.stdin Process.Discard) |> Result.isErr
 example: (Process.describe (Process.command "git" [
   "status"
 ] |> Process.argument "--short")).launch.arguments = ["status", "--short"]

@@ -761,6 +761,8 @@ Streaming results retain only a configurable preview and report truncation.
 `ProcessText.decoder`/`feed`/`finish` decode bounded UTF-8 LF/CRLF lines; maintain
 separate decoder state for each pipe.
 `Process.pipeline commands` constructs a validated-at-execution native pipeline.
+`stdin`, `stdout`, and `stderr` select `Process.Pipe`, `Process.Inherit`, or
+`Process.Discard`; preset stdin and intermediate pipeline links require pipes.
 `runPipeline` captures final stdout and stage-ordered stderr/statuses;
 `withPipelineOutput` streams tagged chunks. Only the first stage accepts preset
 stdin. `expectSuccess` checks every stage; `expectLastSuccess` checks the last.

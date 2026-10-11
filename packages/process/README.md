@@ -18,6 +18,10 @@ output, native error information and separate cleanup failures.
 Command builders are pure: `argument`, `arguments`, `workingDirectory`,
 `inheritEnvironment`, `clearEnvironment`, `setEnvironment`, `unsetEnvironment`,
 `stdinBytes`, and `stdinText`. `describe` exposes their immutable description.
+`stdin`, `stdout`, and `stderr` choose `Pipe`, `Inherit`, or `Discard` for each
+descriptor. Preset input requires a pipe. Intermediate pipeline links remain
+piped; the first input, final output, and each stderr may use other modes.
+Inherited output retains raw byte behavior and is not included in capture.
 Environment edits apply in order; unset removes a name. Native execution resolves
 paths and the effective PATH. Windows names compare case-insensitively. Shell
 programs are explicit executables; Windows batch scripts require an explicit

@@ -38,7 +38,13 @@ fn integer(value: i64) -> Value {
 fn errors(value: &Error) -> Value {
     data(
         0,
-        &[integer(value.code), integer(value.kind), string(&value.message), integer(value.stage)],
+        &[
+            integer(value.code),
+            values(value.exits.iter().map(|v| option(v.as_ref().map(exit)))),
+            integer(value.kind),
+            string(&value.message),
+            integer(value.stage),
+        ],
     )
 }
 fn result(value: Result<Value, Error>) -> Value {
@@ -123,6 +129,9 @@ pub extern "C" fn fai_process_start(specs: Value, config: Value) -> Value {
                 .collect(),
             executable: text(field(v, 3)),
             inherit: crate::unbox_int(field(v, 4)) != 0,
+            stderr: crate::unbox_int(field(v, 5)),
+            stdin: crate::unbox_int(field(v, 6)),
+            stdout: crate::unbox_int(field(v, 7)),
         })
         .collect();
     let config_result = options(config);

@@ -70,11 +70,13 @@ def main():
         executable = directory / "process-checks.exe"
         output = run([compiler, "run", "--no-daemon", "-C", "packages", program,
                       "--", sys.executable, fixture])
-        assert b"process checks passed" in output and b"FAIL" not in output, output
+        assert b"process checks passed" in output and b"FAIL" not in output and b"inherited-marker" in output, output
         run([compiler, "build", "--no-daemon", "-C", "packages", program,
              "--out", str(executable)])
         output = run([str(executable), sys.executable, fixture])
-        assert b"process checks passed" in output and b"FAIL" not in output, output
+        assert b"process checks passed" in output and b"FAIL" not in output and b"inherited-marker" in output, output
+        output = run([str(executable), sys.executable, fixture, "inherit-stdin"], input=bytes(range(256)))
+        assert b"inherited input ok" in output, output
         negative_checks(compiler, directory)
         for example in ("Capture", "TaskRunner"):
             run([compiler, "build", "--no-daemon", "-C", "packages",
