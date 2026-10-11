@@ -1,0 +1,67 @@
+module Llm
+
+public type Request = LlmTypes.Request
+
+public type Response = LlmTypes.Response
+
+public type Error = LlmTypes.Error
+
+public type Event = LlmTypes.Event
+
+public type Limits = LlmTypes.Limits
+
+public limits : Limits
+let limits = LlmTypes.limits
+
+public request : String -> Request
+let request model = {
+  history = [],
+  instructions = "",
+  maxOutputTokens = 4096,
+  model = model,
+  outputSchema = None,
+  parallelTools = true,
+  providerOptions = LlmTypes.Defaults,
+  temperature = None,
+  toolChoice = LlmTypes.Auto,
+  tools = []
+}
+
+public instructions : String -> Request -> Request
+let instructions text request = { request with instructions = text }
+
+public user : List LlmTypes.Content -> Request -> Request
+let user content request = { request with
+  history = List.append request.history [LlmTypes.Message LlmTypes.User content]
+}
+
+public userText : String -> Request -> Request
+let userText text request = user [LlmTypes.Text text] request
+
+public maxOutputTokens : Int -> Request -> Request
+let maxOutputTokens count request = { request with maxOutputTokens = count }
+
+public tools : List LlmTypes.ToolDefinition -> Request -> Request
+let tools definitions request = { request with tools = definitions }
+
+public toolChoice : LlmTypes.ToolChoice -> Request -> Request
+let toolChoice choice request = { request with toolChoice = choice }
+
+public structured : LlmSchema.Schema 'a -> Request -> Result Request Error
+let structured schema request =
+  match LlmSchema.describe schema with
+  | Err message -> Err (LlmTypes.error LlmTypes.SchemaError message)
+  | Ok json -> Ok { request with outputSchema = Some json }
+
+public text : Response -> String
+let text response =
+  String.join "" (List.map (fun block ->
+    match block with
+    | LlmTypes.TextBlock _ text -> text
+    | _ -> "") response.blocks)
+
+public errorToString : Error -> String
+let errorToString error = error.message
+
+/// A model port can be a pure scripted function or native provider execution.
+public type Model 'e = { generate : Request -> Result Response Error / 'e }

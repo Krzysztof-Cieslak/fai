@@ -1,0 +1,29 @@
+module LlmMessage
+
+public text : String -> LlmTypes.Content
+let text value = LlmTypes.Text value
+
+public imageBytes : String -> Bytes -> LlmTypes.Content
+let imageBytes media bytes = LlmTypes.Image (LlmTypes.ImageBytes media bytes)
+
+public imageUrl : String -> LlmTypes.Content
+let imageUrl url = LlmTypes.Image (LlmTypes.ImageUrl url)
+
+/// Append a completed turn and exactly one result for each of its tool calls.
+/// Native continuation items retain provider-specific reasoning and signatures.
+public continueWith : LlmTypes.Response -> List LlmTypes.ToolResult -> LlmTypes.Request -> Result LlmTypes.Request LlmTypes.Error
+let continueWith response results request =
+  let expected = List.map (fun call -> call.id) response.toolCalls
+  let actual = List.map (fun result -> result.id) results
+  if response.finish = LlmTypes.InProgress || (match response.finish with
+  | LlmTypes.Incomplete _ -> true
+  | _ -> false) then
+    Err (LlmTypes.error LlmTypes.InvalidRequest "cannot continue an unfinished response")
+  else if List.length expected <> List.length actual || Set.size (Set.fromList actual) <> List.length actual || Set.fromList expected <> Set.fromList actual then
+    Err (LlmTypes.error LlmTypes.InvalidRequest "tool results must match the response call IDs exactly")
+  else
+    let ordered =
+      List.concatMap (fun id -> List.filter (fun result -> result.id = id) results) expected
+    Ok { request with
+      history = List.append request.history (List.append response.continuation (List.map LlmTypes.ToolOutput ordered))
+    }

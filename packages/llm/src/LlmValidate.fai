@@ -1,0 +1,129 @@
+module LlmValidate
+
+let invalid message = Err (LlmTypes.error LlmTypes.InvalidRequest message)
+
+let limited message = Err (LlmTypes.error LlmTypes.LimitExceeded message)
+
+public limits : LlmTypes.Limits -> Result Unit LlmTypes.Error
+let limits value =
+  if value.maxBlocks <= 0 || value.maxEvents <= 0 || value.maxImageBytes < 0 || value.maxImages < 0 || value.maxRequestBytes <= 0 || value.maxResponseBytes <= 0 || value.maxSchemaDepth <= 0 || value.maxSchemaDepth > 128 || value.maxSchemaNodes <= 0 || value.maxToolArgumentBytes <= 0 || value.maxToolCalls <= 0 then
+    invalid "invalid LLM limit"
+  else
+    Ok ()
+
+public toolName : String -> Bool
+let toolName name =
+  name <> "" && String.length name <= 64 && List.all (fun c ->
+    (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c = 95 || c = 45) (Bytes.toList (Bytes.fromString name))
+
+let children value =
+  match value with
+  | Json.Array values -> Array.toList values
+  | Json.Object fields -> List.map pairValue (Array.toList fields)
+  | _ -> []
+
+let pairValue pair =
+  let (_, value) = pair
+  value
+
+walk : Int -> Int -> Int -> Json.Value -> Result Int LlmTypes.Error
+let walk maxDepth depth fuel value =
+  if depth > maxDepth || fuel <= 0 then
+    limited "schema exceeds its depth or node limit"
+  else
+    walkChildren maxDepth (depth + 1) (fuel - 1) (children value)
+
+walkChildren : Int -> Int -> Int -> List Json.Value -> Result Int LlmTypes.Error
+let walkChildren maxDepth depth fuel values =
+  match values with
+  | [] -> Ok fuel
+  | first :: rest ->
+    match walk maxDepth depth fuel first with
+    | Err error -> Err error
+    | Ok fuel -> walkChildren maxDepth depth fuel rest
+
+public schema : LlmTypes.Limits -> Json.Value -> Result Unit LlmTypes.Error
+let schema limits value =
+  match JsonDecode.decode JsonDecode.value value with
+  | Err detail -> Err { LlmTypes.error LlmTypes.SchemaError (JsonDecode.errorToString detail) with
+    detail = Some (JsonDecode.Data detail)
+  }
+  | Ok _ ->
+    if LlmJson.text "type" value <> Some "object" then
+      invalid "tool and structured-output schemas must have an object root"
+    else
+      Result.map (fun _ -> ()) (walk limits.maxSchemaDepth 0 limits.maxSchemaNodes value)
+
+image : LlmTypes.Limits -> LlmTypes.Image -> Result Unit LlmTypes.Error
+let image limits image =
+  match image with
+  | LlmTypes.ImageUrl url ->
+    match Url.parse url with
+    | Err _ -> invalid "invalid image URL"
+    | Ok url ->
+      if Url.scheme url = Some "https" || Url.scheme url = Some "http" then
+        Ok ()
+      else
+        invalid "image URLs require HTTP or HTTPS"
+  | LlmTypes.ImageBytes media bytes ->
+    if not (List.member media ["image/png", "image/jpeg", "image/webp", "image/gif"]) then
+      invalid "unsupported image MIME type"
+    else if Bytes.length bytes > limits.maxImageBytes then
+      limited "image exceeds its byte limit"
+    else
+      Ok ()
+
+content : LlmTypes.Limits -> LlmTypes.Content -> Result Int LlmTypes.Error
+let content limits value =
+  match value with
+  | LlmTypes.Text _ -> Ok 0
+  | LlmTypes.Image value -> Result.map (fun _ -> 1) (image limits value)
+
+history : LlmTypes.Provider -> LlmTypes.Limits -> LlmTypes.Item -> Result Int LlmTypes.Error
+let history provider limits item =
+  match item with
+  | LlmTypes.Message _ parts ->
+    Result.map (List.foldl (+) 0) (LlmJson.traverse (content limits) parts)
+  | LlmTypes.Native origin value ->
+    if provider = origin then Ok 0 else invalid "continuation belongs to another provider"
+  | LlmTypes.ToolOutput result ->
+    if result.id = "" then invalid "tool result needs a call ID" else Ok 0
+
+tool : LlmTypes.Limits -> LlmTypes.ToolDefinition -> Result Unit LlmTypes.Error
+let tool limits value =
+  if toolName value.name then schema limits value.parameters else invalid "invalid tool name"
+
+public request : LlmTypes.Provider -> LlmTypes.Limits -> LlmTypes.Request -> Result Unit LlmTypes.Error
+let request provider limit request =
+  match limits limit with
+  | Err error -> Err error
+  | Ok _ ->
+    if request.model = "" || request.maxOutputTokens <= 0 then
+      invalid "model and positive maxOutputTokens are required"
+    else if List.length request.tools > limit.maxToolCalls then
+      limited "too many tools"
+    else if Set.size (Set.fromList (List.map (fun tool ->
+      tool.name) request.tools)) <> List.length request.tools then
+      invalid "duplicate tool name"
+    else if (match request.toolChoice with
+    | LlmTypes.Named name -> not (List.any (fun tool -> tool.name = name) request.tools)
+    | LlmTypes.Required -> request.tools = []
+    | _ -> false) then
+      invalid "tool choice names no available tool"
+    else if (match request.temperature with
+    | None -> false
+    | Some value -> Result.isErr (JsonNumber.fromFloat value) || value < 0.0 || value > 2.0) then
+      invalid "temperature must be finite and in 0..2"
+    else
+      match LlmJson.traverse (history provider limit) request.history with
+      | Err error -> Err error
+      | Ok counts ->
+        if List.foldl (+) 0 counts > limit.maxImages then
+          limited "too many images"
+        else
+          match LlmJson.traverse (tool limit) request.tools with
+          | Err error -> Err error
+          | Ok _ ->
+            (match request.outputSchema with
+            | None -> Ok ()
+            | Some value -> schema limit value)

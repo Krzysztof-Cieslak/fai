@@ -1,0 +1,202 @@
+module LlmTypes
+
+public type Provider =
+  | OpenAI
+  | Anthropic
+
+public type Image =
+  | ImageUrl String
+  | ImageBytes String Bytes
+
+public type Content =
+  | Text String
+  | Image Image
+
+public type Role =
+  | User
+  | Assistant
+
+public type ToolResult = { id : String, isError : Bool, value : Json.Value }
+
+/// Native items retain signatures and opaque reasoning needed on the next turn.
+public type Item =
+  | Message Role (List Content)
+  | Native Provider Json.Value
+  | ToolOutput ToolResult
+
+public type ToolDefinition = { description : String, name : String, parameters : Json.Value }
+
+public type ToolChoice =
+  | Auto
+  | Disabled
+  | Required
+  | Named String
+
+public type ProviderOptions =
+  | Defaults
+  | OpenAIOptions { reasoningEffort : Option String, store : Bool }
+  | AnthropicOptions { thinkingBudget : Option Int }
+
+public type Request = {
+  history : List Item,
+  instructions : String,
+  maxOutputTokens : Int,
+  model : String,
+  outputSchema : Option Json.Value,
+  parallelTools : Bool,
+  providerOptions : ProviderOptions,
+  temperature : Option Float,
+  toolChoice : ToolChoice,
+  tools : List ToolDefinition
+}
+
+public type Usage = {
+  cacheReadTokens : Option Int,
+  cacheWriteTokens : Option Int,
+  inputTokens : Option Int,
+  outputTokens : Option Int,
+  reasoningTokens : Option Int,
+  totalTokens : Option Int
+}
+
+public emptyUsage : Usage
+let emptyUsage = {
+  cacheReadTokens = None,
+  cacheWriteTokens = None,
+  inputTokens = None,
+  outputTokens = None,
+  reasoningTokens = None,
+  totalTokens = None
+}
+
+public type ToolCall = {
+  arguments : Json.Value,
+  id : String,
+  itemId : Option String,
+  name : String,
+  rawArguments : String
+}
+
+public type Block =
+  | TextBlock String String
+  | ReasoningBlock String String
+  | ToolBlock ToolCall
+  | RefusalBlock String String
+  | ExtensionBlock String Json.Value
+
+public type Finish =
+  | InProgress
+  | Completed
+  | NeedsTools
+  | Refused
+  | Incomplete String
+
+public type Response = {
+  blocks : List Block,
+  continuation : List Item,
+  finish : Finish,
+  id : String,
+  model : String,
+  provider : Provider,
+  requestId : Option String,
+  toolCalls : List ToolCall,
+  usage : Usage
+}
+
+public emptyResponse : Provider -> Response
+let emptyResponse provider = {
+  blocks = [],
+  continuation = [],
+  finish = InProgress,
+  id = "",
+  model = "",
+  provider = provider,
+  requestId = None,
+  toolCalls = [],
+  usage = emptyUsage
+}
+
+public type Event =
+  | Started String String
+  | TextDelta String String
+  | ReasoningDelta String String
+  | ToolStarted String String
+  | ToolArgumentsDelta String String
+  | BlockCompleted String
+  | UsageUpdated Usage
+  | ExtensionEvent String Json.Value
+  | ResponseCompleted Response
+
+public type ErrorKind =
+  | InvalidRequest
+  | UnsupportedFeature
+  | InvalidJson
+  | ProtocolError
+  | InvalidToolArguments
+  | TransportError
+  | ProviderError
+  | Cancelled
+  | DeadlineExceeded
+  | LimitExceeded
+  | ConsumerError
+  | SchemaError
+
+public type Error = {
+  bodyPreview : Bytes,
+  detail : Option JsonDecode.ReadError,
+  http : Option HttpClient.Error,
+  kind : ErrorKind,
+  message : String,
+  partial : Option Response,
+  providerCode : Option String,
+  requestId : Option String,
+  status : Option Int
+}
+
+public error : ErrorKind -> String -> Error
+let error kind message = {
+  bodyPreview = Bytes.empty,
+  detail = None,
+  http = None,
+  kind = kind,
+  message = message,
+  partial = None,
+  providerCode = None,
+  requestId = None,
+  status = None
+}
+
+public type Limits = {
+  maxBlocks : Int,
+  maxEvents : Int,
+  maxImageBytes : Int,
+  maxImages : Int,
+  maxRequestBytes : Int,
+  maxResponseBytes : Int,
+  maxSchemaDepth : Int,
+  maxSchemaNodes : Int,
+  maxToolArgumentBytes : Int,
+  maxToolCalls : Int
+}
+
+public limits : Limits
+let limits = {
+  maxBlocks = 256,
+  maxEvents = 1000000,
+  maxImageBytes = 20971520,
+  maxImages = 20,
+  maxRequestBytes = 33554432,
+  maxResponseBytes = 16777216,
+  maxSchemaDepth = 64,
+  maxSchemaNodes = 4096,
+  maxToolArgumentBytes = 1048576,
+  maxToolCalls = 64
+}
+
+public type Decision =
+  | Continue
+  | Stop
+
+public type StreamResult =
+  | Finished Response
+  | Stopped Response

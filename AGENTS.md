@@ -1132,6 +1132,12 @@ stop also observes an expired operation deadline before beginning cleanup.
 
 ## 6. Compiler pipeline
 
+The optional `packages/llm` library defines pure model requests, ordered content
+and provider-tagged continuation items. `LlmSchema` pairs portable JSON schemas
+with typed decoders and explicit local refinements; object fields are required,
+unknown fields fail, and nullable values remain distinct from missing fields.
+Tool-result continuation checks IDs and preserves native item order.
+
 `HttpClient.foldEvents` threads application state through scoped SSE callbacks,
 retaining typed callback errors, response metadata and bounded error bodies.
 Cancellation and deadlines retain the final committed state after worker cleanup;

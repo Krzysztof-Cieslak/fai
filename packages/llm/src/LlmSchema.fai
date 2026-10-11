@@ -1,0 +1,179 @@
+module LlmSchema
+
+public opaque type Schema 'a = {
+  decoder : JsonDecode.Decoder 'a,
+  issue : Option String,
+  json : Json.Value
+}
+
+let scalar name decoder = {
+  decoder = decoder,
+  issue = None,
+  json = LlmJson.object [("type", Json.String name)]
+}
+
+public string : Schema String
+let string = scalar "string" JsonDecode.string
+
+public bool : Schema Bool
+let bool = scalar "boolean" JsonDecode.bool
+
+public int : Schema Int
+let int = scalar "integer" JsonDecode.int
+
+public float : Schema Float
+let float = scalar "number" JsonDecode.float
+
+public map : ('a -> 'b) -> Schema 'a -> Schema 'b
+let map f schema = {
+  decoder = JsonDecode.map f schema.decoder,
+  issue = schema.issue,
+  json = schema.json
+}
+
+public list : Schema 'a -> Schema (List 'a)
+let list schema = {
+  decoder = JsonDecode.list schema.decoder,
+  issue = schema.issue,
+  json = LlmJson.object [("type", Json.String "array"), ("items", schema.json)]
+}
+
+public nullable : Schema 'a -> Schema (Option 'a)
+let nullable schema = {
+  decoder = JsonDecode.nullable schema.decoder,
+  issue = schema.issue,
+  json = LlmJson.object [
+    ("anyOf", LlmJson.array [schema.json, LlmJson.object [("type", Json.String "null")]])
+  ]
+}
+
+public enumeration : List String -> Schema String
+let enumeration choices = {
+  decoder = JsonDecode.andThen (fun value ->
+    if List.member value choices then
+      JsonDecode.succeed value
+    else
+      JsonDecode.fail "unknown enum value") JsonDecode.string,
+  issue = if choices = [] then Some "an enum needs at least one value" else None,
+  json = LlmJson.object [
+    ("type", Json.String "string"),
+    ("enum", LlmJson.array (List.map Json.String choices))
+  ]
+}
+
+/// Object fields are required; nullable explicitly models a value that may be null.
+public field : String -> Schema 'a -> Schema 'a
+let field name schema = {
+  decoder = JsonDecode.field name schema.decoder,
+  issue = if name = "" then Some "a field needs a name" else schema.issue,
+  json = LlmJson.object [
+    ("type", Json.String "object"),
+    ("properties", LlmJson.object [(name, schema.json)]),
+    ("required", LlmJson.array [Json.String name]),
+    ("additionalProperties", Json.Boolean false)
+  ]
+}
+
+let properties schema = Option.withDefault Json.Null (LlmJson.get "properties" schema)
+
+let names fields = List.map pairName fields
+
+let pairName pair =
+  let (name, _) = pair
+  name
+
+/// Compose two object schemas and their decoders, checking duplicate fields.
+public map2 : ('a -> 'b -> 'c) -> Schema 'a -> Schema 'b -> Schema 'c
+let map2 f first second =
+  let left = LlmJson.fields (properties first.json)
+  let right = LlmJson.fields (properties second.json)
+  let fields = List.append left right
+  let issue =
+    if LlmJson.text "type" first.json <> Some "object" || LlmJson.text "type" second.json <> Some "object" then
+      Some "map2 combines object field schemas"
+    else if List.any (fun name -> List.member name (names right)) (names left) then
+      Some "duplicate schema field"
+    else
+      (match first.issue with
+      | Some issue -> Some issue
+      | None -> second.issue)
+  {
+    decoder = JsonDecode.map2 f first.decoder second.decoder,
+    issue = issue,
+    json = LlmJson.object [
+      ("type", Json.String "object"),
+      ("properties", LlmJson.object fields),
+      ("required", LlmJson.array (List.map Json.String (names fields))),
+      ("additionalProperties", Json.Boolean false)
+    ]
+  }
+
+/// A refinement runs locally; the provider is sent the underlying wire schema.
+public refine : ('a -> Result 'a String) -> Schema 'a -> Schema 'a
+let refine check schema = { schema with
+  decoder = JsonDecode.andThen (fun value ->
+    match check value with
+    | Ok value -> JsonDecode.succeed value
+    | Err message -> JsonDecode.fail message) schema.decoder
+}
+
+public describe : Schema 'a -> Result Json.Value String
+let describe schema =
+  match schema.issue with
+  | None -> Ok schema.json
+  | Some issue -> Err issue
+
+public decoder : Schema 'a -> JsonDecode.Decoder 'a
+let decoder schema = JsonDecode.fromFunction (decode schema)
+
+checkFields : Json.Value -> List (String * Json.Value) -> List JsonDecode.PathSegment -> Int -> Result Unit JsonDecode.Error
+let checkFields properties fields path depth =
+  match fields with
+  | [] -> Ok ()
+  | (name, value) :: rest ->
+    let at = List.append path [JsonDecode.Field name]
+    match LlmJson.get name properties with
+    | None -> Err (JsonDecode.Failure at "unknown object field")
+    | Some shape ->
+      match checkShape shape value at depth with
+      | Err error -> Err error
+      | Ok _ -> checkFields properties rest path depth
+
+checkItems : Json.Value -> List Json.Value -> Int -> List JsonDecode.PathSegment -> Int -> Result Unit JsonDecode.Error
+let checkItems shape items index path depth =
+  match items with
+  | [] -> Ok ()
+  | value :: rest ->
+    match checkShape shape value (List.append path [JsonDecode.Index index]) depth with
+    | Err error -> Err error
+    | Ok _ -> checkItems shape rest (index + 1) path depth
+
+checkShape : Json.Value -> Json.Value -> List JsonDecode.PathSegment -> Int -> Result Unit JsonDecode.Error
+let checkShape shape value path depth =
+  if depth > 128 then
+    Err (JsonDecode.Failure path "schema nesting limit exceeded")
+  else
+    match LlmJson.list "anyOf" shape with
+    | Some (first :: _) ->
+      if value = Json.Null then Ok () else checkShape first value path (depth + 1)
+    | _ ->
+      match value with
+      | Json.Object fields ->
+        if LlmJson.text "type" shape = Some "object" then
+          checkFields (properties shape) (Array.toList fields) path (depth + 1)
+        else
+          Ok ()
+      | Json.Array items ->
+        (match LlmJson.get "items" shape with
+        | Some child -> checkItems child (Array.toList items) 0 path (depth + 1)
+        | None -> Ok ())
+      | _ -> Ok ()
+
+public decode : Schema 'a -> Json.Value -> Result 'a JsonDecode.Error
+let decode schema value =
+  match schema.issue with
+  | Some issue -> Err (JsonDecode.Failure [] issue)
+  | None ->
+    match checkShape schema.json value [] 0 with
+    | Err error -> Err error
+    | Ok _ -> JsonDecode.decode schema.decoder value

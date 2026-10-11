@@ -1846,6 +1846,13 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/llm` supplies pure `Llm.request` builders, ordered `LlmTypes` content and
+provider-tagged continuation items. `LlmSchema` combines a wire schema and typed
+JSON decoder (`field`, `map2`, `list`, `nullable`, scalar schemas and local
+`refine`). `Llm.structured` attaches its output shape. `LlmMessage.continueWith`
+requires one result for each completed tool call. `Llm.Model 'e` is an
+effect-carrying generation port that also supports pure scripted models.
+
 Including `packages/process/src` supplies `Process` and `ProcessText`. Commands
 are pure descriptions (`command`, `arguments`, `workingDirectory`, environment
 and stdin builders); `run` captures bytes, and `withOutput` streams them to a
