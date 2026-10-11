@@ -7790,7 +7790,11 @@ impl<M: Module> Translator<'_, M> {
     ) -> Value {
         let saved_tags = std::mem::take(&mut self.known_tags);
         let mut layout_tags = FxHashMap::default();
-        if self.array_tag_cacheable && !self.concurrent {
+        // Keep single-buffer scans' predicates local: extending their lifetime
+        // can spill a hot scalar. Copy/merge loops amortize several layout reads.
+        let generic_arrays =
+            params.iter().filter(|p| self.var_ty(**p).is_some_and(is_generic_array)).count();
+        if self.array_tag_cacheable && !self.concurrent && generic_arrays >= 2 {
             let stable = crate::array_layout::invariant(params, body);
             for &param in params {
                 if stable.contains(&param) && self.var_ty(param).is_some_and(is_generic_array) {

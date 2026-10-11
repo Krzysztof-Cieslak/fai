@@ -4706,6 +4706,17 @@ fn layout_preserving_array_loops_load_descriptors_once() {
 }
 
 #[test]
+fn single_buffer_loops_keep_layout_predicates_local() {
+    let source = "module M\nlet fill n value target = if n <= 0 then target else fill (n - 1) value (Array.unsafeSet (n - 1) value target)\n";
+    let ir = entry_ir(source, "fill");
+    let reads = ir
+        .lines()
+        .filter(|line| line.contains("load.i64") && line.trim_end().ends_with("+8"))
+        .count();
+    assert_eq!(reads, 2, "single-buffer scans keep the existing predicate lifetime:\n{ir}");
+}
+
+#[test]
 fn an_array_bounded_integer_needs_no_boxing_overflow_guard() {
     let source = "module M\nlet append n values = if n < 0 then values else if n < Array.length values then Array.push n values else values\n";
     let ir = entry_ir(source, "append");
