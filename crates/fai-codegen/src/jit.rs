@@ -148,6 +148,11 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_fs_open_directory", rt::fai_fs_open_directory);
     sym!("fai_fs_next_directory", rt::fai_fs_next_directory);
     sym!("fai_fs_close_directory", rt::fai_fs_close_directory);
+    sym!("fai_fs_temp_create", rt::fai_fs_temp_create);
+    sym!("fai_fs_temp_path", rt::fai_fs_temp_path);
+    sym!("fai_fs_temp_writer", rt::fai_fs_temp_writer);
+    sym!("fai_fs_temp_close", rt::fai_fs_temp_close);
+    sym!("fai_fs_temp_persist", rt::fai_fs_temp_persist);
     sym!("fai_env_get", rt::fai_env_get);
     sym!("fai_env_args", rt::fai_env_args);
     sym!("fai_record_update", rt::fai_record_update);

@@ -1,0 +1,50 @@
+module Temp
+
+/// The resource owns both the entry and every alias of its initial writer.
+public type File = { path : Path, resource : Io.Temporary, writer : Writer }
+
+public type Directory = { path : Path, resource : Io.Temporary }
+
+/// Create in an explicit parent; scope exit closes writer aliases and removes the
+/// entry, even after callback failure or cancellation. Persistence transfers it.
+public withFile : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> (File -> Result 'a 'error / 'e) -> Result 'a (FileSystem.ScopeError 'error) / { Concurrency, FileSystem | 'e }
+let withFile env parent work =
+  match env.fs.createTemporary parent false with
+  | Err error -> Err (FileSystem.OpenError error)
+  | Ok resource ->
+    let opened =
+      match env.fs.temporaryPath resource with
+      | Err error -> Err error
+      | Ok path ->
+        match env.fs.temporaryWriter resource with
+        | Err error -> Err error
+        | Ok writer -> Ok { path = path, resource = resource, writer = writer }
+    match opened with
+    | Err error -> failedOpen env resource error
+    | Ok file ->
+      let result = work file
+      let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeTemporary resource)
+      FileSystem.scopeResult result closed
+
+/// Create a private temporary directory with recursive no-follow cleanup.
+public withDirectory : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> (Directory -> Result 'a 'error / 'e) -> Result 'a (FileSystem.ScopeError 'error) / { Concurrency, FileSystem | 'e }
+let withDirectory env parent work =
+  match env.fs.createTemporary parent true with
+  | Err error -> Err (FileSystem.OpenError error)
+  | Ok resource ->
+    match env.fs.temporaryPath resource with
+    | Err error -> failedOpen env resource error
+    | Ok path ->
+      let result = work { path = path, resource = resource }
+      let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeTemporary resource)
+      FileSystem.scopeResult result closed
+
+failedOpen : { concurrency : Concurrency, fs : FileSystem | _ } -> Io.Temporary -> FileSystem.Error -> Result 'a (FileSystem.ScopeError 'error) / { Concurrency, FileSystem }
+let failedOpen env resource error =
+  match Wire.cleanup env.concurrency (fun _ -> env.fs.closeTemporary resource) with
+  | Ok _ -> Err (FileSystem.OpenError error)
+  | Err cleanup -> Err (FileSystem.OpenAndCloseError error cleanup)
+
+/// Transfer an owned entry to destination; false means atomic no-clobber.
+public persist : FileSystem -> Io.Temporary -> Path -> Bool -> Result Path FileSystem.Error / { FileSystem }
+let persist fs resource destination overwrite = fs.persistTemporary resource destination overwrite

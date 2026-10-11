@@ -282,6 +282,7 @@ fn mutate(op: i64, a: &Path, b: &Path, probe: &CancellationProbe) -> Result<()> 
             }
         }
         10 => fs::hard_link(a, b)?,
+        11 => fs::remove_dir_all(a)?,
         _ => return Err(Error::new(Kind::InvalidArgument, "invalid filesystem operation")),
     }
     Ok(())
@@ -310,11 +311,16 @@ pub extern "C" fn fai_fs_mutate(op: Value, a: Value, b: Value) -> Value {
         6 | 7 => "copy",
         8 | 9 => "symlink",
         10 => "hardLink",
+        11 => "removeTree",
         _ => "mutate",
     };
-    result(outcome, name, pa.as_deref(), if code >= 4 { pb.as_deref() } else { None }, |_| {
-        crate::FAI_UNIT
-    })
+    result(
+        outcome,
+        name,
+        pa.as_deref(),
+        if (4..=10).contains(&code) { pb.as_deref() } else { None },
+        |_| crate::FAI_UNIT,
+    )
 }
 
 /// Open a directory cursor; final drop or explicit close releases enumeration.

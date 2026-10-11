@@ -167,10 +167,12 @@ public interface FileSystem =
   canonicalize : Path -> Result Path FileSystem.Error / { FileSystem }
   closeDirectory : Io.DirectoryCursor -> Result Unit FileSystem.Error / { FileSystem }
   closeReader : Reader -> Result Unit FileSystem.Error / { FileSystem }
+  closeTemporary : Io.Temporary -> Result Unit FileSystem.Error / { FileSystem }
   closeWriter : Writer -> Result Unit FileSystem.Error / { FileSystem }
   copy : Path -> Path -> Bool -> Result Unit FileSystem.Error / { FileSystem }
   createDirectories : Path -> Result Unit FileSystem.Error / { FileSystem }
   createDirectory : Path -> Result Unit FileSystem.Error / { FileSystem }
+  createTemporary : Path -> Bool -> Result Io.Temporary FileSystem.Error / { FileSystem }
   currentDirectory : Unit -> Result Path FileSystem.Error / { FileSystem }
   flushWriter : Writer -> Result Unit FileSystem.Error / { FileSystem }
   hardLink : Path -> Path -> Result Unit FileSystem.Error / { FileSystem }
@@ -182,12 +184,14 @@ public interface FileSystem =
   openRead : Path -> Result Reader FileSystem.Error / { FileSystem }
   openWrite : Path -> Result Writer FileSystem.Error / { FileSystem }
   openWriter : Path -> FileSystem.WriteMode -> Result Writer FileSystem.Error / { FileSystem }
+  persistTemporary : Io.Temporary -> Path -> Bool -> Result Path FileSystem.Error / { FileSystem }
   readBytes : Path -> Int -> Result Bytes FileSystem.Error / { FileSystem }
   readChunk : Reader -> Int -> Result Bytes FileSystem.Error / { FileSystem }
   readFile : Path -> Result String FileSystem.Error / { FileSystem }
   readLink : Path -> Result Path FileSystem.Error / { FileSystem }
   removeDirectory : Path -> Result Unit FileSystem.Error / { FileSystem }
   removeFile : Path -> Result Unit FileSystem.Error / { FileSystem }
+  removeTree : Path -> Result Unit FileSystem.Error / { FileSystem }
   rename : Path -> Path -> Result Unit FileSystem.Error / { FileSystem }
   replace : Path -> Path -> Result Unit FileSystem.Error / { FileSystem }
   sameFile : Path -> Path -> Result Bool FileSystem.Error / { FileSystem }
@@ -196,6 +200,8 @@ public interface FileSystem =
   symlink : Path -> Path -> Bool -> Result Unit FileSystem.Error / { FileSystem }
   syncWriter : Writer -> Bool -> Result Unit FileSystem.Error / { FileSystem }
   temporaryDirectory : Unit -> Result Path FileSystem.Error / { FileSystem }
+  temporaryPath : Io.Temporary -> Result Path FileSystem.Error / { FileSystem }
+  temporaryWriter : Io.Temporary -> Result Writer FileSystem.Error / { FileSystem }
   writeBytes : Path -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
   writeChunk : Writer -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
   writeFile : Path -> String -> Result Unit FileSystem.Error / { FileSystem }
@@ -366,6 +372,16 @@ foreign "fai_fs_next_directory" fsNextDirectory : Io.DirectoryCursor -> Result (
 
 foreign "fai_fs_close_directory" fsCloseDirectory : Io.DirectoryCursor -> Result Unit FileSystem.Error / { FileSystem }
 
+foreign "fai_fs_temp_create" fsTempCreate : Path -> Bool -> Result Io.Temporary FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_temp_path" fsTempPath : Io.Temporary -> Result Path FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_temp_writer" fsTempWriter : Io.Temporary -> Result Writer FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_temp_close" fsTempClose : Io.Temporary -> Result Unit FileSystem.Error / { FileSystem }
+
+foreign "fai_fs_temp_persist" fsTempPersist : Io.Temporary -> Path -> Bool -> Result Path FileSystem.Error / { FileSystem }
+
 foreign "fai_env_get" envGet : String -> (Bool * String) / { Env }
 
 foreign "fai_env_args" envArgs : Unit -> List String / { Env }
@@ -479,10 +495,12 @@ let stdFs = { FileSystem with
   canonicalize path = fsLocation 2 path,
   closeDirectory = fsCloseDirectory,
   closeReader = fileCloseReader,
+  closeTemporary = fsTempClose,
   closeWriter = fileCloseWriter,
   copy source destination overwrite = fsMutate (if overwrite then 7 else 6) source destination,
   createDirectories path = fsMutate 1 path Path.empty,
   createDirectory path = fsMutate 0 path Path.empty,
+  createTemporary = fsTempCreate,
   currentDirectory unit = fsLocation 0 Path.empty,
   flushWriter = fileFlush,
   hardLink source destination = fsMutate 10 source destination,
@@ -494,12 +512,14 @@ let stdFs = { FileSystem with
   openRead = fileOpenRead,
   openWrite = fileOpenWrite,
   openWriter = fileOpenWriter,
+  persistTemporary = fsTempPersist,
   readBytes = fileReadBytes,
   readChunk = fileReadChunk,
   readFile = fileRead,
   readLink path = fsLocation 3 path,
   removeDirectory path = fsMutate 3 path Path.empty,
   removeFile path = fsMutate 2 path Path.empty,
+  removeTree path = fsMutate 11 path Path.empty,
   rename source destination = fsMutate 4 source destination,
   replace source destination = fsMutate 5 source destination,
   sameFile = fsSameFile,
@@ -508,6 +528,8 @@ let stdFs = { FileSystem with
   symlink target link directory = fsMutate (if directory then 9 else 8) target link,
   syncWriter = fileSync,
   temporaryDirectory unit = fsLocation 1 Path.empty,
+  temporaryPath = fsTempPath,
+  temporaryWriter = fsTempWriter,
   writeBytes = fileWriteBytes,
   writeChunk = fileWriteChunk,
   writeFile = fileWrite

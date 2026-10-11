@@ -4,6 +4,10 @@ module Files
 public readConfig : { fs : FileSystem | _ } -> Path -> Result String FileSystem.Error / { FileSystem }
 let readConfig env path = File.readText env.fs 65536 path
 
+/// Temporary directories are removed even when the callback reports failure.
+public scratch : { concurrency : Concurrency, fs : FileSystem | _ } -> Path -> Result Path (FileSystem.ScopeError String) / { Concurrency, FileSystem }
+let scratch env parent = Temp.withDirectory env parent (fun temporary -> Ok temporary.path)
+
 /// Metadata is a snapshot. Actual filesystem operations still return errors if
 /// the entry changes after this observation.
 public size : { fs : FileSystem | _ } -> Path -> Result Int FileSystem.Error / { FileSystem }

@@ -12,9 +12,14 @@ use crate::Value;
 use crate::scheduler::{CancellationProbe, cancellation_probe};
 
 mod directory;
+mod temporary;
 pub use directory::{
     fai_fs_close_directory, fai_fs_location, fai_fs_metadata, fai_fs_mutate, fai_fs_next_directory,
     fai_fs_open_directory, fai_fs_same_file,
+};
+pub use temporary::{
+    fai_fs_temp_close, fai_fs_temp_create, fai_fs_temp_path, fai_fs_temp_persist,
+    fai_fs_temp_writer,
 };
 
 type Result<T> = std::result::Result<T, Error>;
@@ -40,7 +45,7 @@ enum Kind {
     IoFailure,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Error {
     kind: Kind,
     message: String,
@@ -153,6 +158,7 @@ enum FileState {
     Reader(Option<BufReader<File>>),
     Writer(Option<BufWriter<File>>),
     Directory(Option<std::fs::ReadDir>),
+    Temporary(Box<temporary::Temporary>),
 }
 struct FileObject {
     path: PathBuf,
@@ -160,8 +166,11 @@ struct FileObject {
 }
 
 fn file_handle_value(path: PathBuf, state: FileState) -> Value {
-    let raw =
-        Arc::into_raw(Arc::new(FileObject { path, state: Mutex::new(state) })) as usize as i64;
+    file_handle_arc(Arc::new(FileObject { path, state: Mutex::new(state) }))
+}
+
+fn file_handle_arc(arc: Arc<FileObject>) -> Value {
+    let raw = Arc::into_raw(arc) as usize as i64;
     let p = crate::alloc_obj(crate::HEADER_SIZE + 8, std::ptr::addr_of!(crate::FAI_FILE_DESC));
     // SAFETY: the allocated handle has one slot holding the Arc owner.
     unsafe { crate::write_i64(p, crate::HANDLE_PTR_OFFSET, raw) };
@@ -301,6 +310,7 @@ pub extern "C" fn fai_file_write_chunk(writer: Value, bytes: Value) -> Value {
 
 fn close_state(state: &mut FileState) -> Result<()> {
     match state {
+        FileState::Temporary(resource) => resource.close(),
         FileState::Directory(directory) => {
             directory.take();
             Ok(())
@@ -394,7 +404,7 @@ pub extern "C" fn fai_file_seek(handle: Value, offset: Value) -> Value {
         check(&probe)?;
         let position = SeekFrom::Start(offset_value as u64);
         let offset = match &mut *state {
-            FileState::Directory(_) => {
+            FileState::Directory(_) | FileState::Temporary(_) => {
                 return Err(Error::new(Kind::InvalidArgument, "cannot seek a directory"));
             }
             FileState::Reader(reader) => reader.as_mut().ok_or_else(closed)?.seek(position)?,

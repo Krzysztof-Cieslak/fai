@@ -1139,6 +1139,16 @@ forall xs: mirror (mirror xs) = xs
 
 ### FileSystem and File — native file I/O
 
+`Temp.withFile env parent work` and `Temp.withDirectory env parent work` create
+exclusive temporary resources. The callback receives the native path and opaque
+resource; a file also supplies its writer. Scope exit expires writer aliases and
+deletes the entry, preserving callback/cleanup failures. `Temp.persist fs resource
+destination overwrite` transfers it on success; a failed rename retains cleanup
+ownership. `fs.removeTree path` recursively removes without following symlink
+targets, can partially complete on failure, and checks cancellation before its
+native (non-interruptible) traversal. Obtain a default parent using
+`fs.temporaryDirectory ()`.
+
 `Directory.list env limit path` returns a sorted, bounded listing and preserves
 scope cleanup errors. `Directory.walk env options root initial step` folds over
 descendants, with children at depth one. `step depth entry state` returns a new

@@ -51,6 +51,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Temporary resources are exclusive native creations, with private Unix modes,
+  explicit parent directories and owned cleanup. Persisting closes initial writer
+  aliases and transfers the directory entry only after a successful rename.
+  Failed transfers remain owned. Native recursive deletion does not traverse
+  symlink targets; its individual OS traversal is not cancellation-interruptible.
+
 - Directory traversal uses an explicit frame stack, scoped native cursors and
   ancestor-only cycle detection. Entry, depth and open-directory limits are
   explicit. Native order streams; sorted order buffers each bounded directory.
