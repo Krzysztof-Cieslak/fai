@@ -1,0 +1,78 @@
+module LogSink
+
+public type Sink 'e = LogTypes.Sink 'e
+
+public type Output 'e = LogTypes.Output 'e
+
+/// Give unnamed failures the destination's identity while retaining native detail.
+public at : String -> LogTypes.Error -> LogTypes.Error
+let at name error = { error with
+  failures = List.map (fun failure -> { failure with
+    destination = if failure.destination = "" then name else failure.destination
+  }) error.failures
+}
+
+send : String -> LogTypes.Limits -> LogFormat.Format -> Output 'e -> LogTypes.Record -> Result (List LogTypes.Outcome) LogTypes.Error / 'e
+let send name limits format output record =
+  match LogFormat.render limits format record with
+  | Err error -> Err (at name error)
+  | Ok line ->
+    Result.map (fun delivery -> [
+      { delivery = delivery, destination = name }
+    ]) (Result.mapError (at name) (output.writeLine line))
+
+/// Format one complete record before invoking the line output once.
+public formatted : String -> LogTypes.Limits -> LogFormat.Format -> Output 'e -> Sink 'e
+let formatted name limits format output = {
+  emit = send name limits format output,
+  flush = fun _ -> Result.mapError (at name) (output.flush ()),
+  names = [name]
+}
+
+public validate : Sink 'e -> Result Unit LogTypes.Error
+let validate sink =
+  if sink.names = [] || List.length sink.names > 64 || List.any (fun name ->
+    name = "") sink.names || Set.size (Set.fromList sink.names) <> List.length sink.names then
+    Err (LogTypes.error LogTypes.Configuration "" "destinations must have distinct nonempty names (at most 64)")
+  else
+    Ok ()
+
+join : Result (List LogTypes.Outcome) LogTypes.Error -> Result (List LogTypes.Outcome) LogTypes.Error -> Result (List LogTypes.Outcome) LogTypes.Error
+let join first second =
+  match (first, second) with
+  | (Ok a, Ok b) -> Ok (List.append a b)
+  | (Err a, Ok b) -> Err { a with outcomes = List.append a.outcomes b }
+  | (Ok a, Err b) -> Err { b with outcomes = List.append a b.outcomes }
+  | (Err a, Err b) -> Err {
+    failures = List.append a.failures b.failures,
+    outcomes = List.append a.outcomes b.outcomes
+  }
+
+sendBoth : Sink 'e -> Sink 'e -> LogTypes.Record -> Result (List LogTypes.Outcome) LogTypes.Error / 'e
+let sendBoth first second record =
+  let a = first.emit record
+  let b = second.emit record
+  join a b
+
+flushBoth : Sink 'e -> Sink 'e -> Unit -> Result Unit LogTypes.Error / 'e
+let flushBoth first second unit =
+  let a = Result.map (fun _ -> []) (first.flush ())
+  let b = Result.map (fun _ -> []) (second.flush ())
+  Result.map (fun _ -> ()) (join a b)
+
+/// Attempt each destination in registration order, including after earlier errors.
+/// The shared effect parameter unions differently effectful arguments.
+public combine : Sink 'e -> Sink 'e -> Sink 'e
+let combine first second = {
+  emit = sendBoth first second,
+  flush = flushBoth first second,
+  names = List.append first.names second.names
+}
+
+/// A pure sink for applications that explicitly discard logging.
+public discard : String -> Sink { }
+let discard name = {
+  emit = fun _ -> Ok [{ delivery = LogTypes.Completed, destination = name }],
+  flush = fun _ -> Ok (),
+  names = [name]
+}

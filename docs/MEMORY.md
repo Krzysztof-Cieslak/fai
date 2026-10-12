@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Loggers are explicit effect-carrying values. Filtering precedes lazy entry
+  construction and timestamp reads; a record and its timestamp are shared across
+  destinations. Checked delivery remains available beneath a Unit-returning
+  best-effort facade with an explicitly supplied error handler.
+
 - Structured logging is an optional source package with pure records, filtering,
   field merging and formatting. Context layers use later-value precedence; the
   versioned JSON envelope keeps user fields separate from metadata. Validation

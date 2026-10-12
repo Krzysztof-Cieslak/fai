@@ -1,0 +1,164 @@
+module Log
+
+public type Level = LogTypes.Level
+
+public type Error = LogTypes.Error
+
+public type Entry = LogTypes.Entry
+
+public type Record = LogTypes.Record
+
+public type Receipt = LogTypes.Receipt
+
+public type Options = LogFilter.Options
+
+public type Limits = LogTypes.Limits
+
+public defaults : Options
+let defaults = LogFilter.defaults
+
+public limits : Limits
+let limits = LogTypes.limits
+
+public opaque type Logger 'e = {
+  context : List LogField.Field,
+  options : Options,
+  run : Option (Record * Bool) -> Result Receipt Error / 'e,
+  target : String
+}
+
+runSink : LogSink.Sink 'e -> Option (Record * Bool) -> Result Receipt Error / 'e
+let runSink sink action =
+  match action with
+  | None -> Result.map (fun _ -> LogTypes.Emitted []) (sink.flush ())
+  | Some (record, _) -> Result.map LogTypes.Emitted (sink.emit record)
+
+/// Validate configuration before constructing a logger; construction is pure.
+public create : Options -> LogSink.Sink 'e -> Result (Logger 'e) Error
+let create options sink =
+  match LogFilter.validate options with
+  | Err error -> Err error
+  | Ok _ ->
+    match LogSink.validate sink with
+    | Err error -> Err error
+    | Ok _ -> Ok { context = [], options = options, run = runSink sink, target = "" }
+
+public withTarget : String -> Logger 'e -> Logger 'e
+let withTarget target logger = { logger with target = target }
+
+/// Child context is immutable. Event fields override child and parent fields.
+public withFields : List LogField.Field -> Logger 'e -> Logger 'e
+let withFields fields logger = { logger with context = List.append logger.context fields }
+
+public withTimestamp : (Unit -> Option Instant / 'e) -> Logger 'e -> Logger 'e
+let withTimestamp timestamp logger = {
+  context = logger.context,
+  options = logger.options,
+  run = stamped timestamp logger.options.limits logger.run,
+  target = logger.target
+}
+
+stamped : (Unit -> Option Instant / 'e) -> Limits -> (Option (Record * Bool) -> Result Receipt Error / 'e) -> Option (Record * Bool) -> Result Receipt Error / 'e
+let stamped timestamp limits run action =
+  match action with
+  | None -> run None
+  | Some (record, already) ->
+    let time = if already then record.timestamp else timestamp ()
+    let record = { record with timestamp = time }
+    match LogBudget.check limits (LogFormat.toJson record) with
+    | Err error -> Err error
+    | Ok _ -> run (Some (record, true))
+
+public withClock : Clock -> Logger 'e -> Logger { Clock | 'e }
+let withClock clock logger = {
+  context = logger.context,
+  options = logger.options,
+  run = clocked clock logger.options.limits logger.run,
+  target = logger.target
+}
+
+clocked : Clock -> Limits -> (Option (Record * Bool) -> Result Receipt Error / 'e) -> Option (Record * Bool) -> Result Receipt Error / { Clock | 'e }
+let clocked clock limits run action =
+  match action with
+  | None -> run None
+  | Some (record, already) ->
+    let time = if already then record.timestamp else Some (Instant.now { clock = clock })
+    let record = { record with timestamp = time }
+    match LogBudget.check limits (LogFormat.toJson record) with
+    | Err error -> Err error
+    | Ok _ -> run (Some (record, true))
+
+public entry : String -> List LogField.Field -> Entry
+let entry message fields = { event = None, fields = fields, message = message }
+
+public named : String -> Entry -> Entry
+let named event entry = { entry with event = Some event }
+
+public enabled : Logger 'e -> Level -> Bool
+let enabled logger level = LogFilter.enabled logger.options logger.target level
+
+/// Pure preparation supports tests and replay without constructing a native sink.
+public prepare : Options -> String -> List LogField.Field -> Level -> Entry -> Result (Option Record) Error
+let prepare options target context level entry =
+  match LogFilter.validate options with
+  | Err error -> Err error
+  | Ok _ ->
+    if not (LogFilter.enabled options target level) then
+      Ok None
+    else
+      match LogField.merge options.limits (List.append context entry.fields) with
+      | Err error -> Err error
+      | Ok fields ->
+        let record = {
+          event = entry.event,
+          fields = fields,
+          level = level,
+          message = entry.message,
+          target = target,
+          timestamp = None
+        }
+        Result.map (fun _ -> Some record) (LogBudget.check options.limits (LogFormat.toJson record))
+
+/// Filter before constructing the complete entry, reading time or touching sinks.
+public writeLazy : Logger 'e -> Level -> (Unit -> Entry) -> Result Receipt Error / 'e
+let writeLazy logger level build =
+  if not (enabled logger level) then
+    Ok LogTypes.Filtered
+  else
+    match prepare logger.options logger.target logger.context level (build ()) with
+    | Err error -> Err error
+    | Ok None -> Ok LogTypes.Filtered
+    | Ok (Some record) -> logger.run (Some (record, false))
+
+public write : Logger 'e -> Level -> Entry -> Result Receipt Error / 'e
+let write logger level entry = writeLazy logger level (fun _ -> entry)
+
+public trace : Logger 'e -> String -> List LogField.Field -> Result Receipt Error / 'e
+let trace logger message fields = write logger LogTypes.Trace (entry message fields)
+
+public debug : Logger 'e -> String -> List LogField.Field -> Result Receipt Error / 'e
+let debug logger message fields = write logger LogTypes.Debug (entry message fields)
+
+public info : Logger 'e -> String -> List LogField.Field -> Result Receipt Error / 'e
+let info logger message fields = write logger LogTypes.Info (entry message fields)
+
+public warn : Logger 'e -> String -> List LogField.Field -> Result Receipt Error / 'e
+let warn logger message fields = write logger LogTypes.Warn (entry message fields)
+
+public error : Logger 'e -> String -> List LogField.Field -> Result Receipt Error / 'e
+let error logger message fields = write logger LogTypes.Error (entry message fields)
+
+public fatal : Logger 'e -> String -> List LogField.Field -> Result Receipt Error / 'e
+let fatal logger message fields = write logger LogTypes.Fatal (entry message fields)
+
+public debugLazy : Logger 'e -> (Unit -> Entry) -> Result Receipt Error / 'e
+let debugLazy logger build = writeLazy logger LogTypes.Debug build
+
+public infoLazy : Logger 'e -> (Unit -> Entry) -> Result Receipt Error / 'e
+let infoLazy logger build = writeLazy logger LogTypes.Info build
+
+public flush : Logger 'e -> Result Unit Error / 'e
+let flush logger = Result.map (fun _ -> ()) (logger.run None)
+
+public errorToString : Error -> String
+let errorToString error = LogTypes.errorToString error

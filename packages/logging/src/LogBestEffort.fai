@@ -1,0 +1,43 @@
+module LogBestEffort
+
+public opaque type Logger 'e = { checked : Log.Logger 'e, onFailure : Log.Error -> Unit / 'e }
+
+/// Handle observable failures once, outside the checked logger's internal guards.
+/// Queue scope completion remains checked, including failures after acceptance.
+public fromChecked : Log.Logger 'e -> (Log.Error -> Unit / 'e) -> Logger 'e
+let fromChecked checked onFailure = { checked = checked, onFailure = onFailure }
+
+let finish logger result =
+  match result with
+  | Ok _ -> ()
+  | Err error -> logger.onFailure error
+
+public write : Logger 'e -> Log.Level -> Log.Entry -> Unit / 'e
+let write logger level entry = finish logger (Log.write logger.checked level entry)
+
+public writeLazy : Logger 'e -> Log.Level -> (Unit -> Log.Entry) -> Unit / 'e
+let writeLazy logger level build = finish logger (Log.writeLazy logger.checked level build)
+
+public info : Logger 'e -> String -> List LogField.Field -> Unit / 'e
+let info logger message fields = write logger LogTypes.Info (Log.entry message fields)
+
+public debug : Logger 'e -> String -> List LogField.Field -> Unit / 'e
+let debug logger message fields = write logger LogTypes.Debug (Log.entry message fields)
+
+public warn : Logger 'e -> String -> List LogField.Field -> Unit / 'e
+let warn logger message fields = write logger LogTypes.Warn (Log.entry message fields)
+
+public error : Logger 'e -> String -> List LogField.Field -> Unit / 'e
+let error logger message fields = write logger LogTypes.Error (Log.entry message fields)
+
+public fatal : Logger 'e -> String -> List LogField.Field -> Unit / 'e
+let fatal logger message fields = write logger LogTypes.Fatal (Log.entry message fields)
+
+public trace : Logger 'e -> String -> List LogField.Field -> Unit / 'e
+let trace logger message fields = write logger LogTypes.Trace (Log.entry message fields)
+
+public debugLazy : Logger 'e -> (Unit -> Log.Entry) -> Unit / 'e
+let debugLazy logger build = writeLazy logger LogTypes.Debug build
+
+public flush : Logger 'e -> Unit / 'e
+let flush logger = finish logger (Log.flush logger.checked)
