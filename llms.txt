@@ -2335,7 +2335,10 @@ See `packages/web/README.md`.
 
 The current CLI uses the native-dependency `fai.toml` section described below.
 The package/project design and implementation status are in `docs/PACKAGES.md`;
-its vendoring, publishing, and toolchain-dispatch integration is being developed.
+its publishing and toolchain-dispatch integration is being developed. `fai vendor`
+snapshots exact locked Git sources for frozen builds without a cache or network.
+Configured snapshots fail on missing/altered entries; `--no-vendor` is an explicit
+bypass, and `fai vendor` refreshes tool-owned source trees.
 
 `fai build-info` prints JSON describing the compiler's source digest, complete
 tool build identity, backend identity, target, profile and bundled native

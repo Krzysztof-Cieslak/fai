@@ -168,6 +168,12 @@ A dependency alias has multiple declarations that can be active on one target, i
 
 A package has duplicate executable names, invalid source-root ownership, a missing entry file, an invalid default executable, or an entry outside its package boundary. Executable and test sources are separate from the shared library surface.
 
+### FAI0820 — vendored source unavailable
+
+**Severity:** error
+
+A required source has no matching verified vendor entry or its bytes changed. Refresh the vendor snapshot, or explicitly use --no-vendor to restore through the normal source provider. Configured vendoring never silently falls through to the network.
+
 ### FAI0825 — package inputs changed during preparation
 
 **Severity:** error

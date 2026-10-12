@@ -13,6 +13,7 @@ fai-diagnostics.workspace = true
 camino.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 tempfile.workspace = true
 blake3.workspace = true
 

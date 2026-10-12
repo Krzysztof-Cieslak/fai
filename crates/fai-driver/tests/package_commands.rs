@@ -190,3 +190,21 @@ fn stale_prepared_graphs_cannot_replace_a_newer_compiler_snapshot() {
     assert!(session.apply_prepared(old).is_err());
     assert_eq!(session.user_files(), files);
 }
+
+#[test]
+fn vendor_snapshot_rejects_mutable_sources_outside_the_project() {
+    let fixture = Fixture::new();
+    fixture.package("app", "app", "1.0.0", "[dependencies]\nlib = {path = '../lib'}\n");
+    fixture.package("lib", "lib", "1.0.0", "");
+    let result = run_package_command(
+        &fixture.root.join("app"),
+        &PackageCommand::Vendor { directory: None },
+        &ProjectOptions::default(),
+        &[],
+    );
+    assert!(result.is_err());
+    assert!(
+        !std::fs::read_to_string(fixture.root.join("app/fai.toml")).unwrap().contains("[vendor]")
+    );
+    assert!(!fixture.root.join("app/fai.lock").exists());
+}

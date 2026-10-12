@@ -83,6 +83,7 @@ fai <command> [subcommand] [arguments] [flags]
 | `--offline` | Use cached metadata and content without Git network access. |
 | `--frozen` | Combine `--locked` and `--offline`. |
 | `--target <triple>` | Metadata target selection, repeatable; compilation currently supports the host only. |
+| `--no-vendor` | Explicitly bypass configured vendor sources and use the normal source provider. |
 | `--color <auto\|always\|never>` | Colorize human output. Default `auto`. |
 | `--quiet` / `--verbose` | Decrease / increase log verbosity. |
 | `--protocol-log <file>` | (debug) Append a JSON decode of all daemon traffic for this invocation. |
@@ -216,6 +217,8 @@ fai update library             # prioritize this dependency, retain other pins w
 fai update                     # full update within authored requirements
 fai deps                       # read-only recorded graph inspection
 fai deps why library
+fai --no-local vendor           # snapshot shared locked Git sources
+fai --no-local --frozen check   # use the snapshot without cache or network
 ```
 
 `add` also accepts `--subdir`, `--branch`, and a full `--rev`. With no Git version
@@ -237,6 +240,20 @@ Package commands accept `--message-format=json`. Results carry `schemaVersion`,
 version and source, reason, and affected `root@target` graphs. `deps` adds the
 selected `graph` records and optional `why` edges. It never refreshes refs or
 restores source content.
+
+### Vendored snapshots
+
+`fai vendor [--dir <directory>]` prepares the selected lock matrix, copies verified
+Git package trees into `vendor/sources/<checksum>/`, and records exact source
+descriptors and graph receipts in `vendor/fai-vendor.toml`. The root manifest gains
+`[vendor] directory = "vendor"`. Index, configuration, and any changed lock are
+published through the metadata journal. Existing unrelated files are retained.
+
+When configured, required Git sources must have matching, unmodified vendor
+entries; missing or altered sources fail with `FAI0820`. There is no automatic
+network fallback. `--no-vendor` explicitly bypasses the snapshot, and running
+`vendor` again repairs tool-owned source trees. Mutable paths outside the active
+project cannot be captured as a self-contained vendor snapshot.
 
 ## 3. Conventions
 

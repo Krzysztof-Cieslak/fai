@@ -247,6 +247,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         | Command::Remove(_)
         | Command::Resolve
         | Command::Fetch
+        | Command::Vendor { .. }
         | Command::Update { .. }
         | Command::Deps { .. }
         | Command::RunWorker(_)
@@ -262,6 +263,12 @@ fn package_command(command: &Command) -> Option<Result<fai_driver::PackageComman
     let result = match command {
         Command::Resolve => Ok(Package::Resolve),
         Command::Fetch => Ok(Package::Fetch),
+        Command::Vendor { directory } => directory
+            .as_deref()
+            .map(fai_package::PackagePath::parse)
+            .transpose()
+            .map(|directory| Package::Vendor { directory })
+            .map_err(|error| metadata_error(error.to_string())),
         Command::Update { packages } => Ok(Package::Update(packages.clone())),
         Command::Deps { sub } => Ok(Package::Deps {
             why: sub.as_ref().map(|cli::DepsCommand::Why { selector }| selector.clone()),

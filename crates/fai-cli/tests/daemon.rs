@@ -284,6 +284,68 @@ mod package_projects {
         assert_eq!(std::fs::read(project.workspace.join("src/Main.fai")).unwrap(), source);
     }
 
+    fn vendored_project() -> (Daemon, PathBuf) {
+        let (project, upstream, url) = git_project();
+        let added = project.run(&["add", &url], &[]);
+        assert!(added.status.success(), "{added:?}");
+        let vendored = project.run(&["vendor"], &[]);
+        assert!(vendored.status.success(), "{vendored:?}");
+        (project, upstream)
+    }
+
+    fn vendor_source(project: &Daemon) -> PathBuf {
+        std::fs::read_dir(project.workspace.join("vendor/sources"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_dir())
+            .unwrap()
+            .join("src/Values.fai")
+    }
+
+    #[test]
+    fn vendored_frozen_execution_needs_neither_git_cache_nor_remote() {
+        let (project, upstream) = vendored_project();
+        std::fs::remove_dir_all(upstream).unwrap();
+        std::fs::remove_dir_all(&project.cache_dir).unwrap();
+        let result = project.run(&["run", "--frozen", "--no-daemon"], &[]);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(result.stdout, b"42\n");
+    }
+
+    #[test]
+    fn altered_vendor_content_does_not_fall_back_to_an_available_cache() {
+        let (project, _) = vendored_project();
+        std::fs::write(vendor_source(&project), "modified").unwrap();
+        let rejected = project.run(&["check", "--no-daemon", "--message-format=json"], &[]);
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stdout).contains("FAI0820"), "{rejected:?}");
+    }
+
+    #[test]
+    fn no_vendor_explicitly_uses_the_verified_cache() {
+        let (project, _) = vendored_project();
+        std::fs::write(vendor_source(&project), "modified").unwrap();
+        let result = project.run(&["run", "--no-daemon", "--no-vendor", "--frozen"], &[]);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(result.stdout, b"42\n");
+    }
+
+    #[test]
+    fn vendor_refresh_repairs_sources_and_retains_unowned_files() {
+        let (project, _) = vendored_project();
+        std::fs::write(project.workspace.join("vendor/notes.txt"), "keep").unwrap();
+        std::fs::write(vendor_source(&project), "modified").unwrap();
+        let refreshed = project.run(&["vendor"], &[]);
+        assert!(refreshed.status.success(), "{refreshed:?}");
+        assert_eq!(
+            std::fs::read_to_string(project.workspace.join("vendor/notes.txt")).unwrap(),
+            "keep"
+        );
+        let result = project.run(&["run", "--no-daemon", "--frozen"], &[]);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(result.stdout, b"42\n");
+    }
+
     #[test]
     fn default_executable_agrees_between_daemon_and_direct_run() {
         let project = project();

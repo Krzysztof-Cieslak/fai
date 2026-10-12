@@ -20,6 +20,7 @@ pub(super) struct State {
     changed: bool,
     on_disk: LockFile,
     mode: PrepareMode,
+    vendor_root: Option<Utf8PathBuf>,
 }
 
 impl State {
@@ -37,6 +38,14 @@ impl State {
         }
         let context = if loader.project.local { LockContext::Local } else { LockContext::Shared };
         let original = read_optional(&root.join(lock_name(context)))?;
+        if loader.mode.expected_lock.as_ref().is_some_and(|expected| {
+            *expected != original.as_ref().map(|text| FileEdit::fingerprint(text.as_bytes()))
+        }) {
+            return Err(error(
+                fai_package::INPUTS_CHANGED,
+                "the active lock changed after the dependency edit preview",
+            ));
+        }
         let on_disk = match &original {
             Some(text) => LockFile::parse(text)?,
             None => LockFile::new(context),
@@ -77,6 +86,7 @@ impl State {
             changed: false,
             on_disk,
             mode: loader.mode.clone(),
+            vendor_root: if options.no_vendor { None } else { loader.vendor_dir.clone() },
         })
     }
 
@@ -91,7 +101,7 @@ impl State {
         let previous = self.lock.graph(&root_name, &loader.target).cloned();
         let baseline =
             self.shared.as_ref().and_then(|lock| lock.graph(&root_name, &loader.target)).cloned();
-        let mut provider = Provider::new(loader, &mut self.store, root);
+        let mut provider = Provider::new(loader, &mut self.store, root, self.vendor_root.clone());
         let root_source = PackageSource::Path(provider.path_key(root));
         let root_key = PackageKey::Path(provider.path_key(root));
         let root_candidate = provider.candidate(&root_source, false)?;
@@ -182,7 +192,7 @@ impl State {
         member: &PackagePath,
     ) -> Result<(), DriverError> {
         let name = portable_path(root.strip_prefix(&loader.configuration_root).unwrap_or(root));
-        let mut provider = Provider::new(loader, &mut self.store, root);
+        let mut provider = Provider::new(loader, &mut self.store, root, self.vendor_root.clone());
         let key = provider.path_key(root);
         let candidate = match provider.candidate(&PackageSource::Path(key.clone()), false) {
             Ok(candidate) => candidate,
@@ -281,11 +291,18 @@ impl State {
             }
         }
         let lock_path = loader.configuration_root.join(lock_name(self.lock.context));
+        if !self.mode.write && read_optional(&lock_path)? != self.original {
+            return Err(error(
+                fai_package::INPUTS_CHANGED,
+                "the active lock changed during read-only preparation",
+            ));
+        }
         if let Some(text) = read_optional(&lock_path)? {
             loader.project.observed.push((lock_path, FileEdit::fingerprint(text.as_bytes())));
         }
         loader.project.lock = Some(self.lock);
         loader.project.previous_lock = Some(self.on_disk);
+        loader.project.original_lock = self.original;
         Ok(())
     }
 }
@@ -298,10 +315,17 @@ struct Provider<'a, 'files> {
     locations: BTreeMap<PackageSource, Utf8PathBuf>,
     verified: BTreeMap<PackageSource, Digest>,
     last_error: Option<DriverError>,
+    vendor_root: Option<Utf8PathBuf>,
+    vendor_index: Option<Arc<fai_package_store::VendorIndex>>,
 }
 
 impl<'a, 'files> Provider<'a, 'files> {
-    fn new(loader: &'a mut Loader<'files>, store: &'a mut GitStore, root: &Utf8Path) -> Self {
+    fn new(
+        loader: &'a mut Loader<'files>,
+        store: &'a mut GitStore,
+        root: &Utf8Path,
+        vendor_root: Option<Utf8PathBuf>,
+    ) -> Self {
         Self {
             loader,
             store,
@@ -310,6 +334,8 @@ impl<'a, 'files> Provider<'a, 'files> {
             locations: BTreeMap::new(),
             verified: BTreeMap::new(),
             last_error: None,
+            vendor_root,
+            vendor_index: None,
         }
     }
 
@@ -527,8 +553,11 @@ impl<'a, 'files> Provider<'a, 'files> {
             let mut candidate = match &source {
                 PackageSource::Path(_) => self.candidate(&source, false)?,
                 PackageSource::Git { package, revision } => {
-                    let materialized =
-                        self.store.materialize(package, revision, record.checksum.as_ref())?;
+                    let materialized = if let Some((root, index)) = self.vendor()? {
+                        index.materialize(&root, record)?
+                    } else {
+                        self.store.materialize(package, revision, record.checksum.as_ref())?
+                    };
                     self.verified.insert(source.clone(), materialized.checksum.clone());
                     let document =
                         self.loader.document(&materialized.directory.join("fai.toml"), false)?;
@@ -638,7 +667,7 @@ impl<'a, 'files> Provider<'a, 'files> {
     }
 
     fn materialize(&mut self, graph: &mut ResolvedGraph) -> Result<(), DriverError> {
-        for candidate in graph.packages.values_mut() {
+        for (key, candidate) in &mut graph.packages {
             if let PackageSource::Git { package, revision } = &candidate.source {
                 if let Some(verified) = self.verified.get(&candidate.source) {
                     if candidate
@@ -655,7 +684,27 @@ impl<'a, 'files> Provider<'a, 'files> {
                     continue;
                 }
                 let expected = candidate.checksum.as_deref().map(Digest::parse).transpose()?;
-                let materialized = self.store.materialize(package, revision, expected.as_ref())?;
+                let materialized = if let Some((root, index)) = self.vendor()? {
+                    let matching = index
+                        .packages
+                        .iter()
+                        .find(|entry| {
+                            entry.logical.key() == *key
+                                && entry.source.source() == candidate.source
+                                && entry.version == candidate.version
+                        })
+                        .ok_or_else(|| {
+                            error(
+                                fai_package::VENDOR_UNAVAILABLE,
+                                format!("no vendored source for {key:?}"),
+                            )
+                        })?;
+                    candidate.checksum = Some(matching.checksum.as_str().into());
+                    let record = fai_package::LockedPackage::from_candidate(key, candidate)?;
+                    index.materialize(&root, &record)?
+                } else {
+                    self.store.materialize(package, revision, expected.as_ref())?
+                };
                 candidate.checksum = Some(materialized.checksum.as_str().into());
                 self.verified.insert(candidate.source.clone(), materialized.checksum.clone());
                 self.locations.insert(candidate.source.clone(), materialized.directory);
@@ -748,6 +797,18 @@ impl<'a, 'files> Provider<'a, 'files> {
             package.development = development;
         }
         Ok(root)
+    }
+
+    fn vendor(
+        &mut self,
+    ) -> Result<Option<(Utf8PathBuf, Arc<fai_package_store::VendorIndex>)>, DriverError> {
+        let Some(root) = self.vendor_root.clone() else {
+            return Ok(None);
+        };
+        if self.vendor_index.is_none() {
+            self.vendor_index = Some(Arc::new(fai_package_store::VendorIndex::read(&root)?));
+        }
+        Ok(self.vendor_index.as_ref().map(|index| (root, index.clone())))
     }
 
     fn resolution_error(&mut self, failure: ResolutionError) -> DriverError {
@@ -904,7 +965,7 @@ impl Provider<'_, '_> {
                     .push(format!("excluded version-mismatched release at {revision}"));
                 continue;
             }
-            if self.store.is_offline() {
+            if self.store.is_offline() && self.vendor_root.is_none() {
                 match self.store.materialize(package, &revision, None) {
                     Ok(materialized) => {
                         candidate.checksum = Some(materialized.checksum.as_str().into());

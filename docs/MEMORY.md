@@ -5479,5 +5479,14 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   does not fetch sources. Daemon restoration occurs outside the database mutex;
   prepared inputs are checked again before compiler publication.
 
+- **D167 Verified vendor source snapshots.** Vendoring copies exact locked Git
+  package trees under a content-addressed source directory and records their full
+  logical/actual descriptors, checksums, entry modes, and graph receipts. Required
+  configured entries are revalidated before compiler use; missing or modified
+  content fails rather than falling through to Git. `--no-vendor` is explicit.
+  Refresh prepares source trees before journaling index, root configuration, and
+  lock changes. Unrelated vendor-directory files and unselected entries remain.
+  Outside-project mutable path inputs cannot form a self-contained snapshot.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
