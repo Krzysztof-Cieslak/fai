@@ -1,5 +1,7 @@
 module LlmPolicySpec
 
+import http_client.HttpClient
+
 let config = { LlmOpenAI.config "key" with retryBaseMs = 100, retryCount = 2, retryMaxMs = 1000 }
 
 decide : LlmConfig.Config -> Int -> (Llm.Error -> Llm.Error) -> Option Int

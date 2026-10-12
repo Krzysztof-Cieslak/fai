@@ -1,17 +1,31 @@
-"""Source-package test metadata and dependency-aware selection."""
+"""Dependency-aware CI selection from the source packages' real manifests."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
+import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import tomllib
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = "ci.json"
+MANIFEST = "fai.toml"
+LEGACY_MANIFEST = "ci.json"
 PLATFORMS = ("linux", "macos", "windows")
 MODES = ("jit", "aot")
 NAME = re.compile(r"[a-z][a-z0-9_-]*")
 TEMPLATE = re.compile(r"\$\{([^}]+)\}")
+
+
+def in_tree_repository(location):
+    location = location.lower()
+    if location.startswith("github:"):
+        location = "https://github.com/" + location[len("github:"):]
+    if location.startswith("git@github.com:"):
+        location = "https://github.com/" + location[len("git@github.com:"):]
+    url = urlsplit(location)
+    path = url.path.rstrip("/").removesuffix(".git")
+    return url.hostname == "github.com" and path == "/krzysztof-cieslak/fai"
 
 
 class PackageError(ValueError):
@@ -45,6 +59,11 @@ class Package:
     dependencies: tuple[str, ...]
     integrations: tuple[Integration, ...] = ()
     fixtures: tuple[Fixture, ...] = ()
+    development: tuple[str, ...] = ()
+
+    @property
+    def all_dependencies(self):
+        return self.dependencies + self.development
 
 
 def unique_object(pairs):
@@ -171,19 +190,83 @@ def named_items(data, key, parse_item):
 
 def parse(directory, text):
     try:
-        data = json.loads(text, object_pairs_hook=unique_object)
-        fields(data, {"schemaVersion", "name", "dependencies", "integrations", "fixtures"}, "package")
-        name = name_value(data["name"], "package")
-        dependencies = data["dependencies"]
-        if type(data["schemaVersion"]) is not int or data["schemaVersion"] != 1 or name != directory.name:
+        if text.lstrip().startswith("{"):
+            data = json.loads(text, object_pairs_hook=unique_object)
+            fields(data, {"schemaVersion", "name", "dependencies", "integrations", "fixtures"}, "package")
+            name = name_value(data["name"], "package")
+            dependencies = data["dependencies"]
+            if type(data["schemaVersion"]) is not int or data["schemaVersion"] != 1 or name != directory.name:
+                raise ValueError("invalid name or schema")
+            if not isinstance(dependencies, list) or not all(isinstance(name, str) and NAME.fullmatch(name) for name in dependencies) or len(set(dependencies)) != len(dependencies):
+                raise ValueError("dependencies must be distinct package names")
+            fixtures = named_items(data, "fixtures", fixture_value)
+            integrations = named_items(data, "integrations", lambda item: integration_value(item, {fixture.name for fixture in fixtures}))
+            return Package(name, directory, tuple(dependencies), integrations, fixtures)
+        data = tomllib.loads(text)
+        name = data["package"]["name"]
+        if data["manifest-version"] != 1 or not re.fullmatch(r"[a-z][a-z0-9-]*", name):
             raise ValueError("invalid name or schema")
-        if not isinstance(dependencies, list) or not all(isinstance(name, str) and NAME.fullmatch(name) for name in dependencies) or len(set(dependencies)) != len(dependencies):
-            raise ValueError("dependencies must be distinct package names")
-        fixtures = named_items(data, "fixtures", fixture_value)
-        integrations = named_items(data, "integrations", lambda item: integration_value(item, {fixture.name for fixture in fixtures}))
-        return Package(name, directory, tuple(dependencies), integrations, fixtures)
+        def dependencies(section):
+            found = set()
+            for scope in [data, *data.get("platform", [])]:
+                for dependency in scope.get(section, {}).values():
+                    if not isinstance(dependency, dict):
+                        raise ValueError("dependencies must be source tables")
+                    if "path" in dependency:
+                        found.add("path:" + str((directory / dependency["path"]).resolve()))
+                    elif "git" in dependency:
+                        if in_tree_repository(dependency["git"]):
+                            path = dependency.get("subdir", ".")
+                            if not isinstance(path, str) or Path(path).is_absolute() or ".." in Path(path).parts:
+                                raise ValueError("invalid in-tree dependency path")
+                            found.add("repo:" + path)
+                    else:
+                        raise ValueError("dependency has no path or Git source")
+            return tuple(sorted(found))
+        return Package(name, directory, dependencies("dependencies"), development=dependencies("dev-dependencies"))
     except (KeyError, TypeError, ValueError) as error:
         raise PackageError(f"invalid {directory / MANIFEST}: {error}") from error
+
+
+def from_documents(directory, manifest=None, metadata=None):
+    if manifest is None:
+        return parse(directory, metadata) if metadata is not None else None
+    package = parse(directory, manifest)
+    if metadata is None:
+        return package
+    try:
+        data = json.loads(metadata, object_pairs_hook=unique_object)
+        fields(data, {"schemaVersion", "integrations", "fixtures"}, "integration metadata")
+        if type(data.get("schemaVersion")) is not int or data["schemaVersion"] != 1:
+            raise ValueError("invalid integration metadata schema")
+        fixtures = named_items(data, "fixtures", fixture_value)
+        integrations = named_items(data, "integrations", lambda item: integration_value(item, {fixture.name for fixture in fixtures}))
+        return replace(package, integrations=integrations, fixtures=fixtures)
+    except (KeyError, TypeError, ValueError) as error:
+        raise PackageError(f"invalid {directory / LEGACY_MANIFEST}: {error}") from error
+
+
+def bind(catalog, root=ROOT):
+    """Resolve checkout paths after all package names, including nested ones, are known."""
+    paths = {str(package.directory.resolve()): package.name for package in catalog.values()}
+    def names(dependencies):
+        result = set()
+        for dependency in dependencies:
+            if dependency.startswith("repo:"):
+                path = str((root / dependency[5:]).resolve())
+            elif dependency.startswith("path:"):
+                path = dependency[5:]
+            else:
+                result.add(dependency)
+                continue
+            if path not in paths:
+                raise PackageError(f"unknown package dependency: {path}")
+            result.add(paths[path])
+        return tuple(sorted(result))
+    result = {name: replace(package, dependencies=names(package.dependencies), development=names(package.development))
+              for name, package in catalog.items()}
+    validate(result)
+    return result
 
 
 def validate(catalog):
@@ -204,6 +287,10 @@ def validate(catalog):
         done.add(name)
         ordered.append(name)
 
+    for package in catalog.values():
+        for dependency in package.all_dependencies:
+            if dependency not in catalog:
+                raise PackageError(f"unknown package dependency: {dependency}")
     for name in sorted(catalog):
         visit(name)
     return ordered
@@ -214,22 +301,30 @@ def discover(root=ROOT):
     workspace = root / "packages"
     if not workspace.exists():
         return catalog
-    for directory in sorted(workspace.iterdir()):
-        if not directory.is_dir() or directory.name.startswith("."):
-            continue
-        path = directory / MANIFEST
-        if not path.exists():
-            if any(directory.rglob("*.fai")):
-                raise PackageError(f"source package is missing {path}")
+    sources = []
+    for directory, children, files in os.walk(workspace):
+        children[:] = sorted(name for name in children if not name.startswith(".") and name not in {"target", "node_modules"})
+        directory = Path(directory)
+        sources.extend(directory / name for name in files if name.endswith(".fai"))
+        manifest = MANIFEST if MANIFEST in files else LEGACY_MANIFEST if LEGACY_MANIFEST in files else None
+        if manifest is None:
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = (directory / manifest).read_text(encoding="utf-8")
+            metadata = (directory / LEGACY_MANIFEST).read_text(encoding="utf-8") if manifest == MANIFEST and LEGACY_MANIFEST in files else None
         except UnicodeError as error:
-            raise PackageError(f"invalid UTF-8 in {path}") from error
-        package = parse(directory, text)
+            raise PackageError(f"invalid UTF-8 in {directory / manifest}") from error
+        if manifest == MANIFEST and "package" not in tomllib.loads(text):
+            continue
+        package = from_documents(directory, text, metadata)
+        if package.name in catalog:
+            raise PackageError(f"duplicate source package: {package.name}")
         catalog[package.name] = package
-    validate(catalog)
-    return catalog
+    owned = {package.directory for package in catalog.values()}
+    for source in sources:
+        if not any(parent in owned for parent in source.parents):
+            raise PackageError(f"source package is missing {source.parent / MANIFEST}")
+    return bind(catalog, root)
 
 
 def affected(catalog, names, dependents=True):
@@ -240,7 +335,7 @@ def affected(catalog, names, dependents=True):
     if dependents:
         while True:
             expanded = selected | {name for name, package in catalog.items()
-                                   if selected.intersection(package.dependencies)}
+                                   if selected.intersection(package.all_dependencies)}
             if expanded == selected:
                 break
             selected = expanded

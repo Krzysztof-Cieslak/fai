@@ -1,5 +1,10 @@
 module WireChecks
 
+import postgres.PgConfig
+import postgres.PgWire
+import postgres.Postgres
+import sql.Sql
+
 public type Runtime = Basic.Runtime
 
 let runtime = {

@@ -1,5 +1,7 @@
 module LlmReplay
 
+import sse.Sse
+
 reduce : LlmTypes.Provider -> LlmTypes.Limits -> LlmStream.State -> String -> Result LlmStream.State LlmTypes.Error
 let reduce provider limits state text =
   let result =

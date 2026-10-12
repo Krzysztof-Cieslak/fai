@@ -1,5 +1,8 @@
 module LlmAnthropic
 
+import json.Json
+import json.JsonEncode
+
 public config : String -> LlmConfig.Config
 let config key =
   LlmConfig.create LlmTypes.Anthropic "https://api.anthropic.com/v1/" (Headers.fromList [

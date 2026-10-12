@@ -1,5 +1,8 @@
 module LlmFixtures
 
+import json.Json
+import llm.LlmJson
+
 let obj = LlmJson.object
 
 let str = Json.String

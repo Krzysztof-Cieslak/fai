@@ -1,5 +1,8 @@
 module SqliteExample
 
+import sql.Sql
+import sql.SqlDecode
+
 public type Runtime = { console : Console, sqlite : SqliteHost.Sqlite }
 
 let runtime = { console = stdConsole, sqlite = SqliteHost.native }

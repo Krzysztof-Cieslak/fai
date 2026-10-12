@@ -1,5 +1,7 @@
 module PgConnect
 
+import sql.Sql
+
 public type Handle = {
   binding : Option Bytes,
   peerHost : String,

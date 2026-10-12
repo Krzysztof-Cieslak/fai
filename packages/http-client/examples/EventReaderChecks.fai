@@ -1,5 +1,7 @@
 module EventReaderChecks
 
+import sse.Sse
+
 type Case = {
   body : String,
   media : String,

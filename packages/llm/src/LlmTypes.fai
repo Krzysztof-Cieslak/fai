@@ -1,5 +1,9 @@
 module LlmTypes
 
+import http_client.HttpClient
+import json.Json
+import json.JsonDecode
+
 public type Provider =
   | OpenAI
   | Anthropic

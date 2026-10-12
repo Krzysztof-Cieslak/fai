@@ -1,5 +1,9 @@
 module HttpClient
 
+import json.JsonDecode
+import json.JsonEncode
+import sse.Sse
+
 /// Metadata for the final response. Attempts count actual HTTP exchanges.
 public type ResponseHead = {
   attempts : Int,

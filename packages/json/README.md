@@ -1,7 +1,7 @@
 # JSON for Fai
 
-A native Fai JSON library. Include `src/*.fai` in your application's workspace;
-modules resolve by name. From this repository:
+A native Fai JSON library. Declare it in your application's `fai.toml` and import
+the modules you use, such as `import json.Json`. From this repository:
 
 ```sh
 fai run -C packages/json examples/JsonExample.fai
@@ -10,9 +10,9 @@ fai test -C packages/json
 
 The package tests are Fai `example`/`forall` declarations and run directly with
 `fai test`. From the shared source-package workspace, use
-`fai test -C packages json`; repeated calls reuse the warm daemon. The package
-can move to another repository together with its `.fai` tests. Repository CI
-dependency metadata lives in `ci.json` and is not needed by the test runner.
+`fai test -C packages --package json`; repeated calls reuse the warm daemon. The
+package can move to another repository together with its manifest and `.fai`
+tests. Repository CI reads the same `fai.toml` dependency declarations.
 
 Repository CI checks both JSON and its Web dependent when this package changes.
 It restores the matching compiler and runs native Fai checks; a compiler-cache

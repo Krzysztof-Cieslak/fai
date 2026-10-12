@@ -5518,5 +5518,15 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   with versioned project-status notifications and located failures. The VS Code
   client displays that status and routes project manifest buffers for validation.
 
+- **D171 In-tree package manifests and CI dependency ownership.** Source libraries
+  and shared example packages use versioned `fai.toml` declarations with explicit
+  cross-package imports. The package workspace replaces portable repository paths
+  with this checkout and records the platform graphs in its lockfile. CI reads
+  these same manifests instead of a parallel dependency catalog. Optional
+  `ci.json` files retain integration programs and pinned test fixtures only. Normal edges
+  determine ordering; normal and development edges both propagate change impact,
+  including a test-helper package's permitted dependency back to its library.
+  Compiler-only fixtures use explicit package environments or temporary consumers.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

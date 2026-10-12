@@ -1,0 +1,31 @@
+manifest-version = 1
+
+[package]
+name = "sqlite"
+version = "0.1.0"
+fai-version = "^0.1.0"
+test-dir = "."
+
+[dependencies]
+sql = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sql", version = "^0.1.0" }
+uuid = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/uuid", version = "^0.1.0" }
+
+[[bin]]
+name = "examples-file-database"
+path = "examples/FileDatabase.fai"
+
+[[bin]]
+name = "examples-sqlite-example"
+path = "examples/SqliteExample.fai"
+
+[[bin]]
+name = "examples-transaction-checks"
+path = "examples/TransactionChecks.fai"
+
+[[bin]]
+name = "examples-value-checks"
+path = "examples/ValueChecks.fai"
+
+[[bin]]
+name = "examples-uuid-checks"
+path = "examples/UuidChecks.fai"

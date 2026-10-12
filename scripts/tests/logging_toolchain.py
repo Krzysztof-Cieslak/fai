@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from package_fixture import prepare
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,10 +19,7 @@ def run(command):
 
 
 def negative_checks(compiler, directory):
-    directory.mkdir()
-    for package in ("json", "logging"):
-        for source in (ROOT / "packages" / package / "src").glob("*.fai"):
-            shutil.copy2(source, directory)
+    prepare(directory, ["logging"])
     cases = [
         ("FAI5001", "public bad : Log.Logger { Console } -> Result Log.Receipt Log.Error\nlet bad logger = Log.info logger \"hidden\" []\n"),
         ("FAI5001", "public bad : LogBestEffort.Logger { Console } -> Unit\nlet bad logger = LogBestEffort.info logger \"hidden\" []\n"),
@@ -29,7 +27,7 @@ def negative_checks(compiler, directory):
         ("FAI3001", "build : Console -> Unit -> Log.Entry / { Console }\nlet build console unit =\n  let written = console.writeLine \"builder\"\n  Log.entry \"effectful\" []\npublic bad : Console -> Log.Logger { Console } -> Result Log.Receipt Log.Error / { Console }\nlet bad console logger = Log.infoLazy logger (build console)\n"),
     ]
     for code, body in cases:
-        source = "module Negative\n// é\n" + body
+        source = "module Negative\nimport logging.Log\nimport logging.LogBestEffort\nimport logging.LogQueue\nimport logging.LogSink\n// é\n" + body
         path = directory / "Negative.fai"
         path.write_bytes(source.encode("utf-8"))
         result = subprocess.run([compiler, "check", "--no-daemon", "--no-examples", "--message-format=json", "-C", str(directory), str(path)], cwd=ROOT, capture_output=True, timeout=90)

@@ -1,5 +1,7 @@
 module ConfigDecodeSpec
 
+import toml.TomlTypes
+
 let decode decoder source =
   match Config.toml Config.limits (ConfigTypes.origin ConfigTypes.Supplied "test.toml") (Bytes.fromString source) with
   | Err error -> Err [error]

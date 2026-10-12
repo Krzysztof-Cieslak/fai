@@ -1,5 +1,12 @@
 module LlmAssistant
 
+import cli.Args
+import llm.Llm
+import llm.LlmAnthropic
+import llm.LlmOpenAI
+import llm.LlmTypes
+import process.Process
+
 public type R = {
   clock : Clock,
   concurrency : Concurrency,

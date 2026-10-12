@@ -1,5 +1,9 @@
 module CsvPeople
 
+import csv.Csv
+import csv.CsvDecode
+import csv.CsvTypes
+
 public type Person = { active : Bool, age : Int, name : String }
 
 public decoder : CsvDecode.Decoder Person

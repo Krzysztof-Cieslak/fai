@@ -1,5 +1,8 @@
 module EventHeartbeatCheck
 
+import sse.Sse
+import sse.SseServer
+
 blockedFrames : Runtime -> Channel Unit -> Stream Sse.Frame { Clock, Concurrency } / { Concurrency }
 let blockedFrames r gate =
   let waited = r.concurrency.recv gate

@@ -1,0 +1,35 @@
+manifest-version = 1
+
+[package]
+name = "web"
+version = "0.1.0"
+fai-version = "^0.1.0"
+test-dir = "."
+
+[dependencies]
+json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
+sse = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sse", version = "^0.1.0" }
+
+[[bin]]
+name = "examples-json-web-example"
+path = "examples/JsonWebExample.fai"
+
+[[bin]]
+name = "examples-main"
+path = "examples/Main.fai"
+
+[[bin]]
+name = "examples-sse-example"
+path = "examples/SseExample.fai"
+
+[[bin]]
+name = "test-headers-on-wire"
+path = "test/HeadersOnWire.fai"
+
+[[bin]]
+name = "test-json-effects"
+path = "test/JsonEffects.fai"
+
+[[bin]]
+name = "test-redirect-safety"
+path = "test/RedirectSafety.fai"

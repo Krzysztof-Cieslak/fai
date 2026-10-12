@@ -1,5 +1,8 @@
 module LogBudget
 
+import json.Json
+import json.JsonNumber
+
 let invalid message = Err (LogTypes.error LogTypes.Validation "" message)
 
 let exceeded message =

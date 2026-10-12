@@ -1,5 +1,7 @@
 module ValueChecks
 
+import sql.Sql
+
 public type Runtime = { console : Console, sqlite : SqliteHost.Sqlite }
 
 let runtime = { console = stdConsole, sqlite = SqliteHost.native }

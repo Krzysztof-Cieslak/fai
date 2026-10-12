@@ -1,5 +1,7 @@
 module LlmPersistenceSpec
 
+import llm_examples.LlmAssistantStore
+
 let config = LlmOpenAI.config "private-api-key"
 
 let request = Llm.request "fixture" |> Llm.userText "remember this"

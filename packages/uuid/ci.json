@@ -1,7 +1,5 @@
 {
   "schemaVersion": 1,
-  "name": "uuid",
-  "dependencies": [],
   "integrations": [
     {
       "name": "runtime",

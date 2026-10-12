@@ -2367,11 +2367,11 @@ ensure` selects a cached optimized compiler without rebuilding Rust on cache hit
 see `docs/DEVELOPMENT.md`. A copied compiler supports JIT and AOT without its
 original Cargo directories; AOT still requires the system linker/SDK.
 After activating that compiler on PATH, use `fai check`, `fai test`, and `fai fmt`
-directly. For repository packages, keep `-C packages` stable and select `json`,
-`web`, or a package-local test file; omit `--no-daemon` for warm feedback. Python
+directly. For repository packages, use `-C packages --package json`,
+`--package web`, or a package-local test file; omit `--no-daemon` for warm feedback. Python
 is used for compiler setup and CI infrastructure, not as the package test runner.
-Repository CI uses each package's `ci.json` dependency list: a JSON-only edit runs
-JSON and Web contracts, while a Web-only edit runs Web contracts. Cached compiler
+Repository CI uses each package's `fai.toml` dependencies, including development
+edges and nested example packages, to select affected contracts. Cached compiler
 bundles keep package-only Linux/macOS/Windows jobs free of Rust builds on cache
 hits. Compiler, embedded std, or CI infrastructure edits retain full validation.
 

@@ -1,5 +1,13 @@
 module CsvRuntimeChecks
 
+import csv.Csv
+import csv.CsvBytes
+import csv.CsvDecode
+import csv.CsvEncode
+import csv.CsvIO
+import csv.CsvStream
+import csv.CsvTypes
+
 let path text = Result.withDefault Path.empty (Path.fromString text)
 
 let source = "\u{feff}name,age,active\r\n\"é\r\n🙂\",42,true\r\nBob,7,false\r\n"

@@ -1,5 +1,7 @@
 module PgControl
 
+import sql.Sql
+
 timer : PgConfig.Runtime -> Int -> String -> Channel (Result 'a Sql.Error) -> Unit / { Clock, Concurrency }
 let timer env timeout operation output =
   let waited = env.clock.sleep timeout

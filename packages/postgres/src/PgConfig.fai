@@ -1,5 +1,7 @@
 module PgConfig
 
+import sql.Sql
+
 public type TlsMode =
   | VerifyFull (Option Bytes)
   | Disabled

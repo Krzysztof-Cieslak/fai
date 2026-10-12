@@ -1,5 +1,8 @@
 module LlmSchema
 
+import json.Json
+import json.JsonDecode
+
 public opaque type Schema 'a = {
   decoder : JsonDecode.Decoder 'a,
   issue : Option String,

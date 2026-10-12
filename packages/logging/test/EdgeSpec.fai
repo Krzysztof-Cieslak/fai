@@ -1,5 +1,7 @@
 module LogEdgeSpec
 
+import json.Json
+
 let entry = Log.entry "message" []
 
 let limits = Log.limits

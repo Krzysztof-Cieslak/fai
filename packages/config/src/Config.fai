@@ -1,5 +1,9 @@
 module Config
 
+import dotenv.Dotenv
+import toml.Toml
+import toml.TomlTypes
+
 public opaque type Config = ConfigTree.Node
 
 public opaque type Layer = ConfigTree.Node

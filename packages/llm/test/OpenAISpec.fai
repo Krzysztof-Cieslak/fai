@@ -1,5 +1,7 @@
 module LlmOpenAISpec
 
+import json.Json
+
 let obj = LlmJson.object
 
 let str = Json.String

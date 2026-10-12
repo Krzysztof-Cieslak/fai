@@ -1,5 +1,9 @@
 module LlmJson
 
+import json.Json
+import json.JsonDecode
+import json.JsonNumber
+
 public object : List (String * Json.Value) -> Json.Value
 let object fields = Json.Object (Array.fromList fields)
 

@@ -30,7 +30,8 @@ locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and to
 > and exact resume. Installed compiler pins dispatch through an explicit local
 > inventory, and standalone files retain isolated source scope. Editor restoration
 > runs in the background with coalesced generations and authoritative source overlays.
-> In-tree ecosystem migration remains in development.
+> In-tree libraries and shared example packages declare their real dependencies
+> and source scopes in `fai.toml`; CI impact selection reads the same manifests.
 > Native-only and unversioned directory sessions retain compatibility discovery.
 
 This document consolidates the agreed product decisions and proposes the concrete
@@ -1809,19 +1810,19 @@ Sharing a release commit never forces permanent lockstep.
 
 ### 20.1 Current implementation seams
 
-The repository currently has a native-only manifest reader in
-`crates/fai-driver/src/manifest.rs`. Project collection is directory-oriented;
-module lookup is global within the loaded workspace. `SourceOrigin` in
-`crates/fai-db/src/lib.rs` distinguishes `User` and `StandardLibrary`.
+`crates/fai-driver/src/project.rs` prepares manifest-owned source scopes and
+`project/resolution.rs` validates or repairs locked source graphs. `fai-package`
+owns the pure metadata and solver; `fai-package-store` owns Git, vendor, and
+metadata storage. The legacy native-only reader remains in `manifest.rs` for
+explicit directory workflows.
 
-Existing in-tree packages under `packages/` describe CI dependencies in `ci.json`.
-Those files are useful migration input, not a second long-term package resolver.
-Examples include Web depending on JSON/SSE and larger packages depending on many
-other source packages.
+In-tree libraries and shared example packages under `packages/` use `fai.toml`.
+Their workspace supplies explicit local replacements for portable Git declarations,
+and CI impact selection consumes the same normal and development dependencies.
 
 ### 20.2 Package loader and compiler input model
 
-Introduce explicit models for:
+The explicit models cover:
 
 - Root/workspace membership and manifest metadata.
 - Logical source keys, actual sources, and selected instances.
@@ -1829,8 +1830,8 @@ Introduce explicit models for:
 - Source ownership and target-local module scopes.
 - Per-package normal dependency environments and root-only dev environments.
 
-Replace global module-name lookup with lookup in an explicit package/source
-context. Preserve the trusted embedded std loader and its separate source identity
+Module lookup uses an explicit package/source context. The trusted embedded std
+loader retains its separate source identity
 registry. A package called `std`, or a path resembling an embedded path, must not
 acquire std privileges.
 

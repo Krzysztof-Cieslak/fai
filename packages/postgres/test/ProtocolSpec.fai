@@ -1,5 +1,7 @@
 module ProtocolSpec
 
+import sql.Sql
+
 example: PgWire.signed 2 (PgWire.int16 (-32768)) = Ok (-32768)
 example: PgWire.signed 4 (PgWire.int32 (-2147483648)) = Ok (-2147483648)
 forall n: PgWire.signed 8 (PgWire.int64 n) = Ok n

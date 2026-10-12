@@ -966,12 +966,12 @@ carry byte offsets and Unicode-scalar line/column locations. Explicit traversal
 frames keep native stack use bounded; the default container-depth limit is 256.
 Opaque `JsonNumber.Number` values validate arbitrary decimal text, convert exactly
 to in-range `Int`s, and round to finite binary64 with ties to even. Non-finite
-Float encoding and numeric overflow return errors. Include package sources under
-the application's workspace root; package modules are not embedded in std.
-Source packages own ordinary Fai contracts: run `fai test -C packages json` or
-`fai test -C packages web` directly, retaining the warm daemon. A `ci.json` in each
-package declares dependency-aware CI selection and optional native Fai integration
-entrypoints; it does not introduce a separate assertion framework. Compiler-only
+Float encoding and numeric overflow return errors. Applications declare source
+package dependencies in `fai.toml`; package modules are not embedded in std.
+Source packages own ordinary Fai contracts: run `fai test -C packages --package json` or
+`fai test -C packages --package web` directly, retaining the warm daemon. Each
+package's `fai.toml` also supplies dependency-aware CI selection; optional `ci.json`
+files declare native integration programs and pinned fixtures. Compiler-only
 JIT/AOT/differential fixtures live under
 `scripts/tests/`, and library edits require no Rust compiler/test rebuild.
 `JsonDecode` adds pure composable typed decoders, with field/index error paths,

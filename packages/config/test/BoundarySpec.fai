@@ -1,5 +1,8 @@
 module ConfigBoundarySpec
 
+import config_examples.ConfigExampleSettings
+import toml.TomlTypes
+
 let configured source =
   match Config.toml Config.limits (ConfigTypes.origin ConfigTypes.Supplied "test") (Bytes.fromString source) with
   | Err error -> Err error

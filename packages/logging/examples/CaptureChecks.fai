@@ -1,5 +1,7 @@
 module LogCaptureChecks
 
+import json.JsonDecode
+
 bump : Concurrency -> Channel Int -> Int / { Concurrency }
 let bump c counter =
   let value = Option.withDefault 0 (c.recv counter)

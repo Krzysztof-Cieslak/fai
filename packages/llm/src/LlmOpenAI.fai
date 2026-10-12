@@ -1,5 +1,8 @@
 module LlmOpenAI
 
+import json.Json
+import json.JsonEncode
+
 public config : String -> LlmConfig.Config
 let config key =
   LlmConfig.create LlmTypes.OpenAI "https://api.openai.com/v1/" (Headers.fromList [

@@ -1,0 +1,13 @@
+manifest-version = 1
+
+[package]
+name = "config-examples"
+version = "0.1.0"
+fai-version = "^0.1.0"
+source-dir = "."
+auto-main = false
+
+[dependencies]
+cli = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/cli", version = "^0.1.0" }
+config = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/config", version = "^0.1.0" }
+toml = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/toml", version = "^0.1.0" }

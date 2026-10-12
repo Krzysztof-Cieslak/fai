@@ -1,13 +1,15 @@
 module SqlUuid
 
+import uuid.Uuid as SharedUuid
+
 /// The shared network-order UUID value. Existing SQL UUID signatures remain
 /// compatible with application UUIDs without conversion or extra wrappers.
-public type Uuid = Uuid.Uuid
+public type Uuid = SharedUuid.Uuid
 
 /// Parse the 8-4-4-4-12 form. Uppercase hex is accepted and normalized.
 public parse : String -> Result Uuid String
-let parse text = Result.mapError (fun _ -> "invalid UUID") (Uuid.parse text)
+let parse text = Result.mapError (fun _ -> "invalid UUID") (SharedUuid.parse text)
 
 /// Render the canonical lowercase spelling.
 public toString : Uuid -> String
-let toString value = Uuid.toString value
+let toString value = SharedUuid.toString value

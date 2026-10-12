@@ -1,5 +1,8 @@
 module TransactionChecks
 
+import sql.Sql
+import sql.SqlDecode
+
 public type Runtime = {
   clock : Clock,
   concurrency : Concurrency,

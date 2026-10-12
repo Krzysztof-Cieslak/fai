@@ -1,5 +1,7 @@
 module ResponseSpec
 
+import json.JsonDecode
+
 let cfg = HttpClient.config "https://api.test/"
 
 let raw = HttpClient.get ""

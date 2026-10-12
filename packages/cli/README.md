@@ -177,4 +177,4 @@ fai test -C packages cli/test/HelpSpec.fai
 ```
 
 The tests are Fai contracts. Repeated commands reuse the warm daemon, and the
-package's `ci.json` selects the cached-compiler CI lane.
+package's `fai.toml` also supplies dependency-aware cached-compiler CI selection.

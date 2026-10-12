@@ -1,5 +1,9 @@
 module LlmTool
 
+import json.Json
+import json.JsonDecode
+import json.JsonEncode
+
 /// Definitions are serializable data; handlers remain latent effectful functions.
 public opaque type Tool 'e =
   | Tool LlmTypes.ToolDefinition (Json.Value -> Result (Json.Value * Bool) LlmTypes.Error / 'e) (Option LlmTypes.Error)

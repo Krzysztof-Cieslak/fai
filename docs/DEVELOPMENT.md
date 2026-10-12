@@ -25,7 +25,7 @@ cached-compiler lane.
 CSV contracts run with `fai test -C packages csv`. Its Fai `RuntimeChecks`,
 `StreamChecks` and `StressChecks` examples exercise scoped files, mixed effects,
 early stop, writer progress and bounded streaming through JIT and AOT. The CSV
-package declares those programs in `csv/ci.json`; the generic integration runner
+example package declares those programs in `csv/examples/ci.json`; the generic integration runner
 executes them on each platform using the prepared compiler.
 
 Configuration development uses native Fai contracts in `packages/toml`,
@@ -66,17 +66,18 @@ Use the compiler directly. Package tests are ordinary Fai `example` and `forall`
 declarations, including those in each package's `test/` directory:
 
 ```sh
-fai check -C packages json
-fai test -C packages json
-fai test -C packages web
-fai test -C packages sql
-fai test -C packages sqlite
+fai check -C packages --package json
+fai test -C packages --package json
+fai test -C packages --package web
+fai test -C packages --package sql
+fai test -C packages --package sqlite
 fai test -C packages json/test/CodecSpec.fai --match treeRoundTrip
-fai fmt -C packages json
+fai fmt -C packages --package json
 ```
 
-The stable `packages/` workspace root lets the daemon retain one warm database
-for libraries and their dependencies. Omit `--no-daemon` for the local loop.
+The `packages/fai.toml` workspace declares its members and explicit local
+replacements of their portable Git dependencies. Each selected package retains
+a warm database for its library and dependencies. Omit `--no-daemon` for the local loop.
 `fai check --no-examples` gives type-only feedback; normal `check` also evaluates
 closed examples. `fai test -C packages` tests all source packages.
 
@@ -97,10 +98,13 @@ After changing compiler/runtime/std sources, run setup again to select the new
 matching bundle. Package edits keep the same binary and warm daemon. Native
 contracts continue to run directly through `fai test`.
 
-Each package's `ci.json` declares its name, dependencies and optional Fai
-integration entrypoints for repository CI. It does not change `fai test` or
-define another assertion framework. The package tests remain runnable wherever
-their Fai sources and dependencies are available.
+Each package's `fai.toml` supplies its name, source ownership, dependencies, and
+executable entries to both the compiler and repository CI. Normal and development
+edges participate in CI impact selection; only normal edges determine dependency
+cycles. Shared example modules live in nested example packages, allowing test
+helpers to depend on their library without adding a production dependency back
+to those helpers. Optional `ci.json` files declare integration programs and pinned
+fixtures, using the manifest's identity and dependencies.
 
 Measured on the development Linux host with the assertion-enabled optimized
 compiler: a cold JSON type check was 106 ms, a warm check 4 ms, and the warm
@@ -111,11 +115,12 @@ compiler: a cold JSON type check was 106 ms, a warm check 4 ms, and the warm
 Add ordinary Fai integration programs to the owning package's `ci.json` rather
 than adding a package-specific GitHub action or editing the shared workflow:
 
+This file contains integration settings only. Its package name and dependency
+edges come from the adjacent `fai.toml`.
+
 ```json
 {
   "schemaVersion": 1,
-  "name": "example",
-  "dependencies": [],
   "integrations": [
     {
       "name": "runtime",
@@ -285,7 +290,7 @@ predecessor, not unconditionally with `main`.
 
 Dependency impact uses both the base and head catalogs, so deleting or changing
 an edge does not hide an affected dependent. Renames include both old and new
-paths. New source-package directories must include `ci.json`; malformed catalogs
+paths. New source-package directories must include `fai.toml`; malformed catalogs
 and missing dependencies fail classification. An unavailable comparison base
 selects the full lane conservatively.
 Mixed package/presentation changes run both relevant lanes. Changes to the Rust
@@ -301,9 +306,9 @@ successful classification, so a failed selector cannot pass through skipped
 jobs. On package-only changes their source checks are direct commands:
 
 ```sh
-fai fmt --check -C packages PACKAGE
-fai check --no-examples -C packages PACKAGE
-fai test -C packages PACKAGE --seed 42 --count 128
+fai fmt --check -C packages --package PACKAGE
+fai check --no-examples -C packages --package PACKAGE
+fai test -C packages --package PACKAGE --seed 42 --count 128
 ```
 
 Linux, macOS, and Windows each restore an exact compiler bundle and put its

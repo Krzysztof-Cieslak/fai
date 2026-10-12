@@ -1,5 +1,15 @@
 module LlmAssistantCore
 
+import json.Json
+import json.JsonEncode
+import llm.Llm
+import llm.LlmJson
+import llm.LlmMessage
+import llm.LlmSchema
+import llm.LlmTool
+import llm.LlmTypes
+import process.Process
+
 public type Services = {
   clock : Clock,
   concurrency : Concurrency,

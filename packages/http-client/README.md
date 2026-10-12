@@ -271,5 +271,5 @@ fai check -C packages http-client
 fai test -C packages http-client
 ```
 
-The package depends on `json`; its `ci.json` participates in dependency-aware
+The package depends on `json` and `sse`; its `fai.toml` participates in dependency-aware
 package checks. Repeated edits reuse the cached compiler and warm daemon.

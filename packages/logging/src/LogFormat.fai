@@ -1,5 +1,8 @@
 module LogFormat
 
+import json.Json
+import json.JsonNumber
+
 public type Format =
   | JsonLines
   | Human Bool

@@ -1,5 +1,9 @@
 module CsvStressChecks
 
+import csv.Csv
+import csv.CsvStream
+import csv.CsvTypes
+
 let read count =
   if count >= 20000 then Ok None else Ok (Some (Bytes.fromString "42,x\r\n", count + 1))
 

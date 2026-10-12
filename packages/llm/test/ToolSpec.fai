@@ -1,5 +1,8 @@
 module LlmToolSpec
 
+import json.Json
+import json.JsonEncode
+
 let schema = LlmSchema.field "x" LlmSchema.int
 
 let tool = LlmTool.define "double" "Double an integer" schema JsonEncode.int (fun x -> Ok (x * 2))

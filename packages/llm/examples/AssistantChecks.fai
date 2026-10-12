@@ -1,5 +1,13 @@
 module LlmAssistantChecks
 
+import json.Json
+import llm.Llm
+import llm.LlmJson
+import llm.LlmOpenAI
+import llm.LlmTool
+import llm.LlmTypes
+import process.Process
+
 public type R = {
   clock : Clock,
   concurrency : Concurrency,

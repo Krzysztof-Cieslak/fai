@@ -1,5 +1,10 @@
 module LlmOpenAICheck
 
+import json.Json
+import llm.Llm
+import llm.LlmJson
+import llm.LlmOpenAI
+
 let frame value = "data: " ++ Json.toString value ++ "\n\n"
 
 let obj = LlmJson.object

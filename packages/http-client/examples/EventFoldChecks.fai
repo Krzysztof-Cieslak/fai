@@ -1,5 +1,7 @@
 module EventFoldChecks
 
+import sse.Sse
+
 type Case = { reject : Bool, slow : Bool, status : Int, stop : Bool, total : Option Int }
 
 let basic = { reject = false, slow = false, status = 200, stop = false, total = None }

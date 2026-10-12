@@ -1,0 +1,23 @@
+manifest-version = 1
+
+[package]
+name = "tui"
+version = "0.1.0"
+fai-version = "^0.1.0"
+test-dir = "."
+
+[[bin]]
+name = "examples-agent-demo"
+path = "examples/AgentDemo.fai"
+
+[[bin]]
+name = "examples-data-browser"
+path = "examples/DataBrowser.fai"
+
+[[bin]]
+name = "examples-form-demo"
+path = "examples/FormDemo.fai"
+
+[[bin]]
+name = "examples-runtime-checks"
+path = "examples/RuntimeChecks.fai"

@@ -1,5 +1,9 @@
 module ConfigDecode
 
+import toml.TomlScalar
+import toml.TomlTemporal
+import toml.TomlTypes
+
 type Context = {
   limits : Config.Limits,
   node : Option ConfigTree.Node,

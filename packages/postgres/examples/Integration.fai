@@ -1,5 +1,14 @@
 module Integration
 
+import json.JsonDecode
+import postgres.PgConfig
+import postgres.Postgres
+import sql.Sql
+import sql.SqlDecimal
+import sql.SqlDecode
+import sql.SqlUuid
+import uuid.Uuid
+
 public type Runtime = Basic.Runtime
 
 let runtime = {

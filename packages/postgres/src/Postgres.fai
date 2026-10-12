@@ -1,5 +1,7 @@
 module Postgres
 
+import sql.Sql
+
 /// Explicit connection configuration, including every protocol timeout and limit.
 public type Options = PgConfig.Options
 

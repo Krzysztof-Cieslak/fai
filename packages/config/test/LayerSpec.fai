@@ -1,5 +1,7 @@
 module ConfigLayerSpec
 
+import toml.TomlTypes
+
 let layer name text =
   Config.toml Config.limits (ConfigTypes.origin ConfigTypes.Supplied name) (Bytes.fromString text)
 

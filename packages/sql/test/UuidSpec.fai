@@ -1,5 +1,7 @@
 module SqlUuidSpec
 
+import uuid.Uuid
+
 let text = "01234567-89ab-cdef-0123-456789abcdef"
 
 let compatibility =

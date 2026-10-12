@@ -1,5 +1,7 @@
 module SseOptions
 
+import sse.Sse
+
 /// Timeouts are positive milliseconds or None; limits bound decoder buffering.
 public type Events = {
   connectTimeoutMs : Option Int,

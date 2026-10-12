@@ -1,5 +1,11 @@
 module ConfigRuntimeChecks
 
+import config.Config
+import config.ConfigDecode
+import config.ConfigSource
+import config.ConfigTypes
+import toml.TomlTypes
+
 let path text = Result.withDefault Path.empty (Path.fromString text)
 
 let isKind kind result =

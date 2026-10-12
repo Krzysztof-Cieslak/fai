@@ -1,5 +1,8 @@
 module JsonWebExample
 
+import json.JsonDecode
+import json.JsonEncode
+
 type User = { id : Int, name : String }
 
 let userDecoder =

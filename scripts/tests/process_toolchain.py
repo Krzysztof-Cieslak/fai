@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from package_fixture import prepare
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -20,8 +21,7 @@ def run(command, **kwargs):
 
 
 def negative_checks(compiler, directory):
-    for source in (ROOT / "packages/process/src").glob("*.fai"):
-        shutil.copy2(source, directory)
+    prepare(directory, ["process"])
     path = directory / "Check.fai"
     source = """module Check
 public bad : ProcessHost.Process -> ProcessHost.Session -> Unit
@@ -37,6 +37,7 @@ let bad host child = host.stop child
     assert errors and all(0 <= d["primary"]["byteStart"] < d["primary"]["byteEnd"] <= len(source) for d in errors), payload
 
     source = """module Check
+import process.Process
 log : Console -> Process.Chunk -> Result Process.Control Process.Error / { Console }
 let log console chunk =
   let written = console.writeLine "chunk"

@@ -1,5 +1,7 @@
 module LlmReplaySpec
 
+import llm_examples.LlmFixtures
+
 let openai = Bytes.fromString (LlmFixtures.openai true)
 
 let anthropic = Bytes.fromString (LlmFixtures.anthropic true)
