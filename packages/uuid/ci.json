@@ -1,5 +1,12 @@
 {
   "schemaVersion": 1,
   "name": "uuid",
-  "dependencies": []
+  "dependencies": [],
+  "integrations": [
+    {
+      "name": "runtime",
+      "entry": "examples/RuntimeChecks.fai",
+      "stdoutLines": ["UUID runtime checks passed"]
+    }
+  ]
 }

@@ -46,7 +46,9 @@ public errorToString : Error -> String
 let errorToString error =
   error.message ++ (match error.offset with
   | None -> ""
-  | Some offset -> " at byte " ++ Int.toString offset)
+  | Some offset -> " at byte " ++ Int.toString offset) ++ (match error.cause with
+  | None -> ""
+  | Some cause -> ": " ++ cause)
 
 let hexDigit byte =
   if byte >= 48 && byte <= 57 then
@@ -265,3 +267,41 @@ let v7UnixMillis uuid = if isV7 uuid then Some (unixMillis uuid 0 0) else None
 
 public v7Instant : Uuid -> Option Instant
 let v7Instant uuid = Option.map Instant.fromUnixTimeMillis (v7UnixMillis uuid)
+
+entropyBytes : Crypto.Entropy -> Int -> Result Bytes Error / { Crypto.Entropy }
+let entropyBytes entropy expected =
+  match entropy.bytes expected with
+  | Err cause -> Err { (error EntropyFailure "UUID entropy request failed") with
+    cause = Some cause
+  }
+  | Ok bytes ->
+    let actual = Bytes.length bytes
+    if actual <> expected then
+      Err (lengthError UnexpectedEntropyLength "UUID entropy provider returned an unexpected byte count" expected actual)
+    else
+      Ok bytes
+
+/// Generate a random UUIDv4 with one request for exactly 16 bytes.
+public v4 : Crypto.Entropy -> Result Uuid Error / { Crypto.Entropy }
+let v4 entropy =
+  match entropyBytes entropy 16 with
+  | Err error -> Err error
+  | Ok bytes -> v4FromRandom bytes
+
+/// Generate a stateless UUIDv7 at explicit Unix milliseconds. Timestamp validation
+/// precedes the one request for ten random bytes; no previous value is retained.
+public v7At : Crypto.Entropy -> Int -> Result Uuid Error / { Crypto.Entropy }
+let v7At entropy millis =
+  match timestamp millis with
+  | Err error -> Err error
+  | Ok _ ->
+    match entropyBytes entropy 10 with
+    | Err error -> Err error
+    | Ok bytes -> v7FromRandom millis bytes
+
+/// Read the clock once and generate a stateless UUIDv7. Same-millisecond values
+/// and clock rollback do not have a generation-order guarantee.
+public v7 : { clock : Clock, entropy : Crypto.Entropy | _ } -> Result Uuid Error / { Clock, Crypto.Entropy }
+let v7 env =
+  let millis = env.clock.now ()
+  v7At env.entropy millis

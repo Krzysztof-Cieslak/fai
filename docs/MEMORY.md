@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- UUIDv4/v7 generation uses explicit Crypto.Entropy and Clock capabilities with
+  exact response-length checks. UUIDv7 is stateless: same-millisecond suffixes
+  are random, and clock rollback is preserved rather than clamped. Timestamp
+  validation precedes entropy access; provider failures retain their cause.
+
 - UUIDs are opaque network-order 16-byte source-library values. Equality, ordering
   and hashing cover all bits, and ordering agrees with canonical lowercase text.
   Parsing preserves every syntactically valid value independently of variant or
