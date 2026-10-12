@@ -2355,6 +2355,10 @@ executables and warms library artifacts. Exact `[toolchain]` pins select an
 already-installed compiler registered with `fai toolchain register`; no automatic
 compiler downloads occur.
 
+The language server restores dependencies in the background on project open and
+saved manifest/lock changes. Unsaved manifests receive syntax feedback without
+writing locks, and current source overlays remain authoritative during restoration.
+
 `fai build-info` prints JSON describing the compiler's source digest, complete
 tool build identity, backend identity, target, profile and bundled native
 libraries. Different builds of the same version use distinct workspace daemons.

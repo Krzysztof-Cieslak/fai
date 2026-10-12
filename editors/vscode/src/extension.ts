@@ -11,6 +11,7 @@ import {
 // launches one `fai lsp --project <folder>` process per folder and routes each
 // document to the client whose folder contains it.
 const clients = new Map<string, LanguageClient>();
+const packageStatus = new Map<string, vscode.StatusBarItem>();
 
 // All clients share one output channel (and use it for tracing too), so a
 // multi-root window has a single "Fai Language Server" view.
@@ -33,7 +34,11 @@ function clientOptionsFor(folder: vscode.WorkspaceFolder): LanguageClientOptions
   const glob = `${folder.uri.fsPath.replace(/\\/g, "/")}/**/*`;
   const config = vscode.workspace.getConfiguration("fai", folder.uri);
   return {
-    documentSelector: [{ scheme: "file", language: "fai", pattern: glob }],
+    documentSelector: [
+      { scheme: "file", language: "fai", pattern: glob },
+      { scheme: "file", pattern: `${folder.uri.fsPath.replace(/\\/g, "/")}/**/fai.toml` },
+      { scheme: "file", pattern: `${folder.uri.fsPath.replace(/\\/g, "/")}/**/fai.local.toml` },
+    ],
     workspaceFolder: folder,
     outputChannel,
     traceOutputChannel: outputChannel,
@@ -56,10 +61,29 @@ async function startClient(folder: vscode.WorkspaceFolder): Promise<void> {
     clientOptionsFor(folder),
   );
   clients.set(key, client);
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
+  packageStatus.set(key, status);
+  status.command = "fai.showOutput";
+  client.onNotification("$/fai/projectStatus", (event: { schemaVersion: number; state: string }) => {
+    if (event.schemaVersion !== 1) return;
+    if (event.state === "ready") {
+      status.hide();
+    } else if (event.state === "restoring") {
+      status.text = "$(sync~spin) Fai dependencies";
+      status.tooltip = `Restoring ${folder.name} package dependencies`;
+      status.show();
+    } else if (event.state === "failed") {
+      status.text = "$(warning) Fai dependencies";
+      status.tooltip = `Dependency restoration failed for ${folder.name}; open Fai output`;
+      status.show();
+    }
+  });
   try {
     await client.start();
   } catch (error) {
     clients.delete(key);
+    packageStatus.delete(key);
+    status.dispose();
     const message = error instanceof Error ? error.message : String(error);
     const openSettings = "Open Settings";
     const choice = await vscode.window.showErrorMessage(
@@ -78,6 +102,8 @@ async function stopClient(key: string): Promise<void> {
     return;
   }
   clients.delete(key);
+  packageStatus.get(key)?.dispose();
+  packageStatus.delete(key);
   await client.stop();
 }
 
@@ -115,6 +141,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand("fai.restartServer", restartAll),
+    vscode.commands.registerCommand("fai.showOutput", () => outputChannel?.show()),
   );
 }
 

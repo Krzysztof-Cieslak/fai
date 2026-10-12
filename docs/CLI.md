@@ -626,6 +626,14 @@ Dependency restoration runs before acquiring the compiler database lock. Prepare
 metadata is checked again before publication so an older restore cannot replace
 newer manifest or lock inputs.
 
+The language server restores projects in the background after opening or saved
+manifest/lock changes. Requests remain available while restoration waits on Git or
+metadata locks. Source overlays remain authoritative; unsaved manifests receive
+syntax feedback without publishing locks. Superseded restore generations are
+discarded and coalesced into the newest request. `$/fai/projectStatus` notifications
+carry `schemaVersion: 1`, a `generation`, and `state: restoring|ready|failed`; VS Code
+shows dependency progress and failures in its status bar.
+
 ### 7.4 Session & consistency model
 
 - **Stateless per invocation:** connect → (optionally declare dirty files) →

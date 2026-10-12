@@ -52,6 +52,7 @@ corosensei = "0.3"
 # Lock-free Chase-Lev work-stealing deques: the runtime scheduler's per-worker run
 # queues + stealing. (crossbeam-deque is already in the tree via rayon.)
 crossbeam-deque = "0.8"
+crossbeam-channel = "0.5"
 # Cross-platform non-blocking I/O readiness (epoll/kqueue/IOCP): the runtime's
 # network reactor (TCP/UDP). Pure Rust, no C toolchain. `os-poll` + the `net`
 # sources are all we need.

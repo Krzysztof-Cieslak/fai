@@ -37,7 +37,7 @@ fn registers_for_source_file_events_when_the_client_supports_it() {
     assert_eq!(registration["registrations"][0]["method"], "workspace/didChangeWatchedFiles");
     assert_eq!(
         registration["registrations"][0]["registerOptions"]["watchers"],
-        json!([{"globPattern": "**/*.fai", "kind": 7}, {"globPattern": "**/fai.toml", "kind": 7}, {"globPattern": "**/fai.local.toml", "kind": 7}])
+        json!([{"globPattern": "**/*.fai", "kind": 7}, {"globPattern": "**/fai.toml", "kind": 7}, {"globPattern": "**/fai.local.toml", "kind": 7}, {"globPattern": "**/fai.lock", "kind": 7}, {"globPattern": "**/fai.local.lock", "kind": 7}])
     );
     h.shutdown();
 }

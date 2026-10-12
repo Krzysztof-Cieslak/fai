@@ -28,8 +28,9 @@ locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and to
 > bypass and refresh behavior. Publication validates isolated candidate graphs and
 > journals version/commit/tag state before atomic pushes, with advisory API reports
 > and exact resume. Installed compiler pins dispatch through an explicit local
-> inventory, and standalone files retain isolated source scope. Ecosystem migration
-> and asynchronous editor restoration remain in development.
+> inventory, and standalone files retain isolated source scope. Editor restoration
+> runs in the background with coalesced generations and authoritative source overlays.
+> In-tree ecosystem migration remains in development.
 > Native-only and unversioned directory sessions retain compatibility discovery.
 
 This document consolidates the agreed product decisions and proposes the concrete

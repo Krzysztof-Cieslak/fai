@@ -47,6 +47,7 @@ pub struct Session {
     project: Option<Arc<LiveProject>>,
     options: crate::ProjectOptions,
     standalone: Option<Utf8PathBuf>,
+    unresolved: bool,
 }
 
 struct LiveProject {
@@ -56,6 +57,7 @@ struct LiveProject {
     default_entry: Option<SourceId>,
     read_only: FxHashSet<SourceId>,
     notices: Vec<String>,
+    metadata: BTreeSet<Utf8PathBuf>,
 }
 
 /// Fully prepared project metadata, produced without holding a compiler database lock.
@@ -128,6 +130,7 @@ impl Session {
             project: None,
             options: update.options.clone(),
             standalone: None,
+            unresolved: false,
         };
         session.apply_prepared(update)?;
         Ok(session)
@@ -142,6 +145,30 @@ impl Session {
             options: crate::ProjectOptions { no_local: true, ..Default::default() },
             project: Some(project),
             dirty: Vec::new(),
+        })
+    }
+
+    /// Creates an editor database before background package restoration completes.
+    pub fn open_unresolved(
+        root: Utf8PathBuf,
+        options: crate::ProjectOptions,
+    ) -> Result<Self, DriverError> {
+        let root =
+            root.canonicalize_utf8().map_err(|source| DriverError::Io { path: root, source })?;
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        Ok(Self {
+            db,
+            root,
+            stats: FxHashMap::default(),
+            live: FxHashSet::default(),
+            overlays: FxHashSet::default(),
+            overlay_contents: FxHashMap::default(),
+            loaded: FxHashSet::default(),
+            project: None,
+            options,
+            standalone: None,
+            unresolved: true,
         })
     }
 
@@ -168,6 +195,7 @@ impl Session {
             project: None,
             options: crate::ProjectOptions::default(),
             standalone: Some(relative),
+            unresolved: false,
         };
         session.sync_directory()?;
         Ok(session)
@@ -185,6 +213,7 @@ impl Session {
             self.sync_directory()?;
             self.apply_directory_dirty(&update.dirty)?;
         }
+        self.unresolved = false;
         Ok(())
     }
 
@@ -199,12 +228,17 @@ impl Session {
     /// Refreshes explicitly changed workspace-relative paths, bypassing their
     /// stat gate because a watcher is authoritative even if timestamps match.
     pub fn refresh_disk_paths(&mut self, paths: &[Utf8PathBuf]) -> Result<bool, DriverError> {
+        self.invalidate_disk_paths(paths);
+        self.sync_disk_changes()
+    }
+
+    /// Invalidates watcher-proven changes before publishing a background restore.
+    pub fn invalidate_disk_paths(&mut self, paths: &[Utf8PathBuf]) {
         for path in paths {
             if !self.overlays.contains(path) {
                 self.stats.remove(path);
             }
         }
-        self.sync_disk_changes()
     }
 
     /// Synchronizes disk-backed inputs, preserving open editor overlays. Returns
@@ -297,7 +331,7 @@ impl Session {
         &self,
         dirty: &[DirtyFile],
     ) -> Result<Option<crate::project::PreparedProject>, DriverError> {
-        if self.standalone.is_some() {
+        if self.standalone.is_some() || self.unresolved {
             return Ok(None);
         }
         let base = if self.root.is_absolute() {
@@ -465,6 +499,7 @@ impl Session {
             default_entry,
             read_only,
             notices: project.notices,
+            metadata: project.observed.into_iter().map(|(path, _)| path).collect(),
         }));
         Ok(changed)
     }
@@ -503,6 +538,47 @@ impl Session {
             self.overlay_contents.insert(path.to_owned(), file.text(&self.db).clone());
         }
         Ok(())
+    }
+
+    /// Applies source text without fetching or reparsing project metadata. Returns
+    /// false for a provisional new file whose ownership needs background preparation.
+    pub fn set_overlay_text(&mut self, path: &Utf8Path, text: String) -> Result<bool, DriverError> {
+        let files = self.analysis_files(Some(path));
+        if files.iter().any(|&file| self.is_read_only(file)) {
+            return Err(DriverError::InvalidSelection(path.to_owned()));
+        }
+        let existed = !files.is_empty();
+        if files.is_empty() {
+            let id = self.db.add_source(path.to_owned(), text.clone());
+            self.loaded.insert(id);
+            self.live.insert(id);
+        } else {
+            let inputs: Vec<_> = files
+                .iter()
+                .filter(|file| file.text(&self.db) != &text)
+                .map(|file| {
+                    (
+                        file.path(&self.db).clone(),
+                        file.origin(&self.db),
+                        file.role(&self.db).clone(),
+                    )
+                })
+                .collect();
+            for (path, origin, role) in inputs {
+                self.db.add_source_scoped(path.into(), text.clone(), origin, role);
+            }
+        }
+        self.overlays.insert(path.to_owned());
+        self.overlay_contents.insert(path.to_owned(), text);
+        self.stats.remove(path);
+        Ok(existed)
+    }
+
+    /// Returns overlay ownership to disk before a background refresh.
+    pub fn clear_overlay_pending(&mut self, path: &Utf8Path) {
+        self.overlays.remove(path);
+        self.overlay_contents.remove(path);
+        self.stats.remove(path);
     }
 
     /// Returns an editor-owned input to the filesystem, including deactivation
@@ -643,6 +719,7 @@ impl Session {
             project: self.project.clone(),
             options: self.options.clone(),
             standalone: self.standalone.clone(),
+            unresolved: self.unresolved,
         }
     }
 
@@ -732,6 +809,12 @@ impl Session {
     #[must_use]
     pub fn package_notices(&self) -> &[String] {
         self.project.as_ref().map_or(&[], |project| project.notices.as_slice())
+    }
+
+    /// Whether a path belongs to metadata read by the current graph preparation.
+    #[must_use]
+    pub fn is_project_metadata(&self, path: &Utf8Path) -> bool {
+        self.project.as_ref().is_some_and(|project| project.metadata.contains(path))
     }
 
     /// Native requirements of a source's selected package dependency projection.
