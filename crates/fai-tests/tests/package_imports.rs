@@ -187,7 +187,14 @@ fn development_dependencies_are_importable_only_by_test_sources() {
         SourceRole::Test,
     );
     assert!(errors(&db, production).iter().any(|diagnostic| diagnostic.code.as_str() == "FAI2021"));
-    assert!(errors(&db, db.source_file(test_id).unwrap()).is_empty());
+    let test = db.source_file(test_id).unwrap();
+    let diagnostics = errors(&db, test);
+    // Checking tests also validates their production library. Its invalid import
+    // remains an error without making the test scope's valid import an error.
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic.primary.source() == production.source(&db))
+    );
+    assert!(diagnostics.iter().all(|diagnostic| diagnostic.primary.source() != test.source(&db)));
 }
 
 #[test]

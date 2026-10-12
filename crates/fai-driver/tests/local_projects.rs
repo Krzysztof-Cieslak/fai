@@ -73,6 +73,19 @@ fn workspace_selects_members_and_coalesces_shared_local_libraries() {
 }
 
 #[test]
+fn workspace_member_globs_do_not_parse_the_native_root_as_pattern_syntax() {
+    let project = Project::new();
+    project
+        .write("root[1]/fai.toml", "manifest-version = 1\n[workspace]\nmembers = ['packages/*']\n");
+    project.package("root[1]/packages/a", "a", "");
+    project.package("root[1]/packages/b", "b", "");
+    project.write("root[1]/packages/a/src/Library.fai", "module Library\n");
+    project.write("root[1]/packages/b/src/Library.fai", "module Library\n");
+    let session = project.open("root[1]");
+    assert_eq!(session.user_files().len(), 2);
+}
+
+#[test]
 fn package_scanning_ignores_unowned_sources() {
     let project = Project::new();
     project.package("app", "app", "");
