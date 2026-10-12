@@ -131,13 +131,20 @@ def run_task(compiler, workspace, package, integration, entry, temporary, fixtur
            if (key.casefold() if os.name == "nt" else key) not in replaced}
     env.update(overrides)
     label = f"{package.name}/{integration.name}"
+    compiler_root = workspace
+    for directory in entry.parents:
+        if not directory.is_relative_to(workspace):
+            break
+        if (directory / packages.MANIFEST).is_file():
+            compiler_root = directory
+            break
     for mode in integration.modes:
         print(f"Integration {label} [{mode}]", flush=True)
         if mode == "jit":
-            arguments = [compiler, "run", "--no-daemon", "-C", workspace, entry, "--", *args]
+            arguments = [compiler, "run", "--no-daemon", "-C", compiler_root, entry, "--", *args]
         else:
             binary = temporary / "program.exe"
-            command([compiler, "build", "--no-daemon", "-C", workspace, entry, "--out", binary],
+            command([compiler, "build", "--no-daemon", "-C", compiler_root, entry, "--out", binary],
                     workspace, env, integration.timeout_seconds, f"{label} [aot build]")
             arguments = [binary, *args]
         result = command(arguments, workspace, env, integration.timeout_seconds, f"{label} [{mode}]")
