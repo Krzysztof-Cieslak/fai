@@ -106,3 +106,79 @@ let group index captures = RegexInternal.group index captures
 
 public groupNamed : String -> Captures -> Result (Option Match) Error
 let groupNamed name captures = RegexInternal.groupNamed name captures
+
+public opaque type Cursor = RegexInternal.Cursor
+
+public opaque type CaptureCursor = RegexInternal.Cursor
+
+public cursorFromByteWithLimits : Limits -> Int -> Regex -> String -> Result Cursor Error
+let cursorFromByteWithLimits limits start regex text =
+  RegexInternal.cursor limits regex (RegexInternal.Text text) start false
+
+public cursorWithLimits : Limits -> Regex -> String -> Result Cursor Error
+let cursorWithLimits limits regex text = cursorFromByteWithLimits limits 0 regex text
+
+public cursor : Regex -> String -> Result Cursor Error
+let cursor regex text = cursorWithLimits limits regex text
+
+public next : Cursor -> Result (Option (Match * Cursor)) Error
+let next cursor = Result.map (Option.map (fun pair -> nextMatch pair)) (RegexInternal.next cursor)
+
+let nextMatch pair =
+  let (found, rest) = pair
+  (RegexInternal.whole found, rest)
+
+public captureCursorWithLimits : Limits -> Regex -> String -> Result CaptureCursor Error
+let captureCursorWithLimits limits regex text =
+  RegexInternal.cursor limits regex (RegexInternal.Text text) 0 true
+
+public captureCursor : Regex -> String -> Result CaptureCursor Error
+let captureCursor regex text = captureCursorWithLimits limits regex text
+
+public nextCaptures : CaptureCursor -> Result (Option (Captures * CaptureCursor)) Error
+let nextCaptures cursor = RegexInternal.next cursor
+
+public findAllWithLimits : Limits -> Regex -> String -> Result (Array Match) Error
+let findAllWithLimits limits regex text =
+  match cursorWithLimits limits regex text with
+  | Err error -> Err error
+  | Ok cursor -> Result.map (Array.map RegexInternal.whole) (RegexInternal.collect cursor)
+
+public findAll : Regex -> String -> Result (Array Match) Error
+let findAll regex text = findAllWithLimits limits regex text
+
+public capturesAllWithLimits : Limits -> Regex -> String -> Result (Array Captures) Error
+let capturesAllWithLimits limits regex text =
+  match captureCursorWithLimits limits regex text with
+  | Err error -> Err error
+  | Ok cursor -> RegexInternal.collect cursor
+
+public capturesAll : Regex -> String -> Result (Array Captures) Error
+let capturesAll regex text = capturesAllWithLimits limits regex text
+
+public foldWithLimits : Limits -> Regex -> String -> 'state -> ('state -> Match -> Result ('state * RegexTypes.Decision) 'error / 'e) -> RegexTypes.FoldResult 'state 'error / 'e
+let foldWithLimits limits regex text state step =
+  match cursorWithLimits limits regex text with
+  | Err error -> {
+    outcome = Err (RegexTypes.SearchError error),
+    state = state,
+    stopped = false,
+    visited = 0
+  }
+  | Ok cursor ->
+    RegexInternal.fold cursor state (fun state captures ->
+      step state (RegexInternal.whole captures))
+
+public fold : Regex -> String -> 'state -> ('state -> Match -> Result ('state * RegexTypes.Decision) 'error / 'e) -> RegexTypes.FoldResult 'state 'error / 'e
+let fold regex text state step = foldWithLimits limits regex text state step
+
+public foldCapturesWithLimits : Limits -> Regex -> String -> 'state -> ('state -> Captures -> Result ('state * RegexTypes.Decision) 'error / 'e) -> RegexTypes.FoldResult 'state 'error / 'e
+let foldCapturesWithLimits limits regex text state step =
+  match captureCursorWithLimits limits regex text with
+  | Err error -> {
+    outcome = Err (RegexTypes.SearchError error),
+    state = state,
+    stopped = false,
+    visited = 0
+  }
+  | Ok cursor -> RegexInternal.fold cursor state step

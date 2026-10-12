@@ -35,6 +35,21 @@ original coordinates, letting the match and its retained input go out of scope.
 Compiled values compare and hash by their complete immutable description,
 including options, independently of native addresses and search cache state.
 
+`cursor`/`next` and `captureCursor`/`nextCaptures` provide immutable iteration:
+advancing a cursor returns a match and a new cursor without changing any alias.
+`findAll`/`capturesAll` collect arrays; their WithLimits forms check result and
+capture-slot budgets. Empty matches follow the Rust iterator's non-overlapping
+policy, advancing text at scalar boundaries and binary input one byte at a time.
+Scalar checkpoints advance with each match, so position conversion does not
+rescan all preceding text on every iteration.
+
+`fold`/`foldWithLimits` and `foldCapturesWithLimits` thread an accumulator through
+callbacks returning `(state, Continue/Stop)`. Callback effects are forwarded.
+Their result retains the last committed state, completed callback count and
+search/callback failure. Stop is successful early termination; a resource limit
+fails only when another result would exceed it. A single search is O(m*n); full
+iteration retains the engine's possible O(m*n*n) worst case.
+
 ```sh
 fai fmt --check -C packages regex
 fai check -C packages regex

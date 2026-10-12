@@ -186,3 +186,124 @@ let fromChar text index =
   match RegexEngine.byteIndex text index with
   | Err error -> Err (RegexTypes.nativeError None error)
   | Ok (byte, _) -> Ok byte
+
+public type Cursor = {
+  baseByte : Int,
+  baseChar : Int,
+  captures : Bool,
+  done : Bool,
+  lastEnd : Int,
+  limits : RegexTypes.Limits,
+  nextByte : Int,
+  regex : Compiled,
+  remaining : Int,
+  size : Int,
+  slots : Int,
+  source : Source
+}
+
+public cursor : RegexTypes.Limits -> Compiled -> Source -> Int -> Bool -> Result Cursor RegexTypes.Error
+let cursor limits regex source start captures =
+  match validate limits regex source start with
+  | Err error -> Err error
+  | Ok size -> Ok {
+    baseByte = 0,
+    baseChar = 0,
+    captures = captures,
+    done = false,
+    lastEnd = -1,
+    limits = limits,
+    nextByte = start,
+    regex = regex,
+    remaining = limits.maxResults,
+    size = size,
+    slots = limits.maxCaptureSlots,
+    source = source
+  }
+
+nextBoundary : String -> Int -> Int -> Result Int RegexTypes.Error
+let nextBoundary text candidate attempts =
+  if attempts <= 0 then
+    Err (RegexTypes.error RegexTypes.InternalFailure "missing UTF-8 boundary")
+  else
+    match RegexEngine.slice text candidate candidate with
+    | Ok _ -> Ok candidate
+    | Err _ -> nextBoundary text (candidate + 1) (attempts - 1)
+
+public advance : Source -> Int -> Result Int RegexTypes.Error
+let advance source index =
+  match source with
+  | Binary _ -> Ok (index + 1)
+  | Text text -> nextBoundary text (index + 1) 4
+
+/// An immutable iterator with the engine's non-overlapping empty-match policy.
+/// Every cursor alias can be advanced independently and gives identical results.
+public next : Cursor -> Result (Option (Captures * Cursor)) RegexTypes.Error
+let next cursor =
+  if cursor.done then
+    Ok None
+  else
+    match search cursor.limits cursor.regex cursor.source cursor.nextByte cursor.baseByte cursor.baseChar cursor.captures with
+    | Err error -> Err error
+    | Ok None -> Ok None
+    | Ok (Some found) ->
+      let span = (whole found).span
+      let empty = span.startByte = span.endByte
+      if empty && cursor.lastEnd = span.endByte then
+        if span.endByte >= cursor.size then
+          Ok None
+        else
+          match advance cursor.source span.endByte with
+          | Err error -> Err error
+          | Ok position -> next { cursor with nextByte = position }
+      else if cursor.remaining <= 0 then
+        Err (RegexTypes.error RegexTypes.ResultLimit "match result limit exceeded")
+      else if Array.length found.groups > cursor.slots then
+        Err (RegexTypes.error RegexTypes.CaptureLimit "capture slot limit exceeded")
+      else
+        Ok (Some (found, { cursor with
+          baseByte = span.endByte,
+          baseChar = span.endChar,
+          done = empty && span.endByte = cursor.size,
+          lastEnd = span.endByte,
+          nextByte = span.endByte,
+          remaining = cursor.remaining - 1,
+          slots = cursor.slots - Array.length found.groups
+        }))
+
+public collect : Cursor -> Result (Array Captures) RegexTypes.Error
+let collect cursor = collectInto cursor [||]
+
+let collectInto cursor values =
+  match next cursor with
+  | Err error -> Err error
+  | Ok None -> Ok values
+  | Ok (Some (found, rest)) -> collectInto rest (Array.push found values)
+
+public fold : Cursor -> 'state -> ('state -> Captures -> Result ('state * RegexTypes.Decision) 'error / 'e) -> RegexTypes.FoldResult 'state 'error / 'e
+let fold cursor state step = foldLoop cursor state step 0
+
+let foldLoop cursor state step visited =
+  match next cursor with
+  | Err error -> {
+    outcome = Err (RegexTypes.SearchError error),
+    state = state,
+    stopped = false,
+    visited = visited
+  }
+  | Ok None -> { outcome = Ok (), state = state, stopped = false, visited = visited }
+  | Ok (Some (found, rest)) ->
+    match step state found with
+    | Err error -> {
+      outcome = Err (RegexTypes.CallbackError error),
+      state = state,
+      stopped = false,
+      visited = visited
+    }
+    | Ok (state, RegexTypes.Stop) -> {
+      outcome = Ok (),
+      state = state,
+      stopped = true,
+      visited = visited + 1
+    }
+    | Ok (state, RegexTypes.Continue) -> foldLoop rest state step (visited + 1)

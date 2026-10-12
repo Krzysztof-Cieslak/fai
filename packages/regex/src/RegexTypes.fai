@@ -94,6 +94,21 @@ public type TextSpan = { endByte : Int, endChar : Int, startByte : Int, startCha
 
 public type ByteSpan = { endByte : Int, startByte : Int }
 
+public type Decision =
+  | Continue
+  | Stop
+
+public type FoldError 'error =
+  | SearchError Error
+  | CallbackError 'error
+
+public type FoldResult 'state 'error = {
+  outcome : Result Unit (FoldError 'error),
+  state : 'state,
+  stopped : Bool,
+  visited : Int
+}
+
 public validateLimits : Limits -> Result Unit Error
 let validateLimits limits =
   if limits.maxCaptureSlots < 0 || limits.maxInputBytes < 0 || limits.maxOutputBytes < 0 || limits.maxResults < 0 then

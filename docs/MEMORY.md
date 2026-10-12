@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Regex iteration uses immutable cursor state, never an observable mutable native
+  iterator. Advancing scalar checkpoints avoid prefix rescans. Empty matches obey
+  native iteration policy; collection limits distinguish exact exhaustion from an
+  additional result, and folds retain committed state on callback/search failure.
+
 - Text regex matches expose both Unicode-scalar and UTF-8 byte coordinates, while
   binary matches expose byte coordinates. Search offsets retain full-input anchor
   context. Match values retain their inputs; extraction and detached results make

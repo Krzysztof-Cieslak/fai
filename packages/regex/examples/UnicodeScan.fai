@@ -1,0 +1,10 @@
+module RegexUnicodeScan
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  match Regex.compile "(?<word>\\p{L}+)" with
+  | Err error -> env.console.writeLine (Regex.errorToString error)
+  | Ok regex ->
+    match Regex.findAll regex "123 héllo 世界" with
+    | Err error -> env.console.writeLine (Regex.errorToString error)
+    | Ok matches -> env.console.writeLine (String.joinArray ", " (Array.map Regex.text matches))
