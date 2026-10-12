@@ -13,7 +13,7 @@ fn run(body: &str, effects: &str) -> String {
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
-    for package in ["sql", "sqlite"] {
+    for package in ["sql", "sqlite", "uuid"] {
         let mut files: Vec<_> = std::fs::read_dir(root.join(package).join("src"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
