@@ -1,0 +1,28 @@
+module EncodingHexSpec
+
+let vector plain encoded =
+  Hex.encode (Bytes.fromString plain) = encoded && Hex.decode encoded = Ok (Bytes.fromString plain)
+example: vector "" ""
+example: vector "f" "66"
+example: vector "fo" "666f"
+example: vector "foo" "666f6f"
+example: vector "foob" "666f6f62"
+example: vector "fooba" "666f6f6261"
+example: vector "foobar" "666f6f626172"
+example: Hex.encodeWith {
+  letterCase = Encoding.Uppercase
+} (Bytes.fromString "foobar") = "666F6F626172"
+example: Hex.decode "00fFAa" = Ok (Bytes.fromList [0, 255, 170])
+example: Hex.decode "ff" = Ok (Bytes.fromList [255])
+example: Hex.decode "f" |> Result.isErr
+example: Hex.decode "0xff" |> Result.isErr
+example: Hex.decode "ff ff" |> Result.isErr
+example: Hex.decode "ff=" |> Result.isErr
+example: Hex.decode "gg" |> Result.isErr
+example: Hex.decodeWith { letterCase = Some Encoding.Lowercase } "ff" = Ok (Bytes.fromList [255])
+example: Hex.decodeWith { letterCase = Some Encoding.Lowercase } "FF" |> Result.isErr
+example: Hex.decodeWith { letterCase = Some Encoding.Uppercase } "FF" = Ok (Bytes.fromList [255])
+example: Hex.decodeWith { letterCase = Some Encoding.Uppercase } "ff" |> Result.isErr
+example: Hex.decodeBytesWith {
+  letterCase = None
+} (Bytes.fromString "Ff") = Ok (Bytes.fromList [255])

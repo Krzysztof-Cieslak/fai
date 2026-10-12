@@ -1,0 +1,75 @@
+module EncodingBase32Spec
+
+let vector plain encoded =
+  Base32.encode (Bytes.fromString plain) = encoded && Base32.decode encoded = Ok (Bytes.fromString plain)
+example: vector "" ""
+example: vector "f" "MY======"
+example: vector "fo" "MZXQ===="
+example: vector "foo" "MZXW6==="
+example: vector "foob" "MZXW6YQ="
+example: vector "fooba" "MZXW6YTB"
+example: vector "foobar" "MZXW6YTBOI======"
+example: Base32.decode "my======" |> Result.isErr
+example: Base32.decodeWith {
+  caseInsensitive = true,
+  padding = Encoding.RequirePadding
+} "mY======" = Ok (Bytes.fromString "f")
+example: Base32.decodeWith {
+  caseInsensitive = true,
+  padding = Encoding.AllowPadding
+} "mzxw6" = Ok (Bytes.fromString "foo")
+example: Base32.decodeWith {
+  caseInsensitive = true,
+  padding = Encoding.AllowPadding
+} "01" |> Result.isErr
+example: Base32.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString "foob") = "MZXW6YQ"
+example: Base32.decodeWith {
+  caseInsensitive = false,
+  padding = Encoding.ForbidPadding
+} "MZXW6YQ" = Ok (Bytes.fromString "foob")
+example: Base32.decodeWith {
+  caseInsensitive = false,
+  padding = Encoding.AllowPadding
+} "MY=====" |> Result.isErr
+example: Base32.decodeWith {
+  caseInsensitive = false,
+  padding = Encoding.ForbidPadding
+} "MY======" |> Result.isErr
+example: Base32.decode "MZ======" |> Result.isErr
+example: Base32.decode "MZXR====" |> Result.isErr
+example: Base32.decode "MZXW7===" |> Result.isErr
+example: Base32.decode "MZXW6YR=" |> Result.isErr
+example: Base32.decodeBytes (Bytes.fromString "MY======") = Ok (Bytes.fromString "f")
+
+let hexVector plain encoded =
+  Base32Hex.encode (Bytes.fromString plain) = encoded && Base32Hex.decode encoded = Ok (Bytes.fromString plain)
+example: hexVector "" ""
+example: hexVector "f" "CO======"
+example: hexVector "fo" "CPNG===="
+example: hexVector "foo" "CPNMU==="
+example: hexVector "foob" "CPNMUOG="
+example: hexVector "fooba" "CPNMUOJ1"
+example: hexVector "foobar" "CPNMUOJ1E8======"
+example: Base32Hex.decode "co======" |> Result.isErr
+example: Base32Hex.decodeWith {
+  caseInsensitive = true,
+  padding = Encoding.RequirePadding
+} "cO======" = Ok (Bytes.fromString "f")
+example: Base32Hex.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString "foob") = "CPNMUOG"
+example: Base32Hex.decodeWith {
+  caseInsensitive = false,
+  padding = Encoding.ForbidPadding
+} "CPNMUOG" = Ok (Bytes.fromString "foob")
+example: Base32Hex.decodeWith {
+  caseInsensitive = true,
+  padding = Encoding.AllowPadding
+} "cpnmu" = Ok (Bytes.fromString "foo")
+example: Base32Hex.decode "CP======" |> Result.isErr
+example: Base32Hex.decode "CPNH====" |> Result.isErr
+example: Base32Hex.decode "CPNMV===" |> Result.isErr
+example: Base32Hex.decode "CPNMUOH=" |> Result.isErr
+example: Base32Hex.decode "MY======" |> Result.isErr
+example: Base32Hex.decodeBytesWith {
+  caseInsensitive = true,
+  padding = Encoding.RequirePadding
+} (Bytes.fromString "co======") = Ok (Bytes.fromString "f")

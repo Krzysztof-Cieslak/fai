@@ -15,6 +15,12 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Encoding contracts run with `fai test -C packages --package encoding`. Its package-local
+`RuntimeChecks` integration covers all RFC 4648 codecs on large buffers and long
+fixed-chunk streams through JIT and AOT. Run it with
+`python3 scripts/package_integrations.py encoding --no-dependents --fai /path/to/fai`.
+Dependency-aware checks include its PostgreSQL, LLM and TUI consumers.
+
 UUID contracts run with `fai test -C packages uuid`. Its `ci.json` declares a
 native fixture for injected and OS-backed entropy/clock generation. Run
 `python3 scripts/package_integrations.py uuid --fai /path/to/fai` to exercise

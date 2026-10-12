@@ -1,5 +1,7 @@
 module Tui
 
+import encoding.Base64
+
 public type Program 'model 'msg 'e = {
   init : TuiLayout.Context -> 'model * TuiCmd.Cmd 'msg 'e,
   onEvent : TerminalHost.Event -> Option 'msg,
@@ -172,7 +174,7 @@ let clipboard context actions state =
     let bytes = Bytes.fromString text
     let result =
       if context.options.clipboard && Bytes.length bytes <= context.options.maxClipboardBytes then
-        context.backend.write (Bytes.fromString ("\u{1b}]52;c;" ++ Http.base64Encode bytes ++ "\u{7}"))
+        context.backend.write (Bytes.fromString ("\u{1b}]52;c;" ++ Base64.encode bytes ++ "\u{7}"))
       else
         Ok ()
     match result with

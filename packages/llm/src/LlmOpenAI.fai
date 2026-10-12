@@ -1,5 +1,6 @@
 module LlmOpenAI
 
+import encoding.Base64
 import json.Json
 import json.JsonEncode
 
@@ -13,7 +14,7 @@ imageUrl : LlmTypes.Image -> String
 let imageUrl image =
   match image with
   | LlmTypes.ImageUrl url -> url
-  | LlmTypes.ImageBytes media bytes -> "data:" ++ media ++ ";base64," ++ Http.base64Encode bytes
+  | LlmTypes.ImageBytes media bytes -> "data:" ++ media ++ ";base64," ++ Base64.encode bytes
 
 content : LlmTypes.Role -> LlmTypes.Content -> Json.Value
 let content role part =

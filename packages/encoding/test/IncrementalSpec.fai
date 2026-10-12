@@ -1,0 +1,141 @@
+module EncodingIncrementalSpec
+
+let encodeChunks encoder chunks output =
+  match chunks with
+  | [] -> String.join "" (List.reverse (Encoding.finishEncoder encoder :: output))
+  | chunk :: rest ->
+    let step = Encoding.feedEncoder encoder chunk
+    encodeChunks step.encoder rest (step.output :: output)
+
+let appendReversed bytes output = List.append (List.reverse (Bytes.toList bytes)) output
+
+let decoded output error = (Bytes.fromList (List.reverse output), error)
+
+let decodeChunks decoder chunks output =
+  match chunks with
+  | [] ->
+    match Encoding.finishDecoder decoder with
+    | Ok tail -> decoded (appendReversed tail output) None
+    | Err error -> decoded output (Some error)
+  | chunk :: rest ->
+    let step = Encoding.feedDecoder decoder chunk
+    let output = appendReversed step.output output
+    match step.error with
+    | Some error -> decoded output (Some error)
+    | None -> decodeChunks step.decoder rest output
+
+let partitionedEncode encoder encode chunks =
+  encodeChunks encoder (List.map Bytes.fromList chunks) [] = encode (Bytes.fromList (List.concat chunks))
+forall chunks: partitionedEncode (Hex.encoder Hex.encodeOptions) Hex.encode chunks
+forall chunks: partitionedEncode (Base64.encoder Base64.encodeOptions) Base64.encode chunks
+forall chunks: partitionedEncode (Base64Url.encoder Base64Url.encodeOptions) Base64Url.encode chunks
+forall chunks: partitionedEncode (Base32.encoder Base32.encodeOptions) Base32.encode chunks
+forall chunks: partitionedEncode (Base32Hex.encoder Base32Hex.encodeOptions) Base32Hex.encode chunks
+
+let partitionedDecode decoder chunks =
+  decodeChunks decoder (List.map Bytes.fromList chunks) [] = decodeChunks decoder [
+    Bytes.fromList (List.concat chunks)
+  ] []
+forall chunks: partitionedDecode (Hex.decoder Hex.decodeOptions) chunks
+forall chunks: partitionedDecode (Base64.decoder Base64.decodeOptions) chunks
+forall chunks: partitionedDecode (Base64Url.decoder Base64Url.decodeOptions) chunks
+forall chunks: partitionedDecode (Base32.decoder Base32.decodeOptions) chunks
+forall chunks: partitionedDecode (Base32Hex.decoder Base32Hex.decodeOptions) chunks
+
+let splitAt input seed =
+  let bound = Bytes.length input + 1
+  let remainder = seed % bound
+  let index = if remainder < 0 then remainder + bound else remainder
+  [
+    Bytes.empty,
+    Bytes.slice 0 index input,
+    Bytes.empty,
+    Bytes.slice index (Bytes.length input) input,
+    Bytes.empty
+  ]
+
+let encodedPartitions encode decoder values seed =
+  let input = Bytes.fromList values
+  decodeChunks decoder (splitAt (Bytes.fromString (encode input)) seed) [] = (input, None)
+forall values seed: encodedPartitions Hex.encode (Hex.decoder Hex.decodeOptions) values seed
+forall values seed: encodedPartitions Base64.encode (Base64.decoder Base64.decodeOptions) values seed
+forall values seed: encodedPartitions Base64Url.encode (Base64Url.decoder Base64Url.decodeOptions) values seed
+forall values seed: encodedPartitions Base32.encode (Base32.decoder Base32.decodeOptions) values seed
+forall values seed: encodedPartitions Base32Hex.encode (Base32Hex.decoder Base32Hex.decodeOptions) values seed
+forall values seed: encodedPartitions (Base64.encodeWith {
+  padding = Encoding.Unpadded
+}) (Base64.decoder { padding = Encoding.AllowPadding }) values seed
+forall values seed: encodedPartitions (Base32.encodeWith {
+  padding = Encoding.Unpadded
+}) (Base32.decoder { caseInsensitive = false, padding = Encoding.AllowPadding }) values seed
+
+let allSplits decoder text =
+  let input = Bytes.fromString text
+  let expected = decodeChunks decoder [input] []
+  List.all (fun index ->
+    decodeChunks decoder (splitAt input index) [] = expected) (List.range 0 (Bytes.length input + 1))
+example: allSplits (Base64.decoder Base64.decodeOptions) "Zm9vYg=="
+example: allSplits (Base32.decoder Base32.decodeOptions) "MZXW6YTBOI======"
+example: allSplits (Base32Hex.decoder Base32Hex.decodeOptions) "CPNMUOJ1E8======"
+example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAAB=="
+example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAAA==AAAA"
+example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAAAB="
+example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAA"
+example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAAA="
+example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAé="
+example: allSplits (Base32.decoder Base32.decodeOptions) "MZXW6YTBAB======"
+example: allSplits (Base32.decoder Base32.decodeOptions) "MZXW6YTBAA====="
+example: allSplits (Hex.decoder Hex.decodeOptions) "0001ffg0"
+example: allSplits (Base64Url.decoder Base64Url.decodeOptions) "-_8"
+
+let encoder = Base64.encoder Base64.encodeOptions
+
+let first = Encoding.feedEncoder encoder (Bytes.fromString "f")
+example: first.output = "" && Encoding.finishEncoder first.encoder = "Zg=="
+example: Encoding.finishEncoder encoder = ""
+example: encodeChunks first.encoder [Bytes.fromString "oo"] [] = "Zm9v"
+example: encodeChunks first.encoder [Bytes.fromString "ar"] [] = "ZmFy"
+example: Encoding.feedEncoder first.encoder Bytes.empty = { encoder = first.encoder, output = "" }
+
+let decoder = Base64.decoder Base64.decodeOptions
+
+let head = Encoding.feedDecoder decoder (Bytes.fromString "Zg")
+example: head.output = Bytes.empty && head.consumed = 2 && head.error = None && Encoding.decoderOffset head.decoder = 2
+example: decodeChunks head.decoder [Bytes.fromString "=="] [] = (Bytes.fromString "f", None)
+example: decodeChunks head.decoder [Bytes.fromString "AA"] [] = (Bytes.fromList [102, 0, 0], None)
+example: decodeChunks decoder [Bytes.fromString "Zm9v"] [] = (Bytes.fromString "foo", None)
+example: Encoding.feedDecoder head.decoder Bytes.empty = {
+  consumed = 0,
+  decoder = head.decoder,
+  error = None,
+  output = Bytes.empty
+}
+
+let bad = Encoding.feedDecoder decoder (Bytes.fromString "Zm9v!")
+example: bad.consumed = 4 && bad.output = Bytes.fromString "foo" && bad.error = Some {
+  kind = Encoding.InvalidCharacter,
+  message = "character is outside the encoding alphabet",
+  offset = Some 4
+}
+example: Encoding.feedDecoder bad.decoder (Bytes.fromString "AAAA") = {
+  consumed = 0,
+  decoder = bad.decoder,
+  error = bad.error,
+  output = Bytes.empty
+}
+example: Encoding.feedDecoder bad.decoder Bytes.empty = {
+  consumed = 0,
+  decoder = bad.decoder,
+  error = bad.error,
+  output = Bytes.empty
+}
+example: (match Encoding.finishDecoder bad.decoder with
+| Err error -> Some error = bad.error
+| Ok _ -> false)
+
+let urlTail =
+  Encoding.feedDecoder (Base64Url.decoder Base64Url.decodeOptions) (Bytes.fromString "Zg")
+example: urlTail.output = Bytes.empty && Encoding.finishDecoder urlTail.decoder = Ok (Bytes.fromString "f")
+example: decodeChunks urlTail.decoder [
+  Bytes.fromString "AA"
+] [] = (Bytes.fromList [102, 0, 0], None)

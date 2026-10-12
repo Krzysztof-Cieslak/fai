@@ -1,0 +1,69 @@
+module EncodingErrorSpec
+
+let errorAt kind offset result =
+  match result with
+  | Err error -> error.kind = kind && error.offset = Some offset
+  | Ok _ -> false
+example: Base64.decode "!AAA" = Err {
+  kind = Encoding.InvalidCharacter,
+  message = "character is outside the encoding alphabet",
+  offset = Some 0
+}
+example: errorAt Encoding.InvalidCharacter 0 (Base64.decode "!A")
+example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA A")
+example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA\tA")
+example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA\r\n")
+example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA\u{0}A")
+example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AAé=")
+example: errorAt Encoding.InvalidCharacter 4 (Base64.decode "AAAA😀")
+example: errorAt Encoding.InvalidCharacter 0 (Base64.decode "\u{feff}AAAA")
+example: errorAt Encoding.InvalidCharacter 1 (Base64.decodeBytes (Bytes.fromList [65, 255, 65, 65]))
+example: errorAt Encoding.InvalidLength 1 (Base64.decode "A")
+example: errorAt Encoding.InvalidLength 5 (Base64.decode "AAAAA")
+example: errorAt Encoding.InvalidPadding 2 (Base64.decode "AA")
+example: errorAt Encoding.InvalidPadding 3 (Base64.decode "AAA")
+example: errorAt Encoding.InvalidPadding 0 (Base64.decode "====")
+example: errorAt Encoding.InvalidPadding 1 (Base64.decode "A===")
+example: errorAt Encoding.InvalidPadding 3 (Base64.decode "AA=")
+example: errorAt Encoding.InvalidPadding 3 (Base64.decode "AA=A")
+example: errorAt Encoding.InvalidPadding 4 (Base64.decode "AAAA=")
+example: errorAt Encoding.InvalidPadding 4 (Base64.decode "AA===")
+example: errorAt Encoding.InvalidPadding 4 (Base64.decode "AA==AAAA")
+example: errorAt Encoding.NonCanonicalBits 1 (Base64.decode "AB==")
+example: errorAt Encoding.NonCanonicalBits 2 (Base64.decode "AAB=")
+example: errorAt Encoding.NonCanonicalBits 5 (Base64.decode "AAAAAB==")
+example: errorAt Encoding.NonCanonicalBits 1 (Base64Url.decode "AB")
+example: errorAt Encoding.NonCanonicalBits 2 (Base64Url.decode "AAB")
+example: errorAt Encoding.InvalidPadding 2 (Base64Url.decode "AA==")
+example: errorAt Encoding.InvalidLength 1 (Hex.decode "0")
+example: errorAt Encoding.InvalidLength 3 (Hex.decode "000")
+example: errorAt Encoding.InvalidCharacter 2 (Hex.decode "00é")
+example: errorAt Encoding.InvalidCharacter 0 (Hex.decodeBytes (Bytes.fromList [255]))
+example: errorAt Encoding.InvalidPadding 2 (Hex.decode "00=")
+example: errorAt Encoding.InvalidLength 1 (Base32.decode "A")
+example: errorAt Encoding.InvalidLength 3 (Base32.decode "AAA")
+example: errorAt Encoding.InvalidLength 6 (Base32.decode "AAAAAA")
+example: errorAt Encoding.InvalidPadding 2 (Base32.decode "AA")
+example: errorAt Encoding.InvalidPadding 4 (Base32.decode "AAAA")
+example: errorAt Encoding.InvalidPadding 5 (Base32.decode "AAAAA")
+example: errorAt Encoding.InvalidPadding 7 (Base32.decode "AAAAAAA")
+example: errorAt Encoding.InvalidPadding 7 (Base32.decode "AA=====")
+example: errorAt Encoding.InvalidPadding 3 (Base32.decode "AA=A====")
+example: errorAt Encoding.InvalidPadding 8 (Base32.decode "AA=======")
+example: errorAt Encoding.NonCanonicalBits 1 (Base32.decode "AB======")
+example: errorAt Encoding.NonCanonicalBits 3 (Base32.decode "AAAB====")
+example: errorAt Encoding.NonCanonicalBits 4 (Base32.decode "AAAAB===")
+example: errorAt Encoding.NonCanonicalBits 6 (Base32.decode "AAAAAAB=")
+example: errorAt Encoding.InvalidCharacter 0 (Base32Hex.decode "WW======")
+example: errorAt Encoding.InvalidLength 3 (Base32Hex.decode "000")
+example: errorAt Encoding.NonCanonicalBits 1 (Base32Hex.decode "01======")
+example: Encoding.errorToString {
+  kind = Encoding.InvalidLength,
+  message = "incomplete encoding group",
+  offset = Some 3
+} = "incomplete encoding group at byte 3"
+example: Encoding.errorToString {
+  kind = Encoding.Overflow,
+  message = "too long",
+  offset = None
+} = "too long"

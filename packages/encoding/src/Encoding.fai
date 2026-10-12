@@ -1,0 +1,247 @@
+module Encoding
+
+/// Padding emitted by an encoder.
+public type OutputPadding =
+  | Padded
+  | Unpadded
+
+/// AllowPadding accepts either complete padding or its complete omission.
+public type Padding =
+  | RequirePadding
+  | AllowPadding
+  | ForbidPadding
+
+/// ASCII letter case used by hexadecimal codecs.
+public type LetterCase =
+  | Lowercase
+  | Uppercase
+
+/// Stable categories for malformed input and unrepresentable sizes or offsets.
+public type ErrorKind =
+  | InvalidCharacter
+  | InvalidLength
+  | InvalidPadding
+  | NonCanonicalBits
+  | Overflow
+
+/// Offsets address bytes in the original input, including across chunk boundaries.
+/// EOF errors use the input length. Size-helper errors have no input offset.
+public type Error = { kind : ErrorKind, message : String, offset : Option Int }
+
+/// Render the message and its optional zero-based input byte location.
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.offset with
+  | None -> ""
+  | Some offset -> " at byte " ++ Int.toString offset)
+
+/// An immutable encoder snapshot retaining at most one unfinished input group.
+public opaque type Encoder = {
+  count : Int,
+  format : EncodingCore.Format,
+  padded : Bool,
+  word : Int
+}
+
+/// An immutable decoder snapshot. Failures are sticky in the returned state.
+public opaque type Decoder = {
+  count : Int,
+  error : Option Error,
+  foldCase : Bool,
+  format : EncodingCore.Format,
+  offset : Int,
+  padding : Padding,
+  pads : Int,
+  terminal : Bool,
+  word : Int
+}
+
+/// Emitted ASCII text and the immutable state for the next input chunk.
+public type EncodeStep = { encoder : Encoder, output : String }
+
+/// Output contains only complete validated groups, including on failure.
+/// Consumed is the first unconsumed index in this chunk. A trailing-bit error can
+/// locate a previously consumed digit, even one from an earlier chunk.
+public type DecodeStep = { consumed : Int, decoder : Decoder, error : Option Error, output : Bytes }
+
+internal newEncoder : EncodingCore.Format -> OutputPadding -> Encoder
+let newEncoder format padding = { count = 0, format = format, padded = padding = Padded, word = 0 }
+
+internal newDecoder : EncodingCore.Format -> Bool -> Padding -> Decoder
+let newDecoder format foldCase padding = {
+  count = 0,
+  error = None,
+  foldCase = foldCase,
+  format = format,
+  offset = 0,
+  padding = padding,
+  pads = 0,
+  terminal = false,
+  word = 0
+}
+
+encodeFrom : Encoder -> Bytes -> Int -> String -> EncodeStep
+let encodeFrom encoder input index output =
+  if index = Bytes.length input then
+    { encoder = encoder, output = output }
+  else
+    let word = encoder.word * 256 + Bytes.unsafeGet index input
+    let count = encoder.count + 1
+    if count = encoder.format.bytes then
+      encodeFrom { encoder with
+        count = 0,
+        word = 0
+      } input (index + 1) (output ++ EncodingCore.render encoder.format false count word)
+    else
+      encodeFrom { encoder with count = count, word = word } input (index + 1) output
+
+/// Encode a chunk, emitting complete groups. Empty chunks preserve the state.
+public feedEncoder : Encoder -> Bytes -> EncodeStep
+let feedEncoder encoder input = encodeFrom encoder input 0 ""
+
+/// Render the final partial group. This observes a snapshot without mutating it;
+/// repeated finalization returns the same suffix, and aliases can branch freely.
+public finishEncoder : Encoder -> String
+let finishEncoder encoder =
+  EncodingCore.render encoder.format encoder.padded encoder.count encoder.word
+
+let located kind message offset = { kind = kind, message = message, offset = Some offset }
+
+problem : Decoder -> ErrorKind -> String -> Error
+let problem decoder kind message = located kind message decoder.offset
+
+let bytes output = Bytes.fromList (List.reverse output)
+
+step : Decoder -> Int -> List Int -> DecodeStep
+let step decoder consumed output = {
+  consumed = consumed,
+  decoder = decoder,
+  error = decoder.error,
+  output = bytes output
+}
+
+failed : Decoder -> Int -> List Int -> Error -> DecodeStep
+let failed decoder consumed output error = step { decoder with error = Some error } consumed output
+
+decodeFrom : Decoder -> Bytes -> Int -> List Int -> DecodeStep
+let decodeFrom decoder input index output =
+  if index = Bytes.length input then
+    step decoder index output
+  else if decoder.offset = 9223372036854775807 then
+    failed decoder index output (problem decoder Overflow "encoding input offset overflow")
+  else
+    let byte = Bytes.unsafeGet index input
+    if decoder.terminal then
+      failed decoder index output (problem decoder InvalidPadding "data follows a padded final group")
+    else if byte = 61 then
+      if decoder.padding = ForbidPadding then
+        failed decoder index output (problem decoder InvalidPadding "padding is forbidden")
+      else if not (EncodingCore.validTail decoder.format decoder.count) then
+        failed decoder index output (problem decoder InvalidPadding "padding at an invalid position")
+      else if not (EncodingCore.canonical decoder.format decoder.count decoder.word) then
+        failed decoder index output (located NonCanonicalBits "unused trailing bits must be zero" (decoder.offset - 1))
+      else
+        let decoder = { decoder with offset = decoder.offset + 1, pads = decoder.pads + 1 }
+        if decoder.count + decoder.pads = decoder.format.digits then
+          decodeFrom { decoder with
+            count = 0,
+            pads = 0,
+            terminal = true,
+            word = 0
+          } input (index + 1) (EncodingCore.push decoder.format decoder.count decoder.word output)
+        else
+          decodeFrom decoder input (index + 1) output
+    else if decoder.pads > 0 then
+      failed decoder index output (problem decoder InvalidPadding "expected remaining padding")
+    else
+      let digit = EncodingCore.digit decoder.format decoder.foldCase byte
+      if digit < 0 then
+        failed decoder index output (problem decoder InvalidCharacter "character is outside the encoding alphabet")
+      else
+        let decoder = { decoder with
+          count = decoder.count + 1,
+          offset = decoder.offset + 1,
+          word = Int.or (Int.shiftLeft decoder.word decoder.format.bits) digit
+        }
+        if decoder.count = decoder.format.digits then
+          decodeFrom { decoder with
+            count = 0,
+            word = 0
+          } input (index + 1) (EncodingCore.push decoder.format decoder.count decoder.word output)
+        else
+          decodeFrom decoder input (index + 1) output
+
+/// Decode complete groups and retain the unfinished group. A failed state accepts
+/// no further input and returns the same error with empty output.
+public feedDecoder : Decoder -> Bytes -> DecodeStep
+let feedDecoder decoder input =
+  match decoder.error with
+  | Some _ -> step decoder 0 []
+  | None -> decodeFrom decoder input 0 []
+
+/// Validate EOF and return a final unpadded group's bytes. Finalization observes
+/// the snapshot; the caller appends its result once after all successful feeds.
+public finishDecoder : Decoder -> Result Bytes Error
+let finishDecoder decoder =
+  match decoder.error with
+  | Some error -> Err error
+  | None ->
+    if decoder.pads > 0 then
+      Err (problem decoder InvalidPadding "incomplete padding")
+    else if decoder.count = 0 then
+      Ok Bytes.empty
+    else if not (EncodingCore.validTail decoder.format decoder.count) then
+      Err (problem decoder InvalidLength "incomplete encoding group")
+    else if decoder.padding = RequirePadding then
+      Err (problem decoder InvalidPadding "required padding is missing")
+    else if not (EncodingCore.canonical decoder.format decoder.count decoder.word) then
+      Err (located NonCanonicalBits "unused trailing bits must be zero" (decoder.offset - 1))
+    else
+      Ok (bytes (EncodingCore.push decoder.format decoder.count decoder.word []))
+
+/// Number of consumed source bytes, including any retained partial group.
+public decoderOffset : Decoder -> Int
+let decoderOffset decoder = decoder.offset
+
+internal encode : Encoder -> Bytes -> String
+let encode encoder input =
+  let progress = feedEncoder encoder input
+  progress.output ++ finishEncoder progress.encoder
+
+internal decode : Decoder -> Bytes -> Result Bytes Error
+let decode decoder input =
+  let progress = feedDecoder decoder input
+  Result.map (Bytes.concat progress.output) (finishDecoder progress.decoder)
+
+internal lengthFor : EncodingCore.Format -> OutputPadding -> Int -> Result Int Error
+let lengthFor format padding count =
+  match EncodingCore.encodedLength format (padding = Padded) count with
+  | Some length -> Ok length
+  | None -> Err {
+    kind = if count < 0 then InvalidLength else Overflow,
+    message = if count < 0 then
+      "byte count must be nonnegative"
+    else
+      "encoded length exceeds Int range",
+    offset = None
+  }
+
+// Exercise the offset ceiling without constructing an enormous input stream.
+let offsetBoundary = { (newDecoder EncodingCore.base64 false RequirePadding) with
+  offset = 9223372036854775804
+}
+
+let boundaryStep = feedDecoder offsetBoundary (Bytes.fromString "AAAA")
+example: boundaryStep.consumed = 3 && decoderOffset boundaryStep.decoder = 9223372036854775807 && boundaryStep.output = Bytes.empty
+example: boundaryStep.error = Some {
+  kind = Overflow,
+  message = "encoding input offset overflow",
+  offset = Some 9223372036854775807
+}
+example: feedDecoder boundaryStep.decoder Bytes.empty = {
+  consumed = 0,
+  decoder = boundaryStep.decoder,
+  error = boundaryStep.error,
+  output = Bytes.empty
+}
+example: (feedDecoder { offsetBoundary with offset = 9223372036854775807 } Bytes.empty).error = None

@@ -1,0 +1,70 @@
+module EncodingPropertySpec
+
+let roundTrip encode decode values =
+  let bytes = Bytes.fromList values
+  decode (encode bytes) = Ok bytes
+forall values: roundTrip Hex.encode Hex.decode values
+forall values: roundTrip Base64.encode Base64.decode values
+forall values: roundTrip Base64Url.encode Base64Url.decode values
+forall values: roundTrip Base32.encode Base32.decode values
+forall values: roundTrip Base32Hex.encode Base32Hex.decode values
+
+let unpadded64 = Base64.encodeWith { padding = Encoding.Unpadded }
+
+let raw64 = Base64.decodeWith { padding = Encoding.ForbidPadding }
+
+let paddedUrl = Base64Url.encodeWith { padding = Encoding.Padded }
+
+let strictUrl = Base64Url.decodeWith { padding = Encoding.RequirePadding }
+
+let unpadded32 = Base32.encodeWith { padding = Encoding.Unpadded }
+
+let raw32 = Base32.decodeWith { caseInsensitive = false, padding = Encoding.ForbidPadding }
+
+let unpadded32Hex = Base32Hex.encodeWith { padding = Encoding.Unpadded }
+
+let raw32Hex = Base32Hex.decodeWith { caseInsensitive = false, padding = Encoding.ForbidPadding }
+forall values: roundTrip unpadded64 raw64 values
+forall values: roundTrip paddedUrl strictUrl values
+forall values: roundTrip unpadded32 raw32 values
+forall values: roundTrip unpadded32Hex raw32Hex values
+forall values: roundTrip (Hex.encodeWith { letterCase = Encoding.Uppercase }) Hex.decode values
+
+let sizeMatches encode length values =
+  let bytes = Bytes.fromList values
+  length (Bytes.length bytes) = Ok (String.length (encode bytes))
+forall values: sizeMatches Hex.encode Hex.encodedLength values
+forall values: sizeMatches Base64.encode Base64.encodedLength values
+forall values: sizeMatches Base64Url.encode Base64Url.encodedLength values
+forall values: sizeMatches Base32.encode Base32.encodedLength values
+forall values: sizeMatches Base32Hex.encode Base32Hex.encodedLength values
+forall values: sizeMatches unpadded64 (Base64.encodedLengthWith {
+  padding = Encoding.Unpadded
+}) values
+forall values: sizeMatches unpadded32 (Base32.encodedLengthWith {
+  padding = Encoding.Unpadded
+}) values
+
+let total decode encode values =
+  let input = Bytes.fromList values
+  match decode input with
+  | Ok decoded -> decode (Bytes.fromString (encode decoded)) = Ok decoded
+  | Err error ->
+    match error.offset with
+    | None -> false
+    | Some offset -> offset >= 0 && offset <= Bytes.length input
+forall values: total Hex.decodeBytes Hex.encode values
+forall values: total Base64.decodeBytes Base64.encode values
+forall values: total Base64Url.decodeBytes Base64Url.encode values
+forall values: total Base32.decodeBytes Base32.encode values
+forall values: total Base32Hex.decodeBytes Base32Hex.encode values
+
+let canonical decode encode text =
+  match decode text with
+  | Ok decoded -> encode decoded = text
+  | Err _ -> true
+forall text: canonical Base64.decode Base64.encode text
+forall text: canonical Base64Url.decode Base64Url.encode text
+forall text: canonical Base32.decode Base32.encode text
+forall text: canonical Base32Hex.decode Base32Hex.encode text
+forall values: Base64.encode (Bytes.fromList values) = Http.base64Encode (Bytes.fromList values)

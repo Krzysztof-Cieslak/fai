@@ -51,6 +51,21 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Binary-to-ASCII encoding is a pure optional source package covering the RFC
+  4648 alphabets. Standard Base64 and Base32 default to complete padding;
+  Base64Url defaults to unpadded input/output. Padding policies are explicit and
+  unused bits must be zero. Hex defaults to lowercase output and mixed-case input;
+  Base32 case folding is opt-in and never substitutes visually similar digits.
+
+- Encoding feeds use immutable snapshots retaining one bounded group and scalar
+  offsets. Decode feeds return complete validated prefixes alongside sticky errors;
+  finalization observes the snapshot, validates its tail and does not mutate aliases.
+  Error locations and collected prefixes are independent of chunk boundaries.
+  Whole-buffer wrappers collect through the same core and return all-or-error.
+  Existing source-package consumers share this codec through manifest dependencies
+  and explicit module imports;
+  the embedded HTTP helper is checked for matching standard Base64 output.
+
 - SQL UUIDs use the standalone Uuid.Uuid value through a transparent SqlUuid.Uuid
   compatibility alias. Legacy canonical parsing and String errors are preserved.
   SQLite UUID storage remains canonical text; PostgreSQL binary UUID results

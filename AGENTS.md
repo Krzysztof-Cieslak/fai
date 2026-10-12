@@ -1181,6 +1181,19 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/encoding` source library supplies pure RFC 4648 `Hex`,
+`Base64`, `Base64Url`, `Base32` and `Base32Hex` codecs. Standard Base64 and both
+Base32 variants default to padded output; URL-safe Base64 defaults to unpadded.
+Decoders validate alphabets, exact padding and zero unused bits, with explicit
+padding/case policies and typed byte-located errors. Shared immutable incremental
+states retain at most one group, emit validated prefixes and preserve errors and
+offsets across arbitrary chunk boundaries. Whole-buffer decoding is all-or-error;
+finalization observes a snapshot and returns its tail. Native Fai contracts and
+JIT/AOT fixtures cover binary data, size arithmetic, large buffers and chunked
+processing. Its `fai.toml` owns the library, tests and runnable examples;
+PostgreSQL, LLM image payloads and TUI clipboard output use manifest dependencies
+and explicit imports such as `import encoding.Base64`.
+
 The optional `packages/uuid` library stores UUIDs as opaque 16-byte network-order
 values. Canonical, compact and URN codecs are pure; syntax validation accepts all
 bit patterns while version/variant inspection remains explicit. Pure v4/v7
@@ -1446,6 +1459,10 @@ extracted when linking, making compiler bundles independent of Cargo build paths
   through a pull request; `main` is never committed or pushed to directly. Keep
   the branch focused, update it against `main` before opening the PR (or its
   predecessor in a native PR stack), and let the CI gates (§12) pass before merging.
+- **Complete delivery automatically.** After implementing and validating requested
+  changes, commit them, open the pull request, monitor CI, and merge once all four
+  required checks pass on the exact current head. No separate user prompt is
+  needed to open or merge the PR. Resolve failures and preserve branch protection.
 
 ### Dependent changes: native GitHub PR stacks
 

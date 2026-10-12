@@ -1,7 +1,9 @@
 # Full-screen terminal applications
 
 `tui` is an optional Fai source package for forms, data browsers and agent-style
-terminal applications. Include its `src/` directory in your application's workspace.
+terminal applications. Declare `tui` in your application's `fai.toml` and import
+its modules, such as `tui.Tui` and `tui.Ui`. Its manifest includes the `encoding`
+dependency for clipboard output.
 It uses the explicit `TerminalHost` capability and the pure `TextCells` primitives.
 
 The rendering foundation is pure: `TuiText` sanitizes display text and operates on

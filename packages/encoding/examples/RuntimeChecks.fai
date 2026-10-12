@@ -1,0 +1,100 @@
+module EncodingRuntimeChecks
+
+let hashBytes bytes index hash =
+  if index = Bytes.length bytes then
+    hash
+  else
+    hashBytes bytes (index + 1) (Int.xor (hash * 1099511628211) (Bytes.unsafeGet index bytes))
+
+let hash bytes seed = hashBytes bytes 0 seed
+
+let large encode decode length input =
+  let encoded = encode input
+  length (Bytes.length input) = Ok (String.length encoded) && decode encoded = Ok input
+
+let finish encoder decoder expected actual count total =
+  let step = Encoding.feedDecoder decoder (Bytes.fromString (Encoding.finishEncoder encoder))
+  match (step.error, Encoding.finishDecoder step.decoder) with
+  | (None, Ok tail) ->
+    hash tail (hash step.output actual) = expected && count + Bytes.length step.output + Bytes.length tail = total
+  | _ -> false
+
+let stream encoder decoder chunk remaining expected actual count total =
+  if remaining = 0 then
+    finish encoder decoder expected actual count total
+  else
+    let encoded = Encoding.feedEncoder encoder chunk
+    let decoded = Encoding.feedDecoder decoder (Bytes.fromString encoded.output)
+    match decoded.error with
+    | Some _ -> false
+    | None ->
+      stream encoded.encoder decoded.decoder chunk (remaining - 1) (hash chunk expected) (hash decoded.output actual) (count + Bytes.length decoded.output) (total + Bytes.length chunk)
+
+let streamed encoder decoder chunk = stream encoder decoder chunk 256 17 17 0 0
+
+let aliases chunk =
+  let encoder =
+    (Encoding.feedEncoder (Base64.encoder Base64.encodeOptions) (Bytes.fromString "f")).encoder
+  let one = Encoding.feedEncoder encoder chunk
+  let two = Encoding.feedEncoder encoder (Bytes.fromString "oo")
+  Base64.decode (one.output ++ Encoding.finishEncoder one.encoder) = Ok (Bytes.concat (Bytes.fromString "f") chunk) && two.output = "Zm9v" && Encoding.finishEncoder encoder = "Zg=="
+
+let invalidBytes =
+  let step =
+    Encoding.feedDecoder (Base64.decoder Base64.decodeOptions) (Bytes.fromList [
+      90,
+      109,
+      57,
+      118,
+      255
+    ])
+  step.output = Bytes.fromString "foo" && step.consumed = 4 && step.error = Some {
+    kind = Encoding.InvalidCharacter,
+    message = "character is outside the encoding alphabet",
+    offset = Some 4
+  }
+
+let referenceVectors =
+  let bytes = Bytes.fromString "foobar"
+  Hex.encode bytes = "666f6f626172" && Base64.encode bytes = "Zm9vYmFy" && Base32.encode bytes = "MZXW6YTBOI======" && Base32Hex.encode bytes = "CPNMUOJ1E8======" && Base64Url.encode (Bytes.fromList [
+    251,
+    255
+  ]) = "-_8"
+
+let failed pair =
+  let (_, passed) = pair
+  not passed
+
+report : Console -> List (String * Bool) -> Unit / { Console }
+let report console failures =
+  match failures with
+  | [] -> ()
+  | (name, _) :: rest ->
+    let shown = console.writeLine ("FAILED: " ++ name)
+    report console rest
+
+public main : { console : Console | _ } -> Unit / { Console }
+let main env =
+  let input = Bytes.fromList (List.map (fun n -> Int.and 255 (n * 73 + 19)) (List.range 0 262147))
+  let chunk = Bytes.slice 0 4093 input
+  let checks = [
+    ("large hex", large Hex.encode Hex.decode Hex.encodedLength input),
+    ("large base64", large Base64.encode Base64.decode Base64.encodedLength input),
+    ("large base64url", large Base64Url.encode Base64Url.decode Base64Url.encodedLength input),
+    ("large base32", large Base32.encode Base32.decode Base32.encodedLength input),
+    ("large base32hex", large Base32Hex.encode Base32Hex.decode Base32Hex.encodedLength input),
+    ("streamed hex", streamed (Hex.encoder Hex.encodeOptions) (Hex.decoder Hex.decodeOptions) chunk),
+    ("streamed base64", streamed (Base64.encoder Base64.encodeOptions) (Base64.decoder Base64.decodeOptions) chunk),
+    ("streamed base64url", streamed (Base64Url.encoder Base64Url.encodeOptions) (Base64Url.decoder Base64Url.decodeOptions) chunk),
+    ("streamed base32", streamed (Base32.encoder Base32.encodeOptions) (Base32.decoder Base32.decodeOptions) chunk),
+    ("streamed base32hex", streamed (Base32Hex.encoder Base32Hex.encodeOptions) (Base32Hex.decoder Base32Hex.decodeOptions) chunk),
+    ("shared state", aliases chunk),
+    ("malformed byte prefix", invalidBytes),
+    ("independent RFC vectors", referenceVectors)
+  ]
+  let failures = List.filter failed checks
+  let reported = report env.console failures
+  env.console.writeLine (if List.isEmpty failures then
+    "Encoding runtime checks passed"
+  else
+    "Encoding runtime checks FAILED")

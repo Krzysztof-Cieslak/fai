@@ -1,6 +1,6 @@
 # Typed model clients
 
-`llm` uses the `json`, `sse`, and `http-client` source packages. Request and schema
+`llm` uses the `json`, `sse`, `http-client`, and `encoding` source packages. Request and schema
 construction are pure. `LlmTypes` describes ordered messages, image inputs, tool
 calls/results, usage, completion outcomes and provider-specific continuation items.
 

@@ -1,0 +1,60 @@
+module Hex
+
+/// ASCII letter case for hexadecimal output.
+public type EncodeOptions = { letterCase : Encoding.LetterCase }
+
+/// None accepts either ASCII letter case; Some restricts letters to that case.
+public type DecodeOptions = { letterCase : Option Encoding.LetterCase }
+
+/// Lowercase output by default.
+public encodeOptions : EncodeOptions
+let encodeOptions = { letterCase = Encoding.Lowercase }
+
+/// Accept uppercase, lowercase, and mixed-case hexadecimal.
+public decodeOptions : DecodeOptions
+let decodeOptions = { letterCase = None }
+
+let format letterCase =
+  if letterCase = Encoding.Lowercase then EncodingCore.hexLower else EncodingCore.hexUpper
+
+/// Start an incremental hexadecimal encoder.
+public encoder : EncodeOptions -> Encoding.Encoder
+let encoder options = Encoding.newEncoder (format options.letterCase) Encoding.Unpadded
+
+/// Start an incremental decoder, retaining a single unfinished hex digit.
+public decoder : DecodeOptions -> Encoding.Decoder
+let decoder options =
+  Encoding.newDecoder (format (Option.withDefault Encoding.Lowercase options.letterCase)) (options.letterCase = None) Encoding.ForbidPadding
+
+/// Encode two hexadecimal characters per byte in the selected case.
+public encodeWith : EncodeOptions -> Bytes -> String
+let encodeWith options input = Encoding.encode (encoder options) input
+
+/// Lowercase hexadecimal, two characters per byte.
+public encode : Bytes -> String
+let encode input = encodeWith encodeOptions input
+
+/// Decode ASCII hex bytes with explicit case acceptance.
+public decodeBytesWith : DecodeOptions -> Bytes -> Result Bytes Encoding.Error
+let decodeBytesWith options input = Encoding.decode (decoder options) input
+
+/// Decode hex text with explicit case acceptance; offsets count UTF-8 bytes.
+public decodeWith : DecodeOptions -> String -> Result Bytes Encoding.Error
+let decodeWith options input = decodeBytesWith options (Bytes.fromString input)
+
+/// Decode complete pairs of ASCII hex bytes in either case.
+public decodeBytes : Bytes -> Result Bytes Encoding.Error
+let decodeBytes input = decodeBytesWith decodeOptions input
+
+/// Accept complete pairs of ASCII hex digits in either case.
+public decode : String -> Result Bytes Encoding.Error
+let decode input = decodeWith decodeOptions input
+
+/// Exact output length, rejecting negative input counts and Int overflow.
+public encodedLengthWith : EncodeOptions -> Int -> Result Int Encoding.Error
+let encodedLengthWith options count =
+  Encoding.lengthFor (format options.letterCase) Encoding.Unpadded count
+
+/// Twice the input byte count, checked for negative counts and Int overflow.
+public encodedLength : Int -> Result Int Encoding.Error
+let encodedLength count = encodedLengthWith encodeOptions count

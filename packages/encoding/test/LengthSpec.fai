@@ -1,0 +1,45 @@
+module EncodingLengthSpec
+
+let kind expected result =
+  match result with
+  | Err error -> error.kind = expected && error.offset = None
+  | Ok _ -> false
+example: Hex.encodedLength 0 = Ok 0
+example: Hex.encodedLength 3 = Ok 6
+example: Hex.encodedLength 4611686018427387903 = Ok 9223372036854775806
+example: kind Encoding.Overflow (Hex.encodedLength 4611686018427387904)
+example: kind Encoding.InvalidLength (Hex.encodedLength (-1))
+example: kind Encoding.InvalidLength (Base64.encodedLength (-9223372036854775808))
+example: Base64.encodedLength 0 = Ok 0
+example: Base64.encodedLength 1 = Ok 4
+example: Base64.encodedLength 2 = Ok 4
+example: Base64.encodedLength 3 = Ok 4
+example: Base64.encodedLength 4 = Ok 8
+example: Base64Url.encodedLength 1 = Ok 2
+example: Base64Url.encodedLength 2 = Ok 3
+example: Base64Url.encodedLength 3 = Ok 4
+example: Base64Url.encodedLength 4 = Ok 6
+example: Base64.encodedLength 6917529027641081853 = Ok 9223372036854775804
+example: kind Encoding.Overflow (Base64.encodedLength 6917529027641081854)
+example: Base64Url.encodedLength 6917529027641081855 = Ok 9223372036854775807
+example: kind Encoding.Overflow (Base64Url.encodedLength 6917529027641081856)
+example: Base32.encodedLength 0 = Ok 0
+example: Base32.encodedLength 1 = Ok 8
+example: Base32.encodedLength 5 = Ok 8
+example: Base32.encodedLength 6 = Ok 16
+example: Base32.encodedLengthWith { padding = Encoding.Unpadded } 1 = Ok 2
+example: Base32.encodedLengthWith { padding = Encoding.Unpadded } 2 = Ok 4
+example: Base32.encodedLengthWith { padding = Encoding.Unpadded } 3 = Ok 5
+example: Base32.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7
+example: Base32.encodedLength 5764607523034234875 = Ok 9223372036854775800
+example: kind Encoding.Overflow (Base32.encodedLength 5764607523034234876)
+example: Base32.encodedLengthWith {
+  padding = Encoding.Unpadded
+} 5764607523034234879 = Ok 9223372036854775807
+example: kind Encoding.Overflow (Base32.encodedLengthWith {
+  padding = Encoding.Unpadded
+} 5764607523034234880)
+example: kind Encoding.Overflow (Base32Hex.encodedLength 9223372036854775807)
+example: Base32Hex.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7
+example: Hex.encodedLengthWith { letterCase = Encoding.Uppercase } 2 = Ok 4
+example: Base64Url.encodedLengthWith { padding = Encoding.Padded } 1 = Ok 4
