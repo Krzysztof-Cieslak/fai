@@ -16,9 +16,11 @@ locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and to
 > with scoped module lookup, internal visibility, and package-qualified native symbols.
 > Explicit module imports and identity-preserving public re-exports are implemented
 > in syntax, resolution, formatting, and IDE lookup for package-aware compiler inputs.
-> The package-aware project loader and the dependency, lockfile, vendor,
-> and publishing commands below describe the intended interface. The current CLI
-> still uses the native-only manifest and directory-based source loader.
+> The shared project loader now prepares local path dependencies, root path
+> overrides, host source scopes, and native requirements for CLI, daemon, and LSP.
+> Workspace/member and executable selection use those manifests. Git restoration,
+> dependency commands, locks, vendoring, and publication remain in development.
+> Native-only and unversioned directory sessions retain compatibility discovery.
 
 This document consolidates the agreed product decisions and proposes the concrete
 syntax and operational details needed to implement them. Section 23 explicitly

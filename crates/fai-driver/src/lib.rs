@@ -59,6 +59,11 @@ pub use fai_core::{TestWireBundle, WireBundle};
 pub use manifest::{MANIFEST_NAME, NativeDeps, read_native_manifest};
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::Session;
+mod project;
+pub use project::{ProjectError, project_entry_path, project_package_root};
+
+/// Human-readable notice when personal package overrides are active.
+pub const LOCAL_CONTEXT_NOTICE: &str = "using personal package overrides (local context)\n";
 pub use tool::{BuildInfo, TOOL_BUILD_ID, build_info};
 
 /// A command is not implemented yet.
@@ -152,6 +157,9 @@ pub const CODES: &[CodeInfo] = &[
 /// These are hard failures (exit code 3), distinct from in-band diagnostics.
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {
+    /// Located project/manifest diagnostics prepared before compiler inputs exist.
+    #[error("{0}")]
+    Project(#[from] Box<ProjectError>),
     /// An effectful request may have executed before its transport failed.
     #[error("command outcome is unknown ({0}); command was not restarted")]
     CommandOutcomeUnknown(String),
@@ -321,8 +329,9 @@ pub(crate) fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
 /// error does not cascade into spurious resolution/type errors).
 #[must_use]
 pub fn check(db: &dyn Db, files: &[SourceFile]) -> CommandResult {
+    let files = dependency_validation_files(db, files);
     let mut diagnostics = Vec::new();
-    for &file in files {
+    for &file in &files {
         let parse_diags = file_diagnostics(db, file);
         let has_parse_error = parse_diags.iter().any(|d| d.severity == Severity::Error);
         diagnostics.extend(parse_diags);
@@ -333,6 +342,42 @@ pub fn check(db: &dyn Db, files: &[SourceFile]) -> CommandResult {
     sort_diagnostics(&mut diagnostics);
     let ok = !diagnostics.iter().any(|diag| diag.severity == Severity::Error);
     CommandResult { diagnostics, ok }
+}
+
+/// Expands semantic validation to the selected packages' production dependencies.
+/// Contract execution continues to use the original explicit source selection.
+pub(crate) fn dependency_validation_files(db: &dyn Db, selected: &[SourceFile]) -> Vec<SourceFile> {
+    use fai_db::{SourceOrigin, SourceRole};
+    use std::collections::BTreeSet;
+    let mut pending: Vec<_> = selected
+        .iter()
+        .filter_map(|file| match file.origin(db) {
+            SourceOrigin::Package(id) => Some(id),
+            _ => None,
+        })
+        .collect();
+    if pending.is_empty() {
+        return selected.to_vec();
+    }
+    let mut packages = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !packages.insert(id) {
+            continue;
+        }
+        if let Some(package) = fai_db::package_environment(db, id) {
+            pending.extend(package.dependencies(db).values().copied());
+            if selected.iter().any(|file| {
+                file.origin(db) == SourceOrigin::Package(id)
+                    && matches!(file.role(db), SourceRole::Test)
+            }) {
+                pending.extend(package.development(db).values().copied());
+            }
+        }
+    }
+    let mut files: Vec<_> = db.all_source_files().into_iter().filter(|file| selected.contains(file)
+        || (matches!(file.role(db), SourceRole::Library) && matches!(file.origin(db), SourceOrigin::Package(id) if packages.contains(&id)))).collect();
+    files.sort_by(|a, b| a.path(db).cmp(b.path(db)));
+    files
 }
 
 /// `fai test` — run example/forall contracts over `files`, filtered by

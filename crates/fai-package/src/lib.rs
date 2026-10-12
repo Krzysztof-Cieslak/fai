@@ -12,7 +12,10 @@ mod model;
 mod platform;
 mod version;
 
-pub use diagnostic::CODES;
+pub use diagnostic::{
+    CODES, COMPILER_MISMATCH, INVALID_MANIFEST, INVALID_PLATFORM, INVALID_SOURCE, INVALID_TARGET,
+    PACKAGE_CYCLE, RESOLUTION_CONFLICT, SOURCE_UNAVAILABLE,
+};
 pub use identity::{
     DependencyAlias, GitBranch, GitPackage, GitRepository, GitRevision, PackageName, PackagePath,
 };

@@ -35,6 +35,12 @@ pub struct GlobalArgs {
     /// Workspace root. Defaults to the current directory.
     #[arg(long = "project", short = 'C', global = true, value_name = "DIR")]
     pub project: Option<Utf8PathBuf>,
+    /// Select one member of a manifest workspace.
+    #[arg(long, short = 'p', global = true, value_name = "PACKAGE")]
+    pub package: Option<String>,
+    /// Ignore personal root overrides and use the shared project context.
+    #[arg(long, global = true)]
+    pub no_local: bool,
     /// Run in-process; do not spawn or connect to a daemon.
     #[arg(long, global = true)]
     pub no_daemon: bool,
@@ -136,12 +142,16 @@ pub struct CheckArgs {
 /// Arguments for `fai build`.
 #[derive(Debug, Args)]
 pub struct BuildArgs {
-    /// The entry file (defines `main`).
+    /// The entry file, or the manifest's default executable when omitted.
+    #[arg(default_value = "")]
     pub path: Utf8PathBuf,
+    /// Select a named executable declared by the package.
+    #[arg(long, value_name = "NAME", conflicts_with = "path")]
+    pub bin: Option<String>,
     /// Output executable path (defaults to the entry file's stem).
     #[arg(long, value_name = "FILE")]
     pub out: Option<Utf8PathBuf>,
-    /// Optimize the build (accepted; no effect in this milestone).
+    /// Optimize the build (accepted; no effect yet).
     #[arg(long)]
     pub release: bool,
 }
@@ -168,8 +178,12 @@ pub struct TestWorkerArgs {
 /// Arguments for `fai run`.
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// The entry file.
+    /// The entry file, or the manifest's default executable when omitted.
+    #[arg(default_value = "")]
     pub path: Utf8PathBuf,
+    /// Select a named executable declared by the package.
+    #[arg(long, value_name = "NAME", conflicts_with = "path")]
+    pub bin: Option<String>,
     /// Arguments passed to the program after `--`.
     #[arg(last = true)]
     pub args: Vec<String>,

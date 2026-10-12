@@ -77,6 +77,8 @@ fai <command> [subcommand] [arguments] [flags]
 | `--message-format <human\|json>` | Output format. Default: `human` for build/dev commands, `json` for `query`. |
 | `--project <dir>` / `-C <dir>` | Workspace root. Default: nearest ancestor containing a project marker, else the current directory. |
 | `--no-daemon` | Run the request in-process; do not spawn/connect to a daemon. |
+| `--package <name-or-path>` / `-p` | Select one member of a versioned workspace. |
+| `--no-local` | Ignore `fai.local.toml` and select the shared project context. |
 | `--color <auto\|always\|never>` | Colorize human output. Default `auto`. |
 | `--quiet` / `--verbose` | Decrease / increase log verbosity. |
 | `--protocol-log <file>` | (debug) Append a JSON decode of all daemon traffic for this invocation. |
@@ -96,9 +98,9 @@ fai <command> [subcommand] [arguments] [flags]
 
 ### Workspace model (v1)
 
-The package/project design is specified in **`docs/PACKAGES.md`**, whose status
-section distinguishes implemented metadata tooling from the proposed package-aware
-CLI. The workspace behavior described here is the currently available interface.
+Versioned `fai.toml` manifests load package-owned library, executable, and test
+sources through the same CLI, daemon, and language-server pipeline. The complete
+package-system design and implementation status are in **`docs/PACKAGES.md`**.
 
 Package-aware compiler environments support file-local `import dependency.Module`
 and `public import` re-exports. Their aliases are supplied by the project loader;
@@ -114,10 +116,28 @@ its separate backend identity. Native dependency archives needed beyond system
 libraries are embedded and extracted alongside the runtime when linking, so a
 copied compiler needs the platform linker/SDK but not its original Cargo home.
 
-The **workspace root** is the current directory (or `--project <dir>`). Sources
-are **all `.fai` files under the root**, excluding hidden and ignored
-directories. (A `fai.toml` manifest with explicit roots/targets is still deferred
-to v2; only the native-dependency section below is read today.)
+At a package directory, `check` and `test` select that package's targets. At a
+workspace directory they select its members; `--package` narrows the selection.
+`src/Main.fai` supplies the conventional executable, other shared files belong
+to the library, and `tests/` supplies additional test-only sources. `[[bin]]`
+declares additional entry files; `--bin <name>` or `package.default-run` selects
+one for `build`/`run`. Two entry files may both declare `module Main`.
+
+Path dependencies and root Git-to-path overrides are loaded recursively.
+Consumed packages contribute their library and normal dependencies. Development
+aliases are available only to additional tests; production source keeps its
+normal environment during checks. Dependency code is validated, while its
+contracts execute only when selected. Active platform sections select host
+sources, dependencies, and native settings.
+
+Root `fai.local.toml` overrides activate automatically and take precedence over
+shared overrides. Commands report the local context on stderr; `--no-local`
+selects shared configuration. The daemon retains separate warm databases for
+these contexts. Git restoration, lock operations, and installed-compiler dispatch
+are described by the package specification and are being integrated.
+
+Directory sessions without a versioned manifest retain recursive `.fai` discovery
+for compatibility, including native-only manifests described below.
 
 `check`, `fmt`, and `test` accept workspace-relative or absolute file/directory
 selections, including `./` and normalized `..` components inside the workspace.
@@ -285,7 +305,7 @@ $ fai check
 ok: 0 errors, 2 warnings
 ```
 
-### `fai build <path> [--release] [--out <file>]`
+### `fai build [path] [--bin <name>] [--release] [--out <file>]`
 Ahead-of-time compile to a native executable (Cranelift → object cache → link).
 
 Build and run validate the runtime-to-`main` application (`FAI0007` for an invalid
@@ -298,7 +318,7 @@ when initialization or the instantiated entry requires it.
 - **Output (json):** `{ "schemaVersion": 1, "artifact": string, "diagnostics": [Diagnostic], "ok": bool }`
 - **Exit:** `0` on success; `1` if compilation failed.
 
-### `fai run <path> [-- <args>...]`
+### `fai run [path] [--bin <name>] [-- <args>...]`
 Build (via JIT) and run. Lowest edit→run latency: no linking; executed in an
 isolated worker spawned by the daemon (capabilities provided by the host).
 
@@ -462,19 +482,22 @@ The first request is `initialize`:
 ```jsonc
 // → request
 { "method": "initialize",
-  "params": { "protocolVersion": 4, "compilerVersion": "0.1.0", "compilerBuildId": "…",
+  "params": { "protocolVersion": 5, "compilerVersion": "0.1.0", "compilerBuildId": "…",
               "schemaVersion": 1, "workspaceRoot": "/abs/path",
               "clientInfo": { "name": "fai-cli", "version": "0.1.0" } } }
 // ← response
 { "result": { "serverCapabilities": { "streaming": true, "query": true },
-              "compilerVersion": "0.1.0", "compilerBuildId": "…", "protocolVersion": 4, "schemaVersion": 1 } }
+              "compilerVersion": "0.1.0", "compilerBuildId": "…", "protocolVersion": 5, "schemaVersion": 1 } }
 ```
 
 Because the client and daemon are the **same binary**, a version mismatch means a
 *stale* daemon: the client sends `exit`, then respawns and re-initializes.
-Protocol 4 additionally requires the full executable build identity in both
+The protocol requires the full executable build identity in both
 directions; matching `0.1.0` version strings alone cannot reuse a stale compiler.
 Source-qualified contract events remain required.
+Protocol 5 adds `no_local` to command, run, and test requests. Each context is
+prepared independently; located manifest failures use the same result envelope
+as one-shot execution, including when opening a project fails.
 
 ### 7.4 Session & consistency model
 

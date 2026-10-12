@@ -78,11 +78,35 @@ A package source has an invalid repository locator, revision, branch, package-re
 
 A package version or requirement is malformed. Versions have three numeric components and an optional prerelease. A bare dependency version is exact; `^` and `~` request compatible ranges. Commas intersect requirements and `||` joins alternatives. Partial versions and build metadata are not accepted.
 
+### FAI0804 — dependency requirements conflict
+
+**Severity:** error
+
+A selected package does not satisfy its dependency version requirements. Local paths and explicit replacements retain the declared compatibility constraints; select compatible sources or update the intended requirements.
+
+### FAI0805 — package dependency cycle
+
+**Severity:** error
+
+Normal package dependencies form a cycle. Move shared definitions into another package or remove an edge. A root's development dependencies are checked separately from its normal dependency node.
+
+### FAI0809 — incompatible project compiler
+
+**Severity:** error
+
+The selected compiler does not meet the package's compatible compiler requirement or the root's exact toolchain pin. Select the required installed compiler; compatibility requirements are not silently ignored.
+
 ### FAI0810 — invalid or unsupported package platform
 
 **Severity:** error
 
 A target triple or platform predicate is invalid, or the package does not support the requested target. Platform predicates contain exact operating-system, architecture, and environment values and must contain at least one condition.
+
+### FAI0811 — package source unavailable
+
+**Severity:** error
+
+A declared package source is unavailable to the source provider. Local project loading supports path dependencies and explicit path replacements for Git sources. A Git source needs a materialized provider or a compatible local replacement.
 
 ### FAI0816 — overlapping package overrides
 

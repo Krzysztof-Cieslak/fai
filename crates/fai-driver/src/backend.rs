@@ -1604,9 +1604,16 @@ fn native_lib_flags(native: &crate::manifest::NativeDeps) -> Vec<String> {
     let mut flags = Vec::new();
     for dir in &native.lib_dirs {
         flags.push(format!("-L{}", dir.display()));
+        if !native.frameworks.is_empty() {
+            flags.push(format!("-F{}", dir.display()));
+        }
     }
     for lib in &native.libs {
         flags.push(format!("-l{lib}"));
+    }
+    for framework in &native.frameworks {
+        flags.push("-framework".to_owned());
+        flags.push(framework.clone());
     }
     flags
 }

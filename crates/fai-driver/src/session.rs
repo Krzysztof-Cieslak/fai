@@ -10,9 +10,13 @@
 //! revision — preserving early cutoff.
 
 use std::time::SystemTime;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use fai_db::{Db, DbSpanResolver, FaiDatabase, SourceFile};
+use fai_db::{Db, DbSpanResolver, FaiDatabase, PackageId, SourceFile, SourceOrigin, SourceRole};
 use fai_span::SourceId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -37,6 +41,18 @@ pub struct Session {
     live: FxHashSet<SourceId>,
     /// Editor-owned inputs that disk scans must not replace or deactivate.
     overlays: FxHashSet<Utf8PathBuf>,
+    overlay_contents: FxHashMap<Utf8PathBuf, String>,
+    /// All package inputs, including dependencies excluded from user selection.
+    loaded: FxHashSet<SourceId>,
+    project: Option<Arc<LiveProject>>,
+    no_local: bool,
+}
+
+struct LiveProject {
+    local: bool,
+    native: BTreeMap<PackageId, crate::NativeDeps>,
+    entries: Vec<(String, SourceId)>,
+    default_entry: Option<SourceId>,
 }
 
 impl Session {
@@ -45,9 +61,16 @@ impl Session {
     /// Hidden directories and `target` are skipped. Files are loaded with paths
     /// relative to `root`, so diagnostics report workspace-relative locations.
     pub fn open(root: Utf8PathBuf) -> Result<Self, DriverError> {
+        Self::open_with_local(root, true)
+    }
+
+    /// Opens a project with explicit control over personal root overrides.
+    pub fn open_with_local(root: Utf8PathBuf, use_local: bool) -> Result<Self, DriverError> {
         if !root.is_dir() {
             return Err(DriverError::NotADirectory(root));
         }
+        let root =
+            root.canonicalize_utf8().map_err(|source| DriverError::Io { path: root, source })?;
         let mut db = FaiDatabase::new();
         // The embedded standard library is loaded first as high-durability
         // synthetic files, so their module names are reserved and rarely-changing.
@@ -58,6 +81,10 @@ impl Session {
             stats: FxHashMap::default(),
             live: FxHashSet::default(),
             overlays: FxHashSet::default(),
+            overlay_contents: FxHashMap::default(),
+            loaded: FxHashSet::default(),
+            project: None,
+            no_local: !use_local,
         };
         session.sync_from_disk()?;
         Ok(session)
@@ -85,6 +112,15 @@ impl Session {
     /// Synchronizes disk-backed inputs, preserving open editor overlays. Returns
     /// whether source content or active membership changed (not just file stats).
     pub fn sync_disk_changes(&mut self) -> Result<bool, DriverError> {
+        if let Some(project) = self.prepare_project(&[])? {
+            return self.apply_project(project, &[]);
+        }
+        if self.project.take().is_some() {
+            self.db.remove_sources(self.loaded.iter().copied());
+            self.loaded.clear();
+            self.live.clear();
+            self.stats.clear();
+        }
         let mut present = Vec::new();
         collect_fai_files(&self.root, &mut present)?;
         present.sort();
@@ -144,14 +180,184 @@ impl Session {
         self.db.remove_sources(self.live.difference(&live).copied());
         self.stats.retain(|path, _| seen_paths.contains(path));
         self.live = live;
+        self.loaded = self.live.clone();
         Ok(content_changed)
+    }
+
+    fn prepare_project(
+        &self,
+        dirty: &[DirtyFile],
+    ) -> Result<Option<crate::project::PreparedProject>, DriverError> {
+        let base = if self.root.is_absolute() {
+            self.root.clone()
+        } else {
+            let current = std::env::current_dir()
+                .map_err(|source| DriverError::Io { path: self.root.clone(), source })?;
+            Utf8PathBuf::from_path_buf(current)
+                .map_err(|path| DriverError::NonUtf8Path(path.to_string_lossy().into_owned()))?
+                .join(&self.root)
+        };
+        let mut overlays: Vec<_> = self.overlays.iter().map(|path| base.join(path)).collect();
+        overlays.extend(
+            dirty
+                .iter()
+                .filter(|entry| entry.content.is_some())
+                .map(|entry| base.join(&entry.path)),
+        );
+        crate::project::prepare(&self.root, &overlays, self.no_local)
+    }
+
+    fn apply_project(
+        &mut self,
+        project: crate::project::PreparedProject,
+        dirty: &[DirtyFile],
+    ) -> Result<bool, DriverError> {
+        let previous: BTreeMap<_, _> = self
+            .loaded
+            .iter()
+            .filter_map(|id| self.db.source_file(*id))
+            .map(|file| (Utf8PathBuf::from(file.path(&self.db)), file))
+            .collect();
+        let mut contents: BTreeMap<Utf8PathBuf, (String, FileStat)> = BTreeMap::new();
+        for source in &project.sources {
+            let relative =
+                source.path.strip_prefix(&project.base).unwrap_or(&source.path).to_owned();
+            if contents.contains_key(&relative) {
+                continue;
+            }
+            let metadata = std::fs::metadata(&source.path).ok();
+            let mtime = metadata.as_ref().and_then(|metadata| metadata.modified().ok());
+            let len = metadata.as_ref().map_or(0, std::fs::Metadata::len);
+            let supplied = self
+                .overlay_contents
+                .get(&relative)
+                .cloned()
+                .or_else(|| {
+                    self.overlays
+                        .contains(&relative)
+                        .then(|| previous.get(&relative).map(|file| file.text(&self.db).clone()))
+                        .flatten()
+                })
+                .or_else(|| {
+                    dirty
+                        .iter()
+                        .find(|entry| project.base.join(&entry.path) == source.path)
+                        .and_then(|entry| entry.content.clone())
+                });
+            let cached = supplied.or_else(|| {
+                if dirty.iter().any(|entry| project.base.join(&entry.path) == source.path) {
+                    return None;
+                }
+                self.stats
+                    .get(&relative)
+                    .filter(|previous| previous.mtime == mtime && previous.len == len)?;
+                previous.get(&relative).map(|file| file.text(&self.db).clone())
+            });
+            let text = match cached {
+                Some(text) => text,
+                None => std::fs::read_to_string(&source.path).map_err(|source_error| {
+                    DriverError::Io { path: source.path.clone(), source: source_error }
+                })?,
+            };
+            let hash = *blake3::hash(text.as_bytes()).as_bytes();
+            contents.insert(relative, (text, FileStat { mtime, len, hash }));
+        }
+        let ids: BTreeMap<_, _> = project
+            .packages
+            .keys()
+            .map(|key| (key.clone(), self.db.register_package(key.clone())))
+            .collect();
+        let mut changed =
+            self.project.as_ref().is_none_or(|previous| previous.local != project.local);
+        let mut native = BTreeMap::new();
+        for (key, package) in &project.packages {
+            let normal =
+                package.dependencies.iter().map(|(alias, key)| (alias.clone(), ids[key])).collect();
+            let development =
+                package.development.iter().map(|(alias, key)| (alias.clone(), ids[key])).collect();
+            changed |= self.db.set_package_dependencies(ids[key], normal, development);
+            native.insert(ids[key], package.native.clone());
+        }
+        let mut loaded = FxHashSet::default();
+        let mut live = FxHashSet::default();
+        for source in &project.sources {
+            let relative =
+                source.path.strip_prefix(&project.base).unwrap_or(&source.path).to_owned();
+            let origin = SourceOrigin::Package(ids[&source.package]);
+            let text = &contents[&relative].0;
+            let existing = self.db.id_for_scoped_path(&relative, origin, &source.role);
+            let id = if let Some(id) = existing.filter(|id| {
+                self.db.source_file(*id).is_some_and(|file| file.text(&self.db) == text)
+            }) {
+                id
+            } else {
+                changed = true;
+                self.db.add_source_scoped(relative, text.clone(), origin, source.role.clone())
+            };
+            loaded.insert(id);
+            if source.selected {
+                live.insert(id);
+            }
+        }
+        changed |= self.loaded != loaded || self.live != live;
+        self.db.remove_sources(self.loaded.difference(&loaded).copied());
+        self.loaded = loaded;
+        self.live = live;
+        self.stats = contents.into_iter().map(|(path, (_, stat))| (path, stat)).collect();
+        let mut entries = Vec::new();
+        let mut default_entry = None;
+        for entry in &project.entries {
+            let path = entry.path.strip_prefix(&project.base).unwrap_or(&entry.path);
+            if let Some(id) = self.db.id_for_scoped_path(
+                path,
+                SourceOrigin::Package(ids[&entry.package]),
+                &SourceRole::Executable(entry.name.clone()),
+            ) {
+                if project
+                    .default_entry
+                    .as_ref()
+                    .is_some_and(|(package, name)| package == &entry.package && name == &entry.name)
+                {
+                    default_entry = Some(id);
+                }
+                entries.push((entry.name.clone(), id));
+            }
+        }
+        self.project =
+            Some(Arc::new(LiveProject { local: project.local, native, entries, default_entry }));
+        Ok(changed)
     }
 
     /// Gives the editor ownership of one source until [`Self::clear_overlay`].
     /// Its text and active membership survive external edits and deletion.
     pub fn set_overlay(&mut self, path: &Utf8Path, text: String) -> Result<(), DriverError> {
+        if self.project.is_some() {
+            let previous = self.overlay_contents.insert(path.to_owned(), text.clone());
+            let was_open = !self.overlays.insert(path.to_owned());
+            if let Err(error) = self.apply_dirty(&[DirtyFile {
+                path: path.to_string(),
+                hash: None,
+                content: Some(text),
+            }]) {
+                if !was_open {
+                    self.overlays.remove(path);
+                }
+                if let Some(previous) = previous {
+                    self.overlay_contents.insert(path.to_owned(), previous);
+                } else {
+                    self.overlay_contents.remove(path);
+                }
+                return Err(error);
+            }
+            return Ok(());
+        }
         self.apply_dirty(&[DirtyFile { path: path.to_string(), hash: None, content: Some(text) }])?;
         self.overlays.insert(path.to_owned());
+        if let Some(id) = self.db.id_for_path(path)
+            && let Some(file) = self.db.source_file(id)
+        {
+            self.overlay_contents.insert(path.to_owned(), file.text(&self.db).clone());
+        }
         Ok(())
     }
 
@@ -159,6 +365,7 @@ impl Session {
     /// when its on-disk file has been deleted.
     pub fn clear_overlay(&mut self, path: &Utf8Path) -> Result<bool, DriverError> {
         self.overlays.remove(path);
+        self.overlay_contents.remove(path);
         self.stats.remove(path);
         self.sync_disk_changes()
     }
@@ -166,6 +373,10 @@ impl Session {
     /// Applies a client-supplied dirty-set as a fast path: each entry's content
     /// (inline, or re-read from disk) is hashed and the input updated if changed.
     pub fn apply_dirty(&mut self, dirty: &[DirtyFile]) -> Result<(), DriverError> {
+        if let Some(project) = self.prepare_project(dirty)? {
+            self.apply_project(project, dirty)?;
+            return Ok(());
+        }
         for entry in dirty {
             let relative = Utf8PathBuf::from(&entry.path);
             let absolute = self.root.join(&relative);
@@ -186,6 +397,7 @@ impl Session {
             let len = metadata.as_ref().map_or(0, std::fs::Metadata::len);
             self.stats.insert(relative, FileStat { mtime, len, hash });
             self.live.insert(id);
+            self.loaded.insert(id);
         }
         Ok(())
     }
@@ -194,12 +406,41 @@ impl Session {
     /// standard library and deleted files).
     #[must_use]
     pub fn user_files(&self) -> Vec<SourceFile> {
-        self.db
+        let mut files: Vec<_> = self
+            .db
             .all_source_files()
             .into_iter()
             .filter(|f| self.live.contains(&f.source(&self.db)))
             .filter(|f| !f.is_std(&self.db))
-            .collect()
+            .collect();
+        files.sort_by(|a, b| a.path(&self.db).cmp(b.path(&self.db)));
+        files
+    }
+
+    /// Sources available to IDE analysis, including materialized dependencies.
+    /// An explicit path can select only files already owned by the loaded graph.
+    #[must_use]
+    pub fn analysis_files(&self, path: Option<&Utf8Path>) -> Vec<SourceFile> {
+        let target = path.map(|path| normalized_path(&self.root.join(path)));
+        let mut files: Vec<_> = self
+            .db
+            .all_source_files()
+            .into_iter()
+            .filter(|file| self.loaded.contains(&file.source(&self.db)))
+            .filter(|file| {
+                target.as_ref().is_none_or(|target| {
+                    normalized_path(&self.root.join(file.path(&self.db))) == *target
+                })
+            })
+            .collect();
+        files.sort_by_key(|file| {
+            (
+                !self.live.contains(&file.source(&self.db)),
+                file.path(&self.db).clone(),
+                file.source(&self.db),
+            )
+        });
+        files
     }
 
     /// Bounds the in-memory native-object cache to `capacity` blobs (0 =
@@ -231,6 +472,10 @@ impl Session {
             stats: FxHashMap::default(),
             live: self.live.clone(),
             overlays: self.overlays.clone(),
+            overlay_contents: self.overlay_contents.clone(),
+            loaded: self.loaded.clone(),
+            project: self.project.clone(),
+            no_local: self.no_local,
         }
     }
 
@@ -244,6 +489,121 @@ impl Session {
     #[must_use]
     pub fn root(&self) -> &Utf8Path {
         &self.root
+    }
+
+    /// Selects a declared default entry or an explicit source-file entry.
+    pub fn entry_file(&self, path: &Utf8Path) -> Result<SourceFile, DriverError> {
+        if path.as_str().is_empty() {
+            let entry = self
+                .project
+                .as_ref()
+                .and_then(|project| project.default_entry)
+                .and_then(|id| self.db.source_file(id));
+            return entry.ok_or_else(|| {
+                DriverError::InvalidSelection(
+                    "<default executable: select an entry file or configure default-run>".into(),
+                )
+            });
+        }
+        let files = self.select_files_checked(Some(path))?;
+        let exact = self.selection_path(path);
+        let matching: Vec<_> = files
+            .into_iter()
+            .filter(|file| exact.as_ref().is_some_and(|path| file.path(&self.db) == path.as_str()))
+            .collect();
+        match matching.as_slice() {
+            [file] => Ok(*file),
+            _ => Err(DriverError::InvalidSelection(path.to_owned())),
+        }
+    }
+
+    /// The declared name for an executable source, if this is a package project.
+    #[must_use]
+    pub fn executable_name(&self, file: SourceFile) -> Option<&str> {
+        self.project
+            .as_ref()?
+            .entries
+            .iter()
+            .find(|(_, id)| *id == file.source(&self.db))
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Whether source ownership is supplied by versioned package manifests.
+    #[must_use]
+    pub fn is_package_project(&self) -> bool {
+        self.project.is_some()
+    }
+
+    /// Whether personal root overrides are active in this package project.
+    #[must_use]
+    pub fn has_local_overrides(&self) -> bool {
+        self.project.as_ref().is_some_and(|project| project.local)
+    }
+
+    /// Native requirements of a source's selected package dependency projection.
+    pub fn native_dependencies(&self, file: SourceFile) -> Result<crate::NativeDeps, DriverError> {
+        let Some(project) = &self.project else {
+            return crate::read_native_manifest(&self.root).map_err(crate::project::message_error);
+        };
+        let SourceOrigin::Package(root) = file.origin(&self.db) else {
+            return Ok(crate::NativeDeps::default());
+        };
+        let mut pending = vec![root];
+        if matches!(file.role(&self.db), SourceRole::Test)
+            && let Some(package) = fai_db::package_environment(&self.db, root)
+        {
+            pending.extend(package.development(&self.db).values().copied());
+        }
+        let mut edges = BTreeMap::new();
+        while let Some(id) = pending.pop() {
+            if edges.contains_key(&id) {
+                continue;
+            }
+            let Some(package) = fai_db::package_environment(&self.db, id) else {
+                continue;
+            };
+            let children: BTreeSet<_> = package.dependencies(&self.db).values().copied().collect();
+            pending.extend(children.iter().copied());
+            edges.insert(id, children);
+        }
+        let mut indegrees: BTreeMap<_, usize> = edges.keys().copied().map(|id| (id, 0)).collect();
+        for children in edges.values() {
+            for child in children {
+                *indegrees.entry(*child).or_default() += 1;
+            }
+        }
+        let key = |id| {
+            fai_db::package_environment(&self.db, id)
+                .map(|package| package.key(&self.db).clone())
+                .unwrap_or_default()
+        };
+        let mut ready: BTreeSet<_> = indegrees
+            .iter()
+            .filter(|(_, count)| **count == 0)
+            .map(|(&id, _)| (key(id), id))
+            .collect();
+        let mut result = crate::NativeDeps::default();
+        while let Some((_, id)) = ready.pop_first() {
+            if let Some(native) = project.native.get(&id) {
+                result.append(native);
+            }
+            for child in &edges[&id] {
+                if let Some(count) = indegrees.get_mut(child) {
+                    *count -= 1;
+                    if *count == 0 {
+                        ready.insert((key(*child), *child));
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Production source validation plus selected root source scopes, without
+    /// implicitly executing dependency contracts.
+    #[must_use]
+    pub fn validation_files(&self, selected: &[SourceFile]) -> Vec<SourceFile> {
+        crate::dependency_validation_files(&self.db, selected)
     }
 
     /// A span resolver backed by this session's database.

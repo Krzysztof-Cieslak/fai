@@ -5432,5 +5432,17 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   Formatting preserves import comments and aliases; IDE module completion and
   definition lookup use the resolved original namespace.
 
+- **D163 Local manifest project preparation.** The CLI, daemon and language server
+  share the local project loader. It validates manifests before updating compiler
+  inputs, selects host sources, resolves path dependencies and explicit root path
+  overrides, and builds package-native dependency projections. Additional tests
+  alone acquire development aliases; consumed packages contribute only normal
+  dependencies and shared library sources. Workspace members and executable entry
+  names are explicit selectors. Personal overrides have a separate warm database
+  from shared configuration, selected by protocol metadata and `--no-local`.
+  Dependency sources participate in IDE navigation and overlays without becoming
+  implicit test selections. Legacy directory/native-only sessions remain available
+  during migration.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

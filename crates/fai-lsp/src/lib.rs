@@ -46,8 +46,14 @@ use position::{Encoding, LineMap};
 /// Returns the process exit code.
 #[must_use]
 pub fn run_stdio(root: Utf8PathBuf) -> i32 {
+    run_stdio_with_local(root, true)
+}
+
+/// Runs stdio LSP with explicit selection of personal or shared project context.
+#[must_use]
+pub fn run_stdio_with_local(root: Utf8PathBuf, use_local: bool) -> i32 {
     let (connection, io_threads) = Connection::stdio();
-    let result = serve(&connection, root);
+    let result = serve_with_local(&connection, root, use_local);
     drop(connection);
     let _ = io_threads.join();
     match result {
@@ -65,6 +71,15 @@ pub fn run_stdio(root: Utf8PathBuf) -> i32 {
 /// # Errors
 /// Returns an error if the initialize handshake or workspace setup fails.
 pub fn serve(connection: &Connection, root: Utf8PathBuf) -> Result<(), Box<dyn Error>> {
+    serve_with_local(connection, root, true)
+}
+
+/// Serves LSP in a selected project context; callers can opt out of personal overrides.
+pub fn serve_with_local(
+    connection: &Connection,
+    root: Utf8PathBuf,
+    use_local: bool,
+) -> Result<(), Box<dyn Error>> {
     // Split handshake: read the client's capabilities first so the advertised
     // position encoding can match what the client supports.
     let (id, init_params) = connection.initialize_start()?;
@@ -72,7 +87,15 @@ pub fn serve(connection: &Connection, root: Utf8PathBuf) -> Result<(), Box<dyn E
     let examples_enabled = examples_enabled(&init_params);
     let capabilities = serde_json::to_value(server_capabilities(encoding))?;
     connection.initialize_finish(id, serde_json::json!({ "capabilities": capabilities }))?;
-    let mut server = Server::new(root, encoding, examples_enabled)?;
+    let mut server = Server::new(root, encoding, examples_enabled, use_local)?;
+    if server.session.has_local_overrides() {
+        connection.sender.send(Message::Notification(Notification::new(
+            "window/logMessage".to_owned(),
+            serde_json::json!({
+                "type": 3, "message": fai_driver::LOCAL_CONTEXT_NOTICE.trim_end()
+            }),
+        )))?;
+    }
     if init_params
         .pointer("/capabilities/workspace/didChangeWatchedFiles/dynamicRegistration")
         .and_then(serde_json::Value::as_bool)
@@ -84,7 +107,7 @@ pub fn serve(connection: &Connection, root: Utf8PathBuf) -> Result<(), Box<dyn E
             serde_json::json!({"registrations": [{
                 "id": "fai/source-files",
                 "method": "workspace/didChangeWatchedFiles",
-                "registerOptions": {"watchers": [{"globPattern": "**/*.fai", "kind": 7}]}
+                "registerOptions": {"watchers": [{"globPattern": "**/*.fai", "kind": 7}, {"globPattern": "**/fai.toml", "kind": 7}, {"globPattern": "**/fai.local.toml", "kind": 7}]}
             }]}),
         )))?;
     }
@@ -225,9 +248,10 @@ impl Server {
         root: Utf8PathBuf,
         encoding: Encoding,
         examples_enabled: bool,
+        use_local: bool,
     ) -> Result<Self, Box<dyn Error>> {
         let root = root.canonicalize_utf8().unwrap_or(root);
-        let session = Session::open(root.clone())?;
+        let session = Session::open_with_local(root.clone(), use_local)?;
         let standard_documents = StandardDocuments::new(session.db())?;
         Ok(Self {
             session,
@@ -313,13 +337,22 @@ impl Server {
                         .changes
                         .iter()
                         .filter_map(|event| self.relative(&event.uri))
-                        .filter(|path| path.extension() == Some("fai"))
+                        .filter(|path| {
+                            path.extension() == Some("fai")
+                                || matches!(path.file_name(), Some("fai.toml" | "fai.local.toml"))
+                        })
                         .collect();
                     if paths.is_empty() {
                         return;
                     }
+                    let was_local = self.session.has_local_overrides();
                     match self.session.refresh_disk_paths(&paths) {
                         Ok(true) => {
+                            if !was_local && self.session.has_local_overrides() {
+                                let _ = conn.sender.send(Message::Notification(Notification::new("window/logMessage".to_owned(), serde_json::json!({
+                                    "type": 3, "message": fai_driver::LOCAL_CONTEXT_NOTICE.trim_end()
+                                }))));
+                            }
                             // Saved examples may depend on any changed module.
                             self.saved_examples.clear();
                             self.publish_all_open(conn);
@@ -438,7 +471,7 @@ impl Server {
         let uri = &params.text_document.uri;
         let rel = self.relative(uri)?;
         let text = self.open.get(uri)?;
-        let files = self.session.select_files(Some(&rel));
+        let files = self.session.analysis_files(Some(&rel));
         let file = files.first()?;
         // The open buffer is already overlaid into the database, so the warm
         // formatter sees the unsaved text.
@@ -474,7 +507,7 @@ impl Server {
     fn formatting_edits_in_range(&self, uri: &Url, range: Range) -> Option<Vec<TextEdit>> {
         let rel = self.relative(uri)?;
         let original = self.open.get(uri)?;
-        let file = *self.session.select_files(Some(&rel)).first()?;
+        let file = *self.session.analysis_files(Some(&rel)).first()?;
         let result = fmt(self.session.db(), &[file]);
         let formatted = &result.files.first()?.formatted;
         Some(range_formatting_edits(original, formatted, range))
@@ -483,7 +516,7 @@ impl Server {
     fn document_symbols(&self, params: &DocumentSymbolParams) -> Option<DocumentSymbolResponse> {
         let uri = &params.text_document.uri;
         let rel = self.relative(uri)?;
-        let file = *self.session.select_files(Some(&rel)).first()?;
+        let file = *self.session.analysis_files(Some(&rel)).first()?;
         let result = fai_ide::document_symbols(self.session.db(), file, &self.session.resolver());
         let symbols: Vec<DocumentSymbol> =
             result.outline.iter().filter_map(|n| self.to_document_symbol(n)).collect();
@@ -507,7 +540,7 @@ impl Server {
         let (file, offset) = self.locate(&pos.text_document.uri, pos.position)?;
         let locations = fai_ide::references_at(
             self.session.db(),
-            &self.session.user_files(),
+            &self.session.analysis_files(None),
             file,
             offset,
             &self.session.resolver(),
@@ -531,7 +564,7 @@ impl Server {
             .ok_or_else(|| "no renameable symbol at this position".to_owned())?;
         let locations = fai_ide::checked_rename_at(
             self.session.db(),
-            &self.session.user_files(),
+            &self.session.analysis_files(None),
             file,
             offset,
             &params.new_name,
@@ -648,7 +681,7 @@ impl Server {
     fn code_actions(&self, params: &CodeActionParams) -> Option<CodeActionResponse> {
         let uri = &params.text_document.uri;
         let rel = self.relative(uri)?;
-        let file = *self.session.select_files(Some(&rel)).first()?;
+        let file = *self.session.analysis_files(Some(&rel)).first()?;
         let text = self.open.get(uri)?;
         let lines = self.line_map(text);
         let start = lines.offset(params.range.start) as u32;
@@ -693,7 +726,7 @@ impl Server {
     fn inlay_hints(&self, params: &InlayHintParams) -> Option<Vec<LspInlayHint>> {
         let uri = &params.text_document.uri;
         let rel = self.relative(uri)?;
-        let file = *self.session.select_files(Some(&rel)).first()?;
+        let file = *self.session.analysis_files(Some(&rel)).first()?;
         let text = self.open.get(uri)?;
         let lines = self.line_map(text);
         let start = lines.offset(params.range.start) as u32;
@@ -719,7 +752,7 @@ impl Server {
     fn semantic_tokens(&self, params: &SemanticTokensParams) -> Option<SemanticTokensResult> {
         let uri = &params.text_document.uri;
         let rel = self.relative(uri)?;
-        let file = *self.session.select_files(Some(&rel)).first()?;
+        let file = *self.session.analysis_files(Some(&rel)).first()?;
         let text = self.open.get(uri)?;
         let lines = self.line_map(text);
         let tokens = fai_ide::semantic_tokens(self.session.db(), file);
@@ -816,7 +849,7 @@ impl Server {
         let Some(text) = self.open.get(uri).cloned() else { return false };
         let unchanged = self
             .session
-            .select_files(Some(&rel))
+            .analysis_files(Some(&rel))
             .first()
             .is_some_and(|file| file.text(self.session.db()) == &text);
         if self.session.set_overlay(&rel, text).is_err() {
@@ -850,7 +883,7 @@ impl Server {
             return;
         }
         let failures = match self.relative(uri) {
-            Some(rel) => match self.session.select_files(Some(&rel)).first() {
+            Some(rel) => match self.session.analysis_files(Some(&rel)).first() {
                 Some(&file) => check_examples(self.session.db(), &[file]),
                 None => Vec::new(),
             },
@@ -868,13 +901,16 @@ impl Server {
     fn publish_all_open(&self, conn: &Connection) {
         for (uri, text) in &self.open {
             let diagnostics = match self.relative(uri) {
-                Some(rel) => match self.session.select_files(Some(&rel)).first() {
+                Some(rel) => match self.session.analysis_files(Some(&rel)).first() {
                     Some(&file) => {
                         let result = check(self.session.db(), &[file]);
                         let lines = self.line_map(text);
                         let mut diags: Vec<LspDiagnostic> = result
                             .diagnostics
                             .iter()
+                            .filter(|diagnostic| {
+                                diagnostic.primary.source() == file.source(self.session.db())
+                            })
                             .map(|d| to_lsp_diagnostic(d, &lines))
                             .collect();
                         if let Some(examples) = self.saved_examples.get(uri) {
@@ -914,7 +950,10 @@ impl Server {
         let path = uri.to_file_path().ok()?;
         let path = Utf8PathBuf::from_path_buf(path).ok()?;
         let path = path.canonicalize_utf8().unwrap_or(path);
-        Some(path.strip_prefix(&self.root).ok()?.to_owned())
+        if let Ok(relative) = path.strip_prefix(&self.root) {
+            return Some(relative.to_owned());
+        }
+        (!self.session.analysis_files(Some(&path)).is_empty()).then_some(path)
     }
 
     /// Resolves a document by source identity, so an embedded display path and
@@ -939,7 +978,7 @@ impl Server {
         }
         let rel = self.relative(uri)?;
         let text = self.open.get(uri)?;
-        let file = *self.session.select_files(Some(&rel)).first()?;
+        let file = *self.session.analysis_files(Some(&rel)).first()?;
         let offset = self.line_map(text).offset(position) as u32;
         Some((file, offset))
     }

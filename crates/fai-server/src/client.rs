@@ -122,14 +122,29 @@ impl Client {
         opts: RenderOpts,
         dirty: Vec<DirtyFile>,
     ) -> Result<Rendered, DaemonError> {
+        self.command_in_context(spec, opts, dirty, false)
+    }
+
+    /// Runs a command against a selected shared or personal context.
+    pub fn command_in_context(
+        &mut self,
+        spec: CommandSpec,
+        opts: RenderOpts,
+        dirty: Vec<DirtyFile>,
+        no_local: bool,
+    ) -> Result<Rendered, DaemonError> {
         let mutating =
             matches!(&spec, CommandSpec::Build { .. } | CommandSpec::Fmt { check: false, .. });
-        let result =
-            (|| match self.request(&Request::Command(CommandRequest { spec, opts, dirty }))? {
-                Response::Command(rendered) => Ok(rendered),
-                Response::Error(message) => Err(DaemonError::Protocol(message)),
-                other => Err(DaemonError::Protocol(format!("unexpected response: {other:?}"))),
-            })();
+        let result = (|| match self.request(&Request::Command(CommandRequest {
+            spec,
+            opts,
+            dirty,
+            no_local,
+        }))? {
+            Response::Command(rendered) => Ok(rendered),
+            Response::Error(message) => Err(DaemonError::Protocol(message)),
+            other => Err(DaemonError::Protocol(format!("unexpected response: {other:?}"))),
+        })();
         if mutating { result.map_err(DaemonError::submitted) } else { result }
     }
 
@@ -142,7 +157,19 @@ impl Client {
         out: &mut dyn Write,
         err: &mut dyn Write,
     ) -> Result<i32, DaemonError> {
-        self.stream_run_submitted(path, args, out, err).map_err(DaemonError::submitted)
+        self.stream_run_in_context(path, args, out, err, false)
+    }
+
+    /// Runs a program in a selected project context.
+    pub fn stream_run_in_context(
+        &mut self,
+        path: &str,
+        args: &[String],
+        out: &mut dyn Write,
+        err: &mut dyn Write,
+        no_local: bool,
+    ) -> Result<i32, DaemonError> {
+        self.stream_run_submitted(path, args, out, err, no_local).map_err(DaemonError::submitted)
     }
 
     fn stream_run_submitted(
@@ -151,8 +178,10 @@ impl Client {
         args: &[String],
         out: &mut dyn Write,
         err: &mut dyn Write,
+        no_local: bool,
     ) -> Result<i32, DaemonError> {
         self.send(&Request::Run(RunRequest {
+            no_local,
             path: path.to_owned(),
             args: args.to_vec(),
             dirty: Vec::new(),
