@@ -31,7 +31,7 @@ def negative_checks(compiler, directory):
     for code, body in cases:
         source = "module Negative\n// é\n" + body
         path = directory / "Negative.fai"
-        path.write_text(source, encoding="utf-8")
+        path.write_bytes(source.encode("utf-8"))
         result = subprocess.run([compiler, "check", "--no-daemon", "--no-examples", "--message-format=json", "-C", str(directory), str(path)], cwd=ROOT, capture_output=True, timeout=90)
         diagnostics = json.loads(result.stdout)["diagnostics"]
         matching = [d for d in diagnostics if d["code"] == code]
