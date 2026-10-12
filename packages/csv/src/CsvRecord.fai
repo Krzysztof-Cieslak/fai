@@ -1,0 +1,165 @@
+module CsvRecord
+
+public type Headers 'a = { indexes : Dict 'a Int, names : Array 'a, original : CsvTypes.Record 'a }
+
+public type Table 'a = { headers : Option (Headers 'a), records : Array (CsvTypes.Record 'a) }
+
+public type HeaderMode 'a =
+  | NoHeader
+  | FirstRecord
+  | Supplied (Headers 'a)
+
+public map : ('a -> 'b) -> CsvTypes.Record 'a -> CsvTypes.Record 'b
+let map transform record = { record with
+  fields = Array.map (fun field -> { field with value = transform field.value }) record.fields
+}
+
+public values : CsvTypes.Record 'a -> Array 'a
+let values record = Array.map (fun field -> field.value) record.fields
+
+textFields : CsvTypes.Record Bytes -> Int -> Array (CsvTypes.Field String) -> Result (CsvTypes.Record String) CsvTypes.Error
+let textFields record index output =
+  if index >= Array.length record.fields then
+    Ok { record with fields = output }
+  else
+    let field = Array.unsafeGet index record.fields
+    match Bytes.toString field.value with
+    | None ->
+      Err (CsvTypes.at record (Some index) (CsvTypes.error CsvTypes.InvalidUtf8 "CSV field is not UTF-8"))
+    | Some value -> textFields record (index + 1) (Array.push { field with value = value } output)
+
+public text : CsvTypes.Record Bytes -> Result (CsvTypes.Record String) CsvTypes.Error
+let text record = textFields record 0 [||]
+
+recordFields : CsvTypes.Limits -> ('a -> Int) -> Array 'a -> Int -> Int -> Array (CsvTypes.Field 'a) -> Result (CsvTypes.Record 'a) CsvTypes.Error
+let recordFields limits size values index remaining output =
+  if index >= Array.length values then
+    Ok { fields = output, source = None }
+  else
+    let value = Array.unsafeGet index values
+    let bytes = size value
+    if bytes > limits.maxFieldBytes then
+      Err { (CsvTypes.error CsvTypes.FieldLimit "CSV field byte limit exceeded") with
+        fieldIndex = Some index
+      }
+    else if bytes > remaining then
+      Err (CsvTypes.error CsvTypes.RecordLimit "CSV record content byte limit exceeded")
+    else
+      recordFields limits size values (index + 1) (remaining - bytes) (Array.push {
+        quoted = false,
+        span = None,
+        value = value
+      } output)
+
+public make : CsvTypes.Limits -> ('a -> Int) -> Array 'a -> Result (CsvTypes.Record 'a) CsvTypes.Error
+let make limits size values =
+  match CsvTypes.validateLimits limits with
+  | Err error -> Err error
+  | Ok _ ->
+    if Array.isEmpty values then
+      Err (CsvTypes.error CsvTypes.EmptyRecord "a CSV record must have at least one field")
+    else if Array.length values > limits.maxFields then
+      Err (CsvTypes.error CsvTypes.FieldCountLimit "CSV field count limit exceeded")
+    else
+      recordFields limits size values 0 limits.maxRecordBytes [||]
+
+headerLoop : ('a -> 'a) -> ('a -> Bool) -> CsvTypes.Record 'a -> Int -> Array 'a -> Dict 'a Int -> Result (Headers 'a) CsvTypes.Error
+let headerLoop normalize isEmpty record index names indexes =
+  if index >= Array.length record.fields then
+    Ok { indexes = indexes, names = names, original = record }
+  else
+    let field = Array.unsafeGet index record.fields
+    let name = normalize field.value
+    if isEmpty name then
+      Err (CsvTypes.at record (Some index) (CsvTypes.error CsvTypes.EmptyHeader "CSV header name is empty"))
+    else
+      match Dict.get name indexes with
+      | Some previous -> Err { (CsvTypes.at record (Some index) (CsvTypes.error CsvTypes.DuplicateHeader "duplicate CSV header name")) with
+        related = (Array.unsafeGet previous record.fields).span
+      }
+      | None ->
+        headerLoop normalize isEmpty record (index + 1) (Array.push name names) (Dict.insert name index indexes)
+
+public headers : ('a -> 'a) -> ('a -> Bool) -> CsvTypes.Record 'a -> Result (Headers 'a) CsvTypes.Error
+let headers normalize isEmpty record =
+  if Array.isEmpty record.fields then
+    Err (CsvTypes.error CsvTypes.EmptyHeader "CSV header must have at least one field")
+  else
+    headerLoop normalize isEmpty record 0 [||] Dict.empty
+
+public lookup : 'a -> Headers 'a -> Result Int CsvTypes.Error
+let lookup name headers =
+  match Dict.get name headers.indexes with
+  | Some index -> Ok index
+  | None -> Err (CsvTypes.error CsvTypes.UnknownColumn "CSV header name was not found")
+
+public charge : CsvTypes.Limits -> Int -> CsvTypes.Record Bytes -> Result Int CsvTypes.Error
+let charge limits used record = chargeFields record 0 used limits.maxCollectedBytes
+
+chargeFields : CsvTypes.Record Bytes -> Int -> Int -> Int -> Result Int CsvTypes.Error
+let chargeFields record index used maximum =
+  if index >= Array.length record.fields then
+    Ok used
+  else
+    let size = Bytes.length (Array.unsafeGet index record.fields).value
+    if size > maximum - used then
+      Err (CsvTypes.at record None (CsvTypes.error CsvTypes.CollectionLimit "CSV collected content byte limit exceeded"))
+    else
+      chargeFields record (index + 1) (used + size) maximum
+
+collect : CsvTypes.Options -> CsvCore.Parser -> Bytes -> Int -> Bool -> Array (CsvTypes.Record Bytes) -> Int -> Result (Array (CsvTypes.Record Bytes)) CsvTypes.Error
+let collect options parser bytes next atEnd output used =
+  let fed = if atEnd then CsvCore.finish parser else CsvCore.feed parser bytes next
+  match fed.status with
+  | CsvCore.Failed error -> Err error
+  | CsvCore.End -> Ok output
+  | CsvCore.NeedInput -> collect options fed.parser bytes fed.next true output used
+  | CsvCore.RecordReady record ->
+    if Array.length output >= options.limits.maxCollectedRecords then
+      Err (CsvTypes.at record None (CsvTypes.error CsvTypes.CollectionLimit "CSV collected record limit exceeded"))
+    else
+      match charge options.limits used record with
+      | Err error -> Err error
+      | Ok used ->
+        collect options fed.parser bytes (if atEnd then
+          next
+        else
+          fed.next) atEnd (Array.push record output) used
+
+public parse : Bool -> CsvTypes.Options -> Bytes -> Result (Array (CsvTypes.Record Bytes)) CsvTypes.Error
+let parse text options bytes =
+  match CsvCore.parser text options with
+  | Err error -> Err error
+  | Ok parser -> collect options parser bytes 0 false [||] 0
+
+public optionsFor : CsvTypes.Options -> HeaderMode 'a -> Result CsvTypes.Options CsvTypes.Error
+let optionsFor options mode =
+  match mode with
+  | Supplied headers ->
+    let width = Array.length headers.names
+    match options.width with
+    | CsvTypes.Flexible -> Ok options
+    | CsvTypes.Exact requested ->
+      if requested = width then
+        Ok options
+      else
+        Err (CsvTypes.error CsvTypes.InvalidOptions "supplied headers disagree with exact CSV width")
+    | CsvTypes.Strict -> Ok { options with width = CsvTypes.Exact width }
+  | _ -> Ok options
+
+public table : ('a -> Bool) -> HeaderMode 'a -> Array (CsvTypes.Record 'a) -> Result (Table 'a) CsvTypes.Error
+let table isEmpty mode records =
+  match mode with
+  | NoHeader -> Ok { headers = None, records = records }
+  | Supplied headers -> Ok { headers = Some headers, records = records }
+  | FirstRecord ->
+    match Array.get 0 records with
+    | None -> Err (CsvTypes.error CsvTypes.MissingHeader "CSV input has no header record")
+    | Some first ->
+      match headers identity isEmpty first with
+      | Err error -> Err error
+      | Ok headers -> Ok {
+        headers = Some headers,
+        records = Array.init (Array.length records - 1) (fun index ->
+          Array.unsafeGet (index + 1) records)
+      }

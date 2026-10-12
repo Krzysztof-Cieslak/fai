@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- CSV text and byte APIs have distinct opaque record/parser types. Header policy
+  is explicit; normalization retains original fields and checks resulting name
+  collisions. Whole-input budgets include input headers, while incremental
+  parsing retains only the current record and its bounded field buffers.
+
 - CSV uses one pure byte-oriented parser with separate text validation. Parser
   snapshots are immutable, feed stops at one record, and source spans retain
   original syntax. Width is strict by default; whitespace and embedded line

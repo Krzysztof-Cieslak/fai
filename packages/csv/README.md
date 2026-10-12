@@ -29,3 +29,25 @@ change results. Field assembly uses a growable byte-word buffer and one final
 materialization rather than repeatedly concatenating prefixes.
 
 Run contracts with `fai test -C packages csv`.
+
+`Csv.parse` reads String input; `parseBytes` accepts UTF-8 bytes. `CsvBytes.parse`
+reads arbitrary bytes. All return checked arrays of opaque records; `fields`,
+`field` and `inspect` expose values and metadata. `record`/`recordWith` construct
+checked records from arrays and reject zero-field records. `Csv.fromBytes`
+explicitly converts a byte record to text, retaining its field metadata.
+
+`parserWith`/`feedFrom`/`finish` expose incremental parsing on both modules.
+`Feed.next` is an absolute offset in the supplied chunk, not a count of records.
+`NeedInput` requests another chunk; `RecordReady` carries one row. Empty chunks
+are not EOF. The parser must receive `finish` when the source actually ends.
+
+`parseTable` consumes the first record as headers. `parseTableWith` selects
+`NoHeader`, `FirstRecord` or `Supplied headers`. Strict width follows header width;
+flexible mode preserves ragged rows. Headers reject empty and duplicate names;
+`headersWith` normalizes names explicitly and checks collisions afterwards.
+`headerRecord` retains original spellings/locations, while `headerNames` exposes
+normalized names. Text matching is exact and case-sensitive; bytes match exactly.
+
+Whole-input collection budgets include an input header record. They bound both
+record count and total decoded field-content bytes. Streaming does not use these
+collection budgets. No whole-file byte limit is imposed unless configured.

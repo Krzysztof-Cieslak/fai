@@ -1169,6 +1169,10 @@ for text and arbitrary-byte records. It retains byte-addressed source spans,
 validates text UTF-8 across chunks, and emits at most one record per feed step.
 Strict width, doubled quotes and preserved field whitespace are the defaults;
 record/field/input limits and BOM/newline policies are explicit.
+`Csv` and `CsvBytes` expose distinct records/parsers, bounded collection and
+explicit header modes. Header normalization detects collisions and retains the
+original field metadata. Supplied headers establish strict width; flexible mode
+preserves ragged records. Parsed records own their contents, not the whole input.
 
 The optional `packages/toml` source library supplies pure TOML scalar and string
 parsing. Integer conversion checks signed 64-bit bounds; temporal values retain

@@ -1,0 +1,86 @@
+module CsvRecordSpec
+
+let parsed source = Result.map (Array.map Csv.fields) (Csv.parse source)
+example: parsed "name,note\r\né,\"🙂\r\nline\"" = Ok [|
+  [| "name", "note" |],
+  [| "é", "🙂\r\nline" |]
+|]
+example: parsed "\u{feff}a" = Ok [| [| "a" |] |]
+example: (Csv.parseWith { Csv.options with
+  bom = CsvTypes.PreserveBom
+} "\u{feff}a" |> Result.map (Array.map Csv.fields)) = Ok [| [| "\u{feff}a" |] |]
+example: Csv.parseBytes (Bytes.fromList [255]) |> Result.isErr
+example: (CsvBytes.parse (Bytes.fromList [
+  255
+]) |> Result.map (Array.map CsvBytes.fields)) = Ok [| [| Bytes.fromList [255] |] |]
+example: (Csv.parseWith { Csv.options with
+  width = CsvTypes.Flexible
+} "a,b\n\n" |> Result.map (Array.map Csv.fields)) = Ok [| [| "a", "b" |], [| "" |] |]
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxCollectedRecords = 1 }
+} "a\n" |> Result.isOk
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxCollectedRecords = 1 }
+} "a\nb" |> Result.isErr
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxCollectedBytes = 2 }
+} "\"é\"" |> Result.isOk
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxCollectedBytes = 1 }
+} "\"é\"" |> Result.isErr
+example: Csv.record [||] |> Result.isErr
+example: Csv.parseTable "" |> Result.isErr
+example: Csv.parseTable "a,a\n1,2" |> Result.isErr
+example: Csv.parseTable ",b\n1,2" |> Result.isErr
+example: (match Csv.parseTable "Name, name\nA,B" with
+| Ok table -> Option.map Csv.headerNames table.headers = Some [| "Name", " name" |]
+| _ -> false)
+
+let normalized =
+  match Csv.record [| " Name ", "name" |] with
+  | Ok record ->
+    Csv.headersWith (fun text -> String.toLower (String.trim text)) record |> Result.isErr
+  | _ -> false
+example: normalized
+
+let supplied =
+  match Csv.record [| "a", "b" |] with
+  | Err _ -> false
+  | Ok record ->
+    match Csv.headers record with
+    | Err _ -> false
+    | Ok headers -> Csv.parseTableWith Csv.options (Csv.Supplied headers) "one" |> Result.isErr
+example: supplied
+
+let named =
+  match Csv.parseTable "a,b\n1,2" with
+  | Ok table ->
+    (match table.headers with
+    | Some headers ->
+      Csv.named "b" headers (Array.unsafeGet 0 table.records) = Ok "2" && (Csv.column "missing" headers |> Result.isErr)
+    | _ -> false)
+  | _ -> false
+example: named
+
+let incremental =
+  match Csv.parser () with
+  | Err _ -> false
+  | Ok parser ->
+    let first = Csv.feed parser (Bytes.fromList [195])
+    let second = Csv.feed first.parser (Bytes.fromList [169, 10, 255])
+    match second.status with
+    | Csv.RecordReady record -> Csv.fields record = [| "é" |] && second.next = 2
+    | _ -> false
+example: incremental
+
+let binaryHeaders =
+  match CsvBytes.parseTable (Bytes.fromList [255, 44, 254, 10, 49, 44, 50]) with
+  | Err _ -> false
+  | Ok table ->
+    match table.headers with
+    | Some headers ->
+      CsvBytes.named (Bytes.fromList [
+        254
+      ]) headers (Array.unsafeGet 0 table.records) = Ok (Bytes.fromString "2")
+    | None -> false
+example: binaryHeaders

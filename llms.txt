@@ -1962,6 +1962,10 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 strict width by default, doubled-quote escaping and configurable limits. Feed
 steps stop at one record, preserving unconsumed input and byte source positions.
 Text UTF-8/BOM and CRLF handling are independent of chunk boundaries.
+`Csv.parse`/`parseBytes` and `CsvBytes.parse` collect bounded record arrays.
+`parserWith`/`feedFrom`/`finish` expose incremental consumption. `parseTableWith`
+selects NoHeader, FirstRecord or Supplied headers; names match exactly and
+`headersWith` performs explicit normalization with duplicate detection.
 
 `packages/config` provides sourced layers (`Config.fromValue`, `toml`,
 `ConfigSource.snapshot`) and later-wins `Config.merge`. Tables merge recursively;
