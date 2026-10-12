@@ -56,7 +56,7 @@ let aliases env root =
     | Err error -> error.kind = FileSystem.Closed
     | _ -> false)
 
-links : Runtime -> Path -> Bool / { Concurrency, FileSystem }
+links : Runtime -> Path -> Result Unit String / { Concurrency, FileSystem }
 let links env root =
   let target = child root "target"
   let alias = child root "hard-link"
@@ -67,11 +67,22 @@ let links env root =
   let symbolic = env.fs.symlink (child root "missing") dangling false
   match symbolic with
   | Err error ->
-    Path.nativeEncoding = "windows" && (error.kind = FileSystem.PermissionDenied || error.kind = FileSystem.Unsupported)
+    if Path.nativeEncoding = "windows" && (error.kind = FileSystem.PermissionDenied || error.kind = FileSystem.Unsupported) then
+      Ok ()
+    else
+      Err (FileSystem.errorToString error)
   | Ok _ ->
     let exists = FileSystem.exists env.fs dangling
     let entry = FileSystem.entryExists env.fs dangling
     let read = env.fs.readLink dangling
+    let sameTarget =
+      match read with
+      | Err error -> Err (FileSystem.errorToString error)
+      | Ok target ->
+        if Path.fileName target <> Some (named "missing") then
+          Err ("wrong link filename: " ++ Path.display target)
+        else
+          Result.mapError FileSystem.errorToString (env.fs.sameFile root (Option.withDefault Path.empty (Path.parent target)))
     let removed = env.fs.removeFile dangling
     let cycle = child root "cycle"
     let cycleCreated = env.fs.symlink root cycle true
@@ -84,7 +95,29 @@ let links env root =
         env.fs.removeDirectory cycle
       else
         env.fs.removeFile cycle
-    written = Ok () && linked = Ok () && same = Ok true && exists = Ok false && entry = Ok true && read = Ok (child root "missing") && Result.isErr walk.outcome && removed = Ok () && cycleCreated = Ok () && cycleRemoved = Ok ()
+    if written <> Ok () then
+      Err "write target"
+    else if linked <> Ok () then
+      Err "create hard link"
+    else if same <> Ok true then
+      Err "hard-link identity"
+    else if exists <> Ok false then
+      Err "dangling target existence"
+    else if entry <> Ok true then
+      Err "dangling entry existence"
+    else if sameTarget <> Ok true then
+      (match sameTarget with
+      | Err error -> Err error
+      | _ -> Err "link target directory identity")
+    else if cycleCreated <> Ok () then
+      Err "create directory cycle"
+    else if not (match walk.outcome with
+    | Err (Directory.FileError error) -> error.kind = FileSystem.TooManyLinks
+    | _ -> false) then
+      Err "cycle detection"
+    else if removed <> Ok () then
+      Err "remove dangling link"
+    else if cycleRemoved <> Ok () then Err "remove directory link" else Ok ()
 
 cancelWorker : Runtime -> Path -> Channel Path -> Channel Unit -> Unit -> Bool / { Concurrency, FileSystem }
 let cancelWorker env root ready blocked unit =
@@ -136,8 +169,8 @@ let check env expectedError temporary =
     Err "native filename support differs from the OS probe"
   else if not handles then
     Err "handle alias checks failed"
-  else if not identities then
-    Err "link and identity checks failed"
+  else if Result.isErr identities then
+    identities |> Result.map (fun _ -> true)
   else if not cancelled then
     Err "cancellation cleanup checks failed"
   else if not replaced then Err "atomic replacement checks failed" else Ok true
