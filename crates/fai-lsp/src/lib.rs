@@ -129,11 +129,22 @@ pub fn serve_with_options(
             serde_json::json!({"registrations": [{
                 "id": "fai/source-files",
                 "method": "workspace/didChangeWatchedFiles",
-                "registerOptions": {"watchers": [{"globPattern": "**/*.fai", "kind": 7}, {"globPattern": "**/fai.toml", "kind": 7}, {"globPattern": "**/fai.local.toml", "kind": 7}]}
+                "registerOptions": {"watchers": [{"globPattern": "**/*.fai", "kind": 7}, {"globPattern": "**/fai.toml", "kind": 7}, {"globPattern": "**/fai.local.toml", "kind": 7}, {"globPattern": "**/fai.lock", "kind": 7}, {"globPattern": "**/fai.local.lock", "kind": 7}]}
             }]}),
         )))?;
     }
-    for msg in &connection.receiver {
+    if server.manifest_project {
+        server.schedule_restore(connection);
+    }
+    let restored = server.restored.clone();
+    loop {
+        let msg = crossbeam_channel::select! {
+            recv(connection.receiver) -> message => match message { Ok(message) => message, Err(_) => break },
+            recv(restored) -> message => {
+                if let Ok(message) = message { server.finish_restore(connection, message); }
+                continue;
+            }
+        };
         match msg {
             Message::Request(req) => {
                 if req.method == "shutdown" && !req.params.is_null() {
@@ -263,6 +274,18 @@ struct Server {
     /// Each open file's example failures (`FAI6001`) from its last save. Held
     /// here until an effective input change invalidates their dependency revision.
     saved_examples: HashMap<Url, Vec<fai_diagnostics::Diagnostic>>,
+    manifest_project: bool,
+    project_options: fai_driver::ProjectOptions,
+    restore_sender: crossbeam_channel::Sender<RestoreResult>,
+    restored: crossbeam_channel::Receiver<RestoreResult>,
+    restore_generation: u64,
+    restoring: bool,
+    project_errors: Vec<Url>,
+}
+
+struct RestoreResult {
+    generation: u64,
+    result: Result<fai_driver::PreparedProjectUpdate, fai_driver::DriverError>,
 }
 
 impl Server {
@@ -274,8 +297,14 @@ impl Server {
     ) -> Result<Self, Box<dyn Error>> {
         let root = Utf8PathBuf::from_path_buf(std::path::absolute(root)?)
             .map_err(|_| std::io::Error::other("workspace path is not UTF-8"))?;
-        let session = Session::open_with_options(root.clone(), options)?;
+        let manifest_project = root.join("fai.toml").is_file();
+        let session = if manifest_project {
+            Session::open_unresolved(root.clone(), options.clone())?
+        } else {
+            Session::open_with_options(root.clone(), options.clone())?
+        };
         let standard_documents = StandardDocuments::new(session.db())?;
+        let (restore_sender, restored) = crossbeam_channel::unbounded();
         Ok(Self {
             session,
             root,
@@ -284,12 +313,183 @@ impl Server {
             encoding,
             examples_enabled,
             saved_examples: HashMap::new(),
+            manifest_project,
+            project_options: options,
+            restore_sender,
+            restored,
+            restore_generation: 0,
+            restoring: false,
+            project_errors: Vec::new(),
         })
     }
 
     /// A line map over `text` under the negotiated position encoding.
     fn line_map<'t>(&self, text: &'t str) -> LineMap<'t> {
         LineMap::with_encoding(text, self.encoding)
+    }
+
+    fn schedule_restore(&mut self, conn: &Connection) {
+        self.restore_generation += 1;
+        if !self.restoring {
+            self.start_restore(conn);
+        }
+    }
+
+    fn start_restore(&mut self, conn: &Connection) {
+        self.restoring = true;
+        let generation = self.restore_generation;
+        let dirty: Vec<_> = self
+            .open
+            .iter()
+            .filter_map(|(uri, text)| {
+                let path = self.relative(uri)?;
+                (path.extension() == Some("fai")).then(|| fai_driver::DirtyFile {
+                    path: path.to_string(),
+                    hash: None,
+                    content: Some(text.clone()),
+                })
+            })
+            .collect();
+        let root = self.root.clone();
+        let options = self.project_options.clone();
+        let sender = self.restore_sender.clone();
+        self.project_status(conn, "restoring");
+        self.log_project(conn, 3, "restoring package dependencies");
+        let spawned = std::thread::Builder::new()
+            .name("fai-package-restore".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let result = Session::prepare_update(root, &dirty, options);
+                let _ = sender.send(RestoreResult { generation, result });
+            });
+        if let Err(error) = spawned {
+            self.restoring = false;
+            self.log_project(conn, 1, &format!("cannot start dependency restoration: {error}"));
+            self.project_status(conn, "failed");
+        }
+    }
+
+    fn finish_restore(&mut self, conn: &Connection, restored: RestoreResult) {
+        self.restoring = false;
+        if restored.generation != self.restore_generation {
+            self.start_restore(conn);
+            return;
+        }
+        let result = restored.result.and_then(|update| self.session.apply_prepared(update));
+        match result {
+            Ok(()) => {
+                for uri in self.project_errors.drain(..).collect::<Vec<_>>() {
+                    self.publish(conn, &uri, Vec::new());
+                }
+                self.saved_examples.clear();
+                if self.session.has_local_overrides() {
+                    self.log_project(conn, 3, fai_driver::LOCAL_CONTEXT_NOTICE.trim_end());
+                }
+                for notice in self.session.package_notices() {
+                    self.log_project(conn, 3, notice);
+                }
+                self.project_status(conn, "ready");
+                self.publish_all_open(conn);
+            }
+            Err(fai_driver::DriverError::Project(error))
+                if error.diagnostics.iter().any(|diagnostic| diagnostic.code == "FAI0825") =>
+            {
+                self.schedule_restore(conn)
+            }
+            Err(error) => {
+                self.log_project(conn, 1, &error.to_string());
+                if let fai_driver::DriverError::Project(error) = error {
+                    let mut diagnostics: std::collections::BTreeMap<String, Vec<LspDiagnostic>> =
+                        std::collections::BTreeMap::new();
+                    for diagnostic in error.diagnostics {
+                        if diagnostic.primary.file.starts_with('<') {
+                            continue;
+                        }
+                        let path = self.root.join(&diagnostic.primary.file);
+                        let text = Url::from_file_path(&path)
+                            .ok()
+                            .and_then(|uri| self.open.get(&uri).cloned())
+                            .or_else(|| std::fs::read_to_string(&path).ok());
+                        let range = text
+                            .as_ref()
+                            .map(|text| {
+                                let lines = self.line_map(text);
+                                Range {
+                                    start: lines.position(diagnostic.primary.byte_start as usize),
+                                    end: lines.position(diagnostic.primary.byte_end as usize),
+                                }
+                            })
+                            .unwrap_or(Range {
+                                start: Position {
+                                    line: diagnostic.primary.start.line.saturating_sub(1),
+                                    character: diagnostic.primary.start.column.saturating_sub(1),
+                                },
+                                end: Position {
+                                    line: diagnostic.primary.end.line.saturating_sub(1),
+                                    character: diagnostic.primary.end.column.saturating_sub(1),
+                                },
+                            });
+                        diagnostics.entry(diagnostic.primary.file.clone()).or_default().push(
+                            LspDiagnostic {
+                                range,
+                                severity: Some(DiagnosticSeverity::ERROR),
+                                code: Some(lsp_types::NumberOrString::String(diagnostic.code)),
+                                source: Some("fai".into()),
+                                message: diagnostic.message,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    for (path, diagnostics) in diagnostics {
+                        if let Ok(uri) = Url::from_file_path(self.root.join(path)) {
+                            self.publish(conn, &uri, diagnostics);
+                            self.project_errors.push(uri);
+                        }
+                    }
+                }
+                self.project_status(conn, "failed");
+            }
+        }
+    }
+
+    fn project_status(&self, conn: &Connection, state: &str) {
+        let _ = conn.sender.send(Message::Notification(Notification::new("$/fai/projectStatus".into(), serde_json::json!({"schemaVersion": 1, "state": state, "generation": self.restore_generation}))));
+    }
+
+    fn log_project(&self, conn: &Connection, level: u32, message: &str) {
+        let _ = conn.sender.send(Message::Notification(Notification::new(
+            "window/logMessage".into(),
+            serde_json::json!({"type": level, "message": message}),
+        )));
+    }
+
+    fn manifest_document(&self, uri: &Url) -> bool {
+        self.relative(uri)
+            .is_some_and(|path| matches!(path.file_name(), Some("fai.toml" | "fai.local.toml")))
+    }
+
+    fn publish_manifest(&self, conn: &Connection, uri: &Url) {
+        let Some(text) = self.open.get(uri) else {
+            return;
+        };
+        let local =
+            self.relative(uri).is_some_and(|path| path.file_name() == Some("fai.local.toml"));
+        let parsed = if local {
+            fai_package::ManifestDocument::parse_local(fai_span::SourceId::new(0), text)
+        } else {
+            fai_package::ManifestDocument::parse(fai_span::SourceId::new(0), text)
+        };
+        let lines = self.line_map(text);
+        self.publish(
+            conn,
+            uri,
+            parsed
+                .err()
+                .unwrap_or_default()
+                .iter()
+                .map(|diagnostic| to_lsp_diagnostic(diagnostic, &lines))
+                .collect(),
+        );
     }
 
     // --- notifications ----------------------------------------------------
@@ -327,6 +527,12 @@ impl Server {
                     if let Some(text) = p.text {
                         self.open.insert(p.text_document.uri.clone(), text);
                     }
+                    if self.manifest_document(&p.text_document.uri) {
+                        self.publish_manifest(conn, &p.text_document.uri);
+                        self.manifest_project = self.root.join("fai.toml").is_file();
+                        self.schedule_restore(conn);
+                        return;
+                    }
                     self.refresh_saved(conn, &p.text_document.uri);
                 }
             }
@@ -338,6 +544,14 @@ impl Server {
                     }
                     self.open.remove(uri);
                     self.saved_examples.remove(uri);
+                    if self.manifest_project {
+                        if let Some(path) = self.relative(uri) {
+                            self.session.clear_overlay_pending(&path);
+                        }
+                        self.publish(conn, uri, vec![]);
+                        self.schedule_restore(conn);
+                        return;
+                    }
                     // On close the buffer is no longer authoritative — ownership
                     // returns to the filesystem — so drop the in-memory overlay and
                     // restore the database to the on-disk content. Otherwise a file
@@ -362,10 +576,24 @@ impl Server {
                         .filter_map(|event| self.relative(&event.uri))
                         .filter(|path| {
                             path.extension() == Some("fai")
-                                || matches!(path.file_name(), Some("fai.toml" | "fai.local.toml"))
+                                || matches!(
+                                    path.file_name(),
+                                    Some(
+                                        "fai.toml"
+                                            | "fai.local.toml"
+                                            | "fai.lock"
+                                            | "fai.local.lock"
+                                    )
+                                )
                         })
                         .collect();
                     if paths.is_empty() {
+                        return;
+                    }
+                    self.manifest_project |= self.root.join("fai.toml").is_file();
+                    if self.manifest_project {
+                        self.session.invalidate_disk_paths(&paths);
+                        self.schedule_restore(conn);
                         return;
                     }
                     let was_local = self.session.has_local_overrides();
@@ -885,7 +1113,18 @@ impl Server {
     /// diagnostics for every open document — a cross-module edit can invalidate
     /// another open file, so all of them are refreshed.
     fn refresh(&mut self, conn: &Connection, uri: &Url) {
+        if self.manifest_document(uri) {
+            self.publish_manifest(conn, uri);
+            return;
+        }
+        let known = self
+            .relative(uri)
+            .is_some_and(|path| !self.session.analysis_files(Some(&path)).is_empty());
         if !self.sync_open_document(uri) {
+            return;
+        }
+        if self.manifest_project && !known {
+            self.schedule_restore(conn);
             return;
         }
         self.publish_all_open(conn);
@@ -899,7 +1138,12 @@ impl Server {
             .analysis_files(Some(&rel))
             .first()
             .is_some_and(|file| file.text(self.session.db()) == &text);
-        if self.session.set_overlay(&rel, text).is_err() {
+        let updated = if self.manifest_project {
+            self.session.set_overlay_text(&rel, text).map(|_| ())
+        } else {
+            self.session.set_overlay(&rel, text)
+        };
+        if updated.is_err() {
             return false;
         }
         if !unchanged {
@@ -946,7 +1190,14 @@ impl Server {
     /// Recomputes and publishes diagnostics for every open document: each file's
     /// front-end diagnostics, plus its cached example failures from the last save.
     fn publish_all_open(&self, conn: &Connection) {
+        if self.restoring {
+            return;
+        }
         for (uri, text) in &self.open {
+            if self.manifest_document(uri) {
+                self.publish_manifest(conn, uri);
+                continue;
+            }
             let diagnostics = match self.relative(uri) {
                 Some(rel) => match self.session.analysis_files(Some(&rel)).first() {
                     Some(&file) => {
@@ -996,13 +1247,15 @@ impl Server {
         }
         let path = uri.to_file_path().ok()?;
         let path = Utf8PathBuf::from_path_buf(path).ok()?;
-        let path = path.canonicalize_utf8().unwrap_or(path);
         if let Ok(relative) = path.strip_prefix(&self.root) {
             return Some(relative.to_owned());
         }
         let path = path.canonicalize_utf8().unwrap_or(path);
         if let Ok(relative) = path.strip_prefix(self.session.root()) {
             return Some(relative.to_owned());
+        }
+        if self.session.is_project_metadata(&path) {
+            return Some(path);
         }
         (!self.session.analysis_files(Some(&path)).is_empty()).then_some(path)
     }

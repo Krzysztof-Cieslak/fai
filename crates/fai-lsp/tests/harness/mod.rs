@@ -89,7 +89,28 @@ impl Harness {
             .sender
             .send(Message::Notification(Notification::new("initialized".to_owned(), json!({}))))
             .unwrap();
+        if files.iter().any(|(name, _)| *name == "fai.toml") {
+            harness.wait_project_ready();
+        }
         (harness, init)
+    }
+
+    /// Waits for the background project generation to be published.
+    pub fn wait_project_ready(&self) {
+        self.wait_project_state("ready");
+    }
+
+    pub fn wait_project_state(&self, expected: &str) {
+        loop {
+            if let Message::Notification(note) = self.recv()
+                && note.method == "$/fai/projectStatus"
+            {
+                if note.params["state"] == expected {
+                    return;
+                }
+                assert_ne!(note.params["state"], "failed", "{}", note.params);
+            }
+        }
     }
 
     /// The `file://` URI (as a string) for a workspace file.

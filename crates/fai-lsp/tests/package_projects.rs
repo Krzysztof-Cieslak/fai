@@ -45,6 +45,7 @@ fn a_saved_dependency_manifest_change_updates_open_imports() {
         "workspace/didChangeWatchedFiles",
         json!({"changes": [{"uri": h.uri("fai.toml"), "type": 2}]}),
     );
+    h.wait_project_ready();
     assert!(h.diagnostic_codes(&uri).contains(&"FAI2021".to_owned()));
     h.shutdown();
 }
@@ -59,5 +60,44 @@ fn dependency_diagnostics_do_not_use_the_importers_coordinates() {
     assert!(h.diagnostics(&uri).is_empty());
     h.did_change(&dependency, "module Values\npublic value : Int\nlet value = false\n");
     assert!(h.diagnostic_codes(&dependency).contains(&"FAI3004".to_owned()));
+    h.shutdown();
+}
+
+#[test]
+fn unsaved_manifests_get_syntax_feedback_without_lock_mutation() {
+    let mut h = project();
+    let lock = lsp_types::Url::parse(&h.uri("fai.lock")).unwrap().to_file_path().unwrap();
+    let before = std::fs::read(&lock).unwrap();
+    let uri = h.did_open("fai.toml", "manifest-version = [broken");
+    assert!(h.diagnostic_codes(&uri).contains(&"FAI0800".to_owned()));
+    assert_eq!(std::fs::read(lock).unwrap(), before);
+    h.shutdown();
+}
+
+#[test]
+fn coalesced_manifest_restores_keep_the_newest_saved_configuration() {
+    let mut h = project();
+    let uri = h.did_open("src/App.fai", MAIN);
+    assert!(h.diagnostics(&uri).is_empty());
+    let root_manifest = lsp_types::Url::parse(&h.uri("fai.toml")).unwrap().to_file_path().unwrap();
+    let state_lock = root_manifest.parent().unwrap().join(".fai/metadata.lock");
+    let held = std::fs::File::options().read(true).write(true).open(state_lock).unwrap();
+    held.lock().unwrap();
+    std::fs::write(&root_manifest, ROOT.replace("lib = {", "other = {")).unwrap();
+    h.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": h.uri("fai.toml"), "type": 2}]}),
+    );
+    let _ = h.workspace_symbols("");
+    std::fs::write(&root_manifest, format!("{ROOT}extra = {{path = 'lib'}}\n")).unwrap();
+    h.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": h.uri("fai.toml"), "type": 2}]}),
+    );
+    let _ = h.workspace_symbols("");
+    drop(held);
+    h.wait_project_ready();
+    assert!(h.diagnostics(&uri).is_empty());
+    assert!(h.hover_text(&uri, position_of(MAIN, "answer")).unwrap().contains("Int"));
     h.shutdown();
 }

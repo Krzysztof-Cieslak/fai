@@ -1,5 +1,10 @@
 # Fai for Visual Studio Code
 
+Project dependencies restore in the background. The status bar shows restoration
+progress or failure and opens the Fai output channel for details. Saved manifests
+and locks trigger refreshed graphs; unsaved `fai.toml`/`fai.local.toml` buffers get
+syntax feedback without publishing lockfiles.
+
 Editor support for the [Fai](https://github.com/Krzysztof-Cieslak/fai) language:
 syntax highlighting (a TextMate grammar) and full language intelligence through
 the `fai lsp` language server.

@@ -5509,5 +5509,14 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   that identity. Missing compilers fail rather than downloading or substituting a
   different release.
 
+- **D170 Background editor package restoration.** Manifest projects initialize
+  without waiting on Git or metadata locks. One background preparation runs at a
+  time; newer requests supersede its publication and coalesce into the next
+  generation. The editor continues serving requests from its current database,
+  and source overlays win over prepared disk content. Unsaved manifest syntax
+  diagnostics do not mutate locks. Saved metadata changes trigger restoration,
+  with versioned project-status notifications and located failures. The VS Code
+  client displays that status and routes project manifest buffers for validation.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
