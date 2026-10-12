@@ -646,6 +646,7 @@ fn read_materialized(
     if checksum != receipt.checksum || expected.is_some_and(|expected| expected != &checksum) {
         return Err(integrity("immutable source checksum changed"));
     }
+    let directory = directory.canonicalize_utf8().map_err(io_error)?;
     Ok(MaterializedPackage { directory, checksum, entries: receipt.entries })
 }
 
