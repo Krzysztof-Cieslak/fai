@@ -1682,11 +1682,46 @@ fn link_unix(
     } else {
         command.args(native_libs);
     }
-    let status = command.status().map_err(|e| format!("invoking linker `{linker}`: {e}"))?;
-    if !status.success() {
-        return Err(format!("linker `{linker}` exited with {status}"));
+    run_linker(&mut command)
+}
+
+fn run_linker(command: &mut std::process::Command) -> Result<(), String> {
+    let linker = command.get_program().to_string_lossy().into_owned();
+    let output =
+        command.output().map_err(|error| format!("invoking linker `{linker}`: {error}"))?;
+    if output.status.success() {
+        return Ok(());
     }
-    Ok(())
+    let mut message = format!("linker `{linker}` exited with {}", output.status);
+    for bytes in [&output.stdout, &output.stderr] {
+        let text = String::from_utf8_lossy(bytes);
+        if !text.trim().is_empty() {
+            message.push('\n');
+            message.push_str(text.trim());
+        }
+    }
+    Err(message)
+}
+
+fn select_msvc_linker(
+    explicit: Option<std::path::PathBuf>,
+    tools: Option<&std::path::Path>,
+    host: &str,
+    target: &str,
+) -> std::path::PathBuf {
+    if let Some(explicit) = explicit {
+        return explicit;
+    }
+    if let Some(tools) = tools {
+        for host in [host, target, "x64"] {
+            let linker =
+                tools.join("bin").join(format!("Host{host}")).join(target).join("link.exe");
+            if linker.is_file() {
+                return linker;
+            }
+        }
+    }
+    "link.exe".into()
 }
 
 /// Links with the MSVC linker (`link.exe`, overridable via `$FAI_LINKER`). The
@@ -1701,7 +1736,21 @@ fn link_msvc(
     native_libs: &[&str],
     native: &crate::manifest::NativeDeps,
 ) -> Result<(), String> {
-    let linker = std::env::var("FAI_LINKER").unwrap_or_else(|_| "link.exe".to_owned());
+    let target = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        arch => arch,
+    };
+    let host = std::env::var("VSCMD_ARG_HOST_ARCH").unwrap_or_else(|_| target.into());
+    let tools = std::env::var_os("VCToolsInstallDir").map(std::path::PathBuf::from);
+    // Developer-shell metadata avoids a same-named Unix utility earlier on a
+    // Git Bash PATH. Explicit user selection continues to take precedence.
+    let linker = select_msvc_linker(
+        std::env::var_os("FAI_LINKER").map(Into::into),
+        tools.as_deref(),
+        &host,
+        target,
+    );
     let mut command = std::process::Command::new(&linker);
     command.arg("/NOLOGO").arg("/SUBSYSTEM:CONSOLE").arg("/OPT:REF").arg(format!("/OUT:{out}"));
     // Search directories for the runtime archive's bundled dependency libraries
@@ -1726,14 +1775,7 @@ fn link_msvc(
         .map_err(|e| format!("writing linker response file {}: {e}", response.display()))?;
     let mut argument = std::ffi::OsString::from("@");
     argument.push(&response);
-    let status = std::process::Command::new(&linker)
-        .arg(argument)
-        .status()
-        .map_err(|e| format!("invoking linker `{linker}`: {e}"))?;
-    if !status.success() {
-        return Err(format!("linker `{linker}` exited with {status}"));
-    }
-    Ok(())
+    run_linker(std::process::Command::new(&linker).arg(argument))
 }
 
 fn msvc_response_file<'a>(
@@ -1782,6 +1824,54 @@ mod link_tests {
     use wait_timeout::ChildExt;
 
     use super::*;
+
+    #[test]
+    fn developer_tools_select_the_native_linker_without_a_path_lookup() {
+        let directory = tempfile::tempdir().unwrap();
+        let linker = directory.path().join("bin/Hostx64/x64/link.exe");
+        std::fs::create_dir_all(linker.parent().unwrap()).unwrap();
+        std::fs::write(&linker, b"native linker fixture").unwrap();
+        assert_eq!(select_msvc_linker(None, Some(directory.path()), "x64", "x64"), linker);
+    }
+
+    #[test]
+    fn explicit_linker_selection_precedes_developer_tools() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().join("custom-link.exe");
+        assert_eq!(
+            select_msvc_linker(Some(selected.clone()), Some(directory.path()), "x64", "x64"),
+            selected
+        );
+    }
+
+    #[test]
+    fn absent_developer_tools_retain_the_path_fallback() {
+        assert_eq!(
+            select_msvc_linker(None, None, "x64", "x64"),
+            std::path::PathBuf::from("link.exe")
+        );
+    }
+
+    #[test]
+    fn linker_errors_preserve_both_output_streams() {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "backend::link_tests::link_output_worker", "--nocapture"])
+            .env("FAI_LINK_OUTPUT_TEST", "1");
+        let error = run_linker(&mut command).unwrap_err();
+        assert!(error.contains("stdout linker detail"), "{error}");
+        assert!(error.contains("stderr linker detail"), "{error}");
+    }
+
+    #[test]
+    fn link_output_worker() {
+        if std::env::var_os("FAI_LINK_OUTPUT_TEST").is_none() {
+            return;
+        }
+        println!("stdout linker detail");
+        eprintln!("stderr linker detail");
+        std::process::exit(17);
+    }
 
     fn response_text(arguments: &[&str]) -> String {
         let bytes = msvc_response_file(arguments.iter().map(std::ffi::OsStr::new)).unwrap();
