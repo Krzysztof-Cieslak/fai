@@ -5528,5 +5528,16 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   including a test-helper package's permitted dependency back to its library.
   Compiler-only fixtures use explicit package environments or temporary consumers.
 
+- **D172 Graph-local preparation and exact snapshot publication.** Fingerprints
+  include only replacements for selected logical keys, and unused replacement
+  paths need not exist. Conservative resolve/fetch reuses a valid selected graph;
+  an explicit resolve may repair compiler incompatibility without changing the
+  ordinary locked failure behavior. Branch pins apply only to the same actual
+  repository/subdirectory. Preparation verifies its observed lock contents and
+  optional metadata absence before publishing compiler inputs, so a newer lock
+  or newly created personal configuration cannot be stamped onto an older graph.
+  Source-tree link validation expands intermediate symlinks before applying
+  parent-directory traversal, preserving physical package containment.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

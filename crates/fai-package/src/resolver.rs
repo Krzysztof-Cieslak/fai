@@ -413,8 +413,12 @@ impl<P: ResolverProvider> Resolver<'_, P> {
             ResolutionPolicy::UpdateAll => true,
             ResolutionPolicy::Update(targets) => targets.contains(key),
         };
-        let mut set =
-            self.provider.candidates(actual, &selectors, self.request.pins.get(key), refresh)?;
+        let pin = self.request.pins.get(key).filter(|pin| match (&pin.source, actual) {
+            (PackageSource::Git { package, .. }, PackageKey::Git(expected)) => package == expected,
+            (PackageSource::Path(path), PackageKey::Path(expected)) => path == expected,
+            _ => false,
+        });
+        let mut set = self.provider.candidates(actual, &selectors, pin, refresh)?;
         let mut sources = BTreeMap::new();
         for candidate in &set.candidates {
             let same_source = match (actual, &candidate.source) {

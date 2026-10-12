@@ -242,6 +242,12 @@ unrelated graphs retain their selections. Local-context edits modify the shared
 manifest and `fai.local.lock`, report affected shared graphs stale, and retain
 the shared lock bytes.
 
+Resolve/fetch retains an already valid graph without refreshing release refs.
+An explicit resolve may repair a compiler-incompatible graph; ordinary locked
+commands report the incompatibility. Unused overrides neither require checkout
+directories nor invalidate unrelated graph fingerprints. Replacing a branch's
+source repository also replaces its old branch binding.
+
 Package commands accept `--message-format=json`. Results carry `schemaVersion`,
 `command`, `ok`, `context`, `lockfile`, `roots`, `targets`, `changes`, `staleGraphs`,
 `diagnostics`, and `notices`. Changes identify the logical package, before/after

@@ -211,6 +211,34 @@ fn escaping_git_symlinks_are_rejected_before_materialization() {
     assert!(repository.store(false).materialize(&repository.package, &revision, None).is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn parent_traversal_is_checked_after_expanding_intermediate_links() {
+    let repository = Repository::new();
+    std::fs::create_dir(repository.root.join("base")).unwrap();
+    std::os::unix::fs::symlink(".", repository.root.join("base/deep")).unwrap();
+    std::os::unix::fs::symlink("deep/../../outside", repository.root.join("base/escape")).unwrap();
+    let revision = repository.commit();
+    let error =
+        repository.store(false).materialize(&repository.package, &revision, None).unwrap_err();
+    assert_eq!(error.code, fai_package::UNSUPPORTED_SOURCE_LAYOUT);
+}
+
+#[cfg(unix)]
+#[test]
+fn repeated_noncyclic_links_can_still_resolve_within_the_tree() {
+    let repository = Repository::new();
+    std::os::unix::fs::symlink(".", repository.root.join("here")).unwrap();
+    std::os::unix::fs::symlink("here/here/src/Library.fai", repository.root.join("linked.fai"))
+        .unwrap();
+    let revision = repository.commit();
+    let source = repository.store(false).materialize(&repository.package, &revision, None).unwrap();
+    assert_eq!(
+        std::fs::read(source.directory.join("linked.fai")).unwrap(),
+        std::fs::read(source.directory.join("src/Library.fai")).unwrap()
+    );
+}
+
 #[test]
 fn lfs_pointer_content_is_not_silently_treated_as_package_source() {
     let repository = Repository::new();

@@ -136,15 +136,28 @@ impl State {
                 baseline.as_ref(),
             );
         }
-        let current_fingerprint = inputs(&request)?;
-        let locked = if self.mode.policy == PreparePolicy::Conservative || self.options.locked {
+        let current_fingerprint = inputs(&request, &selected_keys(&self.lock, previous.as_ref()))?;
+        let locked = if !matches!(self.mode.policy, PreparePolicy::Update(_)) || self.options.locked
+        {
             if let Some(previous) = &previous {
                 let baseline_hash =
                     baseline.as_ref().map(LockedGraph::semantic_hash).transpose()?;
                 if previous.input_fingerprint == current_fingerprint
                     && previous.base_graph_hash == baseline_hash
                 {
-                    provider.locked_graph(&request, &self.lock, previous)?
+                    match provider.locked_graph(&request, &self.lock, previous) {
+                        Err(DriverError::Project(failure))
+                            if self.mode.policy == PreparePolicy::Resolve
+                                && !self.options.locked
+                                && failure
+                                    .diagnostics
+                                    .iter()
+                                    .any(|diagnostic| diagnostic.code == "FAI0809") =>
+                        {
+                            None
+                        }
+                        result => result?,
+                    }
                 } else {
                     None
                 }
@@ -183,7 +196,7 @@ impl State {
                 &root_name,
                 &request.target,
                 &request.compiler,
-                current_fingerprint,
+                inputs(&request, &resolved.packages.keys().cloned().collect())?,
                 &resolved,
                 self.shared.as_ref().zip(baseline.as_ref()),
             )?;
@@ -226,7 +239,8 @@ impl State {
             policy: ResolutionPolicy::Conservative,
         };
         let mut valid = self.lock.graph(&name, &request.target).is_some_and(|graph| {
-            inputs(&request).is_ok_and(|fingerprint| fingerprint == graph.input_fingerprint)
+            inputs(&request, &selected_keys(&self.lock, Some(graph)))
+                .is_ok_and(|fingerprint| fingerprint == graph.input_fingerprint)
         });
         if let Some(graph) = self.lock.graph(&name, &request.target) {
             for package in graph.packages.iter().filter_map(|id| self.lock.package(id)) {
@@ -262,53 +276,63 @@ impl State {
         for (path, fingerprint) in &loader.observed {
             observations.push((path.to_string(), Some(fingerprint.clone())));
         }
+        observations
+            .extend(loader.project.absent_metadata.iter().map(|path| (path.to_string(), None)));
         if loader.project.local {
             observations.push((
                 loader.configuration_root.join("fai.lock").to_string(),
                 self.shared_text.as_deref().map(|text| FileEdit::fingerprint(text.as_bytes())),
             ));
         }
-        if self.mode.write && (self.changed || !self.mode.manifest_edits.is_empty()) {
-            let after = self.lock.to_toml()?;
-            let mut edits = Vec::new();
-            for (path, after) in &self.mode.manifest_edits {
-                let relative = path.strip_prefix(&loader.configuration_root).map_err(|_| {
-                    error(
-                        fai_package::INVALID_SOURCE,
-                        "edited manifest is outside the active project",
-                    )
-                })?;
-                edits.push(FileEdit {
-                    path: portable_path(relative),
-                    before: loader.observed.get(path).cloned(),
-                    after: after.clone(),
-                });
-            }
-            edits.push(FileEdit::new(
-                lock_name(self.lock.context).into(),
-                self.original.as_deref(),
-                after,
-            ));
-            MetadataTransaction::new(edits, observations.clone())
-                .commit(&loader.configuration_root)?;
-        }
+        let expected_lock =
+            if self.mode.write && (self.changed || !self.mode.manifest_edits.is_empty()) {
+                let after = self.lock.to_toml()?;
+                let mut edits = Vec::new();
+                for (path, after) in &self.mode.manifest_edits {
+                    let relative = path.strip_prefix(&loader.configuration_root).map_err(|_| {
+                        error(
+                            fai_package::INVALID_SOURCE,
+                            "edited manifest is outside the active project",
+                        )
+                    })?;
+                    edits.push(FileEdit {
+                        path: portable_path(relative),
+                        before: loader.observed.get(path).cloned(),
+                        after: after.clone(),
+                    });
+                }
+                edits.push(FileEdit::new(
+                    lock_name(self.lock.context).into(),
+                    self.original.as_deref(),
+                    after.clone(),
+                ));
+                MetadataTransaction::new(edits, observations.clone())
+                    .commit(&loader.configuration_root)?;
+                Some(after)
+            } else {
+                self.original.clone()
+            };
         for (path, fingerprint) in observations {
             if let Some(fingerprint) = fingerprint {
                 if self.mode.write && self.mode.manifest_edits.contains_key(Utf8Path::new(&path)) {
                     continue;
                 }
                 loader.project.observed.push((path.into(), fingerprint));
+            } else {
+                loader.project.absent_metadata.insert(path.into());
             }
         }
         let lock_path = loader.configuration_root.join(lock_name(self.lock.context));
-        if !self.mode.write && read_optional(&lock_path)? != self.original {
+        if read_optional(&lock_path)? != expected_lock {
             return Err(error(
                 fai_package::INPUTS_CHANGED,
-                "the active lock changed during read-only preparation",
+                "the active lock changed during graph preparation",
             ));
         }
-        if let Some(text) = read_optional(&lock_path)? {
+        if let Some(text) = expected_lock {
             loader.project.observed.push((lock_path, FileEdit::fingerprint(text.as_bytes())));
+        } else {
+            loader.project.absent_metadata.insert(lock_path);
         }
         loader.project.lock = Some(self.lock);
         loader.project.previous_lock = Some(self.on_disk);
@@ -540,7 +564,17 @@ impl<'a, 'files> Provider<'a, 'files> {
                 };
                 overrides.insert(
                     PackageKey::Git(identity),
-                    self.dependency(&rule.rule.with, &rule.directory, origin, false)?,
+                    if let Dependency::Path { path, version } = &rule.rule.with
+                        && !rule.directory.join(path).exists()
+                    {
+                        PackageRequirement {
+                            package: PackageKey::Path(self.path_key(&rule.directory.join(path))),
+                            selector: PackageSelector::Path(version.clone()),
+                            origin,
+                        }
+                    } else {
+                        self.dependency(&rule.rule.with, &rule.directory, origin, false)?
+                    },
                 );
             }
         }
@@ -1065,7 +1099,19 @@ fn reconcile(
     }
 }
 
-fn inputs(request: &ResolutionRequest) -> Result<Digest, DriverError> {
+fn selected_keys(lock: &LockFile, graph: Option<&LockedGraph>) -> BTreeSet<PackageKey> {
+    graph
+        .into_iter()
+        .flat_map(|graph| &graph.packages)
+        .filter_map(|id| lock.package(id))
+        .map(|package| package.logical.key())
+        .collect()
+}
+
+fn inputs(
+    request: &ResolutionRequest,
+    selected: &BTreeSet<PackageKey>,
+) -> Result<Digest, DriverError> {
     let dependencies: Vec<_> = request
         .candidate
         .development
@@ -1075,6 +1121,7 @@ fn inputs(request: &ResolutionRequest) -> Result<Digest, DriverError> {
     let overrides: Vec<_> = request
         .overrides
         .iter()
+        .filter(|(key, requirement)| selected.contains(*key) || requirement.package == request.root)
         .map(|(key, requirement)| (key, &requirement.package, &requirement.selector))
         .collect();
     let bytes = serde_json::to_vec(&(
@@ -1207,4 +1254,58 @@ fn update_policy(
 
 fn error(code: fai_diagnostics::DiagnosticCode, message: impl Into<String>) -> DriverError {
     ProviderFailure { code, message: message.into() }.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unchanged_preparation_cannot_adopt_a_concurrently_replaced_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_owned())
+            .unwrap()
+            .canonicalize_utf8()
+            .unwrap();
+        std::fs::write(
+            root.join("fai.toml"),
+            "manifest-version = 1\n[package]\nname = 'app'\nversion = '1.0.0'\n",
+        )
+        .unwrap();
+        let original = LockFile::new(LockContext::Shared).to_toml().unwrap();
+        std::fs::write(root.join("fai.lock"), &original).unwrap();
+        let project = prepare_request(
+            &root,
+            &[],
+            &ProjectOptions::default(),
+            None,
+            PrepareMode { selection_only: true, metadata_only: true, ..Default::default() },
+        )
+        .unwrap()
+        .unwrap();
+        let mut loader = Loader {
+            base: root.clone(),
+            configuration_root: root.clone(),
+            target: host_target().unwrap(),
+            compiler: PackageVersion::parse(env!("CARGO_PKG_VERSION")).unwrap(),
+            overlays: &[],
+            sources: SourceMap::new(),
+            documents: BTreeMap::new(),
+            loaded: BTreeMap::new(),
+            shared: Vec::new(),
+            local: Vec::new(),
+            project,
+            mode: PrepareMode::default(),
+            observed: BTreeMap::new(),
+            vendor_dir: None,
+        };
+        let state = State::open(&mut loader, &ProjectOptions::default()).unwrap();
+        let replacement = format!("# concurrently replaced\n{original}");
+        std::fs::write(root.join("fai.lock"), &replacement).unwrap();
+        let Err(DriverError::Project(error)) = state.commit(&mut loader) else {
+            panic!("expected stale preparation");
+        };
+        assert_eq!(error.diagnostics[0].code, "FAI0825");
+        assert_eq!(std::fs::read_to_string(root.join("fai.lock")).unwrap(), replacement);
+    }
 }

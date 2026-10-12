@@ -147,6 +147,7 @@ pub(crate) struct PreparedProject {
     pub local: bool,
     pub roots: Vec<(String, Utf8PathBuf)>,
     pub observed: Vec<(Utf8PathBuf, fai_package::Digest)>,
+    pub absent_metadata: BTreeSet<Utf8PathBuf>,
     pub configuration_root: Utf8PathBuf,
     pub lock: Option<fai_package::LockFile>,
     pub previous_lock: Option<fai_package::LockFile>,
@@ -240,6 +241,7 @@ pub(crate) fn prepare_request(
             local: false,
             roots: Vec::new(),
             observed: Vec::new(),
+            absent_metadata: BTreeSet::new(),
             configuration_root: base.clone(),
             lock: None,
             previous_lock: None,
@@ -316,7 +318,7 @@ pub(crate) fn prepare_request(
     if loader.mode.release_validation {
         loader.shared.clear();
     }
-    if !loader.mode.release_validation && !options.no_local && local_path.is_file() {
+    if !loader.mode.release_validation && !options.no_local && metadata_exists(&local_path)? {
         let local = loader.document(&local_path, true)?;
         loader.local = local
             .manifest()
@@ -331,6 +333,8 @@ pub(crate) fn prepare_request(
             })
             .collect();
         loader.project.local = true;
+    } else if !loader.mode.release_validation && !options.no_local {
+        loader.project.absent_metadata.insert(local_path);
     }
     roots.sort();
     roots.dedup();
@@ -807,6 +811,14 @@ fn canonical(path: &Utf8Path) -> Result<Utf8PathBuf, DriverError> {
         .map_err(|source| DriverError::Io { path: path.to_owned(), source })?;
     Utf8PathBuf::from_path_buf(canonical)
         .map_err(|path| DriverError::NonUtf8Path(path.to_string_lossy().into_owned()))
+}
+
+pub(crate) fn metadata_exists(path: &Utf8Path) -> Result<bool, DriverError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(DriverError::Io { path: path.to_owned(), source }),
+    }
 }
 
 fn host_target() -> Result<TargetPlatform, DriverError> {

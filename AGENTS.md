@@ -374,6 +374,13 @@ table **and** the decision log in `docs/MEMORY.md`).
 
 ## 4. Language at a glance
 
+Package graph fingerprints include only replacements relevant to that graph.
+Unused overrides do not require their checkout or invalidate unrelated frozen
+roots. Conservative resolve/fetch retains a valid graph and restores its exact
+sources; branch pins belong to their actual repository/subdirectory. Prepared
+snapshots verify the lock they read and the absence of optional metadata before
+publication, including a newly created personal override file.
+
 Ordered `Dict`/`Set` bulk operations join arbitrarily shrunken subtrees with the
 general weight-balanced join. Ordering, cached sizes, and balance hold at every
 node; the internal tree shape can change while logical contents remain identical.

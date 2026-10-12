@@ -78,3 +78,53 @@ fn editor_requests_are_served_while_dependency_publication_waits() {
         .unwrap();
     worker.join().unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn navigation_preserves_the_editors_workspace_alias() {
+    let temporary = tempfile::tempdir().unwrap();
+    let base = camino::Utf8Path::from_path(temporary.path()).unwrap();
+    std::fs::create_dir(base.join("real")).unwrap();
+    std::os::unix::fs::symlink(base.join("real"), base.join("alias")).unwrap();
+    let root = base.join("alias");
+    let source = "module Main\nlet value = 1\nlet answer = value\n";
+    std::fs::write(root.join("Main.fai"), source).unwrap();
+    let uri = lsp_types::Url::from_file_path(root.join("Main.fai")).unwrap();
+    let (server, client) = Connection::memory();
+    let worker = std::thread::spawn(move || fai_lsp::serve(&server, root).unwrap());
+    client
+        .sender
+        .send(Message::Request(Request::new(
+            1.into(),
+            "initialize".into(),
+            json!({"capabilities": {}}),
+        )))
+        .unwrap();
+    assert!(response(&client, 1).error.is_none());
+    client
+        .sender
+        .send(Message::Notification(Notification::new("initialized".into(), json!({}))))
+        .unwrap();
+    client.sender.send(Message::Notification(Notification::new("textDocument/didOpen".into(), json!({"textDocument": {"uri": uri, "languageId": "fai", "version": 1, "text": source}})))).unwrap();
+    client
+        .sender
+        .send(Message::Request(Request::new(
+            2.into(),
+            "textDocument/definition".into(),
+            json!({"textDocument": {"uri": uri}, "position": {"line": 2, "character": 14}}),
+        )))
+        .unwrap();
+    let definition = response(&client, 2);
+    assert!(definition.error.is_none(), "{definition:?}");
+    assert_eq!(definition.result.unwrap()[0]["uri"], uri.as_str());
+    client
+        .sender
+        .send(Message::Request(Request::new(3.into(), "shutdown".into(), serde_json::Value::Null)))
+        .unwrap();
+    assert!(response(&client, 3).error.is_none());
+    client
+        .sender
+        .send(Message::Notification(Notification::new("exit".into(), serde_json::Value::Null)))
+        .unwrap();
+    worker.join().unwrap();
+}
