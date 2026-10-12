@@ -1,0 +1,224 @@
+module RegexTemplate
+
+public type Options = { maxBytes : Int, maxParts : Int }
+
+public options : Options
+let options = { maxBytes = 65536, maxParts = 4096 }
+
+type Part =
+  | Literal Bytes
+  | Group Int
+
+public opaque type Template = { parts : List Part, regex : Regex.Regex }
+
+public opaque type ByteTemplate = { parts : List Part, regex : RegexBytes.Regex }
+
+type Build = { parts : List Part, remaining : Int }
+
+let fail source start finish message =
+  Err (RegexTypes.locatedBytes source start finish (RegexTypes.error RegexTypes.InvalidTemplate message))
+
+let digit byte = byte >= 48 && byte <= 57
+
+let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+let closeBrace source index =
+  if index >= Bytes.length source then
+    None
+  else if at source index = 125 then Some index else closeBrace source (index + 1)
+
+let digitsEnd source index = if digit (at source index) then digitsEnd source (index + 1) else index
+
+let namedIndex names name index =
+  if index >= Array.length names then
+    None
+  else if Array.unsafeGet index names = Some name then
+    Some index
+  else
+    namedIndex names name (index + 1)
+
+let numericIndex bytes index value maximum =
+  if index >= Bytes.length bytes then
+    Some value
+  else
+    let digit = Bytes.unsafeGet index bytes - 48
+    if digit > maximum || value > (maximum - digit) / 10 then
+      None
+    else
+      numericIndex bytes (index + 1) (value * 10 + digit) maximum
+
+groupIndex : Array (Option String) -> Bytes -> Int -> Int -> Result Int RegexTypes.Error
+let groupIndex names source start finish =
+  let bytes = Bytes.slice start finish source
+  match Bytes.toString bytes with
+  | None -> fail source start finish "capture name is not UTF-8"
+  | Some name ->
+    let index =
+      if name <> "" && List.all digit (Bytes.toList bytes) then
+        numericIndex bytes 0 0 (Array.length names - 1)
+      else
+        namedIndex names name 0
+    match index with
+    | Some index ->
+      if index >= 0 && index < Array.length names then
+        Ok index
+      else
+        fail source start finish "capture index does not exist"
+    | None -> fail source start finish "capture name does not exist"
+
+add : Part -> Build -> Result Build RegexTypes.Error
+let add part build =
+  if build.remaining <= 0 then
+    Err (RegexTypes.error RegexTypes.TemplateLimit "template part limit exceeded")
+  else
+    Ok { parts = part :: build.parts, remaining = build.remaining - 1 }
+
+literal : Bytes -> Int -> Int -> Build -> Result Build RegexTypes.Error
+let literal source start finish build =
+  if start = finish then Ok build else add (Literal (Bytes.slice start finish source)) build
+
+let referenceRange source index =
+  if at source (index + 1) = 123 then
+    match closeBrace source (index + 2) with
+    | None -> None
+    | Some finish -> Some (index + 2, finish, finish + 1)
+  else if digit (at source (index + 1)) then
+    let finish = digitsEnd source (index + 1)
+    Some (index + 1, finish, finish)
+  else
+    None
+
+parseLoop : Array (Option String) -> Bytes -> Int -> Int -> Build -> Result (List Part) RegexTypes.Error
+let parseLoop names source index start build =
+  if index >= Bytes.length source then
+    Result.map (fun build -> List.reverse build.parts) (literal source start index build)
+  else if at source index <> 36 then
+    parseLoop names source (index + 1) start build
+  else
+    match literal source start index build with
+    | Err error -> Err error
+    | Ok build ->
+      if at source (index + 1) = 36 then
+        match add (Literal (Bytes.fromList [36])) build with
+        | Err error -> Err error
+        | Ok build -> parseLoop names source (index + 2) (index + 2) build
+      else
+        let range = referenceRange source index
+        match range with
+        | None ->
+          fail source index (if index + 2 > Bytes.length source then
+            Bytes.length source
+          else
+            index + 2) "expected $$, $number or ${name}"
+        | Some (from, finish, next) ->
+          match groupIndex names source from finish with
+          | Err error -> Err error
+          | Ok group ->
+            match add (Group group) build with
+            | Err error -> Err error
+            | Ok build -> parseLoop names source next next build
+
+parse : Options -> Array (Option String) -> Bytes -> Result (List Part) RegexTypes.Error
+let parse options names source =
+  if options.maxBytes < 0 || options.maxParts < 0 then
+    Err (RegexTypes.error RegexTypes.InvalidOptions "negative template limit")
+  else if Bytes.length source > options.maxBytes then
+    Err (RegexTypes.error RegexTypes.TemplateLimit "template byte limit exceeded")
+  else
+    parseLoop names source 0 0 { parts = [], remaining = options.maxParts }
+
+public compileWith : Options -> Regex.Regex -> String -> Result Template RegexTypes.Error
+let compileWith options regex source =
+  if String.length source > options.maxBytes then
+    Err (RegexTypes.error RegexTypes.TemplateLimit "template byte limit exceeded")
+  else
+    Result.map (fun parts -> {
+      parts = parts,
+      regex = regex
+    }) (parse options (Regex.captureNames regex) (Bytes.fromString source))
+
+public compile : Regex.Regex -> String -> Result Template RegexTypes.Error
+let compile regex source = compileWith options regex source
+
+public compileBytesWith : Options -> RegexBytes.Regex -> Bytes -> Result ByteTemplate RegexTypes.Error
+let compileBytesWith options regex source =
+  Result.map (fun parts -> {
+    parts = parts,
+    regex = regex
+  }) (parse options (RegexBytes.captureNames regex) source)
+
+public compileBytes : RegexBytes.Regex -> Bytes -> Result ByteTemplate RegexTypes.Error
+let compileBytes regex source = compileBytesWith options regex source
+
+public escape : String -> String
+let escape text = String.join "$$" (String.split "$" text)
+
+let tooLarge =
+  RegexTypes.error RegexTypes.OutputLimit "template expansion exceeds output byte limit"
+
+renderText : Int -> Regex.Captures -> List Part -> List String -> Result String RegexTypes.Error
+let renderText remaining captures parts output =
+  match parts with
+  | [] -> Ok (String.join "" (List.reverse output))
+  | Literal bytes :: rest ->
+    if Bytes.length bytes > remaining then
+      Err tooLarge
+    else
+      renderText (remaining - Bytes.length bytes) captures rest (Option.withDefault "" (Bytes.toString bytes) :: output)
+  | Group index :: rest ->
+    match Regex.group index captures with
+    | Err error -> Err error
+    | Ok None -> renderText remaining captures rest output
+    | Ok (Some found) ->
+      let span = Regex.span found
+      let size = span.endByte - span.startByte
+      if size > remaining then
+        Err tooLarge
+      else
+        renderText (remaining - size) captures rest (Regex.text found :: output)
+
+renderBytes : Int -> RegexBytes.Captures -> List Part -> List RegexInternal.Source -> Result Bytes RegexTypes.Error
+let renderBytes remaining captures parts output =
+  match parts with
+  | [] ->
+    Ok (RegexInternal.sourceBytes (RegexInternal.join (RegexInternal.Binary Bytes.empty) (List.reverse output)))
+  | Literal bytes :: rest ->
+    if Bytes.length bytes > remaining then
+      Err tooLarge
+    else
+      renderBytes (remaining - Bytes.length bytes) captures rest (RegexInternal.Binary bytes :: output)
+  | Group index :: rest ->
+    match RegexBytes.group index captures with
+    | Err error -> Err error
+    | Ok None -> renderBytes remaining captures rest output
+    | Ok (Some found) ->
+      let span = RegexBytes.span found
+      let size = span.endByte - span.startByte
+      if size > remaining then
+        Err tooLarge
+      else
+        renderBytes (remaining - size) captures rest (RegexInternal.Binary (RegexBytes.bytes found) :: output)
+
+public replaceNWithLimits : RegexTypes.Limits -> Int -> Template -> String -> Result String RegexTypes.Error
+let replaceNWithLimits limits count template input =
+  Result.mapError RegexInternal.simpleError (Regex.replaceWithLimits limits count template.regex (fun captures -> renderText limits.maxOutputBytes captures template.parts []) input)
+
+public replace : Template -> String -> Result String RegexTypes.Error
+let replace template input = replaceNWithLimits Regex.limits 1 template input
+
+public replaceAll : Template -> String -> Result String RegexTypes.Error
+let replaceAll template input = replaceNWithLimits Regex.limits 9223372036854775807 template input
+
+public replaceN : Int -> Template -> String -> Result String RegexTypes.Error
+let replaceN count template input = replaceNWithLimits Regex.limits count template input
+
+public replaceBytesNWithLimits : RegexTypes.Limits -> Int -> ByteTemplate -> Bytes -> Result Bytes RegexTypes.Error
+let replaceBytesNWithLimits limits count template input =
+  Result.mapError RegexInternal.simpleError (RegexBytes.replaceWithLimits limits count template.regex (fun captures -> renderBytes limits.maxOutputBytes captures template.parts []) input)
+
+public replaceBytes : ByteTemplate -> Bytes -> Result Bytes RegexTypes.Error
+let replaceBytes template input = replaceBytesNWithLimits RegexBytes.limits 1 template input
+
+public replaceAllBytes : ByteTemplate -> Bytes -> Result Bytes RegexTypes.Error
+let replaceAllBytes template input =
+  replaceBytesNWithLimits RegexBytes.limits 9223372036854775807 template input

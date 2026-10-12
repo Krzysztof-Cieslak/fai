@@ -1177,6 +1177,10 @@ Regex cursors are immutable values with advancing scalar checkpoints. Empty-matc
 iteration follows the native engine's non-overlapping rules; text advances on
 scalar boundaries, binary input on byte boundaries. Bounded collection and
 effect-forwarding folds preserve exact exhaustion and committed callback state.
+Regex replacements distinguish literal values from compiled capture templates.
+Templates validate references and numeric bounds against their retained regex;
+callback replacement forwards effects and preserves typed failures with progress.
+Output lengths are checked before joining pieces, and unmatched input is retained.
 
 The optional `packages/logging` source package provides structured log records,
 typed fields, target-prefix filtering and pure human/JSON Lines formatting.

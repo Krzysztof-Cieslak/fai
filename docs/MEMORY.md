@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Regex replacement text is literal unless compiled as a capture template.
+  Template references are validated before matching and bind to one regex schema.
+  Callback replacement processes original-input matches once in order, forwards
+  effects, and reports typed failures with prior replacement count and byte span.
+
 - Regex iteration uses immutable cursor state, never an observable mutable native
   iterator. Advancing scalar checkpoints avoid prefix rescans. Empty matches obey
   native iteration policy; collection limits distinguish exact exhaustion from an

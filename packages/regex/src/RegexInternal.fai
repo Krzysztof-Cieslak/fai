@@ -307,3 +307,132 @@ let foldLoop cursor state step visited =
       visited = visited + 1
     }
     | Ok (state, RegexTypes.Continue) -> foldLoop rest state step (visited + 1)
+
+public slice : Source -> Int -> Int -> Result Source RegexTypes.Error
+let slice source start finish =
+  match sourceSize source with
+  | Err error -> Err error
+  | Ok size ->
+    if start < 0 || finish < start || finish > size then
+      Err (RegexTypes.error RegexTypes.InvalidOffset "invalid source range")
+    else
+      match source with
+      | Binary bytes -> Ok (Binary (Bytes.slice start finish bytes))
+      | Text text ->
+        Result.map Text (Result.mapError (RegexTypes.nativeError None) (RegexEngine.slice text start finish))
+
+let bytePairs chunks =
+  match chunks with
+  | a :: b :: rest -> Bytes.concat a b :: bytePairs rest
+  | rest -> rest
+
+let joinBytes chunks =
+  match chunks with
+  | [] -> Bytes.empty
+  | [one] -> one
+  | _ -> joinBytes (bytePairs chunks)
+
+let stringOf source =
+  match source with
+  | Text value -> value
+  | _ -> ""
+
+let bytesOf source =
+  match source with
+  | Binary value -> value
+  | _ -> Bytes.empty
+
+public join : Source -> List Source -> Source
+let join source pieces =
+  match source with
+  | Text _ -> Text (String.join "" (List.map stringOf pieces))
+  | Binary _ -> Binary (joinBytes (List.map bytesOf pieces))
+
+type Builder = { bytes : Int, pieces : List Source }
+
+let replacementError completed span cause = { cause = cause, completed = completed, span = span }
+
+let outputLimit = RegexTypes.error RegexTypes.OutputLimit "regex output byte limit exceeded"
+
+append : Int -> Source -> Builder -> Result Builder RegexTypes.Error
+let append limit piece builder =
+  match sourceSize piece with
+  | Err error -> Err error
+  | Ok bytes ->
+    if bytes > limit - builder.bytes then
+      Err outputLimit
+    else
+      Ok { bytes = builder.bytes + bytes, pieces = piece :: builder.pieces }
+
+appendRange : Int -> Source -> Int -> Int -> Builder -> Result Builder RegexTypes.Error
+let appendRange limit source start finish builder =
+  if finish - start > limit - builder.bytes then
+    Err outputLimit
+  else
+    match slice source start finish with
+    | Err error -> Err error
+    | Ok piece -> append limit piece builder
+
+finishReplacement : Cursor -> Int -> Int -> Builder -> Result Source (RegexTypes.ReplaceError 'error)
+let finishReplacement cursor completed position builder =
+  if completed = 0 && position = 0 then
+    if cursor.size > cursor.limits.maxOutputBytes then
+      Err (replacementError completed None (RegexTypes.RegexFailure outputLimit))
+    else
+      Ok cursor.source
+  else
+    match appendRange cursor.limits.maxOutputBytes cursor.source position cursor.size builder with
+    | Err error -> Err (replacementError completed None (RegexTypes.RegexFailure error))
+    | Ok builder -> Ok (join cursor.source (List.reverse builder.pieces))
+
+replaceLoop : Cursor -> Int -> Int -> Int -> Builder -> (Captures -> Result Source 'error / 'e) -> Result Source (RegexTypes.ReplaceError 'error) / 'e
+let replaceLoop cursor maximum completed position builder replacement =
+  if completed >= maximum then
+    finishReplacement cursor completed position builder
+  else
+    match next cursor with
+    | Err error -> Err (replacementError completed None (RegexTypes.RegexFailure error))
+    | Ok None -> finishReplacement cursor completed position builder
+    | Ok (Some (found, rest)) ->
+      let span = (whole found).span
+      let location = Some { endByte = span.endByte, startByte = span.startByte }
+      match appendRange cursor.limits.maxOutputBytes cursor.source position span.startByte builder with
+      | Err error -> Err (replacementError completed location (RegexTypes.RegexFailure error))
+      | Ok builder ->
+        match replacement found with
+        | Err error ->
+          Err (replacementError completed location (RegexTypes.ReplacementFailure error))
+        | Ok piece ->
+          let same =
+            match (cursor.source, piece) with
+            | (Text _, Text _) -> true
+            | (Binary _, Binary _) -> true
+            | _ -> false
+          if not same then
+            Err (replacementError completed location (RegexTypes.RegexFailure (RegexTypes.error RegexTypes.WrongMode "replacement mode mismatch")))
+          else
+            match append cursor.limits.maxOutputBytes piece builder with
+            | Err error -> Err (replacementError completed location (RegexTypes.RegexFailure error))
+            | Ok builder ->
+              replaceLoop rest maximum (completed + 1) span.endByte builder replacement
+
+public replace : RegexTypes.Limits -> Int -> Compiled -> Source -> Bool -> (Captures -> Result Source 'error / 'e) -> Result Source (RegexTypes.ReplaceError 'error) / 'e
+let replace limits maximum regex source captures replacement =
+  if maximum < 0 then
+    Err (replacementError 0 None (RegexTypes.RegexFailure (RegexTypes.error RegexTypes.InvalidOptions "negative replacement count")))
+  else
+    match cursor limits regex source 0 captures with
+    | Err error -> Err (replacementError 0 None (RegexTypes.RegexFailure error))
+    | Ok cursor -> replaceLoop cursor maximum 0 0 { bytes = 0, pieces = [] } replacement
+
+public simpleError : RegexTypes.ReplaceError RegexTypes.Error -> RegexTypes.Error
+let simpleError error =
+  match error.cause with
+  | RegexTypes.RegexFailure error -> error
+  | RegexTypes.ReplacementFailure error -> error
+
+public sourceText : Source -> String
+let sourceText source = stringOf source
+
+public sourceBytes : Source -> Bytes
+let sourceBytes source = bytesOf source
