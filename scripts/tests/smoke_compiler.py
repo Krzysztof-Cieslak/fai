@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 
 
 def main():
@@ -66,6 +67,17 @@ def main():
                 invoke(other, "daemon", "stop")
         finally:
             invoke(relocated, "daemon", "stop")
+            # Shutdown acknowledgement can precede process exit. Windows keeps
+            # the executable locked until exit; wait for release before rmtree.
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    relocated.unlink()
+                    break
+                except PermissionError as error:
+                    if getattr(error, "winerror", None) != 32 or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
     print("Relocated compiler: identity, warm daemon, contracts, JIT and AOT passed")
 
 
