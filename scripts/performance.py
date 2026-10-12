@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import sys
 
+import performance_report
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "scripts/performance-trackers.json"
 ENVIRONMENT = ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "OCAMLPARAM", "OCAMLRUNPARAM",
@@ -54,6 +56,7 @@ def configuration(path):
         raise ValueError("invalid repository")
     reports = dict(zip(ROLES, ["perceus-memory.md", "language-memory.md", "language-runtime.md"]))
     for role, tracker in value["trackers"].items():
+        tracker.setdefault("title", performance_report.TITLES[role])
         if not isinstance(tracker.get("title"), str) or not tracker["title"] or tracker.get("report") != reports[role]:
             raise ValueError(f"invalid tracker: {role}")
         if tracker.get("issue") is not None and (type(tracker["issue"]) is not int or tracker["issue"] <= 0):
@@ -296,13 +299,70 @@ def index_artifacts(run, manifest, state):
     manifest["files"] = files
 
 
+def configure_validator(run, executable, revision):
+    """Retain a newer exporter for a completed historical snapshot."""
+    manifest = read_json(run / "snapshot.json")
+    if manifest["status"] != "complete" or not revision or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("a validator override needs a complete snapshot and its full source revision")
+    executable = Path(executable).resolve()
+    identity = digest(executable)
+    directory = run / "presentation"
+    directory.mkdir(exist_ok=True)
+    name = "validator-" + identity[:16] + (".exe" if executable.suffix == ".exe" else "")
+    destination = directory / name
+    if not destination.exists():
+        shutil.copy2(executable, destination)
+    write_json(directory / "validator.json", {
+        "file": name, "sha256": identity, "revision": revision,
+        "snapshotSha256": digest(run / "snapshot.json"),
+    })
+
+
+def validator(run, manifest):
+    override = run / "presentation/validator.json"
+    if override.exists():
+        info = read_json(override)
+        if Path(info["file"]).name != info["file"] or info["snapshotSha256"] != digest(run / "snapshot.json"):
+            raise ValueError("invalid historical validator identity")
+        path = run / "presentation" / info["file"]
+        expected = info["sha256"]
+        revision = info["revision"]
+    else:
+        path = run / "bin/performance-report"
+        recorded = next((row for row in manifest["files"] if row["path"] == "bin/performance-report"), None)
+        if not recorded:
+            raise ValueError("retained report-data validator is missing")
+        expected = recorded["sha256"]
+        revision = manifest["reporterRevision"]
+    if digest(path) != expected:
+        raise ValueError("retained report-data validator is missing or changed")
+    return path, {"sha256": expected, "revision": revision}
+
+
 def render(run, evidence=""):
     manifest = read_json(run / "snapshot.json")
-    renderer = run / "bin/performance-report"
-    recorded = next((row for row in manifest["files"] if row["path"] == "bin/performance-report"), None)
-    if not recorded or digest(renderer) != recorded["sha256"]:
-        raise ValueError("retained report generator is missing or changed")
-    subprocess.run([str(renderer), str(run), str(run / "reports"), *([evidence] if evidence else [])], check=True)
+    executable, validator_info = validator(run, manifest)
+    subprocess.run([str(executable), "export", str(run), str(run / "reports")], check=True)
+    data_path = run / "reports/report-data.json"
+    data = read_json(data_path)
+    snapshot_hash = digest(run / "snapshot.json")
+    if data.get("snapshotSha256") != snapshot_hash:
+        raise ValueError("exported report data belongs to a different snapshot")
+    reports = performance_report.render(data, evidence)
+    source = ROOT / "scripts/performance_report"
+    source_files = {path.name: digest(path) for path in sorted(source.glob("*.py"))}
+    renderer_id = hashlib.sha256(json.dumps(source_files, sort_keys=True).encode()).hexdigest()
+    retained = run / "presentation" / renderer_id
+    retained.mkdir(parents=True, exist_ok=True)
+    for name in source_files:
+        shutil.copy2(source / name, retained / name)
+    for name, text in reports.items():
+        (run / "reports" / name).write_text(text, encoding="utf-8", newline="\n")
+    write_json(run / "reports/render-info.json", {
+        "schemaVersion": 1, "snapshotSha256": snapshot_hash, "reportDataSha256": digest(data_path),
+        "validator": validator_info, "rendererId": renderer_id, "rendererFiles": source_files,
+        "rendererRevision": output(["git", "rev-parse", "HEAD"]), "pythonVersion": platform.python_version(),
+    })
 
 
 def release_timing_cache(run, state, env):
@@ -421,13 +481,21 @@ def main():
     report = sub.add_parser("render", help="strictly validate and regenerate all three reports")
     report.add_argument("snapshot", type=Path)
     report.add_argument("--evidence-url", default="")
+    report.add_argument("--validator", type=Path, help="retain a current exporter for an older snapshot")
+    report.add_argument("--validator-revision", help="full source revision of the selected exporter")
     publish = sub.add_parser("publish", help="publish a validated snapshot to configured trackers")
     publish.add_argument("snapshot", type=Path)
     publish.add_argument("--config", type=Path, default=CONFIG)
     publish.add_argument("--create", action="store_true")
     publish.add_argument("--migrate", action="store_true")
     publish.add_argument("--record-ids", action="store_true")
+    publish.add_argument("--validator", type=Path, help="retain a current exporter for an older snapshot")
+    publish.add_argument("--validator-revision", help="full source revision of the selected exporter")
     args = parser.parse_args()
+    if getattr(args, "validator_revision", None) and not getattr(args, "validator", None):
+        raise ValueError("--validator-revision requires --validator")
+    if getattr(args, "validator", None):
+        configure_validator(args.snapshot.resolve(), args.validator, args.validator_revision)
     if args.command == "run":
         start(args)
     elif args.command == "resume":

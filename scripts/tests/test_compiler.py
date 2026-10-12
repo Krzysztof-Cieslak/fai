@@ -66,6 +66,12 @@ class CompilerTests(unittest.TestCase):
         self.write("packages/json/Json.fai", "changed library")
         self.assertEqual(before, self.identity())
 
+    def test_report_presentation_does_not_change_compiler_key(self):
+        before = self.identity()
+        self.write("scripts/performance_report/__init__.py", "new report wording")
+        self.write("scripts/performance_report/tests/fixtures/normal.json", "{}")
+        self.assertEqual(before, self.identity())
+
     def test_tooling_edits_change_compiler_key(self):
         before = self.identity()
         self.write("crates/tool/src/lib.rs", "changed compiler")

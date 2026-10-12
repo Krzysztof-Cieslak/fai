@@ -1496,6 +1496,13 @@ declared cases. Full curves, overhead, process startup/shutdown, residency, inpu
 definitions and provenance are expandable. Source-linked names, grouped numbers
 and human-sized units aid reading; ratios use unrounded observations, and short
 notes explain omissions without repeated classification/status columns.
+Issue-report presentation lives in `scripts/performance_report/`, outside the
+compiler fingerprint. A versioned Rust JSON exporter owns evidence validation,
+ratios, omission reasons and statistics; Python owns names, units and layout.
+Presentation-only CI runs Python syntax checks and two integration fixtures.
+Mixed package/presentation edits run both relevant lanes, while changes to the
+exporter or CI rules retain full compiler checks. Publication records the retained
+validator and exact Python sources and versions each presentation refresh.
 
 Benchmark contracts also pin construction, materialization and traversal phases.
 The main sorting peers share explicit algorithms; linked parser/evaluator,
@@ -1684,7 +1691,10 @@ locally when changing their implementation or invariants.
 Those four check names have dependency-aware lanes. Package-only diffs restore
 an exact cached compiler and run native `fai fmt`/`check`/`test` for changed
 packages and transitive dependents, without Rust commands on a cache hit.
-Compiler/runtime/std/infrastructure or unknown changes retain the full checks;
+Presentation-only diffs under `scripts/performance_report/` run Python syntax and
+the two renderer fixtures, with no compiler build. Mixed package/presentation
+diffs run both relevant lanes. Compiler/runtime/std/infrastructure or unknown
+changes retain the full checks;
 root documentation-only changes receive lightweight validation. The selector
 uses the actual PR base and both dependency catalogs, including renames/deletions.
 Failed selection fails the required gates. `docs/DEVELOPMENT.md` documents the

@@ -48,6 +48,7 @@ def documentation(path):
 
 def classify(paths, current, previous):
     full = False
+    reporting = False
     selected = set()
     reasons = []
     for path in paths:
@@ -55,6 +56,9 @@ def classify(paths, current, previous):
         if len(parts) >= 3 and parts[0] == "packages" and parts[1] in current.keys() | previous.keys():
             selected.add(parts[1])
             reasons.append(f"package: {parts[1]}")
+        elif path.startswith("scripts/performance_report/"):
+            reporting = True
+            reasons.append("report presentation")
         elif documentation(path):
             continue
         else:
@@ -72,8 +76,9 @@ def classify(paths, current, previous):
             selected = expanded
     return {
         "compiler": full,
+        "reporting": reporting or full,
         "packages": [name for name in packages.validate(current) if name in selected],
-        "mode": "compiler" if full else "packages" if package_change else "docs",
+        "mode": "compiler" if full else "packages" if package_change else "reporting" if reporting else "docs",
         "reasons": sorted(set(reasons)),
     }
 
@@ -87,7 +92,7 @@ def scope(root, base, head="HEAD"):
         previous = catalog_at(root, baseline)
         paths = diff_paths(git(root, "diff", "--name-status", "-z", "--find-renames", baseline, head))
     except (subprocess.CalledProcessError, ValueError) as error:
-        return {"compiler": True, "packages": packages.validate(current), "mode": "compiler",
+        return {"compiler": True, "reporting": True, "packages": packages.validate(current), "mode": "compiler",
                 "reasons": [f"conservative full check: {type(error).__name__}"]}
     result = classify(paths, current, previous)
     result["base"] = baseline
@@ -101,11 +106,15 @@ def summary(text):
             stream.write(text + "\n")
 
 
-def require(result, mode, compiler_flag):
+def require(result, mode, compiler_flag, reporting_flag="false"):
     if result != "success":
         raise ValueError(f"change classification did not succeed: {result}")
-    if mode not in {"compiler", "packages", "docs"} or compiler_flag != str(mode == "compiler").lower():
+    if mode not in {"compiler", "packages", "reporting", "docs"} or compiler_flag != str(mode == "compiler").lower():
         raise ValueError("missing or inconsistent change classification outputs")
+    if (reporting_flag not in {"true", "false"}
+            or (mode in {"compiler", "reporting"} and reporting_flag != "true")
+            or (mode == "docs" and reporting_flag != "false")):
+        raise ValueError("missing or inconsistent reporting selection")
 
 
 def selected_packages(encoded, names):
@@ -134,12 +143,13 @@ def main():
             if args.github_output:
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
                     print(f"compiler={str(result['compiler']).lower()}", file=stream)
+                    print(f"reporting={str(result['reporting']).lower()}", file=stream)
                     print(f"packages={json.dumps(result['packages'], separators=(',', ':'))}", file=stream)
                     print(f"package_names={' '.join(result['packages'])}", file=stream)
                     print(f"mode={result['mode']}", file=stream)
                 summary(f"### Selected CI lane: {result['mode']}\nPackages: {', '.join(result['packages']) or '(none)'}")
             return
-        require(args.result, os.environ.get("CI_MODE"), os.environ.get("CI_COMPILER"))
+        require(args.result, os.environ.get("CI_MODE"), os.environ.get("CI_COMPILER"), os.environ.get("CI_REPORTING"))
         selected = selected_packages(os.environ.get("CI_PACKAGES", "null"), os.environ.get("PACKAGE_NAMES", ""))
         packages.affected(packages.discover(), selected, False)
         summary(f"### CI lane: {os.environ.get('CI_MODE', 'unknown')}\nAffected packages: {os.environ.get('PACKAGE_NAMES') or '(none)'}")

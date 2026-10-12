@@ -61,7 +61,7 @@ and measurement settings. Completed steps are retained; failed step output is
 archived before that step is repeated. A failure cannot turn an absent result
 into zero. Fully completed snapshots are immutable once published.
 
-`performance-report` is the strict Rust validator/renderer in `fai-tests`. It
+`performance-report` is the strict Rust validator and data exporter in `fai-tests`. It
 reuses `bench-summary` parsing and comparison eligibility. It verifies:
 
 - Stored SHA-256 and logical BLAKE3 identities, including compressed artifacts.
@@ -79,10 +79,13 @@ Snapshot schema 2 includes the versioned memory input catalog and requires
 RSS as well as peaks. Older snapshots retain their own renderer and source
 identity; their peak-only observations do not acquire inferred after-RSS values.
 
-The three Markdown files and normalized `results.json` are emitted only after
-validation succeeds. Rendering the same snapshot and evidence URL is
-deterministic. The legacy `bench-summary` command remains a best-effort console
-summary; it does not authorize publication.
+After validation, `performance-report export SNAPSHOT OUTPUT` writes versioned
+`report-data.json` and normalized `results.json`. The standalone Python package
+`scripts/performance_report/` formats the three Markdown files from that data.
+Ratios, omission reasons and statistics are computed in Rust; names, units,
+wording and layout are Python presentation. Rendering the same data and evidence
+URL is deterministic. The legacy `bench-summary` command remains a best-effort
+console summary; it does not authorize publication.
 
 Each workload's `validation.json` retains raw answers for its predeclared input
 window; these run in separate processes before timed workers start. The catalog
@@ -90,11 +93,24 @@ records algorithm/materialization contracts and per-pair implementation notes.
 Changing those contracts requires a new workload version and a fresh measurement;
 an updated renderer cannot promote historical observations into the revised set.
 
-A presentation-only refresh can render an existing validated snapshot into a
-separate output directory using the newer `performance-report` binary. Retain the
-original measurement manifest and renderer, and archive the new presentation's
-revision, renderer hash and input-manifest hash with its generated bodies. Publish
-that presentation as a new evidence revision so earlier reports remain reproducible.
+A presentation-only preview needs Python alone:
+
+```sh
+python scripts/performance_report path/to/report-data.json /tmp/report-preview
+python -m unittest discover -s scripts/performance_report/tests -v
+```
+
+The two renderer fixtures cover complete reports and omitted comparisons.
+Formatting-only edits use Python-only CI and leave the compiler fingerprint
+unchanged. Evidence/calculation changes retain their Rust checks.
+
+`performance.py render` and `publish` revalidate with the retained exporter and
+use the current Python presentation. An older snapshot can select a compatible
+exporter with `--validator PATH --validator-revision FULL_SHA`; that fingerprinted
+override is retained for subsequent refreshes. `render-info.json` records the
+snapshot/data hashes, validator identity, Python version and presentation source
+identity. Publication archives a new presentation revision while retaining the
+original measurement manifest and executable. Earlier reports stay reproducible.
 
 ## Publish and migrate
 
@@ -106,8 +122,9 @@ python scripts/performance.py publish path/to/snapshot \
   --create --migrate --record-ids
 ```
 
-`scripts/performance-trackers.json` owns canonical titles, issue IDs, notes and
-the explicit retirement list. The publisher can discover an existing tracker by
+`scripts/performance-trackers.json` owns issue IDs, measurement settings, notes and
+the explicit retirement list. Default titles live with the Python presentation;
+a configuration can override them. The publisher can discover an existing tracker by
 its unique generated marker; `--create` permits initial creation. It archives raw
 logs, normalized data, source/build provenance and prior issue bodies in a
 versioned gist. Full compressed executable bytes remain in the local snapshot;
@@ -189,6 +206,7 @@ No forced GC, allocator trimming or baseline subtraction changes the natural
 language/runtime policy. The issue shows the largest input's before/after values
 at each repetition count; every size's paired observations remain in the archive.
 
-Presentation and validation tests live under
+The two presentation fixtures live under `scripts/performance_report/tests/`.
+Evidence and calculation tests live under
 `crates/fai-tests/src/bench_summary/tracking/`; publisher/retention tests are in
 `scripts/tests/test_performance.py` and run without GitHub credentials.

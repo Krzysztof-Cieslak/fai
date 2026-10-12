@@ -1,6 +1,8 @@
-//! Strict validation and deterministic Markdown generation for tracking issues.
+//! Strict evidence validation and presentation-independent report-data export.
 
 use std::path::Path;
+
+use sha2::{Digest, Sha256};
 
 use fai_tests::bench_summary::tracking::{Snapshot, catalog, fingerprint};
 
@@ -20,23 +22,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", fingerprint(Path::new(path), !rest.is_empty())?);
         return Ok(());
     }
-    let [directory, output, rest @ ..] = args.as_slice() else {
-        return Err(
-            "usage: performance-report catalog | SNAPSHOT OUTPUT [EVIDENCE_HTTPS_URL]".into()
-        );
+    let [command, directory, output] = args.as_slice() else {
+        return Err("usage: performance-report catalog | export SNAPSHOT OUTPUT".into());
     };
-    if rest.len() > 1 {
-        return Err("too many arguments".into());
+    if command != "export" {
+        return Err("expected export SNAPSHOT OUTPUT".into());
     }
     let snapshot = Snapshot::load(Path::new(directory))?;
-    let reports = snapshot.render(rest.first().map_or("", String::as_str))?;
+    let mut data = snapshot.report_data();
+    data["snapshotSha256"] =
+        format!("{:x}", Sha256::digest(std::fs::read(Path::new(directory).join("snapshot.json"))?))
+            .into();
     let output = Path::new(output);
     std::fs::create_dir_all(output)?;
-    for (name, text) in reports {
-        std::fs::write(output.join(name), text)?;
-    }
+    std::fs::write(output.join("report-data.json"), serde_json::to_vec_pretty(&data)?)?;
     std::fs::write(output.join("results.json"), serde_json::to_vec_pretty(&snapshot.to_json()?)?)?;
-    println!("Validated and rendered snapshot {}", snapshot.manifest().run_id);
+    println!("Validated and exported snapshot {}", snapshot.manifest().run_id);
     Ok(())
 }
 

@@ -374,164 +374,27 @@ impl Fixture {
 }
 
 #[test]
-fn complete_snapshot_renders_three_deterministic_bodies() {
+fn complete_snapshot_exports_stable_versioned_data() {
     let fixture = Fixture::new();
     let snapshot = fixture.load().unwrap();
     let observations = snapshot.to_json().unwrap();
-    let a = snapshot.render("https://example.test/evidence").unwrap();
-    assert_eq!(a, snapshot.render("https://example.test/evidence").unwrap());
-    assert_eq!(a.len(), 3);
-    assert!(a.values().all(|text| text.contains("fixture-checkpoint") && text.len() < 60000));
-    assert!(a["language-runtime.md"].contains("0.500×"));
-    assert!(a["perceus-memory.md"].contains("1,000 → 0"));
-    assert!(!a["language-memory.md"].contains("memory wins"));
+    let data = snapshot.report_data();
+    assert_eq!(data, snapshot.report_data());
+    assert_eq!(data["schemaVersion"], REPORT_DATA_VERSION);
+    assert_eq!(data["runtime"]["cases"].as_array().unwrap().len(), 80);
+    assert_eq!(data["runtime"]["endToEnd"].as_array().unwrap().len(), 40);
+    assert_eq!(data["memory"]["cases"].as_array().unwrap().len(), 254);
+    assert!(
+        (data["runtime"]["summary"]["rust"]["geometricMean"].as_f64().unwrap() - 0.5).abs() < 1e-12
+    );
+    assert_eq!(data["allocations"]["cases"][0]["disabled"]["requests"], 1000);
     assert_eq!(snapshot.to_json().unwrap(), observations);
 }
 
 #[test]
-fn perceus_report_presentation_is_stable() {
-    let fixture = Fixture::new();
-    let reports = fixture.load().unwrap().render("https://example.test/evidence").unwrap();
-    insta::assert_snapshot!("tracking_perceus", reports["perceus-memory.md"]);
-}
-
-#[test]
-fn runtime_report_presentation_is_stable() {
-    let fixture = Fixture::new();
-    let reports = fixture.load().unwrap().render("https://example.test/evidence").unwrap();
-    insta::assert_snapshot!(
-        "tracking_runtime_header",
-        reports["language-runtime.md"].split("### At a glance\n").next().unwrap()
-    );
-}
-
-#[test]
-fn memory_report_presentation_is_stable() {
-    let fixture = Fixture::new();
-    let reports = fixture.load().unwrap().render("https://example.test/evidence").unwrap();
-    insta::assert_snapshot!(
-        "tracking_memory_header",
-        reports["language-memory.md"].split("### At a glance\n").next().unwrap()
-    );
-}
-
-fn section<'a>(text: &'a str, heading: &str) -> &'a str {
-    text.split_once(&format!("## {heading}\n"))
-        .expect("report section")
-        .1
-        .split("\n## ")
-        .next()
-        .unwrap()
-}
-
-fn subsection<'a>(text: &'a str, heading: &str) -> &'a str {
-    text.split_once(&format!("### {heading}\n"))
-        .expect("report table")
-        .1
-        .split("\n### ")
-        .next()
-        .unwrap()
-}
-
-type WorkloadCounts = BTreeMap<String, usize>;
-
-fn workload_counts(text: &str) -> WorkloadCounts {
-    let mut counts = BTreeMap::new();
-    for line in text.lines().filter(|line| line.starts_with("| ")) {
-        let cell = line.split('|').nth(1).unwrap().trim();
-        let name =
-            cell.strip_suffix(']').and_then(|value| value.rsplit('[').next()).unwrap_or(cell);
-        if contracts::for_module(name).is_some() {
-            *counts.entry(name.into()).or_default() += 1;
-        }
-    }
-    counts
-}
-
-#[test]
-fn runtime_tables_keep_kernel_and_application_workloads_separate() {
-    let fixture = Fixture::new();
-    let reports = fixture.load().unwrap().render("").unwrap();
-    let text = &reports["language-runtime.md"];
-    let observed: Vec<_> = ["Shared algorithms", "Standard-library workloads"]
-        .into_iter()
-        .map(|class| {
-            let text = section(text, class);
-            (
-                workload_counts(subsection(text, "All input sizes")),
-                workload_counts(subsection(text, "Complete process time")),
-            )
-        })
-        .collect();
-    let expected: Vec<(WorkloadCounts, WorkloadCounts)> =
-        [contracts::Comparison::Kernel, contracts::Comparison::Application]
-            .into_iter()
-            .map(|class| {
-                let names = || {
-                    algorithms::ALGORITHMS.iter().filter(|case| {
-                        contracts::for_module(case.module).unwrap().comparison == class
-                    })
-                };
-                (
-                    names().map(|case| (case.module.into(), 2)).collect(),
-                    names().map(|case| (case.module.into(), 1)).collect(),
-                )
-            })
-            .collect();
-    assert_eq!(observed, expected);
-    let applications = section(text, "Standard-library workloads");
-    assert!(!applications.contains("| Time vs Rust |"));
-    assert!(!applications.contains("Geometric mean"));
-    assert!(applications.contains("Timing overhead"));
-}
-
-#[test]
-fn memory_tables_keep_every_observation_in_its_own_category() {
-    let fixture = Fixture::new();
-    let reports = fixture.load().unwrap().render("").unwrap();
-    let text = &reports["language-memory.md"];
-    let observed: Vec<_> = ["Shared algorithms", "Standard-library workloads"]
-        .into_iter()
-        .map(|class| {
-            let text = section(text, class);
-            (
-                workload_counts(subsection(text, "All input sizes")),
-                workload_counts(subsection(text, "Before and after execution")),
-                workload_counts(subsection(text, "Input definitions")),
-            )
-        })
-        .collect();
-    let expected: Vec<(WorkloadCounts, WorkloadCounts, WorkloadCounts)> =
-        [contracts::Comparison::Kernel, contracts::Comparison::Application]
-            .into_iter()
-            .map(|class| {
-                let names = || {
-                    memory_workloads::algorithms().filter(|case| {
-                        contracts::for_module(case.module).unwrap().comparison == class
-                    })
-                };
-                (
-                    names()
-                        .map(|case| {
-                            (
-                                case.module.into(),
-                                memory_workloads::profile(case.module).unwrap().sizes.len() * 2,
-                            )
-                        })
-                        .collect(),
-                    names().map(|case| (case.module.into(), 2)).collect(),
-                    names().map(|case| (case.module.into(), 1)).collect(),
-                )
-            })
-            .collect();
-    assert_eq!(observed, expected);
-    assert!(!text.contains("All cases"));
-}
-
-#[test]
-fn application_rss_changes_cannot_change_kernel_tables_or_averages() {
+fn application_rss_changes_cannot_change_kernel_statistics() {
     let mut fixture = Fixture::new();
-    let before = fixture.load().unwrap().render("").unwrap();
+    let before = fixture.load().unwrap().report_data();
     fixture.rewrite("raw/memory.stdout", |text| {
         text.lines()
             .map(|line| {
@@ -544,23 +407,19 @@ fn application_rss_changes_cannot_change_kernel_tables_or_averages() {
             .collect::<Vec<_>>()
             .join("\n")
     });
-    let after = fixture.load().unwrap().render("").unwrap();
+    let after = fixture.load().unwrap().report_data();
     assert_eq!(
-        section(&before["language-memory.md"], "Shared algorithms"),
-        section(&after["language-memory.md"], "Shared algorithms")
+        before["memory"]["summaries"]["matched-kernel"],
+        after["memory"]["summaries"]["matched-kernel"]
     );
-    let applications = subsection(
-        section(&after["language-memory.md"], "Standard-library workloads"),
-        "Summary — all measured inputs",
-    );
-    assert!(applications.contains("| Rust | 46 / 46 | 3.000× | 3.000× | 3.000× |"));
-    assert!(applications.contains("| OCaml | 46 / 46 | 3.000× | 3.000× | 3.000× |"));
+    assert_eq!(after["memory"]["summaries"]["application"]["rust"]["arithmeticMean"], 3.0);
+    assert_eq!(after["memory"]["summaries"]["application"]["ocaml"]["p90"], 3.0);
 }
 
 #[test]
-fn application_runtime_changes_cannot_change_kernel_tables_or_rankings() {
+fn application_runtime_changes_cannot_change_kernel_statistics() {
     let mut fixture = Fixture::new();
-    let before = fixture.load().unwrap().render("").unwrap();
+    let before = fixture.load().unwrap().report_data();
     fixture.rewrite("raw/warm.stdout", |text| {
         text.lines()
             .map(|line| {
@@ -573,18 +432,15 @@ fn application_runtime_changes_cannot_change_kernel_tables_or_rankings() {
             .collect::<Vec<_>>()
             .join("\n")
     });
-    let after = fixture.load().unwrap().render("").unwrap();
-    assert_eq!(
-        section(&before["language-runtime.md"], "Shared algorithms"),
-        section(&after["language-runtime.md"], "Shared algorithms")
-    );
-    assert!(section(&after["language-runtime.md"], "Standard-library workloads").contains("1 ms"));
+    let after = fixture.load().unwrap().report_data();
+    assert_eq!(before["runtime"]["summary"], after["runtime"]["summary"]);
+    assert_ne!(before["runtime"]["cases"], after["runtime"]["cases"]);
 }
 
 #[test]
-fn runtime_summary_includes_inputs_hidden_from_the_overview() {
+fn runtime_summary_includes_every_input() {
     let mut fixture = Fixture::new();
-    let before = fixture.load().unwrap().render("").unwrap();
+    let before = fixture.load().unwrap().report_data();
     fixture.rewrite("raw/warm.stdout", |text| {
         text.lines()
             .map(|line| {
@@ -597,20 +453,15 @@ fn runtime_summary_includes_inputs_hidden_from_the_overview() {
             .collect::<Vec<_>>()
             .join("\n")
     });
-    let after = fixture.load().unwrap().render("").unwrap();
-    let before = section(&before["language-runtime.md"], "Shared algorithms");
-    let after = section(&after["language-runtime.md"], "Shared algorithms");
-    assert_eq!(subsection(before, "At a glance"), subsection(after, "At a glance"));
-    assert_ne!(
-        subsection(before, "Summary — all measured inputs"),
-        subsection(after, "Summary — all measured inputs")
-    );
+    let after = fixture.load().unwrap().report_data();
+    assert_eq!(after["runtime"]["summary"]["rust"]["used"], 66);
+    assert_ne!(before["runtime"]["summary"], after["runtime"]["summary"]);
 }
 
 #[test]
-fn memory_summary_includes_repetitions_hidden_from_the_overview() {
+fn memory_summary_includes_every_repetition() {
     let mut fixture = Fixture::new();
-    let before = fixture.load().unwrap().render("").unwrap();
+    let before = fixture.load().unwrap().report_data();
     fixture.rewrite("raw/memory.stdout", |text| {
         text.lines()
             .map(|line| {
@@ -627,14 +478,9 @@ fn memory_summary_includes_repetitions_hidden_from_the_overview() {
             .collect::<Vec<_>>()
             .join("\n")
     });
-    let after = fixture.load().unwrap().render("").unwrap();
-    let before = section(&before["language-memory.md"], "Shared algorithms");
-    let after = section(&after["language-memory.md"], "Shared algorithms");
-    assert_eq!(subsection(before, "At a glance"), subsection(after, "At a glance"));
-    assert_ne!(
-        subsection(before, "Summary — all measured inputs"),
-        subsection(after, "Summary — all measured inputs")
-    );
+    let after = fixture.load().unwrap().report_data();
+    assert_eq!(after["memory"]["summaries"]["matched-kernel"]["rust"]["used"], 208);
+    assert_ne!(before["memory"]["summaries"], after["memory"]["summaries"]);
 }
 
 #[test]
@@ -830,7 +676,7 @@ fn allocation_windows_must_release_workload_owners() {
 }
 
 #[test]
-fn floor_limited_measurements_remain_visible_without_ratios() {
+fn floor_limited_data_retains_times_and_pairwise_omission_reasons() {
     let mut fixture = Fixture::new();
     fixture.rewrite("raw/warm.stdout", |text| {
         text.lines()
@@ -844,69 +690,16 @@ fn floor_limited_measurements_remain_visible_without_ratios() {
             .collect::<Vec<_>>()
             .join("\n")
     });
-    let reports = fixture.load().unwrap().render("").unwrap();
-    assert!(
-        reports["language-runtime.md"]
-            .contains("| [Fib] | 28 | 10 µs | 20 µs | 25 µs | — | 0.400× |")
-    );
-    assert!(reports["language-runtime.md"].contains("measurement overhead reached the 10% limit"));
-}
-
-fn visible_overview(text: &str) -> String {
-    let mut depth = 0;
-    let mut visible = String::new();
-    for line in text.lines() {
-        if line == "<details>" {
-            depth += 1;
-        } else if line == "</details>" {
-            assert!(depth > 0);
-            depth -= 1;
-        } else if depth == 0 {
-            visible.push_str(line);
-            visible.push('\n');
-        }
-    }
-    assert_eq!(depth, 0, "unclosed details block");
-    visible
-}
-
-#[test]
-fn runtime_overview_uses_the_largest_input_and_hides_overhead() {
-    let fixture = Fixture::new();
-    let reports = fixture.load().unwrap().render("").unwrap();
-    let text = visible_overview(&reports["language-runtime.md"]);
-    let shared = section(&text, "Shared algorithms");
-    let expected: WorkloadCounts = algorithms::ALGORITHMS
+    let data = fixture.load().unwrap().report_data();
+    let row = data["runtime"]["cases"]
+        .as_array()
+        .unwrap()
         .iter()
-        .filter(|case| {
-            contracts::for_module(case.module).unwrap().comparison == contracts::Comparison::Kernel
-        })
-        .map(|case| (case.module.into(), 1))
-        .collect();
-    assert_eq!(workload_counts(subsection(shared, "At a glance")), expected);
-    assert!(text.contains("| [Recursive Fibonacci][Fib] | 33 |"));
-    assert!(!text.contains("| [Recursive Fibonacci][Fib] | 28 |"));
-    assert!(!text.contains("Timing overhead"));
-    assert!(!text.contains("Eligibility"));
-    assert!(text.contains("0.80× means 20% less time"));
-}
-
-#[test]
-fn memory_overview_uses_largest_inputs_and_one_invocation() {
-    let fixture = Fixture::new();
-    let reports = fixture.load().unwrap().render("").unwrap();
-    let text = visible_overview(&reports["language-memory.md"]);
-    let shared = section(&text, "Shared algorithms");
-    let expected: WorkloadCounts = memory_workloads::algorithms()
-        .filter(|case| {
-            contracts::for_module(case.module).unwrap().comparison == contracts::Comparison::Kernel
-        })
-        .map(|case| (case.module.into(), 1))
-        .collect();
-    assert_eq!(workload_counts(subsection(shared, "At a glance")), expected);
-    assert!(text.contains("1 invocation per process"));
-    assert!(text.contains("| [Binary-tree construction][BinaryTrees] | 21 | 48.83 MiB |"));
-    assert!(!text.contains("Baseline peak"));
-    assert!(!text.contains("Comparison / omitted ratios"));
-    assert!(text.contains("0.80× means 20% less memory"));
+        .find(|row| row["benchmark"] == "Fib" && row["input"] == 28)
+        .unwrap();
+    assert_eq!(row["languages"]["fai"]["timeNs"], 10000.0);
+    assert!(row["ratios"]["rust"].is_null());
+    assert_eq!(row["ratios"]["ocaml"], 0.4);
+    assert_eq!(row["omissions"]["rust"], "overhead");
+    assert!(row["omissions"]["ocaml"].is_null());
 }

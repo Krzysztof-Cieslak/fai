@@ -95,8 +95,9 @@ The `package-dev` profile is optimized but retains assertions and runtime leak
 checks. The cache key covers the named inputs in `scripts/compiler-inputs.json`,
 the native target and host compatibility, build environment and bundle schema.
 It is independent of branch names, commits, timestamps and checkout paths.
-Package sources and documentation under `packages/` are outside those inputs;
-new compiler files, Cargo configuration, dependency changes and embedded `std/`
+Package sources and documentation under `packages/`, and the Python presentation
+under `scripts/performance_report/`, are outside those inputs. New compiler files,
+Cargo configuration, dependency changes and embedded `std/`
 sources invalidate the key. The compiler reports its source digest and complete
 executable identity through `fai build-info`.
 
@@ -147,6 +148,7 @@ predecessor, not unconditionally with `main`.
 | `packages/web/**` | Web formatting, type checks, and Fai contracts |
 | `packages/sql/**` | SQL and SQLite formatting, type checks, and Fai contracts |
 | `packages/sqlite/**` | SQLite formatting, type checks, and Fai contracts |
+| `scripts/performance_report/**` | Python syntax and two presentation fixtures; no Cargo or compiler bundle |
 | Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures |
 | Root documentation and `docs/*.md` / `docs/*.txt` only | Change/catalog validation |
 
@@ -155,6 +157,8 @@ an edge does not hide an affected dependent. Renames include both old and new
 paths. New source-package directories must include `ci.json`; malformed catalogs
 and missing dependencies fail classification. An unavailable comparison base
 selects the full lane conservatively.
+Mixed package/presentation changes run both relevant lanes. Changes to the Rust
+report-data exporter or CI infrastructure retain the full compiler checks.
 
 The four protected check names remain unchanged. They explicitly require a
 successful classification, so a failed selector cannot pass through skipped

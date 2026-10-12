@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       compiler: ${{ steps.scope.outputs.compiler }}
+      reporting: ${{ steps.scope.outputs.reporting }}
       packages: ${{ steps.scope.outputs.packages }}
       package_names: ${{ steps.scope.outputs.package_names }}
       mode: ${{ steps.scope.outputs.mode }}
@@ -50,6 +51,7 @@ jobs:
       SCOPE_RESULT: ${{ needs.changes.result }}
       CI_MODE: ${{ needs.changes.outputs.mode }}
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
+      CI_REPORTING: ${{ needs.changes.outputs.reporting }}
       CI_PACKAGES: ${{ needs.changes.outputs.packages }}
       PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
     steps:
@@ -64,6 +66,9 @@ jobs:
       - name: Tooling tests
         if: needs.changes.outputs.compiler == 'true'
         run: python -m unittest discover -s scripts/tests -v
+      - name: Report presentation syntax
+        if: needs.changes.outputs.reporting == 'true'
+        run: python -m compileall -q scripts/performance_report
       - uses: Swatinem/rust-cache@v2
         if: needs.changes.outputs.compiler == 'true'
       - name: Rust format
@@ -90,6 +95,7 @@ jobs:
       SCOPE_RESULT: ${{ needs.changes.result }}
       CI_MODE: ${{ needs.changes.outputs.mode }}
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
+      CI_REPORTING: ${{ needs.changes.outputs.reporting }}
       CI_PACKAGES: ${{ needs.changes.outputs.packages }}
       PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
     steps:
@@ -101,6 +107,9 @@ jobs:
           python-version: '3.x'
       - name: Require successful change classification
         run: python scripts/ci.py require
+      - name: Report presentation fixtures
+        if: needs.changes.outputs.reporting == 'true'
+        run: python -m unittest discover -s scripts/performance_report/tests -v
       - uses: Swatinem/rust-cache@v2
         if: needs.changes.outputs.compiler == 'true'
         with:
@@ -187,6 +196,7 @@ jobs:
       SCOPE_RESULT: ${{ needs.changes.result }}
       CI_MODE: ${{ needs.changes.outputs.mode }}
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
+      CI_REPORTING: ${{ needs.changes.outputs.reporting }}
       CI_PACKAGES: ${{ needs.changes.outputs.packages }}
       PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
     steps:
@@ -198,6 +208,9 @@ jobs:
           python-version: '3.x'
       - name: Require successful change classification
         run: python scripts/ci.py require
+      - name: Report presentation fixtures
+        if: needs.changes.outputs.reporting == 'true'
+        run: python -m unittest discover -s scripts/performance_report/tests -v
       - name: Set up native Windows linker
         if: runner.os == 'Windows' && (needs.changes.outputs.compiler == 'true' || needs.changes.outputs.packages != '[]')
         uses: ilammy/msvc-dev-cmd@v1

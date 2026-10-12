@@ -46,6 +46,25 @@ class ClassificationTests(unittest.TestCase):
         result = ci.classify(["docs/DEVELOPMENT.md", "README.md"], catalog(), catalog())
         self.assertEqual((result["mode"], result["compiler"], result["packages"]), ("docs", False, []))
 
+    def test_report_presentation_selects_only_python_checks(self):
+        result = ci.classify(["scripts/performance_report/__init__.py", "docs/PERFORMANCE_REPORTS.md"], catalog(), catalog())
+        self.assertEqual((result["mode"], result["compiler"], result["reporting"], result["packages"]),
+                         ("reporting", False, True, []))
+
+    def test_report_and_package_edits_select_both_without_rust(self):
+        result = ci.classify(["scripts/performance_report/tests/fixtures/normal.json", "packages/json/src/Json.fai"], catalog(), catalog())
+        self.assertEqual((result["mode"], result["compiler"], result["reporting"], result["packages"]),
+                         ("packages", False, True, ["json", "web"]))
+
+    def test_report_data_edits_still_run_compiler_checks(self):
+        result = ci.classify(["crates/fai-tests/src/bench_summary/tracking/data.rs"], catalog(), catalog())
+        self.assertTrue(result["compiler"] and result["reporting"])
+
+    def test_reporting_mode_cannot_skip_its_checks(self):
+        with self.assertRaisesRegex(ValueError, "reporting selection"):
+            ci.require("success", "reporting", "false", "false")
+        ci.require("success", "reporting", "false", "true")
+
     def test_removed_dependency_edges_still_select_previous_dependents(self):
         result = ci.classify(["packages/json/src/Json.fai"], catalog(()), catalog())
         self.assertEqual(result["packages"], ["json", "web"])

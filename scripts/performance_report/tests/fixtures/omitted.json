@@ -1,0 +1,22 @@
+{
+  "data": {
+    "schemaVersion": 1,
+    "measurement": {"runId": "omitted-fixture", "repository": "example/fai", "measuredRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "completedAt": "2026-10-12T00:00:00Z", "methodology": "isolated-aot-v2", "memoryMethodology": "isolated-memory-v3", "machine": {}, "toolchains": {}, "settings": {"warmPasses": 3, "warmSamples": 21, "memorySamples": 5, "memoryRepeats": [1, 16]}, "notes": {}},
+    "runtime": {
+      "cases": [{"benchmark": "Fib", "input": 33, "classification": "matched-kernel", "languages": {"fai": {"timeNs": 0.001, "overheadFraction": 1}, "rust": {"timeNs": 8, "overheadFraction": 0.001}}, "ratios": {"rust": null, "ocaml": null}, "omissions": {"rust": "overhead", "ocaml": "missing-peer"}}],
+      "summary": {"rust": {"used": 0, "total": 1, "geometricMean": null, "arithmeticMean": null, "p90": null}, "ocaml": {"used": 0, "total": 1, "geometricMean": null, "arithmeticMean": null, "p90": null}},
+      "components": [], "endToEnd": [{"benchmark": "Fib", "input": 33, "classification": "matched-kernel", "timesNs": {"fai": 1000000, "rust": 2000000}}]
+    },
+    "memory": {
+      "cases": [{"benchmark": "BinaryTrees", "input": 21, "invocations": 1, "classification": "matched-kernel", "languages": {"fai": {"peakKib": 2048, "beforeKib": 1024, "afterKib": 1536, "baselinePeakKib": 1536, "baselineAfterKib": 1024}, "rust": {"peakKib": 4096, "beforeKib": 2048, "afterKib": 3072, "baselinePeakKib": 2048, "baselineAfterKib": 2048}}, "ratios": {"rust": 0.5, "ocaml": null}}],
+      "summaries": {"matched-kernel": {"rust": {"used": 1, "total": 1, "geometricMean": 0.5, "arithmeticMean": 0.5, "p90": 0.5}, "ocaml": {"used": 0, "total": 1, "geometricMean": null, "arithmeticMean": null, "p90": null}}, "application": {"rust": {"used": 0, "total": 0, "geometricMean": null, "arithmeticMean": null, "p90": null}, "ocaml": {"used": 0, "total": 0, "geometricMean": null, "arithmeticMean": null, "p90": null}}},
+      "inputs": [{"benchmark": "BinaryTrees", "classification": "matched-kernel", "unit": "tree depth", "scale": "live data", "sizes": [21]}]
+    },
+    "allocations": {"guards": {"perceus_space": 1, "perceus_storage": 1}, "cases": [{"benchmark": "Fusion", "input": 100000, "disabledControl": "no-fusion", "disabled": {"requests": 100000, "allocatedBytes": 2400000, "extraPeakLiveBytes": 2400000, "peakStorageBytes": 2621440, "retainedStorageBytes": 2621440}, "enabled": {"requests": 0, "allocatedBytes": 0, "extraPeakLiveBytes": 0, "peakStorageBytes": 196608, "retainedStorageBytes": 196608}}]}
+  },
+  "expected": {
+    "language-runtime.md": {"contains": ["| Rust | 0 / 1 | — | — | — |", "| [Recursive Fibonacci][Fib] | 33 | <0.01 ns | 8 ns | — | — | — |", "a comparison language is unavailable", "measurement overhead reached the 10% limit", "| [Fib] | 33 | 100.0% | 0.1% | — |"], "absent": ["0.000×", "Eligibility legend"]},
+    "language-memory.md": {"contains": ["| [Binary-tree construction][BinaryTrees] | 21 | 2 MiB | 4 MiB | — | 0.500× | — |", "| OCaml | 0 / 1 | — | — | — |", "**Omitted ratios (—):**", "— → —"], "absent": ["0.000×", "All cases"]},
+    "perceus-memory.md": {"contains": ["100,000 → 0", "2.29 MiB → 0 B", "<summary>Methods, environment and reproducibility</summary>"]}
+  }
+}

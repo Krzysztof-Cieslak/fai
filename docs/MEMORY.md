@@ -1928,6 +1928,13 @@ Editor integration:
     Readable names link to measured source, units are human-sized, and ratios use
     unrounded observations. Omitted ratios have short explanations rather than
     repeated status columns or a classification legend.
+    Presentation is a standalone Python package outside the compiler build
+    fingerprint. The Rust validator exports versioned full-precision report data,
+    including qualified ratios, omission reasons and statistics. Python formats
+    that data and has two representative integration fixtures. CI selects a
+    Python-only lane for presentation edits; exporter and infrastructure changes
+    retain full checks. Retained exporter identities and Python source hashes
+    bind each published presentation to the original measurement snapshot.
     Reviewed workload contracts fix the logical algorithm, construction and
     materialization phases, and traversal order before measurement. Sorting uses
     explicit shared algorithms and general shuffled input; native library sorts
