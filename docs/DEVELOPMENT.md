@@ -291,6 +291,7 @@ predecessor, not unconditionally with `main`.
 | `packages/sql/**` | SQL and SQLite formatting, type checks, and Fai contracts |
 | `packages/sqlite/**` | SQLite formatting, type checks, and Fai contracts |
 | Package-local `ci.json` integrations or Fai entrypoints | Affected packages' native contracts and declared JIT/AOT programs, using the prepared compiler |
+| `packages/fai.toml` or `packages/fai.lock` | All source packages through the cached-compiler lane, including locked graph validation; no Rust suite on a cache hit |
 | `scripts/performance_report/**` | Python syntax and two presentation fixtures; no Cargo or compiler bundle |
 | Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures |
 | Root documentation and `docs/*.md` / `docs/*.txt` only | Change/catalog validation |
@@ -303,6 +304,19 @@ selects the full lane conservatively.
 Mixed package/presentation changes run both relevant lanes. Changes to the Rust
 report-data exporter or CI infrastructure retain the full compiler checks.
 
+Workspace-level membership, replacements and lock graphs can affect any package,
+so those two metadata files conservatively select every current package. Adding a
+new library and updating its workspace registration therefore stays in the package
+lane. Mixed changes to Rust, embedded std, CI scripts or workflows still select
+the full compiler lane.
+
+The prepared compiler runs `fai resolve --locked -C packages` before native package
+operations. This validates all declared root/platform graphs, including non-host
+targets, without updating the committed lock. Invalid manifests, missing/stale
+graphs and malformed locks fail the job. Workspace validation runs even when the
+package selection is empty; an orphan workspace lock requires its manifest.
+Legacy directory trees with neither workspace file keep their existing checks.
+
 The protected check names (`fmt + clippy`, `unit + e2e tests (linux)`, and the
 two platform checks) are stable across lanes. A package-only run still has those
 names, but its Rust steps are skipped. The selection job and each job's summary
@@ -313,9 +327,10 @@ successful classification, so a failed selector cannot pass through skipped
 jobs. On package-only changes their source checks are direct commands:
 
 ```sh
-fai fmt --check -C packages --package PACKAGE
-fai check --no-examples -C packages --package PACKAGE
-fai test -C packages --package PACKAGE --seed 42 --count 128
+python scripts/ci.py validate-packages --fai /path/to/fai
+fai fmt --check --locked -C packages --package PACKAGE
+fai check --no-examples --locked -C packages --package PACKAGE
+fai test --locked -C packages --package PACKAGE --seed 42 --count 128
 ```
 
 Linux, macOS, and Windows each restore an exact compiler bundle and put its

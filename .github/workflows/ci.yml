@@ -78,12 +78,15 @@ jobs:
         if: needs.changes.outputs.compiler == 'true'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - uses: ./.github/actions/compiler
-        if: needs.changes.outputs.compiler != 'true' && needs.changes.outputs.packages != '[]'
+        if: needs.changes.outputs.mode == 'packages'
+      - name: Validate locked package workspace
+        if: needs.changes.outputs.mode == 'packages'
+        run: python scripts/ci.py validate-packages
       - name: Package formatting
         if: needs.changes.outputs.compiler != 'true' && needs.changes.outputs.packages != '[]'
         run: |
           for package in $PACKAGE_NAMES; do
-            fai fmt --check -C packages --package "$package"
+            fai fmt --check --locked -C packages --package "$package"
           done
 
   unit:
@@ -133,14 +136,17 @@ jobs:
         run: ./scripts/check-nextest-partition.sh
       - uses: ./.github/actions/compiler
         id: compiler
-        if: needs.changes.outputs.packages != '[]'
+        if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
+      - name: Validate locked package workspace
+        if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
+        run: python scripts/ci.py validate-packages
       - name: Native package checks
         if: needs.changes.outputs.packages != '[]'
         run: |
           for package in $PACKAGE_NAMES; do
-            fai fmt --check -C packages --package "$package"
-            fai check --no-examples -C packages --package "$package"
-            fai test -C packages --package "$package" --seed 42 --count 128
+            fai fmt --check --locked -C packages --package "$package"
+            fai check --no-examples --locked -C packages --package "$package"
+            fai test --locked -C packages --package "$package" --seed 42 --count 128
           done
       - name: Compiler relocation and execution fixtures
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
@@ -224,7 +230,7 @@ jobs:
         if: needs.changes.outputs.reporting == 'true'
         run: python -m unittest discover -s scripts/performance_report/tests -v
       - name: Set up native Windows linker
-        if: runner.os == 'Windows' && (needs.changes.outputs.compiler == 'true' || needs.changes.outputs.packages != '[]')
+        if: runner.os == 'Windows' && (needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages')
         uses: ilammy/msvc-dev-cmd@v1
       - uses: Swatinem/rust-cache@v2
         if: needs.changes.outputs.compiler == 'true'
@@ -240,24 +246,27 @@ jobs:
         run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
       - uses: ./.github/actions/compiler
         id: compiler
-        if: needs.changes.outputs.packages != '[]'
+        if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
+      - name: Validate locked package workspace
+        if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
+        run: python scripts/ci.py validate-packages
       - name: Native package checks (macOS)
         if: runner.os != 'Windows' && needs.changes.outputs.packages != '[]'
         run: |
           for package in $PACKAGE_NAMES; do
-            fai fmt --check -C packages --package "$package"
-            fai check --no-examples -C packages --package "$package"
-            fai test -C packages --package "$package" --seed 42 --count 128
+            fai fmt --check --locked -C packages --package "$package"
+            fai check --no-examples --locked -C packages --package "$package"
+            fai test --locked -C packages --package "$package" --seed 42 --count 128
           done
       - name: Native package checks (Windows)
         if: runner.os == 'Windows' && needs.changes.outputs.packages != '[]'
         run: |
           foreach ($package in $env:PACKAGE_NAMES.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)) {
-            fai fmt --check -C packages --package $package
+            fai fmt --check --locked -C packages --package $package
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            fai check --no-examples -C packages --package $package
+            fai check --no-examples --locked -C packages --package $package
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            fai test -C packages --package $package --seed 42 --count 128
+            fai test --locked -C packages --package $package --seed 42 --count 128
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - name: Compiler relocation fixture

@@ -51,6 +51,13 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Source-package workspace manifests and locks are package CI inputs. Their
+  changes conservatively select every current source package and reuse the exact
+  prepared compiler. Locked resolution validates all declared platform graphs
+  before package operations, rejecting malformed or stale metadata without repair,
+  including when no package remains selected. Compiler and CI implementation
+  changes continue to require the full Rust checks.
+
 - Binary-to-ASCII encoding is a pure optional source package covering the RFC
   4648 alphabets. Standard Base64 and Base32 default to complete padding;
   Base64Url defaults to unpadded input/output. Padding policies are explicit and

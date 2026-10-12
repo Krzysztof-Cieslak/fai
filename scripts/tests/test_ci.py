@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ci
@@ -85,9 +86,53 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(result["packages"], ["web", "web-examples"])
         self.assertFalse(result["compiler"])
 
-    def test_workspace_manifest_changes_run_full_checks(self):
+    def test_workspace_manifest_changes_select_all_packages_without_rust(self):
         result = ci.classify(["packages/fai.toml"], catalog(), catalog())
-        self.assertTrue(result["compiler"])
+        self.assertEqual((result["mode"], result["compiler"], result["reporting"], result["packages"]),
+                         ("packages", False, False, ["json", "web"]))
+        self.assertEqual(result["reasons"], ["package workspace: packages/fai.toml"])
+
+    def test_workspace_lock_changes_select_all_packages_without_rust(self):
+        result = ci.classify(["packages/fai.lock"], catalog(), catalog())
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, ["json", "web"]))
+
+    def test_new_package_registration_keeps_the_package_lane(self):
+        current = {**catalog(), "encoding": packages.Package("encoding", Path("packages/encoding"), ())}
+        result = ci.classify(["packages/encoding/fai.toml", "packages/encoding/src/Hex.fai",
+                              "packages/fai.toml", "packages/fai.lock"], current, catalog())
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, ["encoding", "json", "web"]))
+
+    def test_workspace_metadata_with_rust_changes_still_runs_full_checks(self):
+        result = ci.classify(["packages/fai.lock", "crates/fai-cli/src/lib.rs"], catalog(), catalog())
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("compiler", True, ["json", "web"]))
+
+    def test_workspace_metadata_with_presentation_changes_runs_both_lanes(self):
+        result = ci.classify(["packages/fai.toml", "scripts/performance_report/__init__.py"], catalog(), catalog())
+        self.assertEqual((result["mode"], result["compiler"], result["reporting"], result["packages"]),
+                         ("packages", False, True, ["json", "web"]))
+
+    def test_workspace_removal_selects_only_surviving_packages(self):
+        current = {"web": catalog(())["web"]}
+        result = ci.classify(["packages/fai.toml", "packages/json/fai.toml"], current, catalog())
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, ["web"]))
+
+    def test_empty_workspace_metadata_still_requires_package_validation(self):
+        result = ci.classify(["packages/fai.toml", "packages/fai.lock"], {}, catalog())
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, []))
+
+    def test_cargo_lock_changes_still_run_full_checks(self):
+        self.assertTrue(ci.classify(["Cargo.lock"], catalog(), catalog())["compiler"])
+
+    def test_unrecognized_workspace_files_still_run_full_checks(self):
+        self.assertTrue(ci.classify(["packages/build.py"], catalog(), catalog())["compiler"])
+
+    def test_classifier_changes_still_run_full_checks(self):
+        self.assertTrue(ci.classify(["scripts/ci.py", "packages/fai.toml"], catalog(), catalog())["compiler"])
 
     def test_removed_package_selects_remaining_previous_dependents(self):
         current = {"web": catalog(())["web"]}
@@ -185,3 +230,92 @@ class ClassificationTests(unittest.TestCase):
             result = ci.scope(root, base)
             self.assertEqual((result["mode"], result["compiler"], result["packages"], result["reasons"]),
                              ("packages", False, ["example"], ["package: example"]))
+
+
+class WorkspaceMetadataScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.git("init", "-b", "main")
+        self.git("config", "user.email", "test@example.invalid")
+        self.git("config", "user.name", "Test")
+        for name in ("json", "web"):
+            directory = self.root / "packages" / name
+            directory.mkdir(parents=True)
+            (directory / "fai.toml").write_text(
+                f'manifest-version = 1\n[package]\nname = "{name}"\nversion = "0.1.0"\n')
+        self.workspace = self.root / "packages/fai.toml"
+        self.workspace.write_text('manifest-version = 1\n[workspace]\nmembers = ["json", "web"]\n')
+        self.lock = self.root / "packages/fai.lock"
+        self.lock.write_text('lock-version = 1\n')
+        self.git("add", ".")
+        self.git("commit", "-m", "Add workspace")
+        self.base = self.git("rev-parse", "HEAD")
+
+    def git(self, *arguments):
+        return subprocess.check_output(["git", *arguments], cwd=self.root,
+                                       stderr=subprocess.DEVNULL).decode().strip()
+
+    def classify(self):
+        self.git("add", "-A")
+        self.git("commit", "-m", "Change workspace metadata")
+        return ci.scope(self.root, self.base)
+
+    def test_committed_lock_only_edit_uses_the_package_lane(self):
+        self.lock.write_text('lock-version = 1\n# Updated graph records\n')
+        result = self.classify()
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, ["json", "web"]))
+
+    def test_workspace_override_edit_selects_every_package(self):
+        with self.workspace.open("a") as output:
+            output.write('\n[[overrides]]\nreplace = {git = "https://example.invalid/repo", subdir = "lib"}\nwith = {path = "json"}\n')
+        result = self.classify()
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, ["json", "web"]))
+
+    def test_deleting_workspace_metadata_keeps_package_checks(self):
+        self.workspace.unlink()
+        self.lock.unlink()
+        result = self.classify()
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, ["json", "web"]))
+
+    def test_invalid_workspace_toml_fails_selection(self):
+        self.workspace.write_text('manifest-version = [\n')
+        with self.assertRaises(ValueError):
+            self.classify()
+
+
+class PackageWorkspaceValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.workspace = self.root / "packages"
+        self.workspace.mkdir()
+
+    def test_versioned_workspace_uses_prepared_compiler_and_locked_resolution(self):
+        (self.workspace / "fai.toml").write_text('manifest-version = 1\n[workspace]\nmembers = []\n')
+        with mock.patch.object(ci.subprocess, "run") as run:
+            ci.validate_package_workspace(self.root, "prepared-fai")
+        run.assert_called_once_with(["prepared-fai", "resolve", "--locked", "-C", str(self.workspace)], check=True)
+
+    def test_compiler_rejecting_metadata_fails_validation(self):
+        (self.workspace / "fai.toml").write_text('manifest-version = 1\n[workspace]\nmembers = []\n')
+        with mock.patch.object(ci.subprocess, "run", side_effect=subprocess.CalledProcessError(1, ["fai"])):
+            with self.assertRaises(subprocess.CalledProcessError):
+                ci.validate_package_workspace(self.root, "fai")
+
+    def test_workspace_lock_without_manifest_fails_validation(self):
+        (self.workspace / "fai.lock").write_text('lock-version = 1\n')
+        with mock.patch.object(ci.subprocess, "run") as run:
+            with self.assertRaisesRegex(packages.PackageError, "lock.*manifest"):
+                ci.validate_package_workspace(self.root, "fai")
+        run.assert_not_called()
+
+    def test_legacy_package_tree_needs_no_workspace_lock(self):
+        with mock.patch.object(ci.subprocess, "run") as run:
+            ci.validate_package_workspace(self.root, "fai")
+        run.assert_not_called()
