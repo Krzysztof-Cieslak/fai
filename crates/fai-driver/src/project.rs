@@ -57,6 +57,7 @@ pub(crate) struct PrepareMode {
     pub transports: BTreeMap<fai_package::GitRepository, fai_package::GitRepository>,
     pub cache_dir: Option<Utf8PathBuf>,
     pub root_alias: Option<GitPackage>,
+    pub toolchain_probe: bool,
 }
 
 impl Default for PrepareMode {
@@ -76,6 +77,7 @@ impl Default for PrepareMode {
             transports: BTreeMap::new(),
             cache_dir: None,
             root_alias: None,
+            toolchain_probe: false,
         }
     }
 }
@@ -152,6 +154,7 @@ pub(crate) struct PreparedProject {
     pub targets: Vec<TargetPlatform>,
     pub stale_graphs: Vec<String>,
     pub notices: Vec<String>,
+    pub required_compiler: Option<PackageVersion>,
 }
 
 struct LoadedPackage {
@@ -244,6 +247,7 @@ pub(crate) fn prepare_request(
             targets: Vec::new(),
             stale_graphs: Vec::new(),
             notices: Vec::new(),
+            required_compiler: None,
         },
         mode,
         observed: BTreeMap::new(),
@@ -280,6 +284,10 @@ pub(crate) fn prepare_request(
                 break;
             }
         }
+    }
+    loader.project.required_compiler = configuration.manifest().toolchain.clone();
+    if loader.mode.toolchain_probe {
+        return Ok(Some(loader.project));
     }
     if !loader.mode.release_validation
         && let Some(pin) = &configuration.manifest().toolchain
@@ -804,6 +812,35 @@ fn canonical(path: &Utf8Path) -> Result<Utf8PathBuf, DriverError> {
 fn host_target() -> Result<TargetPlatform, DriverError> {
     TargetPlatform::parse(&target_lexicon::HOST.to_string())
         .map_err(|failure| project_message(failure.to_string()))
+}
+
+/// Finds the nearest project manifest, retaining the starting directory for
+/// compatibility when no project has been declared.
+#[must_use]
+pub fn discover_project_root(directory: &Utf8Path) -> Utf8PathBuf {
+    directory
+        .ancestors()
+        .find(|ancestor| ancestor.join(fai_package::MANIFEST_NAME).is_file())
+        .unwrap_or(directory)
+        .to_owned()
+}
+
+/// Reads the active root's exact compiler pin without resolving dependencies.
+pub fn required_project_compiler(root: &Utf8Path) -> Result<Option<PackageVersion>, DriverError> {
+    Ok(prepare_request(
+        root,
+        &[],
+        &ProjectOptions { no_local: true, ..Default::default() },
+        None,
+        PrepareMode {
+            toolchain_probe: true,
+            selection_only: true,
+            metadata_only: true,
+            write: false,
+            ..Default::default()
+        },
+    )?
+    .and_then(|project| project.required_compiler))
 }
 
 fn collect_inventory(

@@ -46,6 +46,7 @@ pub struct Session {
     loaded: FxHashSet<SourceId>,
     project: Option<Arc<LiveProject>>,
     options: crate::ProjectOptions,
+    standalone: Option<Utf8PathBuf>,
 }
 
 struct LiveProject {
@@ -126,6 +127,7 @@ impl Session {
             loaded: FxHashSet::default(),
             project: None,
             options: update.options.clone(),
+            standalone: None,
         };
         session.apply_prepared(update)?;
         Ok(session)
@@ -141,6 +143,34 @@ impl Session {
             project: Some(project),
             dirty: Vec::new(),
         })
+    }
+
+    /// Opens exactly one source file plus the embedded standard library.
+    pub fn open_standalone(path: &Utf8Path) -> Result<Self, DriverError> {
+        let path = path
+            .canonicalize_utf8()
+            .map_err(|source| DriverError::Io { path: path.to_owned(), source })?;
+        let root =
+            path.parent().ok_or_else(|| DriverError::InvalidSelection(path.clone()))?.to_owned();
+        let relative = Utf8PathBuf::from(
+            path.file_name().ok_or_else(|| DriverError::InvalidSelection(path.clone()))?,
+        );
+        let mut db = FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let mut session = Self {
+            db,
+            root,
+            stats: FxHashMap::default(),
+            live: FxHashSet::default(),
+            overlays: FxHashSet::default(),
+            overlay_contents: FxHashMap::default(),
+            loaded: FxHashSet::default(),
+            project: None,
+            options: crate::ProjectOptions::default(),
+            standalone: Some(relative),
+        };
+        session.sync_directory()?;
+        Ok(session)
     }
 
     /// Publishes restored metadata after checking that its inputs are still current.
@@ -194,7 +224,14 @@ impl Session {
             self.stats.clear();
         }
         let mut present = Vec::new();
-        collect_fai_files(&self.root, &mut present)?;
+        if let Some(file) = &self.standalone {
+            let file = self.root.join(file);
+            if file.is_file() {
+                present.push(file);
+            }
+        } else {
+            collect_fai_files(&self.root, &mut present)?;
+        }
         present.sort();
 
         let mut live: FxHashSet<_> =
@@ -260,6 +297,9 @@ impl Session {
         &self,
         dirty: &[DirtyFile],
     ) -> Result<Option<crate::project::PreparedProject>, DriverError> {
+        if self.standalone.is_some() {
+            return Ok(None);
+        }
         let base = if self.root.is_absolute() {
             self.root.clone()
         } else {
@@ -487,6 +527,13 @@ impl Session {
     fn apply_directory_dirty(&mut self, dirty: &[DirtyFile]) -> Result<(), DriverError> {
         for entry in dirty {
             let relative = Utf8PathBuf::from(&entry.path);
+            if self
+                .standalone
+                .as_ref()
+                .is_some_and(|file| self.root.join(file) != self.root.join(&relative))
+            {
+                return Err(DriverError::InvalidSelection(relative));
+            }
             let absolute = self.root.join(&relative);
             let text = match &entry.content {
                 Some(content) => content.clone(),
@@ -595,6 +642,7 @@ impl Session {
             loaded: self.loaded.clone(),
             project: self.project.clone(),
             options: self.options.clone(),
+            standalone: self.standalone.clone(),
         }
     }
 
@@ -645,6 +693,17 @@ impl Session {
             .iter()
             .find(|(_, id)| *id == file.source(&self.db))
             .map(|(name, _)| name.as_str())
+    }
+
+    /// Executable entry files of the selected package roots.
+    #[must_use]
+    pub fn executable_files(&self) -> Vec<SourceFile> {
+        self.project
+            .as_ref()
+            .map(|project| {
+                project.entries.iter().filter_map(|(_, id)| self.db.source_file(*id)).collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Whether source ownership is supplied by versioned package manifests.

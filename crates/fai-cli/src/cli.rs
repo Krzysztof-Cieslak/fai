@@ -118,6 +118,11 @@ impl std::fmt::Display for ColorChoice {
 /// Top-level subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Register or list compilers already installed on this host.
+    Toolchain {
+        #[command(subcommand)]
+        sub: ToolchainCommand,
+    },
     /// Validate and publish explicitly versioned package releases through Git.
     Publish(PublishArgs),
     /// Create an application or library package.
@@ -178,6 +183,15 @@ pub enum Command {
         #[command(subcommand)]
         sub: DaemonCommand,
     },
+}
+
+/// Installed-compiler inventory operations; these never download toolchains.
+#[derive(Debug, Subcommand)]
+pub enum ToolchainCommand {
+    /// List registered compiler executables.
+    List,
+    /// Verify and register an existing compiler executable.
+    Register { executable: Utf8PathBuf },
 }
 
 /// Explicit release version intent and resumable publication options.
