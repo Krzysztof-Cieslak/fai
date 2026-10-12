@@ -1,0 +1,36 @@
+module TomlDocumentSpec
+
+let accepts source = Toml.parse source |> Result.isOk
+
+let rejects source = Toml.parse source |> Result.isErr
+example: accepts "a = [1, 'two', { x = true },]\n[b.c]\nd=2\n[b]\ne=3\n"
+example: accepts "[[products]]\nname='a'\n[products.info]\nx=1\n[[products]]\nname='b'\n[products.info]\nx=2"
+example: accepts "a.b=1\na.c=2"
+example: accepts "a={\n b=1, # comment\n c=[true],\n}"
+example: accepts "time=1979-05-27 07:32Z"
+example: rejects "a=1\na=2"
+example: rejects "a.b=1\n[a]"
+example: rejects "a={b=1}\na.c=2"
+example: rejects "a=[]\n[[a]]"
+example: rejects "[a]\n[a]"
+example: rejects "a=[1 2]"
+example: rejects "a=1 b=2"
+example: rejects "a=\n1"
+example: rejects "[a.b]\nx=1\n[a]\nb.y=2"
+example: (match Toml.parse "é=1" with
+| Err error -> error.primary.startByte = 0
+| _ -> false)
+example: (match Toml.parse "a=1\na=2" with
+| Err error ->
+  error.primary.startByte = 4 && error.secondary = Some {
+    column = 1,
+    endByte = 1,
+    endColumn = 2,
+    endLine = 1,
+    line = 1,
+    startByte = 0
+  }
+| _ -> false)
+example: Toml.parseWith { Toml.options with maxNodes = 2 } "a=1" |> Result.isOk
+example: Toml.parseWith { Toml.options with maxNodes = 1 } "a=1" |> Result.isErr
+example: Toml.parseWith { Toml.options with maxDepth = 2 } "a=[[[1]]]" |> Result.isErr

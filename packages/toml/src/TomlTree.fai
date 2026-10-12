@@ -1,0 +1,102 @@
+module TomlTree
+
+public type Action =
+  | Assign TomlTypes.Node
+  | Declare Bool TomlTypes.Span
+
+type Frame =
+  | Field TomlTypes.Node String
+  | Element TomlTypes.Node Int
+
+let conflict kind span old message = Err {
+  kind = kind,
+  message = message,
+  previous = Some (Option.withDefault (TomlTypes.span old) (TomlTypes.keySpan old)),
+  span = span
+}
+
+let mapping mode span = TomlTypes.Node span (Some span) (TomlTypes.Mapping mode Dict.empty)
+
+let rebuild node frames =
+  match frames with
+  | [] -> node
+  | Field parent name :: rest ->
+    match TomlTypes.body parent with
+    | TomlTypes.Mapping mode fields ->
+      rebuild (TomlTypes.withBody (TomlTypes.Mapping mode (Dict.insert name node fields)) parent) rest
+    | _ -> node
+  | Element parent index :: rest ->
+    match TomlTypes.body parent with
+    | TomlTypes.Tables nodes ->
+      rebuild (TomlTypes.withBody (TomlTypes.Tables (Array.unsafeSet index node nodes)) parent) rest
+    | _ -> node
+
+let terminal action span existing =
+  match (action, existing) with
+  | (Assign value, None) -> Ok (TomlTypes.withKey span value, 0)
+  | (Assign _, Some old) -> conflict TomlTypes.DuplicateKey span old "key is already defined"
+  | (Declare array location, None) ->
+    let table = mapping TomlTypes.Header location
+    Ok (if array then
+      TomlTypes.Node location (Some span) (TomlTypes.Tables [| table |])
+    else
+      table, if array then 2 else 1)
+  | (Declare array location, Some old) ->
+    match TomlTypes.body old with
+    | TomlTypes.Tables nodes ->
+      if array then
+        Ok (TomlTypes.withBody (TomlTypes.Tables (Array.push (mapping TomlTypes.Header location) nodes)) old, 1)
+      else
+        conflict TomlTypes.TableConflict span old "array of tables cannot become a table"
+    | TomlTypes.Mapping TomlTypes.Implicit fields ->
+      if array then
+        conflict TomlTypes.TableConflict span old "table cannot become an array of tables"
+      else
+        Ok (TomlTypes.Node location (Some span) (TomlTypes.Mapping TomlTypes.Header fields), 0)
+    | _ -> conflict TomlTypes.TableConflict span old "table is already defined or sealed"
+
+walk : Int -> Int -> Int -> TomlTypes.Node -> List (String * TomlTypes.Span) -> Action -> List Frame -> Int -> Result (TomlTypes.Node * Int) TomlTypes.Issue
+let walk maximum depth prefix node path action frames added =
+  match path with
+  | [] -> Err (TomlTypes.issue TomlTypes.Syntax 0 0 "empty key path")
+  | (name, span) :: rest ->
+    if depth > maximum then
+      Err (TomlTypes.issue TomlTypes.LimitExceeded span.startByte span.endByte "table depth limit exceeded")
+    else
+      match TomlTypes.body node with
+      | TomlTypes.Mapping mode fields ->
+        if mode = TomlTypes.Inline then
+          conflict TomlTypes.TableConflict span node "inline table is sealed"
+        else
+          if List.isEmpty rest then
+            match terminal action span (Dict.get name fields) with
+            | Err error -> Err error
+            | Ok (value, count) ->
+              Ok (rebuild (TomlTypes.withBody (TomlTypes.Mapping mode (Dict.insert name value fields)) node) frames, added + count)
+          else
+            let isHeader =
+              match action with
+              | Declare _ _ -> true
+              | _ -> false
+            let child = Dict.get name fields
+            let childMode = if isHeader || prefix > 0 then TomlTypes.Implicit else TomlTypes.Dotted
+            let next = Option.withDefault (mapping childMode span) child
+            let count = if Option.isSome child then 0 else 1
+            match TomlTypes.body next with
+            | TomlTypes.Mapping nextMode _ ->
+              if nextMode = TomlTypes.Inline || (not isHeader && prefix <= 0 && nextMode <> TomlTypes.Dotted) then
+                conflict TomlTypes.TableConflict span next "dotted key redefines an existing table"
+              else
+                walk maximum (depth + 1) (prefix - 1) next rest action (Field node name :: frames) (added + count)
+            | TomlTypes.Tables values ->
+              if not isHeader && prefix <= 0 then
+                conflict TomlTypes.TableConflict span next "dotted key cannot extend an array of tables"
+              else
+                let index = Array.length values - 1
+                walk maximum (depth + 2) (prefix - 1) (Array.unsafeGet index values) rest action (Element next index :: Field node name :: frames) added
+            | _ -> conflict TomlTypes.TableConflict span next "key path crosses a scalar or array"
+      | _ -> conflict TomlTypes.TableConflict span node "expected table"
+
+/// Update through an explicit reconstruction stack; prefix names are the active table.
+public insert : Int -> Int -> TomlTypes.Node -> List (String * TomlTypes.Span) -> Action -> Result (TomlTypes.Node * Int) TomlTypes.Issue
+let insert maximum prefix root path action = walk maximum 1 prefix root path action [] 0

@@ -1,0 +1,171 @@
+module TomlParser
+
+type Frame =
+  | ArrayFrame Int (Array TomlTypes.Node)
+  | TableFrame Int TomlTypes.Node (List (String * TomlTypes.Span))
+
+let fail index message = Err (TomlTypes.issue TomlTypes.Syntax index (index + 1) message)
+
+let limited index =
+  Err (TomlTypes.issue TomlTypes.LimitExceeded index index "TOML node or depth limit exceeded")
+
+let span start finish = { endByte = finish, startByte = start }
+
+valueLoop : TomlTypes.Options -> Bytes -> Int -> Int -> Int -> List Frame -> Result (TomlTypes.Node * Int * Int) TomlTypes.Issue
+let valueLoop options bytes index depth count frames =
+  if count >= options.maxNodes || depth > options.maxDepth then
+    limited index
+  else
+    let index = TomlText.horizontal bytes index
+    match TomlText.at bytes index with
+    | 91 ->
+      match TomlText.trivia bytes (index + 1) with
+      | Err error -> Err error
+      | Ok next ->
+        if TomlText.at bytes next = 93 then
+          deliver options bytes (TomlTypes.Node (span index (next + 1)) None (TomlTypes.Items [||])) (next + 1) depth (count + 1) frames
+        else
+          valueLoop options bytes next (depth + 1) (count + 1) (ArrayFrame index [||] :: frames)
+    | 123 ->
+      let table =
+        TomlTypes.Node (span index (index + 1)) None (TomlTypes.Mapping TomlTypes.Root Dict.empty)
+      tableKey options bytes (index + 1) depth (count + 1) frames index table
+    | 34 -> stringValue options bytes index depth count frames
+    | 39 -> stringValue options bytes index depth count frames
+    | _ ->
+      match TomlText.atom bytes index with
+      | Err error -> Err error
+      | Ok (value, next) ->
+        deliver options bytes (TomlTypes.Node (span index next) None (TomlTypes.Scalar value)) next depth (count + 1) frames
+
+let stringValue options bytes index depth count frames =
+  match TomlText.quoted bytes index true with
+  | Err error -> Err error
+  | Ok (value, next) ->
+    deliver options bytes (TomlTypes.Node (span index next) None (TomlTypes.Scalar (TomlTypes.String value))) next depth (count + 1) frames
+
+let tableKey options bytes index depth count frames start table =
+  match TomlText.trivia bytes index with
+  | Err error -> Err error
+  | Ok next ->
+    if TomlText.at bytes next = 125 then
+      match TomlTypes.body table with
+      | TomlTypes.Mapping _ fields ->
+        deliver options bytes (TomlTypes.Node (span start (next + 1)) None (TomlTypes.Mapping TomlTypes.Inline fields)) (next + 1) depth count frames
+      | _ -> fail next "expected inline table"
+    else
+      match TomlText.key bytes next options.maxDepth with
+      | Err error -> Err error
+      | Ok (key, end) ->
+        if TomlText.at bytes end <> 61 then
+          fail end "expected ="
+        else
+          valueLoop options bytes (end + 1) (depth + 1) count (TableFrame start table key :: frames)
+
+let deliver options bytes node index depth count frames =
+  if count > options.maxNodes then
+    limited index
+  else
+    match frames with
+    | [] -> Ok (node, index, count)
+    | ArrayFrame start values :: rest ->
+      let values = Array.push node values
+      match TomlText.trivia bytes index with
+      | Err error -> Err error
+      | Ok next ->
+        if TomlText.at bytes next = 93 then
+          deliver options bytes (TomlTypes.Node (span start (next + 1)) None (TomlTypes.Items values)) (next + 1) (depth - 1) count rest
+        else if TomlText.at bytes next <> 44 then
+          fail next "expected comma or ]"
+        else
+          match TomlText.trivia bytes (next + 1) with
+          | Err error -> Err error
+          | Ok next ->
+            if TomlText.at bytes next = 93 then
+              deliver options bytes (TomlTypes.Node (span start (next + 1)) None (TomlTypes.Items values)) (next + 1) (depth - 1) count rest
+            else
+              valueLoop options bytes next depth count (ArrayFrame start values :: rest)
+    | TableFrame start table key :: rest ->
+      match TomlTree.insert options.maxDepth 0 table key (TomlTree.Assign node) with
+      | Err error -> Err error
+      | Ok (table, added) ->
+        match TomlText.trivia bytes index with
+        | Err error -> Err error
+        | Ok next ->
+          if TomlText.at bytes next = 125 then
+            tableKey options bytes next (depth - 1) (count + added) rest start table
+          else if TomlText.at bytes next = 44 then
+            tableKey options bytes (next + 1) (depth - 1) (count + added) rest start table
+          else
+            fail next "expected comma or }"
+
+let statements options bytes index root current count =
+  if count > options.maxNodes then
+    limited index
+  else
+    match TomlText.trivia bytes index with
+    | Err error -> Err error
+    | Ok start ->
+      if start >= Bytes.length bytes then
+        Ok root
+      else if TomlText.at bytes start = 91 then
+        let array = TomlText.at bytes (start + 1) = 91
+        match TomlText.key bytes (start + (if array then 2 else 1)) options.maxDepth with
+        | Err error -> Err error
+        | Ok (key, end) ->
+          if TomlText.at bytes end <> 93 || (array && TomlText.at bytes (end + 1) <> 93) then
+            fail end "expected closing table bracket"
+          else
+            let finish = end + (if array then 2 else 1)
+            match TomlText.lineEnd bytes finish with
+            | Err error -> Err error
+            | Ok next ->
+              match TomlTree.insert options.maxDepth 0 root key (TomlTree.Declare array (span start finish)) with
+              | Err error -> Err error
+              | Ok (root, added) -> statements options bytes next root key (count + added)
+      else
+        match TomlText.key bytes start options.maxDepth with
+        | Err error -> Err error
+        | Ok (key, end) ->
+          if TomlText.at bytes end <> 61 then
+            fail end "expected ="
+          else
+            match valueLoop options bytes (end + 1) (List.length current + List.length key) count [] with
+            | Err error -> Err error
+            | Ok (node, finish, count) ->
+              match TomlText.lineEnd bytes finish with
+              | Err error -> Err error
+              | Ok next ->
+                match TomlTree.insert options.maxDepth (List.length current) root (List.append current key) (TomlTree.Assign node) with
+                | Err error -> Err error
+                | Ok (root, added) -> statements options bytes next root current (count + added)
+
+let depthCheck maximum pending =
+  match pending with
+  | [] -> Ok ()
+  | (node, depth) :: rest ->
+    if depth > maximum then
+      limited (TomlTypes.span node).startByte
+    else
+      let children =
+        match TomlTypes.body node with
+        | TomlTypes.Items nodes -> Array.toList nodes
+        | TomlTypes.Tables nodes -> Array.toList nodes
+        | TomlTypes.Mapping _ fields -> Dict.values fields
+        | _ -> []
+      depthCheck maximum (List.foldl (fun work child -> (child, depth + 1) :: work) rest children)
+
+public parse : TomlTypes.Options -> Bytes -> Result TomlTypes.Node TomlTypes.Issue
+let parse options bytes =
+  if options.maxBytes < 0 || options.maxDepth < 0 || options.maxNodes < 1 then
+    limited 0
+  else if Bytes.length bytes > options.maxBytes then
+    limited 0
+  else if not (Option.isSome (Bytes.toString bytes)) then
+    Err (TomlTypes.issue TomlTypes.InvalidUtf8 0 (Bytes.length bytes) "input is not UTF-8")
+  else
+    let root =
+      TomlTypes.Node (span 0 (Bytes.length bytes)) None (TomlTypes.Mapping TomlTypes.Root Dict.empty)
+    match statements options bytes 0 root [] 1 with
+    | Err error -> Err error
+    | Ok root -> Result.map (fun _ -> root) (depthCheck options.maxDepth [(root, 0)])

@@ -1,0 +1,82 @@
+module TomlEncode
+
+public type Options = { maxBytes : Int, maxDepth : Int, maxNodes : Int }
+
+public options : Options
+let options = { maxBytes = 16777216, maxDepth = 128, maxNodes = 100000 }
+
+public type Error = { message : String, path : List TomlTypes.Segment }
+
+type Work =
+  | Emit String
+  | Value TomlTypes.Value Int (List TomlTypes.Segment)
+
+let quote text = String.join "\\u007f" (String.split "\u{7f}" (Json.toString (Json.String text)))
+
+let floating value =
+  let bits = Float.toBits value
+  let absolute = Int.and bits 0x7fffffffffffffff
+  if absolute > 0x7ff0000000000000 then
+    if bits < 0 then "-nan" else "nan"
+  else if absolute = 0x7ff0000000000000 then
+    if bits < 0 then "-inf" else "inf"
+  else
+    let text = Float.toString value
+    if String.contains text "." || String.contains text "e" || String.contains text "E" then
+      text
+    else
+      text ++ ".0"
+
+let arrayWork values index depth path work =
+  if index < 0 then
+    Emit "[" :: work
+  else
+    arrayWork values (index - 1) depth path (Value (Array.unsafeGet index values) depth (TomlTypes.Index index :: path) :: (if index = Array.length values - 1 then
+      work
+    else
+      Emit ", " :: work))
+
+let fieldsWork fields depth path separator work =
+  match fields with
+  | [] -> work
+  | (name, value) :: rest ->
+    fieldsWork rest depth path separator (Emit (quote name ++ " = ") :: Value value depth (TomlTypes.Key name :: path) :: Emit separator :: work)
+
+let loop options work size nodes output =
+  match work with
+  | [] -> Ok (String.join "" (List.reverse output))
+  | Emit text :: rest ->
+    let length = Bytes.length (Bytes.fromString text)
+    if length > options.maxBytes - size then
+      Err { message = "TOML output byte limit exceeded", path = [] }
+    else
+      loop options rest (size + length) nodes (text :: output)
+  | Value value depth path :: rest ->
+    if depth > options.maxDepth || nodes >= options.maxNodes then
+      Err { message = "TOML output depth or node limit exceeded", path = List.reverse path }
+    else
+      let next =
+        match value with
+        | TomlTypes.String value -> Emit (quote value) :: rest
+        | TomlTypes.Integer value -> Emit (Int.toString value) :: rest
+        | TomlTypes.Float value -> Emit (floating value) :: rest
+        | TomlTypes.Boolean value -> Emit (if value then "true" else "false") :: rest
+        | TomlTypes.Temporal value -> Emit (TomlTemporal.toString value) :: rest
+        | TomlTypes.Array values ->
+          arrayWork values (Array.length values - 1) (depth + 1) path (Emit "]" :: rest)
+        | TomlTypes.Table fields ->
+          Emit "{ " :: fieldsWork (List.reverse (Dict.toList fields)) (depth + 1) path ", " (Emit "}" :: rest)
+      loop options next size (nodes + 1) output
+
+/// Deterministic normalized output; the document root must be a table.
+public toStringWith : Options -> TomlTypes.Value -> Result String Error
+let toStringWith options value =
+  if options.maxBytes < 0 || options.maxDepth < 0 || options.maxNodes < 1 then
+    Err { message = "invalid TOML encoding limits", path = [] }
+  else
+    match value with
+    | TomlTypes.Table fields -> loop options (fieldsWork (List.reverse (Dict.toList fields)) 1 [] "\n" []) 0 1 []
+    | _ -> Err { message = "TOML document root must be a table", path = [] }
+
+public toString : TomlTypes.Value -> Result String Error
+let toString value = toStringWith options value

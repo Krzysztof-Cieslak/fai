@@ -1168,6 +1168,10 @@ The optional `packages/toml` source library supplies pure TOML scalar and string
 parsing. Integer conversion checks signed 64-bit bounds; temporal values retain
 their spelling and fractional precision before checked standard-type conversion.
 Multiline strings normalize line endings while locations retain input byte spans.
+TOML documents track implicit, dotted, declared and sealed tables and arrays of
+tables. Parsing, tree reconstruction and value extraction use explicit frames.
+Normalized rendering sorts keys; `TomlDecode` provides strict typed combinators.
+The Fai conformance executable checks the pinned upstream TOML 1.1 corpus.
 
 `RegexEngine` supplies typed pure native regex primitives. Compiled programs use
 description-based equality, ordering and hashing, independent of their bounded

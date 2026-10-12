@@ -1,0 +1,62 @@
+module Toml
+
+public type Value = TomlTypes.Value
+
+public type Options = TomlTypes.Options
+
+public type ParseError = TomlTypes.ParseError
+
+public type Segment = TomlTypes.Segment
+
+public opaque type Document = { bytes : Bytes, root : TomlTypes.Node }
+
+public options : Options
+let options = TomlTypes.options
+
+public parseBytesWith : Options -> Bytes -> Result Document ParseError
+let parseBytesWith options bytes =
+  Result.map (fun root -> {
+    bytes = bytes,
+    root = root
+  }) (Result.mapError (TomlTypes.parseError bytes) (TomlParser.parse options bytes))
+
+public parseBytes : Bytes -> Result Document ParseError
+let parseBytes bytes = parseBytesWith options bytes
+
+public parseWith : Options -> String -> Result Document ParseError
+let parseWith options text = parseBytesWith options (Bytes.fromString text)
+
+public parse : String -> Result Document ParseError
+let parse text = parseWith options text
+
+public value : Document -> Value
+let value document = TomlTypes.value document.root
+
+public root : Document -> TomlTypes.Node
+let root document = document.root
+
+public location : Document -> TomlTypes.Span -> TomlTypes.Location
+let location document span = TomlTypes.location document.bytes span
+
+let lookup path node =
+  match path with
+  | [] -> Some node
+  | part :: rest ->
+    let child =
+      match (part, TomlTypes.body node) with
+      | (TomlTypes.Key name, TomlTypes.Mapping _ fields) -> Dict.get name fields
+      | (TomlTypes.Index index, TomlTypes.Items nodes) -> Array.get index nodes
+      | (TomlTypes.Index index, TomlTypes.Tables nodes) -> Array.get index nodes
+      | _ -> None
+    Option.andThen (lookup rest) child
+
+public find : List Segment -> Document -> Option TomlTypes.Node
+let find path document = lookup path document.root
+
+public type EncodeError = TomlEncode.Error
+
+public toString : Value -> Result String EncodeError
+let toString value = TomlEncode.toString value
+
+public toStringWith : TomlEncode.Options -> Value -> Result String EncodeError
+let toStringWith options value = TomlEncode.toStringWith options value

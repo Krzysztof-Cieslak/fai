@@ -1,0 +1,178 @@
+module TomlDecode
+
+public type Error = { message : String, path : List TomlTypes.Segment }
+
+public opaque type Decoder 'a =
+  | Decoder (Toml.Value -> Result 'a Error)
+
+public decode : Decoder 'a -> Toml.Value -> Result 'a Error
+let decode decoder value =
+  match decoder with
+  | Decoder read -> read value
+
+public custom : (Toml.Value -> Result 'a String) -> Decoder 'a
+let custom read =
+  Decoder (fun value ->
+    Result.mapError (fun message -> { message = message, path = [] }) (read value))
+
+public succeed : 'a -> Decoder 'a
+let succeed value = custom (fun _ -> Ok value)
+
+public map : ('a -> 'b) -> Decoder 'a -> Decoder 'b
+let map transform decoder = Decoder (fun value -> Result.map transform (decode decoder value))
+
+public andMap : Decoder 'a -> Decoder ('a -> 'b) -> Decoder 'b
+let andMap argument function = Decoder (fun value -> combine argument function value)
+
+let combine argument function value =
+  match decode function value with
+  | Err error -> Err error
+  | Ok apply -> Result.map apply (decode argument value)
+
+public map2 : ('a -> 'b -> 'c) -> Decoder 'a -> Decoder 'b -> Decoder 'c
+let map2 apply left right = andMap right (map apply left)
+
+public andThen : ('a -> Decoder 'b) -> Decoder 'a -> Decoder 'b
+let andThen next decoder = Decoder (fun value -> dependent next decoder value)
+
+let dependent next decoder value =
+  match decode decoder value with
+  | Err error -> Err error
+  | Ok decoded -> decode (next decoded) value
+
+public refine : ('a -> Result 'b String) -> Decoder 'a -> Decoder 'b
+let refine validate decoder = Decoder (fun value -> refined validate decoder value)
+
+let refined validate decoder value =
+  match decode decoder value with
+  | Err error -> Err error
+  | Ok value -> Result.mapError (fun message -> { message = message, path = [] }) (validate value)
+
+public value : Decoder Toml.Value
+let value = custom (fun value -> Ok value)
+
+public string : Decoder String
+let string =
+  custom (fun value ->
+    match value with
+    | TomlTypes.String value -> Ok value
+    | _ -> Err "expected string")
+
+public int : Decoder Int
+let int =
+  custom (fun value ->
+    match value with
+    | TomlTypes.Integer value -> Ok value
+    | _ -> Err "expected integer")
+
+public bool : Decoder Bool
+let bool =
+  custom (fun value ->
+    match value with
+    | TomlTypes.Boolean value -> Ok value
+    | _ -> Err "expected boolean")
+
+public floatAll : Decoder Float
+let floatAll =
+  custom (fun value ->
+    match value with
+    | TomlTypes.Float value -> Ok value
+    | _ -> Err "expected float")
+
+public float : Decoder Float
+let float =
+  refine (fun value ->
+    if Int.and (Float.toBits value) 0x7fffffffffffffff >= 0x7ff0000000000000 then
+      Err "expected finite float"
+    else
+      Ok value) floatAll
+
+public temporal : Decoder TomlTemporal.Value
+let temporal =
+  custom (fun value ->
+    match value with
+    | TomlTypes.Temporal value -> Ok value
+    | _ -> Err "expected temporal value")
+
+public date : Decoder LocalDate
+let date = refine TomlTemporal.toDate temporal
+
+public time : Decoder LocalTime
+let time = refine TomlTemporal.toTime temporal
+
+public localDateTime : Decoder LocalDateTime
+let localDateTime = refine TomlTemporal.toLocalDateTime temporal
+
+public offsetDateTime : Decoder OffsetDateTime
+let offsetDateTime = refine TomlTemporal.toOffsetDateTime temporal
+
+let prefix part error = { error with path = part :: error.path }
+
+public field : String -> Decoder 'a -> Decoder 'a
+let field name decoder = Decoder (fun value -> readField name decoder value)
+
+let readField name decoder value =
+  let result =
+    match value with
+    | TomlTypes.Table fields ->
+      (match Dict.get name fields with
+      | Some value -> decode decoder value
+      | None -> Err { message = "missing field", path = [] })
+    | _ -> Err { message = "expected table", path = [] }
+  Result.mapError (prefix (TomlTypes.Key name)) result
+
+public optionalField : String -> Decoder 'a -> Decoder (Option 'a)
+let optionalField name decoder = Decoder (fun value -> optional name decoder value)
+
+let optional name decoder value =
+  match value with
+  | TomlTypes.Table fields ->
+    (match Dict.get name fields with
+    | None -> Ok None
+    | Some value ->
+      Result.map Some (Result.mapError (prefix (TomlTypes.Key name)) (decode decoder value)))
+  | _ -> Err { message = "expected table", path = [] }
+
+public array : Decoder 'a -> Decoder (Array 'a)
+let array decoder =
+  Decoder (fun value ->
+    match value with
+    | TomlTypes.Array values -> elements decoder values 0 [||]
+    | _ -> Err { message = "expected array", path = [] })
+
+let elements decoder values index output =
+  if index >= Array.length values then
+    Ok output
+  else
+    match decode decoder (Array.unsafeGet index values) with
+    | Err error -> Err (prefix (TomlTypes.Index index) error)
+    | Ok value -> elements decoder values (index + 1) (Array.push value output)
+
+public list : Decoder 'a -> Decoder (List 'a)
+let list decoder = map Array.toList (array decoder)
+
+public dict : Decoder 'a -> Decoder (Dict String 'a)
+let dict decoder =
+  Decoder (fun value ->
+    match value with
+    | TomlTypes.Table fields -> entries decoder (Dict.toList fields) Dict.empty
+    | _ -> Err { message = "expected table", path = [] })
+
+let entries decoder fields output =
+  match fields with
+  | [] -> Ok output
+  | (name, value) :: rest ->
+    (match decode decoder value with
+    | Err error -> Err (prefix (TomlTypes.Key name) error)
+    | Ok value -> entries decoder rest (Dict.insert name value output))
+
+public oneOf : List (Decoder 'a) -> Decoder 'a
+let oneOf decoders = Decoder (fun value -> alternatives decoders value)
+
+let alternatives decoders value =
+  match decoders with
+  | [] -> Err { message = "no decoder alternative matched", path = [] }
+  | decoder :: rest ->
+    (match decode decoder value with
+    | Ok value -> Ok value
+    | Err _ -> alternatives rest value)

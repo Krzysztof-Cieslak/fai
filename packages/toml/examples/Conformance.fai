@@ -1,0 +1,117 @@
+module TomlConformance
+
+let member key pairs = Array.foldl (fun found pair -> choose key pair found) None pairs
+
+let choose key pair found =
+  let (name, value) = pair
+  if name = key then Some value else found
+
+let zeros count = String.joinArray "" (Array.repeat count "0")
+
+let fractionEqual left right =
+  (left ++ zeros (String.length right)) = (right ++ zeros (String.length left))
+
+let temporalEqual left right =
+  let a = TomlTemporal.parts left
+  let b = TomlTemporal.parts right
+  TomlTemporal.kind left = TomlTemporal.kind right && { a with
+    fraction = ""
+  } = { b with fraction = "" } && fractionEqual a.fraction b.fraction
+
+let nan value = Int.and (Float.toBits value) 0x7fffffffffffffff > 0x7ff0000000000000
+
+let scalar kind text actual =
+  match actual with
+  | TomlTypes.String value -> kind = "string" && text = value
+  | TomlTypes.Integer value -> kind = "integer" && TomlScalar.integer text = Ok value
+  | TomlTypes.Boolean value -> kind = "bool" && text = (if value then "true" else "false")
+  | TomlTypes.Float value ->
+    kind = "float" && (match TomlScalar.floating text with
+    | Ok expected -> (nan value && nan expected) || value = expected
+    | _ -> false)
+  | TomlTypes.Temporal value ->
+    (match TomlTemporal.parse text with
+    | Ok expected -> temporalEqual value expected
+    | _ -> false)
+  | _ -> false
+
+let equivalent expected actual =
+  match (expected, actual) with
+  | (Json.Array values, TomlTypes.Array items) ->
+    Array.length values = Array.length items && Array.all identity (Array.init (Array.length values) (fun index ->
+      equivalent (Array.unsafeGet index values) (Array.unsafeGet index items)))
+  | (Json.Object pairs, TomlTypes.Table fields) ->
+    Array.length pairs = Dict.size fields && Array.all (pairEqual fields) pairs
+  | (Json.Object pairs, value) ->
+    (match (member "type" pairs, member "value" pairs) with
+    | (Some (Json.String kind), Some (Json.String text)) -> scalar kind text value
+    | _ -> false)
+  | _ -> false
+
+let pairEqual fields pair =
+  let (name, expected) = pair
+  match Dict.get name fields with
+  | Some actual -> equivalent expected actual
+  | _ -> false
+
+read : FileSystem -> String -> Result String String / { FileSystem }
+let read fs name =
+  match Path.fromString name with
+  | Err _ -> Err "invalid path"
+  | Ok path -> Result.mapError FileSystem.errorToString (fs.readFile path)
+
+check : FileSystem -> String -> String -> Result Unit String / { FileSystem }
+let check fs base name =
+  let path = Result.withDefault Path.empty (Path.fromString (base ++ "/" ++ name))
+  match Result.mapError FileSystem.errorToString (fs.readBytes path 4194304) with
+  | Err error -> Err error
+  | Ok source ->
+    if String.take 8 name = "invalid/" then
+      if Result.isErr (Toml.parseBytes source) then Ok () else Err "accepted invalid TOML"
+    else
+      match Toml.parseBytes source with
+      | Err error -> Err (error.message ++ " at " ++ Int.toString error.primary.startByte)
+      | Ok document ->
+        match read fs (base ++ "/" ++ String.take (String.length name - 5) name ++ ".json") with
+        | Err error -> Err error
+        | Ok expected ->
+          match Json.parse expected with
+          | Err _ -> Err "invalid oracle JSON"
+          | Ok expected ->
+            if not (equivalent expected (Toml.value document)) then
+              Err "value differs from oracle"
+            else
+              match Toml.toString (Toml.value document) with
+              | Err error -> Err error.message
+              | Ok text ->
+                match Toml.parse text with
+                | Err error -> Err error.message
+                | Ok again ->
+                  if equivalent expected (Toml.value again) then
+                    Ok ()
+                  else
+                    Err "normalized output differs from oracle"
+
+run : Runtime -> String -> String -> Int -> Int / { Console, FileSystem }
+let run env base name count =
+  if String.drop (String.length name - 5) name <> ".toml" then
+    count
+  else
+    match check env.fs base name with
+    | Ok _ -> count
+    | Err error ->
+      let logged = env.console.writeLine (name ++ ": " ++ error)
+      count + 1
+
+public main : Runtime -> Unit / { Console, Env, FileSystem }
+let main env =
+  match env.env.args () with
+  | [base] ->
+    match read env.fs (base ++ "/files-toml-1.1.0") with
+    | Err error -> env.console.writeLine error
+    | Ok manifest ->
+      let failed =
+        List.foldl (fun count name -> run env base name count) 0 (String.split "\n" manifest)
+      let logged = env.console.writeLine ("failures: " ++ Int.toString failed)
+      if failed = 0 then () else env.console.writeLine (Int.toString (1 / 0))
+  | _ -> env.console.writeLine "usage: Conformance -- /path/to/toml-test/tests"
