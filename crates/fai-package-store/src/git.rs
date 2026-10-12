@@ -63,6 +63,7 @@ pub struct GitStore {
     cache: Utf8PathBuf,
     offline: bool,
     snapshots: BTreeMap<GitRepository, BTreeMap<String, GitRevision>>,
+    transports: BTreeMap<GitRepository, GitRepository>,
 }
 
 impl GitStore {
@@ -74,7 +75,14 @@ impl GitStore {
     /// Constructs a store rooted in the caller's configured cache directory.
     #[must_use]
     pub fn new(cache: Utf8PathBuf, offline: bool) -> Self {
-        Self { cache, offline, snapshots: BTreeMap::new() }
+        Self { cache, offline, snapshots: BTreeMap::new(), transports: BTreeMap::new() }
+    }
+
+    /// Redirects transport in an isolated validation cache, retaining logical identities.
+    #[must_use]
+    pub fn with_transport(mut self, logical: GitRepository, actual: GitRepository) -> Self {
+        self.transports.insert(logical, actual);
+        self
     }
 
     fn repository_dir(&self, repository: &GitRepository) -> Utf8PathBuf {
@@ -118,7 +126,14 @@ impl GitStore {
             .ok_or_else(|| io_error("cache path is not UTF-8"))?;
         git(
             None,
-            &["clone", "--mirror", "--no-hardlinks", "--", repository.as_str(), temp.as_str()],
+            &[
+                "clone",
+                "--mirror",
+                "--no-hardlinks",
+                "--",
+                self.transports.get(repository).unwrap_or(repository).as_str(),
+                temp.as_str(),
+            ],
         )?;
         std::fs::rename(temp, &path).map_err(io_error)?;
         Ok(path)

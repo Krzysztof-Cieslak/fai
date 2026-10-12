@@ -5488,5 +5488,16 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   lock changes. Unrelated vendor-directory files and unselected entries remain.
   Outside-project mutable path inputs cannot form a self-contained snapshot.
 
+- **D168 Candidate release validation and exact publication recovery.** Publishing
+  requires explicit version intent and clean committed code. A version-only Git
+  tree supplies isolated normal-consumer and development-root validation; a
+  temporary repository advertises coordinated candidate tags without weakening
+  authored ranges. Public declaration diffs are advisory, with incomplete
+  re-export/baseline comparisons marked partial. A receipt records the validated
+  tree, prepared commit, edits, and destination before checkout/ref mutation.
+  Index/ref replacement checks current state, release tags never force-move, and
+  branch/tags push atomically. Resume retains the same prepared release identity.
+  Development locks are retained without embedding future commit IDs.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

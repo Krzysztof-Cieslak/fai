@@ -131,6 +131,18 @@ impl Session {
         Ok(session)
     }
 
+    pub(crate) fn from_project(
+        root: Utf8PathBuf,
+        project: crate::project::PreparedProject,
+    ) -> Result<Self, DriverError> {
+        Self::open_prepared(PreparedProjectUpdate {
+            root,
+            options: crate::ProjectOptions { no_local: true, ..Default::default() },
+            project: Some(project),
+            dirty: Vec::new(),
+        })
+    }
+
     /// Publishes restored metadata after checking that its inputs are still current.
     pub fn apply_prepared(&mut self, update: PreparedProjectUpdate) -> Result<(), DriverError> {
         if self.root != update.root {

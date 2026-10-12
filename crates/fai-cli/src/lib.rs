@@ -132,6 +132,66 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         };
     }
 
+    if let Command::Publish(args) = &parsed.command {
+        let targets = match parsed
+            .global
+            .targets
+            .iter()
+            .map(|target| fai_package::TargetPlatform::parse(target))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(targets) => targets,
+            Err(error) => {
+                return emit_error(&metadata_error(error.to_string()), format, color, out, err);
+            }
+        };
+        let options = fai_driver::PublishOptions {
+            intents: args.intents.clone(),
+            plan: args.plan,
+            resume: args.resume,
+            remote: args.remote.clone(),
+            branch: args.branch.clone(),
+            targets,
+        };
+        return match fai_driver::publish(&root, &options, &parsed.global.options()) {
+            Ok(result) => {
+                if matches!(format, MessageFormat::Json) {
+                    match serde_json::to_string_pretty(&result) {
+                        Ok(json) => {
+                            let _ = writeln!(out, "{json}");
+                        }
+                        Err(error) => {
+                            let _ = writeln!(err, "{error}");
+                            return EXIT_INTERNAL;
+                        }
+                    }
+                } else {
+                    let _ = writeln!(out, "{} release {}", result.status, result.commit);
+                    for package in &result.packages {
+                        let _ = writeln!(
+                            out,
+                            "{}: {} -> {} ({})",
+                            package.name, package.before, package.version, package.tag
+                        );
+                    }
+                    for change in &result.api_changes {
+                        let _ = writeln!(out, "API {}: {}", change.kind, change.name);
+                    }
+                    if !result.api_complete {
+                        let _ = writeln!(
+                            out,
+                            "API comparison is partial; public re-export expansion or baseline data is incomplete"
+                        );
+                    }
+                }
+                for notice in &result.notices {
+                    let _ = writeln!(err, "{notice}");
+                }
+                EXIT_OK
+            }
+            Err(error) => emit_error(&error, format, color, out, err),
+        };
+    }
     if let Some(command) = package_command(&parsed.command) {
         let command = match command {
             Ok(command) => command,
@@ -242,6 +302,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         Command::Lsp => fai_lsp::run_stdio_with_options(root, parsed.global.options()),
         Command::Daemon { sub } => run_daemon_command(&root, sub, log, out, err),
         Command::BuildInfo
+        | Command::Publish(_)
         | Command::Init(_)
         | Command::Add(_)
         | Command::Remove(_)

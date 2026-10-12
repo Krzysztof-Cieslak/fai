@@ -53,6 +53,10 @@ pub(crate) struct PrepareMode {
     pub seed_lock: Option<fai_package::LockFile>,
     pub expected_lock: Option<Option<fai_package::Digest>>,
     pub expected_inputs: BTreeMap<Utf8PathBuf, fai_package::Digest>,
+    pub release_validation: bool,
+    pub transports: BTreeMap<fai_package::GitRepository, fai_package::GitRepository>,
+    pub cache_dir: Option<Utf8PathBuf>,
+    pub root_alias: Option<GitPackage>,
 }
 
 impl Default for PrepareMode {
@@ -68,6 +72,10 @@ impl Default for PrepareMode {
             seed_lock: None,
             expected_lock: None,
             expected_inputs: BTreeMap::new(),
+            release_validation: false,
+            transports: BTreeMap::new(),
+            cache_dir: None,
+            root_alias: None,
         }
     }
 }
@@ -245,7 +253,7 @@ pub(crate) fn prepare_request(
     if document.kind() == ManifestKind::LegacyNative {
         return Ok(None);
     }
-    let mut roots = if document.manifest().workspace.is_some() {
+    let mut roots = if !loader.mode.release_validation && document.manifest().workspace.is_some() {
         loader.members(&base, &document)?
     } else {
         vec![base.clone()]
@@ -257,7 +265,7 @@ pub(crate) fn prepare_request(
         roots.push(base.clone());
     }
     let mut configuration = document.clone();
-    if document.manifest().workspace.is_none() {
+    if !loader.mode.release_validation && document.manifest().workspace.is_none() {
         for ancestor in base.ancestors().skip(1) {
             let path = ancestor.join(fai_package::MANIFEST_NAME);
             if !path.is_file() {
@@ -273,7 +281,8 @@ pub(crate) fn prepare_request(
             }
         }
     }
-    if let Some(pin) = &configuration.manifest().toolchain
+    if !loader.mode.release_validation
+        && let Some(pin) = &configuration.manifest().toolchain
         && pin != &loader.compiler
     {
         return Err(loader.error(
@@ -296,7 +305,10 @@ pub(crate) fn prepare_request(
         })
         .collect();
     let local_path = loader.configuration_root.join("fai.local.toml");
-    if !options.no_local && local_path.is_file() {
+    if loader.mode.release_validation {
+        loader.shared.clear();
+    }
+    if !loader.mode.release_validation && !options.no_local && local_path.is_file() {
         let local = loader.document(&local_path, true)?;
         loader.local = local
             .manifest()
@@ -351,6 +363,9 @@ pub(crate) fn prepare_request(
         .as_ref()
         .map(|path| loader.configuration_root.join(path.as_str()));
     let one_root = roots.len() == 1;
+    if loader.mode.release_validation {
+        loader.vendor_dir = None;
+    }
     let explicit_targets = !loader.mode.targets.is_empty();
     let targets = if explicit_targets {
         loader.mode.targets.clone()
