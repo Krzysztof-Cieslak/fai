@@ -1,0 +1,10 @@
+name: Native regex integration
+description: Check text and binary regexes, callbacks, resource limits and value semantics
+runs:
+  using: composite
+  steps:
+    - name: Regex JIT AOT and effect checks
+      shell: python
+      run: |
+        import subprocess, sys
+        subprocess.run([sys.executable, "scripts/tests/regex_toolchain.py"], check=True)

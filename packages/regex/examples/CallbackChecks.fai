@@ -1,0 +1,31 @@
+module RegexCallbackChecks
+
+replace : Console -> Regex.Captures -> Result String String / { Console }
+let replace console captures =
+  let text = Regex.text (Regex.whole captures)
+  let logged = console.writeLine ("visit:" ++ text)
+  if text = "b" then Err "stop" else Ok (String.toUpper text)
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  match Regex.compile "." with
+  | Err error -> env.console.writeLine (Regex.errorToString error)
+  | Ok regex ->
+    let result = Regex.replaceWith regex (replace env.console) "abc"
+    let failed =
+      match result with
+      | Err error ->
+        error.completed = 1 && error.cause = RegexTypes.ReplacementFailure "stop" && error.span = Some {
+          endByte = 2,
+          startByte = 1
+        }
+      | _ -> false
+    let folded = Regex.fold regex "abc" 0 (fun count found -> Ok (count + 1, RegexTypes.Stop))
+    let invalid =
+      Regex.replaceWithLimits { Regex.limits with
+        maxInputBytes = 0
+      } 1 regex (fun _ -> Ok (Int.toString (1 / 0))) "a"
+    env.console.writeLine (if failed && folded.visited = 1 && folded.stopped && Result.isErr invalid then
+      "regex callback checks passed"
+    else
+      "regex callback checks FAILED")

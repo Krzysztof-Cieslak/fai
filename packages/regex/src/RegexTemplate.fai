@@ -129,7 +129,9 @@ let parse options names source =
 
 public compileWith : Options -> Regex.Regex -> String -> Result Template RegexTypes.Error
 let compileWith options regex source =
-  if String.length source > options.maxBytes then
+  if options.maxBytes < 0 || options.maxParts < 0 then
+    Err (RegexTypes.error RegexTypes.InvalidOptions "negative template limit")
+  else if String.length source > options.maxBytes then
     Err (RegexTypes.error RegexTypes.TemplateLimit "template byte limit exceeded")
   else
     Result.map (fun parts -> {

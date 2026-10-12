@@ -1,0 +1,67 @@
+module RegexNativeChecks
+
+search : Regex.Regex -> Int -> Bool
+let search regex iteration =
+  let matched = Regex.findAll regex "Aé🙂B"
+  match matched with
+  | Err _ -> false
+  | Ok values ->
+    Array.length values = 4 && Regex.span (Array.unsafeGet 2 values) = {
+      endByte = 7,
+      endChar = 3,
+      startByte = 3,
+      startChar = 2
+    }
+
+cursorCheck : Regex.Regex -> Bool
+let cursorCheck regex =
+  match Regex.cursor regex "é🙂" with
+  | Err _ -> false
+  | Ok cursor ->
+    let first = Regex.next cursor
+    match first with
+    | Ok (Some (found, rest)) ->
+      Regex.next cursor = first && Regex.text found = "é" && (match Regex.next rest with
+      | Ok (Some (found, _)) -> (Regex.span found).startChar = 1 && Regex.text found = "🙂"
+      | _ -> false)
+    | _ -> false
+
+binaryCheck : Unit -> Bool
+let binaryCheck unit =
+  match RegexBytes.compile "(?<byte>\\xFF)" with
+  | Err _ -> false
+  | Ok regex ->
+    match RegexTemplate.compileBytes regex (Bytes.fromList [
+      0,
+      36,
+      123,
+      98,
+      121,
+      116,
+      101,
+      125
+    ]) with
+    | Err _ -> false
+    | Ok template ->
+      RegexTemplate.replaceAllBytes template (Bytes.fromList [
+        1,
+        255,
+        2
+      ]) = Ok (Bytes.fromList [1, 0, 255, 2])
+
+public main : Runtime -> Unit / { Concurrency, Console }
+let main env =
+  match (Regex.compile ".", Regex.compile ".") with
+  | (Ok first, Ok second) ->
+    let results = Async.mapConcurrent env.concurrency (search first) (List.range 0 100)
+    let equal =
+      first = second && compare first second = 0 && HashSet.size (HashSet.fromList [
+        first,
+        second
+      ]) = 1
+    let good = List.all identity results && equal && cursorCheck first && binaryCheck ()
+    env.console.writeLine (if good then
+      "regex native checks passed"
+    else
+      "regex native checks FAILED")
+  | _ -> env.console.writeLine "regex compilation FAILED"

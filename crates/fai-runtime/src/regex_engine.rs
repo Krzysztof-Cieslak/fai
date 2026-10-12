@@ -326,8 +326,11 @@ fn request(
         return Err(error(7, "invalid search offset"));
     }
     if !binary {
-        let text = std::str::from_utf8(hay).map_err(|_| error(7, "invalid UTF-8 input"))?;
-        if !text.is_char_boundary(start as usize) || !text.is_char_boundary(base as usize) {
+        // Text entry points borrow a runtime String, whose UTF-8 is already
+        // valid. Check boundary bytes directly rather than revalidating the
+        // complete input at every immutable-cursor step.
+        let boundary = |at: usize| at == hay.len() || hay[at] & 0xc0 != 0x80;
+        if !boundary(start as usize) || !boundary(base as usize) {
             return Err(error(7, "search offset splits a Unicode scalar"));
         }
     }
@@ -612,6 +615,56 @@ mod tests {
         assert_eq!(storage_counts(), (before.0 + 1, before.1 + 1, before.2 + 1));
         drop(program);
         assert_eq!(storage_counts(), before);
+    }
+
+    #[test]
+    fn invalid_native_requests_are_checked_before_searching() {
+        let _lock = SERIAL.lock().unwrap();
+        let program = compile(".", TEXT).unwrap();
+        let query = array(vec![
+            crate::imm_int(1),
+            crate::imm_int(0),
+            crate::imm_int(0),
+            crate::imm_int(100),
+        ]);
+        assert_eq!(request(&program, "é".as_bytes(), query, false).err().unwrap().code, 7);
+        crate::fai_drop(query);
+    }
+
+    #[test]
+    fn scratch_storage_does_not_accumulate_across_searches() {
+        let _lock = SERIAL.lock().unwrap();
+        let before = storage_counts();
+        let program = compile("(?<word>[a-z]+)", TEXT).unwrap();
+        let _ = search(&program, b"123 repeated text", 0, true, 0);
+        let footprint = program.scratch.lock().unwrap()[0].cache.memory_usage();
+        for _ in 0..1000 {
+            let _ = search(&program, b"123 repeated text", 0, true, 0);
+        }
+        assert_eq!(program.scratch.lock().unwrap()[0].cache.memory_usage(), footprint);
+        assert_eq!(storage_counts(), (before.0 + 1, before.1 + 1, before.2 + 1));
+        drop(program);
+        assert_eq!(storage_counts(), before);
+    }
+
+    #[test]
+    fn zero_retention_releases_scratch_after_each_search() {
+        let _lock = SERIAL.lock().unwrap();
+        let before = storage_counts();
+        let mut options = TEXT;
+        options[6] = 0;
+        let program = compile("a", options).unwrap();
+        let _ = search(&program, b"a", 0, false, 0);
+        assert_eq!(storage_counts(), (before.0 + 1, before.1, before.2));
+        drop(program);
+        assert_eq!(storage_counts(), before);
+    }
+
+    #[test]
+    fn scalar_checkpoint_keeps_absolute_byte_coordinates() {
+        let _lock = SERIAL.lock().unwrap();
+        let program = compile("(.)", TEXT).unwrap();
+        assert_eq!(search(&program, "é🙂".as_bytes(), 2, true, 2), [[2, 6, 0, 1], [2, 6, 0, 1]]);
     }
     mod proptests {
         use super::*;

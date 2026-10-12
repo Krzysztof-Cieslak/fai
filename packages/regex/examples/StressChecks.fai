@@ -1,0 +1,21 @@
+module RegexStressChecks
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  let input = String.joinArray "" (Array.repeat 20000 "é")
+  match (Regex.compile ".", RegexBytes.compile "\\xC3\\xA9") with
+  | (Ok text, Ok binary) ->
+    let folded = Regex.fold text input 0 (fun count found -> Ok (count + 1, RegexTypes.Continue))
+    let bytes = RegexBytes.replaceAll binary (Bytes.fromString "bb") (Bytes.fromString input)
+    let split = Regex.splitN 2 text input
+    let good =
+      folded.state = 20000 && folded.outcome = Ok () && (match bytes with
+      | Ok bytes -> Bytes.length bytes = 40000
+      | _ -> false) && (match split with
+      | Ok pieces -> Array.length pieces = 2 && String.length (Array.unsafeGet 1 pieces) = 19999
+      | _ -> false)
+    env.console.writeLine (if good then
+      "regex stress checks passed"
+    else
+      "regex stress checks FAILED")
+  | _ -> env.console.writeLine "regex compilation FAILED"

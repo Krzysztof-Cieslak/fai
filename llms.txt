@@ -603,6 +603,11 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+Regex compilation/searching are pure. The optional regex package's fold and
+replacement callbacks forward their own effects; compiled values can be shared
+across tasks without a regex capability. Compile once in a local binding or
+application state, since top-level value initializers are not memoized.
+
 Native `Path` values preserve Unix filename bytes and Windows UTF-16 code units.
 Use `Path.fromString` at textual boundaries, `Path.toString` for checked Unicode
 conversion, and `Path.display` only for diagnostics. Path operations are pure;
@@ -1144,6 +1149,15 @@ Its opaque Program values compile and search purely and compare by immutable
 description. Text/binary search methods validate their modes and byte boundaries;
 capture spans include scalar offsets relative to the requested text checkpoint.
 The runtime retains a bounded scratch pool and releases it with the program.
+Bridge compilation takes a pattern and seven integers: flags, maximum pattern
+bytes, compiled bytes, cache bytes, nesting, explicit groups, retained caches.
+Flags are binary=1, Unicode=2, case-insensitive=4, multiline=8, dot-newline=16,
+CRLF=32, verbose=64, swap-greed=128, whole-input=256. `findText`/`findBytes` and
+`isMatchText`/`isMatchBytes` take a program, input, and four request integers:
+start byte, capture flag, scalar-base byte, maximum input bytes. `names` reports
+the capture schema. `byteIndex` checks a scalar index and returns its byte offset
+plus input byte length; `slice` copies a checked UTF-8 range; `escape` quotes
+pattern metacharacters. Ordinary applications use the typed package wrappers.
 
 ### FileSystem and File — native file I/O
 
@@ -1956,6 +1970,11 @@ between scalar boundaries; binary matches can occur between any bytes.
 forwards typed callback effects/errors. `RegexTemplate.compile` and `compileBytes`
 validate explicit `$1`/`${name}`/`$$` templates against their retained regex;
 template replacement and output construction are bounded.
+`split` preserves empty pieces; `splitN` keeps the untouched remainder in its
+final piece. Byte patterns can be quoted with `RegexBytes.escape`. Compile limits
+bound pattern/program/cache size, nesting and groups; operation limits bound
+input, results, capture slots and output. See `packages/regex/README.md` and its
+UnicodeScan example. Single search is O(m*n); full iteration can be O(m*n*n).
 
 `packages/logging` supplies structured log records and typed `LogField` builders,
 longest dotted-prefix `LogFilter` rules, and pure `LogFormat` human/JSON Lines
