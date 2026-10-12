@@ -1172,6 +1172,9 @@ TOML documents track implicit, dotted, declared and sealed tables and arrays of
 tables. Parsing, tree reconstruction and value extraction use explicit frames.
 Normalized rendering sorts keys; `TomlDecode` provides strict typed combinators.
 The Fai conformance executable checks the pinned upstream TOML 1.1 corpus.
+The independent `packages/dotenv` parser retains ordered names, literal values
+and source locations. Quoted multiline values normalize CRLF, unknown escapes
+and duplicate names fail, and interpolation/environment mutation never occurs.
 
 `RegexEngine` supplies typed pure native regex primitives. Compiled programs use
 description-based equality, ordering and hashing, independent of their bounded

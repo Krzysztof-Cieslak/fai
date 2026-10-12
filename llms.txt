@@ -1953,6 +1953,11 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/dotenv` provides literal `Dotenv.parse`/`parseBytes` with configurable
+byte/entry limits. `entries` retains name/value locations; `values` extracts a
+dictionary. `${...}` is literal, unknown escapes and duplicate names fail, and
+the parser does not modify the environment. Test with `fai test -C packages dotenv`.
+
 `packages/toml` provides pure TOML scalar and string parsing, including checked
 64-bit integers, TOML 1.1 escapes and precision-preserving temporal values.
 It depends on `json` for checked decimal-to-Float conversion. Run its contracts

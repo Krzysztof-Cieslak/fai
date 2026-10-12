@@ -1,0 +1,36 @@
+module DotenvParseSpec
+
+let value name source =
+  Result.map (fun document -> Dict.get name (Dotenv.values document)) (Dotenv.parse source)
+example: value "A" "export A = hello # comment\r\n" = Ok (Some "hello")
+example: value "A" "A=${HOST}\n" = Ok (Some "${HOST}")
+example: value "A" "A='${HOST}\\n'" = Ok (Some "${HOST}\\n")
+example: value "A" "A=\"line\\nline\\t\\\"\\\\\"" = Ok (Some "line\nline\t\"\\")
+example: value "A" "A=\"hé\r\n🙂\" # tail" = Ok (Some "hé\n🙂")
+example: value "A" "A=" = Ok (Some "")
+example: value "A" "A=unquoted#comment" = Ok (Some "unquoted")
+example: value "A" "A=' # '" = Ok (Some " # ")
+example: Dotenv.parse "A=\"bad\\q\"" |> Result.isErr
+example: Dotenv.parse "1A=wrong" |> Result.isErr
+example: Dotenv.parse "A='missing" |> Result.isErr
+example: Dotenv.parse "A='value' junk" |> Result.isErr
+example: Dotenv.parse "A=value\rB=value" |> Result.isErr
+example: Dotenv.parse "A=\u{0}" |> Result.isErr
+example: Dotenv.parseBytes (Bytes.fromList [255]) |> Result.isErr
+example: Dotenv.parseWith { Dotenv.options with maxEntries = 1 } "A=1\nB=2" |> Result.isErr
+example: Dotenv.parseWith { Dotenv.options with maxEntries = 0 } "#none" |> Result.isOk
+example: (match Dotenv.parse "A=é\nA=2" with
+| Err error ->
+  error.kind = Dotenv.DuplicateName && error.primary.startByte = 5 && error.primary.line = 2 && error.secondary = Some {
+    column = 1,
+    endByte = 1,
+    endColumn = 2,
+    endLine = 1,
+    line = 1,
+    startByte = 0
+  }
+| _ -> false)
+
+let sanitized text =
+  String.join "" (String.split "'" (String.join "" (String.split "\r" (String.join "" (String.split "\u{0}" text)))))
+forall text: value "A" ("A='" ++ sanitized text ++ "'") = Ok (Some (sanitized text))
