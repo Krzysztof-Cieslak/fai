@@ -1,0 +1,58 @@
+module RegexReplaceSpec
+
+let all pattern replacement input =
+  match Regex.compile pattern with
+  | Err error -> Err error
+  | Ok regex -> Regex.replaceAll regex replacement input
+example: all "a" "$1" "banana" = Ok "b$1n$1n$1"
+example: all "" "-" "é🙂" = Ok "-é-🙂-"
+example: all "a*" "x" "aa" = Ok "x"
+example: all "z" "other" "unchanged" = Ok "unchanged"
+example: (match Regex.compile "a" with
+| Err _ -> false
+| Ok regex ->
+  Regex.replaceN 1 regex "X" "banana" = Ok "bXnana" && Regex.replaceN 0 regex "X" "banana" = Ok "banana")
+example: (match Regex.compile "a" with
+| Err _ -> false
+| Ok regex -> Regex.replaceN (-1) regex "X" "banana" |> Result.isErr)
+example: (match Regex.compile "." with
+| Err _ -> false
+| Ok regex ->
+  Regex.replaceNWithLimits { Regex.limits with
+    maxOutputBytes = 2
+  } 100 regex "XX" "aaa" |> Result.isErr)
+example: (match Regex.compile "." with
+| Err _ -> false
+| Ok regex ->
+  Regex.replaceNWithLimits { Regex.limits with maxResults = 1 } 100 regex "X" "aaa" |> Result.isErr)
+example: (match Regex.compile "a" with
+| Err _ -> false
+| Ok regex ->
+  Regex.replaceWith regex (fun captures ->
+    Ok (String.toUpper (Regex.text (Regex.whole captures)))) "banana" = Ok "bAnAnA")
+
+let failure =
+  match Regex.compile "." with
+  | Err _ -> false
+  | Ok regex ->
+    match Regex.replaceWith regex (fun captures ->
+      if Regex.text (Regex.whole captures) = "b" then Err "stop" else Ok "X") "abc" with
+    | Ok _ -> false
+    | Err error ->
+      error.completed = 1 && error.span = Some {
+        endByte = 2,
+        startByte = 1
+      } && error.cause = RegexTypes.ReplacementFailure "stop"
+example: failure
+example: (match RegexBytes.compile "\\xFF" with
+| Err _ -> false
+| Ok regex ->
+  RegexBytes.replaceAll regex (Bytes.fromList [
+    0,
+    1
+  ]) (Bytes.fromList [2, 255, 3]) = Ok (Bytes.fromList [2, 0, 1, 3]))
+forall input: match Regex.compile "." with
+| Err _ -> false
+| Ok regex ->
+  (Regex.replaceWith regex (fun _ ->
+    Ok "X") input |> Result.mapError RegexInternal.simpleError) = Regex.replaceAll regex "X" input

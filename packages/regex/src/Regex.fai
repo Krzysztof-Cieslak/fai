@@ -182,3 +182,27 @@ let foldCapturesWithLimits limits regex text state step =
     visited = 0
   }
   | Ok cursor -> RegexInternal.fold cursor state step
+
+public replaceNWithLimits : Limits -> Int -> Regex -> String -> String -> Result String Error
+let replaceNWithLimits limits count regex replacement text =
+  Result.map RegexInternal.sourceText (Result.mapError RegexInternal.simpleError (RegexInternal.replace limits count regex (RegexInternal.Text text) false (fun _ ->
+    Ok (RegexInternal.Text replacement))))
+
+public replace : Regex -> String -> String -> Result String Error
+let replace regex replacement text = replaceNWithLimits limits 1 regex replacement text
+
+public replaceAll : Regex -> String -> String -> Result String Error
+let replaceAll regex replacement text =
+  replaceNWithLimits limits 9223372036854775807 regex replacement text
+
+public replaceN : Int -> Regex -> String -> String -> Result String Error
+let replaceN count regex replacement text = replaceNWithLimits limits count regex replacement text
+
+public replaceWithLimits : Limits -> Int -> Regex -> (Captures -> Result String 'error / 'e) -> String -> Result String (RegexTypes.ReplaceError 'error) / 'e
+let replaceWithLimits limits count regex replacement text =
+  Result.map RegexInternal.sourceText (RegexInternal.replace limits count regex (RegexInternal.Text text) true (fun captures ->
+    Result.map RegexInternal.Text (replacement captures)))
+
+public replaceWith : Regex -> (Captures -> Result String 'error / 'e) -> String -> Result String (RegexTypes.ReplaceError 'error) / 'e
+let replaceWith regex replacement text =
+  replaceWithLimits limits 9223372036854775807 regex replacement text

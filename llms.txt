@@ -1952,6 +1952,10 @@ top-level initializer. Run contracts with `fai test -C packages regex`.
 `capturesAll` collect bounded arrays. `foldWithLimits` threads state and forwards
 callback effects, retaining committed state on failure. Text empty matches move
 between scalar boundaries; binary matches can occur between any bytes.
+`replace`/`replaceAll`/`replaceN` use literal replacement values. `replaceWith`
+forwards typed callback effects/errors. `RegexTemplate.compile` and `compileBytes`
+validate explicit `$1`/`${name}`/`$$` templates against their retained regex;
+template replacement and output construction are bounded.
 
 `packages/logging` supplies structured log records and typed `LogField` builders,
 longest dotted-prefix `LogFilter` rules, and pure `LogFormat` human/JSON Lines

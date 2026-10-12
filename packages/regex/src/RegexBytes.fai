@@ -166,3 +166,27 @@ let foldCapturesWithLimits limits regex bytes state step =
     visited = 0
   }
   | Ok cursor -> RegexInternal.fold cursor state step
+
+public replaceNWithLimits : Limits -> Int -> Regex -> Bytes -> Bytes -> Result Bytes Error
+let replaceNWithLimits limits count regex replacement bytes =
+  Result.map RegexInternal.sourceBytes (Result.mapError RegexInternal.simpleError (RegexInternal.replace limits count regex (RegexInternal.Binary bytes) false (fun _ ->
+    Ok (RegexInternal.Binary replacement))))
+
+public replace : Regex -> Bytes -> Bytes -> Result Bytes Error
+let replace regex replacement bytes = replaceNWithLimits limits 1 regex replacement bytes
+
+public replaceAll : Regex -> Bytes -> Bytes -> Result Bytes Error
+let replaceAll regex replacement bytes =
+  replaceNWithLimits limits 9223372036854775807 regex replacement bytes
+
+public replaceN : Int -> Regex -> Bytes -> Bytes -> Result Bytes Error
+let replaceN count regex replacement bytes = replaceNWithLimits limits count regex replacement bytes
+
+public replaceWithLimits : Limits -> Int -> Regex -> (Captures -> Result Bytes 'error / 'e) -> Bytes -> Result Bytes (RegexTypes.ReplaceError 'error) / 'e
+let replaceWithLimits limits count regex replacement bytes =
+  Result.map RegexInternal.sourceBytes (RegexInternal.replace limits count regex (RegexInternal.Binary bytes) true (fun captures ->
+    Result.map RegexInternal.Binary (replacement captures)))
+
+public replaceWith : Regex -> (Captures -> Result Bytes 'error / 'e) -> Bytes -> Result Bytes (RegexTypes.ReplaceError 'error) / 'e
+let replaceWith regex replacement bytes =
+  replaceWithLimits limits 9223372036854775807 regex replacement bytes

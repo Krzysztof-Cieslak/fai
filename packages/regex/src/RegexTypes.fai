@@ -69,6 +69,7 @@ public type ErrorKind =
   | OutputLimit
   | UnknownCapture
   | InvalidTemplate
+  | TemplateLimit
   | InternalFailure
 
 public type Location = {
@@ -109,6 +110,16 @@ public type FoldResult 'state 'error = {
   visited : Int
 }
 
+public type ReplaceCause 'error =
+  | RegexFailure Error
+  | ReplacementFailure 'error
+
+public type ReplaceError 'error = {
+  cause : ReplaceCause 'error,
+  completed : Int,
+  span : Option ByteSpan
+}
+
 public validateLimits : Limits -> Result Unit Error
 let validateLimits limits =
   if limits.maxCaptureSlots < 0 || limits.maxInputBytes < 0 || limits.maxOutputBytes < 0 || limits.maxResults < 0 then
@@ -134,6 +145,33 @@ let located source start finish error =
   else
     let (line, column) = position bytes start 0 1 1
     let (endLine, endColumn) = position bytes finish start line column
+    { error with
+      location = Some {
+        byteEnd = finish,
+        byteStart = start,
+        column = column,
+        endColumn = endColumn,
+        endLine = endLine,
+        line = line
+      }
+    }
+
+let bytePosition bytes finish index line column =
+  if index >= finish then
+    (line, column)
+  else if Bytes.unsafeGet index bytes = 10 then
+    bytePosition bytes finish (index + 1) (line + 1) 1
+  else
+    bytePosition bytes finish (index + 1) line (column + 1)
+
+/// Binary template columns count bytes when the template is not valid UTF-8.
+public locatedBytes : Bytes -> Int -> Int -> Error -> Error
+let locatedBytes bytes start finish error =
+  match Bytes.toString bytes with
+  | Some source -> located source start finish error
+  | None ->
+    let (line, column) = bytePosition bytes start 0 1 1
+    let (endLine, endColumn) = bytePosition bytes finish start line column
     { error with
       location = Some {
         byteEnd = finish,

@@ -50,6 +50,22 @@ search/callback failure. Stop is successful early termination; a resource limit
 fails only when another result would exceed it. A single search is O(m*n); full
 iteration retains the engine's possible O(m*n*n) worst case.
 
+Replacement strings are literal: `replace` changes the first match, `replaceAll`
+changes every match, and `replaceN` stops intentionally after its count. Their
+bounded forms enforce output size before assembling the final value. `replaceWith`
+passes captures to a callback returning Result and forwards its effect; failures
+retain the current byte span and number of prior completed replacements. A
+callback that returns oversized output has already run and is never replayed.
+
+`RegexTemplate.compile regex source` validates `$1`, `${1}`, `${name}` and `$$`
+against that regex's capture schema. Unknown groups and numeric overflow fail
+before input searching. Nonparticipating groups expand to empty text. Templates
+retain their regex, and `RegexTemplate.replace`/`replaceAll`/`replaceN` apply them.
+`compileBytes` accepts arbitrary template bytes; `replaceBytes`/`replaceAllBytes`
+preserve them. Text template locations count Unicode scalar columns; non-UTF-8
+template locations count byte columns. Template limits default to 64 KiB and
+4096 parts. `RegexTemplate.escape` quotes dollars for literal template text.
+
 ```sh
 fai fmt --check -C packages regex
 fai check -C packages regex
