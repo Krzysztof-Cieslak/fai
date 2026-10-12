@@ -1,0 +1,78 @@
+module ConfigBoundarySpec
+
+let configured source =
+  match Config.toml Config.limits (ConfigTypes.origin ConfigTypes.Supplied "test") (Bytes.fromString source) with
+  | Err error -> Err error
+  | Ok layer -> Config.merge [layer]
+
+let missingLocation =
+  match configured "[server]\nport=1" with
+  | Err _ -> false
+  | Ok config ->
+    match ConfigDecode.decode (ConfigDecode.field "server" (ConfigDecode.map2 (fun port host ->
+      (port, host)) (ConfigDecode.field "port" ConfigDecode.int) (ConfigDecode.field "host" ConfigDecode.string))) config with
+    | Err [error] ->
+      error.kind = ConfigTypes.Missing && error.path = [
+        TomlTypes.Key "server",
+        TomlTypes.Key "host"
+      ] && Option.andThen (fun origin ->
+        origin.location) error.origin = Some {
+        column = 1,
+        endByte = 8,
+        endColumn = 9,
+        endLine = 1,
+        line = 1,
+        startByte = 0
+      }
+    | _ -> false
+example: missingLocation
+
+let dependent =
+  ConfigDecode.field "type" ConfigDecode.string |> ConfigDecode.andThen (fun kind ->
+    if kind = "number" then ConfigDecode.field "value" ConfigDecode.int else ConfigDecode.succeed 0)
+example: (match configured "type='number'\nvalue=7" with
+| Ok config -> ConfigDecode.decode dependent config = Ok 7
+| _ -> false)
+example: (match configured "type='none'\nvalue=7" with
+| Ok config -> ConfigDecode.decode dependent config |> Result.isErr
+| _ -> false)
+example: (match configured "value='bad'" with
+| Ok config ->
+  ConfigDecode.decode (ConfigDecode.field "value" (ConfigDecode.oneOf [
+    ConfigDecode.map (fun _ -> ()) ConfigDecode.int,
+    ConfigDecode.map (fun _ -> ()) ConfigDecode.bool
+  ])) config |> Result.isErr
+| _ -> false)
+example: (match configured "values=[{x=1,unknown=2},{x='bad'}]" with
+| Ok config ->
+  (match ConfigDecode.decode (ConfigDecode.field "values" (ConfigDecode.array (ConfigDecode.field "x" ConfigDecode.int))) config with
+  | Err errors ->
+    List.map (fun error ->
+      error.path) errors = [
+      [TomlTypes.Key "values", TomlTypes.Index 0, TomlTypes.Key "unknown"],
+      [TomlTypes.Key "values", TomlTypes.Index 1, TomlTypes.Key "x"]
+    ]
+  | _ -> false)
+| _ -> false)
+example: (match configured "date=2026-10-12\ntime=12:30\nlocal=2026-10-12T12:30\noffset=2026-10-12T12:30Z" with
+| Ok config ->
+  ConfigDecode.decode (ConfigDecode.succeed (fun a b c d ->
+    ()) |> ConfigDecode.andMap (ConfigDecode.field "date" ConfigDecode.date) |> ConfigDecode.andMap (ConfigDecode.field "time" ConfigDecode.time) |> ConfigDecode.andMap (ConfigDecode.field "local" ConfigDecode.localDateTime) |> ConfigDecode.andMap (ConfigDecode.field "offset" ConfigDecode.offsetDateTime)) config = Ok ()
+| _ -> false)
+example: (match configured "time=12:30:00.1234567891" with
+| Ok config ->
+  ConfigDecode.decode (ConfigDecode.field "time" ConfigDecode.time) config |> Result.isErr
+| _ -> false)
+
+let leadingZeros =
+  let text = String.joinArray "" (Array.repeat 20000 "0") ++ "42"
+  match ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "env") [
+    { name = "N", path = ["n"] }
+  ] [("N", text)] with
+  | Err _ -> false
+  | Ok layer ->
+    (match Config.merge [layer] with
+    | Ok config -> ConfigDecode.decode (ConfigDecode.field "n" ConfigDecode.int) config = Ok 42
+    | _ -> false)
+example: leadingZeros
+example: ConfigExampleSettings.cli [] = Ok []

@@ -1,0 +1,34 @@
+name: Configuration integration
+description: Run Fai configuration loading and TOML conformance checks through JIT and AOT
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: toml-lang/toml-test
+        ref: ff49d109861c1ad25af53f687f2aef19ab650600
+        path: .toml-test
+        persist-credentials: false
+    - name: Native TOML conformance
+      shell: bash
+      run: |
+        set -euo pipefail
+        corpus="$GITHUB_WORKSPACE/.toml-test/tests"
+        if [ "$RUNNER_OS" = Windows ]; then corpus="$(cygpath -m "$corpus")"; fi
+        fai run --no-daemon -C packages toml/examples/Conformance.fai -- "$corpus" | tee "$RUNNER_TEMP/toml-jit.log"
+        grep -Fx 'failures: 0' "$RUNNER_TEMP/toml-jit.log"
+        fai build -C packages toml/examples/Conformance.fai --out "$RUNNER_TEMP/toml-check.exe"
+        "$RUNNER_TEMP/toml-check.exe" "$corpus" | tee "$RUNNER_TEMP/toml-aot.log"
+        grep -Fx 'failures: 0' "$RUNNER_TEMP/toml-aot.log"
+    - name: Native configuration loading
+      shell: bash
+      env:
+        FAI_CONFIG_PORT: '7100'
+        FAI_CONFIG_HOST: localhost
+      run: |
+        set -euo pipefail
+        fai run --no-daemon -C packages config/examples/RuntimeChecks.fai -- --port 8100 | tee "$RUNNER_TEMP/config-jit.log"
+        grep -Fx 'Configuration runtime checks passed' "$RUNNER_TEMP/config-jit.log"
+        fai build -C packages config/examples/RuntimeChecks.fai --out "$RUNNER_TEMP/config-check.exe"
+        "$RUNNER_TEMP/config-check.exe" --port 8100 | tee "$RUNNER_TEMP/config-aot.log"
+        grep -Fx 'Configuration runtime checks passed' "$RUNNER_TEMP/config-aot.log"

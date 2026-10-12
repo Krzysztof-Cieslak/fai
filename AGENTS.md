@@ -1183,6 +1183,10 @@ decoding. File loading requires an explicit base and skips only optional NotFoun
 bounded independent errors, and rejects unknown object fields by default. Optional
 values/defaults apply only to absence. Path resolution uses an explicit base or
 the winning file's directory, and errors retain the winning origin.
+Configuration's native Fai integration fixture covers real files, environment
+lookups and presence-aware CLI overrides through both JIT and AOT. TOML conformance
+pins its external corpus and requires complete case coverage. Dotenv carries a
+line/column checkpoint between entries rather than rescanning prior input.
 
 `RegexEngine` supplies typed pure native regex primitives. Compiled programs use
 description-based equality, ordering and hashing, independent of their bounded

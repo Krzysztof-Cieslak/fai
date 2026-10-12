@@ -162,7 +162,8 @@ let parse options bytes =
   else if Bytes.length bytes > options.maxBytes then
     limited 0
   else if not (Option.isSome (Bytes.toString bytes)) then
-    Err (TomlTypes.issue TomlTypes.InvalidUtf8 0 (Bytes.length bytes) "input is not UTF-8")
+    let index = Option.withDefault 0 (TomlText.invalidUtf8 bytes)
+    Err (TomlTypes.issue TomlTypes.InvalidUtf8 index (index + 1) "input is not UTF-8")
   else
     let root =
       TomlTypes.Node (span 0 (Bytes.length bytes)) None (TomlTypes.Mapping TomlTypes.Root Dict.empty)

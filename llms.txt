@@ -603,6 +603,11 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+The optional configuration packages parse TOML/dotenv, merge sources and decode
+application records purely. `ConfigSource.load` uses only existing FileSystem/Env
+capabilities, an explicit absolute base and explicit environment-name bindings.
+Loading a missing optional file skips only NotFound; other failures remain errors.
+
 Regex compilation/searching are pure. The optional regex package's fold and
 replacement callbacks forward their own effects; compiled values can be shared
 across tasks without a regex capability. Compile once in a local binding or
@@ -1964,6 +1969,9 @@ reports the winning source; parsing/merging remains pure.
 `allowUnknown` is explicit, and optional/default readers only handle absence.
 `fromText`, `refine`, `range` and `choice` support application validation;
 `pathFromSource` resolves against the winning file or an explicit fallback base.
+See `packages/config/examples/Application.fai` for defaults, optional TOML/dotenv,
+environment bindings and presence-aware Args overrides. Native Fai runtime and
+TOML conformance executables are used directly for cross-platform JIT/AOT checks.
 
 `packages/dotenv` provides literal `Dotenv.parse`/`parseBytes` with configurable
 byte/entry limits. `entries` retains name/value locations; `values` extracts a

@@ -15,6 +15,13 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Configuration development uses native Fai contracts in `packages/toml`,
+`packages/dotenv`, and `packages/config`, with the same cached compiler. The Fai
+`config/examples/RuntimeChecks.fai` fixture exercises scoped temporary files,
+environment values and CLI overrides. `toml/examples/Conformance.fai` checks the
+pinned upstream corpus and normalized-output round trips. `.github/actions/config`
+supplies their inputs and runs both JIT and AOT; no separate test harness is used.
+
 Regex package contracts run with `fai test -C packages regex`.
 `scripts/tests/regex_toolchain.py --fai /path/to/fai` exercises the pure native
 engine through a relocated JIT/AOT compiler, including shared programs, immutable

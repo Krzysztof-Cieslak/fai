@@ -12,33 +12,42 @@ public type Source =
 
 public snapshot : Config.Limits -> Config.Origin -> List Config.Binding -> List (String * String) -> Result Config.Layer Config.Error
 let snapshot limits origin bindings entries =
-  let values = Dict.fromList entries
-  if Dict.size values <> List.length entries then
-    Err (ConfigTypes.error ConfigTypes.InvalidSource "duplicate names in environment snapshot")
-  else
-    Config.bindings limits origin bindings (Dict.map (fun _ text -> (text, None)) values)
+  match Config.validateBindings limits bindings with
+  | Err error -> Err error
+  | Ok _ ->
+    if List.length entries > limits.maxBindings then
+      Err (ConfigTypes.error ConfigTypes.LimitExceeded "environment snapshot entry limit exceeded")
+    else
+      let values = Dict.fromList entries
+      if Dict.size values <> List.length entries then
+        Err (ConfigTypes.error ConfigTypes.InvalidSource "duplicate names in environment snapshot")
+      else
+        Config.bindings limits origin bindings (Dict.map (fun _ text -> (text, None)) values)
 
-readNames : Env -> List Config.Binding -> Dict String (String * Option TomlTypes.Location) -> Set String -> Result (Dict String (String * Option TomlTypes.Location)) Config.Error / { Env }
-let readNames env bindings values seen =
+readNames : Env -> Config.Limits -> List Config.Binding -> Dict String (String * Option TomlTypes.Location) -> Set String -> Int -> Result (Dict String (String * Option TomlTypes.Location)) Config.Error / { Env }
+let readNames env limits bindings values seen used =
   match bindings with
   | [] -> Ok values
   | binding :: rest ->
     if Set.member binding.name seen then
-      readNames env rest values seen
+      readNames env limits rest values seen used
     else
       let value = env.get binding.name
-      let next =
-        match value with
-        | None -> values
-        | Some text -> Dict.insert binding.name (text, None) values
-      readNames env rest next (Set.insert binding.name seen)
+      match value with
+      | None -> readNames env limits rest values (Set.insert binding.name seen) used
+      | Some text ->
+        let size = Bytes.length (Bytes.fromString text)
+        if size > limits.maxInputBytes - used then
+          Err (ConfigTypes.error ConfigTypes.LimitExceeded "environment byte limit exceeded")
+        else
+          readNames env limits rest (Dict.insert binding.name (text, None) values) (Set.insert binding.name seen) (used + size)
 
 public environment : Env -> Config.Limits -> List Config.Binding -> Result Config.Layer Config.Error / { Env }
 let environment env limits bindings =
   match Config.validateBindings limits bindings with
   | Err error -> Err error
   | Ok _ ->
-    match readNames env bindings Dict.empty Set.empty with
+    match readNames env limits bindings Dict.empty Set.empty 0 with
     | Err error -> Err error
     | Ok values ->
       Config.bindings limits (ConfigTypes.origin ConfigTypes.Environment "environment") bindings values

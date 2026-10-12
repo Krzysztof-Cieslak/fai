@@ -94,6 +94,7 @@ let check fs base name =
 
 run : Runtime -> String -> String -> Int -> Int / { Console, FileSystem }
 let run env base name count =
+  let name = String.trim name
   if String.drop (String.length name - 5) name <> ".toml" then
     count
   else
@@ -110,8 +111,14 @@ let main env =
     match read env.fs (base ++ "/files-toml-1.1.0") with
     | Err error -> env.console.writeLine error
     | Ok manifest ->
-      let failed =
-        List.foldl (fun count name -> run env base name count) 0 (String.split "\n" manifest)
+      let cases =
+        List.filter (fun name ->
+          String.drop (String.length name - 5) name = ".toml") (List.map String.trim (String.split "\n" manifest))
+      let failed = List.foldl (fun count name -> run env base name count) 0 cases
+      let coverage = env.console.writeLine ("cases: " ++ Int.toString (List.length cases))
       let logged = env.console.writeLine ("failures: " ++ Int.toString failed)
-      if failed = 0 then () else env.console.writeLine (Int.toString (1 / 0))
+      if failed = 0 && List.length cases = 712 then
+        ()
+      else
+        env.console.writeLine (Int.toString (1 / 0))
   | _ -> env.console.writeLine "usage: Conformance -- /path/to/toml-test/tests"

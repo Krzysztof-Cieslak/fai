@@ -1,0 +1,49 @@
+module ConfigExampleSettings
+
+public type Settings = { data : Path, debug : Bool, host : String, port : Int }
+
+public bindings : List Config.Binding
+let bindings = [
+  { name = "FAI_CONFIG_PORT", path = ["server", "port"] },
+  { name = "FAI_CONFIG_HOST", path = ["server", "host"] }
+]
+
+public defaults : Result Config.Layer Config.Error
+let defaults =
+  Config.toml Config.limits (ConfigTypes.origin ConfigTypes.Defaults "application defaults") (Bytes.fromString "debug=false\ndata='data'\n[server]\nhost='localhost'\nport=5000")
+
+public decoder : Path -> ConfigDecode.Decoder Settings
+let decoder base =
+  ConfigDecode.succeed (fun server debug data -> {
+    data = data,
+    debug = debug,
+    host = server.host,
+    port = server.port
+  }) |> ConfigDecode.andMap (ConfigDecode.field "server" (ConfigDecode.map2 (fun host port -> {
+    host = host,
+    port = port
+  }) (ConfigDecode.field "host" ConfigDecode.string) (ConfigDecode.field "port" (ConfigDecode.range 1 65535)))) |> ConfigDecode.andMap (ConfigDecode.field "debug" ConfigDecode.bool) |> ConfigDecode.andMap (ConfigDecode.field "data" (ConfigDecode.pathFromSource base))
+
+public arguments : Args.Program (Option Int)
+let arguments =
+  Args.program {
+    name = "configured-app",
+    summary = "Explicit sourced configuration",
+    version = None
+  } (Args.option Args.int (Args.named "port" "Override the configured port"))
+
+/// Only an explicitly supplied option becomes a configuration override.
+public cli : List String -> Result (List ConfigSource.Source) String
+let cli argv =
+  match Args.parse arguments argv with
+  | Err error -> Err error.message
+  | Ok (Args.Help text) -> Err text
+  | Ok (Args.Version text) -> Err text
+  | Ok (Args.Parsed None) -> Ok []
+  | Ok (Args.Parsed (Some port)) ->
+    let origin = { (ConfigTypes.origin ConfigTypes.CommandLine "command line") with
+      name = Some "--port"
+    }
+    match Config.override Config.limits origin ["server", "port"] (TomlTypes.Integer port) with
+    | Err error -> Err (Config.errorToString error)
+    | Ok layer -> Ok [ConfigSource.Prepared layer]

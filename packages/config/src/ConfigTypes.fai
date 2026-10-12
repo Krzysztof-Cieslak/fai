@@ -108,9 +108,9 @@ let explain stored =
 public describe : Error -> String
 let describe error =
   let path =
-    String.join "." (List.map (fun segment ->
+    String.join "" (List.map (fun segment ->
       match segment with
-      | TomlTypes.Key name -> name
+      | TomlTypes.Key name -> "[" ++ Json.toString (Json.String name) ++ "]"
       | TomlTypes.Index index -> "[" ++ Int.toString index ++ "]") error.path)
   let source =
     match error.origin with
@@ -118,5 +118,8 @@ let describe error =
     | Some origin ->
       " (" ++ origin.label ++ (match origin.name with
       | Some name -> ":" ++ name
-      | _ -> "") ++ ")"
-  (if path = "" then "" else path ++ ": ") ++ error.message ++ source
+      | _ -> "") ++ (match origin.location with
+      | None -> ""
+      | Some location ->
+        ":" ++ Int.toString location.line ++ ":" ++ Int.toString location.column) ++ ")"
+  (if path = "" then "" else "$" ++ path ++ ": ") ++ error.message ++ source

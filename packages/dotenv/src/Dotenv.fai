@@ -59,8 +59,16 @@ let position bytes finish index line column =
     else
       position bytes finish (index + 1) line (column + (if byte < 128 || byte >= 192 then 1 else 0))
 
-let location bytes start finish =
-  let (line, column) = position bytes start 0 1 1
+let location bytes start finish = locatedFrom bytes start finish 0 1 1
+
+let locatedFrom bytes start finish checkpoint line column =
+  let start =
+    if start < 0 then 0 else if start > Bytes.length bytes then Bytes.length bytes else start
+  let finish =
+    if finish < start then
+      start
+    else if finish > Bytes.length bytes then Bytes.length bytes else finish
+  let (line, column) = position bytes start checkpoint line column
   let (endLine, endColumn) = position bytes finish start line column
   {
     column = column,
@@ -147,14 +155,16 @@ let parseValue bytes start =
     let finish = unquotedEnd bytes start
     Ok (text bytes start (trimEnd bytes start finish), finish)
 
-let loop options bytes index names output =
+let loop options bytes index line column names output =
   let start = horizontal bytes index
   if start >= Bytes.length bytes then
     Ok { entries = output }
   else if List.member (at bytes start) [35, 10, 13] then
     match finishLine bytes start with
     | Err error -> Err error
-    | Ok next -> loop options bytes next names output
+    | Ok next ->
+      let (line, column) = position bytes next index line column
+      loop options bytes next line column names output
   else if Array.length output >= options.maxEntries then
     Err {
       kind = LimitExceeded,
@@ -176,7 +186,7 @@ let loop options bytes index names output =
       fail bytes equals (equals + 1) "expected ="
     else
       let name = text bytes nameStart nameFinish
-      let nameLocation = location bytes nameStart nameFinish
+      let nameLocation = locatedFrom bytes nameStart nameFinish index line column
       match Dict.get name names with
       | Some previous -> Err {
         kind = DuplicateName,
@@ -192,11 +202,15 @@ let loop options bytes index names output =
           match finishLine bytes finish with
           | Err error -> Err error
           | Ok next ->
-            loop options bytes next (Dict.insert name nameLocation names) (Array.push {
+            let valueLocation =
+              locatedFrom bytes valueStart finish nameFinish nameLocation.endLine nameLocation.endColumn
+            let (line, column) =
+              position bytes next finish valueLocation.endLine valueLocation.endColumn
+            loop options bytes next line column (Dict.insert name nameLocation names) (Array.push {
               name = name,
               nameLocation = nameLocation,
               value = value,
-              valueLocation = location bytes valueStart finish
+              valueLocation = valueLocation
             } output)
 
 let nul bytes index =
@@ -224,7 +238,7 @@ let parseBytesWith options bytes =
   else
     match nul bytes 0 with
     | Some index -> fail bytes index (index + 1) "NUL is not allowed"
-    | None -> loop options bytes 0 Dict.empty [||]
+    | None -> loop options bytes 0 1 1 Dict.empty [||]
 
 public parseBytes : Bytes -> Result Document Error
 let parseBytes bytes = parseBytesWith options bytes

@@ -169,6 +169,9 @@ jobs:
       - uses: ./.github/actions/regex
         if: contains(fromJSON(needs.changes.outputs.packages), 'regex')
         timeout-minutes: 10
+      - uses: ./.github/actions/config
+        if: contains(fromJSON(needs.changes.outputs.packages), 'config')
+        timeout-minutes: 10
       - name: Native filesystem compiler fixture
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: python scripts/tests/filesystem_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
@@ -286,6 +289,9 @@ jobs:
         timeout-minutes: 10
       - uses: ./.github/actions/regex
         if: contains(fromJSON(needs.changes.outputs.packages), 'regex')
+        timeout-minutes: 10
+      - uses: ./.github/actions/config
+        if: contains(fromJSON(needs.changes.outputs.packages), 'config')
         timeout-minutes: 10
       - name: Native filesystem compiler fixture
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'

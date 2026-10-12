@@ -1,0 +1,26 @@
+module ConfigApplication
+
+public main : Runtime -> Unit / { Console, Env, FileSystem }
+let main env =
+  match (env.fs.currentDirectory (), ConfigExampleSettings.defaults, ConfigExampleSettings.cli (env.env.args ())) with
+  | (Ok base, Ok defaults, Ok cli) ->
+    let source = Result.withDefault Path.empty (Path.fromString "app.toml")
+    let dotenv = Result.withDefault Path.empty (Path.fromString ".env")
+    let sources =
+      List.append [
+        ConfigSource.Prepared defaults,
+        ConfigSource.Toml ConfigSource.Optional source,
+        ConfigSource.Dotenv ConfigSource.Optional dotenv ConfigExampleSettings.bindings,
+        ConfigSource.Environment ConfigExampleSettings.bindings
+      ] cli
+    match ConfigSource.load env Config.limits base sources with
+    | Err error -> env.console.writeLine (Config.errorToString error)
+    | Ok config ->
+      match ConfigDecode.decode (ConfigExampleSettings.decoder base) config with
+      | Err errors ->
+        env.console.writeLine (String.join "\n" (List.map Config.errorToString errors))
+      | Ok settings ->
+        env.console.writeLine (settings.host ++ ":" ++ Int.toString settings.port ++ " data=" ++ Path.display settings.data)
+  | (_, _, Err message) -> env.console.writeLine message
+  | (_, Err error, _) -> env.console.writeLine (Config.errorToString error)
+  | (Err error, _, _) -> env.console.writeLine (FileSystem.errorToString error)

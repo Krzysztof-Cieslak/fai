@@ -108,6 +108,15 @@ let position bytes end index line column =
 
 public location : Bytes -> Span -> Location
 let location bytes span =
+  let startByte =
+    if span.startByte < 0 then
+      0
+    else if span.startByte > Bytes.length bytes then Bytes.length bytes else span.startByte
+  let endByte =
+    if span.endByte < startByte then
+      startByte
+    else if span.endByte > Bytes.length bytes then Bytes.length bytes else span.endByte
+  let span = { endByte = endByte, startByte = startByte }
   let (line, column) = position bytes span.startByte 0 1 1
   let (endLine, endColumn) = position bytes span.endByte span.startByte line column
   {

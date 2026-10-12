@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Configuration integration remains in Fai: a scoped temporary-directory fixture
+  verifies files, environment and CLI precedence under JIT/AOT. CI supplies only
+  the inputs and commands. The TOML corpus is pinned and checked for full coverage;
+  dotenv location tracking advances incrementally across entries.
+
 - Typed configuration decoding distinguishes native scalar kinds from unparsed
   textual overrides. Defaults apply only to absence. Applicative decoders collect
   bounded independent errors and check unknown fields at each object boundary;
