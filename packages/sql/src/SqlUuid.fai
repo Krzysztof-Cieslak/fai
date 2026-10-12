@@ -1,29 +1,13 @@
 module SqlUuid
 
-/// A validated canonical UUID spelling, stored in lowercase.
-public opaque type Uuid =
-  | Uuid String
-
-let hex c = (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70)
-
-let valid bytes i =
-  if i = 36 then
-    true
-  else
-    let c = Bytes.unsafeGet i bytes
-    (if i = 8 || i = 13 || i = 18 || i = 23 then c = 45 else hex c) && valid bytes (i + 1)
+/// The shared network-order UUID value. Existing SQL UUID signatures remain
+/// compatible with application UUIDs without conversion or extra wrappers.
+public type Uuid = Uuid.Uuid
 
 /// Parse the 8-4-4-4-12 form. Uppercase hex is accepted and normalized.
 public parse : String -> Result Uuid String
-let parse text =
-  let bytes = Bytes.fromString text
-  if Bytes.length bytes = 36 && valid bytes 0 then
-    Ok (Uuid (String.toLower text))
-  else
-    Err "invalid UUID"
+let parse text = Result.mapError (fun _ -> "invalid UUID") (Uuid.parse text)
 
 /// Render the canonical lowercase spelling.
 public toString : Uuid -> String
-let toString value =
-  match value with
-  | Uuid text -> text
+let toString value = Uuid.toString value

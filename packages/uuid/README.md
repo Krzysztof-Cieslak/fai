@@ -89,4 +89,16 @@ python3 scripts/package_integrations.py uuid --fai /path/to/fai
 The integration entrypoint is declared in `ci.json` for both JIT and AOT. This
 source package uses existing capabilities and needs no compiler/std changes.
 
+## Database interoperability
+
+The `sql` package re-exports this type as `SqlUuid.Uuid`. Its legacy `parse` and
+`toString` functions preserve their canonical-only syntax and String error
+contract. A new `Uuid.Uuid` goes directly into `Sql.Uuid`, and `SqlDecode.uuid`
+returns the same type. There is no second SQL-specific UUID representation.
+
+SQLite stores canonical lowercase text. PostgreSQL reads binary UUIDs directly
+from their network-order bytes and binds canonical text. The SQL and PostgreSQL
+contracts cover both APIs, all-zero/all-one values and non-RFC variants; the
+SQLite UUID fixture and PostgreSQL integration exercise actual database values.
+
 Reference: https://www.rfc-editor.org/rfc/rfc9562.html

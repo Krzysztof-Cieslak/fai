@@ -1,0 +1,35 @@
+module PgUuidSpec
+
+let text = "01234567-89ab-cdef-0123-456789abcdef"
+
+let bytes = Bytes.fromList [1, 35, 69, 103, 137, 171, 205, 239, 1, 35, 69, 103, 137, 171, 205, 239]
+
+let parsed =
+  match Uuid.parse text with
+  | Ok uuid -> PgTypes.decode 2950 1 bytes = Ok (Sql.Uuid uuid)
+  | Err _ -> false
+example: parsed
+example: PgTypes.decode 2950 1 (Uuid.toBytes Uuid.nil) = Ok (Sql.Uuid Uuid.nil)
+example: PgTypes.decode 2950 1 (Uuid.toBytes Uuid.max) = Ok (Sql.Uuid Uuid.max)
+example: PgTypes.decode 2950 1 (Bytes.fromList (List.range 0 15)) = Err "invalid UUID"
+example: PgTypes.decode 2950 1 (Bytes.fromList (List.range 0 17)) = Err "invalid UUID"
+example: PgTypes.parameter 2950 (Sql.Uuid Uuid.max) = Ok (Some (Bytes.fromString "ffffffff-ffff-ffff-ffff-ffffffffffff"))
+example: PgTypes.parameter 25 (Sql.Uuid Uuid.nil) = Err "UUID parameter type mismatch"
+
+let v7 =
+  match Uuid.v7FromRandom 1645557742000 (Bytes.fromList [
+    12,
+    195,
+    24,
+    196,
+    220,
+    12,
+    12,
+    7,
+    57,
+    143
+  ]) with
+  | Err _ -> false
+  | Ok uuid ->
+    PgTypes.decode 2950 1 (Uuid.toBytes uuid) = Ok (Sql.Uuid uuid) && PgTypes.parameter 2950 (Sql.Uuid uuid) = Ok (Some (Bytes.fromString "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"))
+example: v7

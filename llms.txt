@@ -1979,6 +1979,10 @@ only RFC-variant v7 timestamps. Test with `fai test -C packages uuid`.
 Entropy is requested once (16/10 bytes); wrong lengths and
 provider failures return typed errors. See `uuid/examples/Generate.fai`; native
 integration runs through the package's `ci.json` with the cached compiler.
+`SqlUuid.Uuid` aliases `Uuid.Uuid`, so generated IDs go directly into `Sql.Uuid`.
+Legacy `SqlUuid.parse` retains canonical-only syntax and its String error; SQL
+decoders return the shared type. The SQL, SQLite and PostgreSQL packages include
+the UUID source dependency; database storage and wire spellings remain canonical.
 
 Package CI entrypoints live in each package's `ci.json`. Declare ordinary Fai
 integration programs there instead of editing GitHub workflows; the generic

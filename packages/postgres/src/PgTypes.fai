@@ -61,10 +61,6 @@ let hexFrom bytes i output =
 public toHex : Bytes -> String
 let toHex bytes = hexFrom bytes 0 []
 
-let uuid bytes =
-  let text = toHex bytes
-  SqlUuid.parse (String.take 8 text ++ "-" ++ String.substring 8 4 text ++ "-" ++ String.substring 12 4 text ++ "-" ++ String.substring 16 4 text ++ "-" ++ String.drop 20 text)
-
 let highest bits n = if bits < 2 then n else highest (Int.shiftRightLogical bits 1) (n + 1)
 
 let float32 bits =
@@ -154,7 +150,7 @@ let decode oid wireFormat bytes =
   else if oid = 1184 then
     Result.map (fun value -> Sql.TimestampTz (decodeInstant value)) (PgWire.signed 8 bytes)
   else if oid = 2950 then
-    if Bytes.length bytes = 16 then Result.map Sql.Uuid (uuid bytes) else Err "invalid UUID"
+    Result.map Sql.Uuid (Result.mapError (fun _ -> "invalid UUID") (Uuid.fromBytes bytes))
   else
     match Bytes.toString bytes with
     | None -> Err "invalid PostgreSQL UTF-8"
@@ -268,7 +264,7 @@ let parameterText oid value =
   | Sql.Decimal value ->
     if oid = 1700 then Ok (SqlDecimal.toString value) else Err "decimal parameter type mismatch"
   | Sql.Uuid value ->
-    if oid = 2950 then Ok (SqlUuid.toString value) else Err "UUID parameter type mismatch"
+    if oid = 2950 then Ok (Uuid.toString value) else Err "UUID parameter type mismatch"
   | Sql.Date value ->
     if oid = 1082 then encodeTemporalDate value else Err "date parameter type mismatch"
   | Sql.Time value ->

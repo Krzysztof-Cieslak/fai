@@ -25,7 +25,7 @@ let bind next result =
   | Ok value -> next value
 
 let values session =
-  match (SqlDecimal.parse "12345678901234567890.1200", SqlUuid.parse "01234567-89ab-cdef-0123-456789abcdef") with
+  match (SqlDecimal.parse "12345678901234567890.1200", Uuid.parse "01234567-89ab-cdef-0123-456789abcdef") with
   | (Ok decimal, Ok uuid) ->
     let time = LocalTime.fromNanoOfDay 123456000
     let timestamp = LocalDateTime.of (LocalDate.fromEpochDay 0) time

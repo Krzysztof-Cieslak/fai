@@ -1,7 +1,7 @@
 # PostgreSQL
 
 An explicit-capability PostgreSQL v3 client written in Fai. Include this directory
-and its `sql` and `json` dependencies under your application's workspace root.
+and its `sql`, `json` and `uuid` dependencies under your application's workspace root.
 
 The protocol modules (`PgWire`, `PgAuth`, `PgTypes`, `PgConfig`, `PgConnect`)
 provide bounded framing, checked scalar codecs, verified TLS, SCRAM-SHA-256 and
@@ -97,7 +97,7 @@ password, database, and application name; no ambient credentials are read.
 | text/varchar/char/name | `Text` (strict UTF-8, no NUL on binding) |
 | bytea | `Blob` |
 | numeric/decimal | `Decimal` (`SqlDecimal`, exact text and scale) |
-| uuid | `Uuid` (`SqlUuid`, canonical spelling) |
+| uuid | `Uuid` (shared `Uuid.Uuid`, with the `SqlUuid.Uuid` compatibility alias) |
 | date, time, timestamp, timestamptz | `Date`, `Time`, `Timestamp`, `TimestampTz` |
 | json/jsonb | `Json` (validated document text) |
 
@@ -106,6 +106,9 @@ an instant, independent of the session time zone. Sub-microsecond input is rejec
 Binding to `real` requires exact float32 representability; use `$1::float8::float4`
 when intentional server-side rounding is desired. Numeric never passes through
 Float. SQL casts/type modifiers can intentionally round or transform inputs.
+UUID binary results decode directly from their 16 network-order bytes. UUID
+parameters retain canonical lowercase text binding; new `Uuid` values and legacy
+`SqlUuid` values are interchangeable in `Sql.Uuid`.
 
 Unsupported OIDs (including arrays, ranges and custom types) require an explicit
 cast to a supported type. COPY, replication, multi-statement calls, MD5 and

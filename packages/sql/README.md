@@ -2,7 +2,7 @@
 
 `Sql` and `SqlDecode` are a driver-independent source library. SQL text and
 placeholder conventions belong to the chosen database; parameters are always
-separate values. The package has no dependencies beyond the standard library.
+separate values. The package depends on the standalone `uuid` source package.
 
 ```fai
 let user = SqlDecode.map2
@@ -19,7 +19,7 @@ let find session id =
 
 `Sql.Value` is `Null`, `Integer Int`, `Real Float`, `Text String`, or `Blob Bytes`.
 It also supports `Boolean`, exact `Decimal` (`SqlDecimal`), validated `Uuid`
-(`SqlUuid`), `Date`, `Time`, `Timestamp`, `TimestampTz`, and JSON document text.
+(`Uuid.Uuid`, also named `SqlUuid.Uuid`), `Date`, `Time`, `Timestamp`, `TimestampTz`, and JSON document text.
 Temporal values explicitly represent positive/negative infinity; SQL time has
 an `EndOfDay` form for 24:00:00. Decimal spelling/scale never pass through Float.
 Conversions are explicit: integer and real decoders do not silently convert each
@@ -31,6 +31,14 @@ Rows retain ordered column metadata and immutable cell snapshots. `Sql.row`
 checks their lengths; `columns` and `values` expose the contents. `SqlDecode`
 supports `map`, `map2`, `andMap`, custom conversions and pure validation. Query
 decoding adds row/column locations to errors.
+
+`SqlUuid` is a compatibility facade over the shared UUID type. Its `parse`
+function still accepts only canonical 8-4-4-4-12 text, accepts uppercase hex, and
+returns the existing `"invalid UUID"` String error on failure. `toString` still
+renders canonical lowercase text. New application code can pass values from
+`Uuid.parse`, `Uuid.v4`, or `Uuid.v7` directly to `Sql.Uuid`; `SqlDecode.uuid`
+returns that same shared type. Every well-formed 128-bit value remains accepted,
+including nil, max, non-RFC variants and reserved version numbers.
 
 ## Sessions and ownership
 

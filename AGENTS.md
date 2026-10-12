@@ -1173,6 +1173,10 @@ UUIDv4 generation requests 16 bytes from an explicit `Crypto.Entropy`; UUIDv7
 requests ten bytes and optionally reads `Clock` once. Generation is stateless,
 preserving actual clock rollback, with typed provider/length errors and timestamp
 validation before entropy requests. Native Fai fixtures exercise both JIT and AOT.
+`SqlUuid.Uuid` is a transparent compatibility alias to `Uuid.Uuid`; its existing
+canonical-only parser and String error remain available. SQL values accept the
+shared type directly. SQLite keeps canonical text storage, while PostgreSQL UUID
+results decode directly from 16 network-order bytes.
 
 The optional `packages/csv` source package uses a pure incremental byte parser
 for text and arbitrary-byte records. It retains byte-addressed source spans,

@@ -1,5 +1,12 @@
 {
   "schemaVersion": 1,
   "name": "sqlite",
-  "dependencies": ["sql"]
+  "dependencies": ["sql", "uuid"],
+  "integrations": [
+    {
+      "name": "uuid-round-trip",
+      "entry": "examples/UuidChecks.fai",
+      "stdoutLines": ["SQLite UUID checks passed"]
+    }
+  ]
 }
