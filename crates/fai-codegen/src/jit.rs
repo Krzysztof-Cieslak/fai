@@ -245,6 +245,15 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_text_width", rt::fai_text_width);
     sym!("fai_path_operation", rt::fai_path_operation);
     sym!("fai_path_components", rt::fai_path_components);
+    sym!("fai_regex_compile", rt::fai_regex_compile);
+    sym!("fai_regex_find_text", rt::fai_regex_find_text);
+    sym!("fai_regex_find_bytes", rt::fai_regex_find_bytes);
+    sym!("fai_regex_test_text", rt::fai_regex_test_text);
+    sym!("fai_regex_test_bytes", rt::fai_regex_test_bytes);
+    sym!("fai_regex_names", rt::fai_regex_names);
+    sym!("fai_regex_byte_index", rt::fai_regex_byte_index);
+    sym!("fai_regex_slice", rt::fai_regex_slice);
+    sym!("fai_regex_escape", rt::fai_regex_escape);
     sym!("fai_cleanup", rt::fai_cleanup);
     sym!("fai_net_peer", rt::fai_net_peer);
     sym!("fai_tls_server_endpoint", rt::fai_tls_server_endpoint);

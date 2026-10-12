@@ -1164,6 +1164,12 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+`RegexEngine` supplies typed pure native regex primitives. Compiled programs use
+description-based equality, ordering and hashing, independent of their bounded
+scratch caches. Text search reports UTF-8 ranges and scalar offsets relative to
+an explicit byte checkpoint; binary search supports arbitrary bytes. Whole-input
+mode anchors parsed HIR, preserving alternatives and verbose pattern comments.
+
 The optional `packages/logging` source package provides structured log records,
 typed fields, target-prefix filtering and pure human/JSON Lines formatting.
 Field layers use later-value precedence with sorted final keys. Validation bounds

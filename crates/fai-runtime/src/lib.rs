@@ -280,6 +280,8 @@ pub const KIND_SQLITE: u64 = 18;
 pub const KIND_TERMINAL: u64 = 19;
 /// A supervised process scope owning pipes, process groups and exit statuses.
 pub const KIND_PROCESS: u64 = 20;
+/// A pure compiled regex value with description-based equality and native scratch.
+pub const KIND_REGEX: u64 = 21;
 
 /// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
 /// cell.
@@ -378,6 +380,9 @@ pub static FAI_TERMINAL_DESC: Descriptor = descriptor(KIND_TERMINAL, "Terminal")
 /// Descriptor for supervised native processes.
 #[unsafe(no_mangle)]
 pub static FAI_PROCESS_DESC: Descriptor = descriptor(KIND_PROCESS, "Process");
+/// Descriptor for compiled regex programs, released at final drop.
+#[unsafe(no_mangle)]
+pub static FAI_REGEX_DESC: Descriptor = descriptor(KIND_REGEX, "Regex");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -1372,6 +1377,7 @@ unsafe fn free_obj(p: *mut u8) {
                 KIND_SQLITE => sqlite::drop_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 KIND_TERMINAL => terminal::drop_handle(read_i64(p, HANDLE_PTR_OFFSET)),
                 KIND_PROCESS => process::drop_handle(read_i64(p, HANDLE_PTR_OFFSET)),
+                KIND_REGEX => regex_engine::drop_program(read_i64(p, HANDLE_PTR_OFFSET)),
                 _ => {}
             }
             read_u64(p, SIZE_OFFSET) as usize
@@ -4241,6 +4247,7 @@ fn values_equal(a: Value, b: Value) -> bool {
                     // Two niche `None` sentinels (the single shared object): equal.
                     // A `None` and a `Some` differ in kind, handled by `ka != kb`.
                     KIND_NONE => true,
+                    KIND_REGEX => regex_engine::compare(a, b).is_eq(),
                     kind if is_resource_kind(kind) => resource_identity(a) == resource_identity(b),
                     _ => false,
                 }
@@ -4353,6 +4360,9 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
     let kind = unsafe { object_kind(as_obj(boxed)) };
     if is_resource_kind(kind) {
         return resource_identity(a).cmp(&resource_identity(b));
+    }
+    if kind == KIND_REGEX {
+        return regex_engine::compare(a, b);
     }
     if kind == KIND_FLOAT {
         return unbox_float(a).total_cmp(&unbox_float(b));
@@ -4565,6 +4575,7 @@ fn values_hash(v: Value) -> u64 {
         // (the immediate nullary tag-0, which hits the immediate path above as
         // `mix64(0)`), since the two compare equal.
         KIND_NONE => mix64(0),
+        KIND_REGEX => regex_engine::hash(v),
         kind if is_resource_kind(kind) => mix64(resource_identity(v) ^ kind.rotate_left(32)),
         _ => mix64(0),
     }
@@ -5204,7 +5215,13 @@ mod reactor;
 /// File-handle capabilities (progressive reading/writing over the blocking pool).
 mod io;
 mod path;
+pub mod regex_engine;
 pub use path::{fai_path_components, fai_path_operation};
+pub use regex_engine::{
+    fai_regex_byte_index, fai_regex_compile, fai_regex_escape, fai_regex_find_bytes,
+    fai_regex_find_text, fai_regex_names, fai_regex_slice, fai_regex_test_bytes,
+    fai_regex_test_text,
+};
 
 mod crypto;
 mod process;

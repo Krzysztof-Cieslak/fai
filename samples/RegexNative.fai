@@ -1,0 +1,7 @@
+module RegexNative
+
+// The standard bridge is pure; ordinary application code uses the regex package.
+let options = [| 2, 65536, 10485760, 2097152, 128, 256, 1 |]
+example: match RegexEngine.compile "(?<word>[a-z]+)" options with
+| Err _ -> false
+| Ok program -> RegexEngine.findText program "123 hello" [| 0, 0, 0, 1024 |] = Ok [| (4, 9, 4, 9) |]

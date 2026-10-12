@@ -1137,6 +1137,14 @@ forall xs: mirror (mirror xs) = xs
 
 ## 13. Standard library reference
 
+### RegexEngine — typed native regex support
+
+`RegexEngine` is the standard bridge used by the optional regex source package.
+Its opaque Program values compile and search purely and compare by immutable
+description. Text/binary search methods validate their modes and byte boundaries;
+capture spans include scalar offsets relative to the requested text checkpoint.
+The runtime retains a bounded scratch pool and releases it with the program.
+
 ### FileSystem and File — native file I/O
 
 `File.withAtomicWriter env options path work`, `writeBytesAtomic` and
