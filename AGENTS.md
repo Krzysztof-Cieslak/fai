@@ -1173,6 +1173,10 @@ Checked loggers carry their sink and timestamp effects. Immutable child context
 and lazy entry builders preserve filtering before construction or clock reads.
 Fan-out retains per-destination successes and failures; an explicit best-effort
 facade routes observable failures to a caller-supplied handler.
+Logging file outputs write complete records in one native call, support explicit
+flush policies, and expire after scoped close. Console outputs reflect Console's
+existing Unit-returning write contract. Custom outputs can share a serialization
+gate, and mixed sink/callback effects remain explicit in logger types.
 
 `Path` is a lossless opaque native path value: raw filename bytes on Unix and
 little-endian UTF-16 units on Windows. Its pure lexical operations never consult

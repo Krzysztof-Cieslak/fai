@@ -31,6 +31,17 @@ and retaining successful receipts alongside failures. Names must be distinct.
 handler runs once per failed operation, after checked operations release guards.
 The Fatal level does not terminate the application.
 
+`LogSink.stdout` and `stderr` use one Console call per line. Console does not expose
+OS write/flush failures, so a completed receipt means its API returned, not that
+the operating system confirmed delivery. File outputs use one native `writeChunk`
+per complete line; concurrent writes through the same Writer retain record
+boundaries. `LogSink.writer fs writer EachRecord` borrows a writer, while
+`LogSink.withFile env options path work` owns open/flush/close and reports callback
+and cleanup failures separately. File options default to append and EachRecord
+flushing; OnFlush buffers until an explicit flush or close. Neither implies fsync.
+Retained aliases return Closed after the scope. `LogSink.serialized` supplies a
+shared gate for custom outputs that need compound-operation serialization.
+
 ```sh
 fai fmt --check -C packages logging
 fai check -C packages logging

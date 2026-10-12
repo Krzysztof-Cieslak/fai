@@ -1,0 +1,12 @@
+module LogEffectChecks
+
+/// Concrete prototypes keep clock, file, console and callback effects visible.
+public combined : Clock -> Console -> FileSystem -> Writer -> Result (Log.Logger { Clock, Console, FileSystem }) Log.Error
+let combined clock console fs writer =
+  let sinks =
+    LogSink.combine (LogSink.formatted "console" Log.limits (LogFormat.Human false) (LogSink.stderr console)) (LogSink.formatted "file" Log.limits LogFormat.JsonLines (LogSink.writer fs writer LogSink.EachRecord))
+  Result.map (Log.withClock clock) (Log.create Log.defaults sinks)
+
+public adapted : Log.Logger { FileSystem } -> Console -> LogBestEffort.Logger { Console, FileSystem }
+let adapted logger console =
+  LogBestEffort.fromChecked logger (fun error -> console.writeError (Log.errorToString error))
