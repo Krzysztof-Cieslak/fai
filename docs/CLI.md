@@ -181,6 +181,10 @@ On Windows/MSVC, the driver passes linker inputs through a quoted UTF-16
 response file, so large programs are not limited by the process command-line
 length. The response file and generated objects share the temporary build
 directory and are removed together after linking.
+`FAI_LINKER` explicitly selects the Windows linker. Otherwise the driver prefers
+the MSVC developer environment's `VCToolsInstallDir` before searching `PATH`, so
+Git Bash's same-named Unix utility cannot shadow it. Link failures retain the
+linker's stdout and stderr in their diagnostic, including through the daemon.
 
 Compiler-generated native symbols use the versioned `fai2_` encoding and are an
 internal ABI; rebuild generated objects when updating the compiler. This replaces
