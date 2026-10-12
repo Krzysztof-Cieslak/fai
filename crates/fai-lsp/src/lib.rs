@@ -250,7 +250,8 @@ impl Server {
         examples_enabled: bool,
         use_local: bool,
     ) -> Result<Self, Box<dyn Error>> {
-        let root = root.canonicalize_utf8().unwrap_or(root);
+        let root = Utf8PathBuf::from_path_buf(std::path::absolute(root)?)
+            .map_err(|_| std::io::Error::other("workspace path is not UTF-8"))?;
         let session = Session::open_with_local(root.clone(), use_local)?;
         let standard_documents = StandardDocuments::new(session.db())?;
         Ok(Self {
@@ -951,6 +952,10 @@ impl Server {
         let path = Utf8PathBuf::from_path_buf(path).ok()?;
         let path = path.canonicalize_utf8().unwrap_or(path);
         if let Ok(relative) = path.strip_prefix(&self.root) {
+            return Some(relative.to_owned());
+        }
+        let path = path.canonicalize_utf8().unwrap_or(path);
+        if let Ok(relative) = path.strip_prefix(self.session.root()) {
             return Some(relative.to_owned());
         }
         (!self.session.analysis_files(Some(&path)).is_empty()).then_some(path)

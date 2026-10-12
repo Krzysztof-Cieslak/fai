@@ -421,7 +421,18 @@ impl Session {
     /// An explicit path can select only files already owned by the loaded graph.
     #[must_use]
     pub fn analysis_files(&self, path: Option<&Utf8Path>) -> Vec<SourceFile> {
-        let target = path.map(|path| normalized_path(&self.root.join(path)));
+        let target = path.map(|path| {
+            let path = self
+                .selection_path(path)
+                .map(|relative| self.root.join(relative))
+                .unwrap_or_else(|| {
+                    self.root
+                        .join(path)
+                        .canonicalize_utf8()
+                        .unwrap_or_else(|_| self.root.join(path))
+                });
+            normalized_path(&path)
+        });
         let mut files: Vec<_> = self
             .db
             .all_source_files()
@@ -664,7 +675,9 @@ impl Session {
         };
         let root = normalized_path(&root);
         let target = normalized_path(&root.join(path));
-        target.strip_prefix(&root).ok().map(Utf8Path::to_owned)
+        target.strip_prefix(&root).ok().map(Utf8Path::to_owned).or_else(|| {
+            target.canonicalize_utf8().ok()?.strip_prefix(&root).ok().map(Utf8Path::to_owned)
+        })
     }
 }
 
@@ -772,6 +785,32 @@ mod tests {
         let (_directory, session) = workspace();
         let path = session.root().join("nested/../Main.fai");
         assert_eq!(session.select_files_checked(Some(&path)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn absolute_selection_uses_the_callers_native_root_spelling() {
+        let (directory, session) = workspace();
+        let path = Utf8Path::from_path(directory.path()).unwrap().join("Main.fai");
+        assert_eq!(session.entry_file(&path).unwrap(), session.user_files()[0]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_selection_resolves_an_aliased_workspace_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = Utf8Path::from_path(directory.path()).unwrap();
+        std::fs::create_dir(base.join("real")).unwrap();
+        std::fs::write(base.join("real/Main.fai"), "module Main\nlet value = 1\n").unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("alias")).unwrap();
+        let session = Session::open(base.join("alias")).unwrap();
+        assert_eq!(
+            session.entry_file(&base.join("alias/Main.fai")).unwrap(),
+            session.user_files()[0]
+        );
+        assert_eq!(
+            session.analysis_files(Some(&base.join("alias/Main.fai"))),
+            session.user_files()
+        );
     }
 
     #[test]
