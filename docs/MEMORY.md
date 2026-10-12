@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- UUIDs are opaque network-order 16-byte source-library values. Equality, ordering
+  and hashing cover all bits, and ordering agrees with canonical lowercase text.
+  Parsing preserves every syntactically valid value independently of variant or
+  version; v4/v7 construction validates its own layout and timestamp inputs.
+
 - Ordinary package integration programs are declared in package-local `ci.json`
   metadata and executed by a generic JIT/AOT runner using the prepared compiler.
   Arguments, environment, output checks and commit-pinned data fixtures remain

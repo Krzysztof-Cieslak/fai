@@ -1,0 +1,267 @@
+module Uuid
+
+/// An immutable 128-bit value in RFC network byte order. Text syntax validation
+/// preserves every bit pattern; generation and inspection identify specific versions.
+public opaque type Uuid = Bytes
+
+public type ErrorKind =
+  | InvalidTextLength
+  | InvalidHex
+  | InvalidSeparator
+  | InvalidPrefix
+  | InvalidByteLength
+  | TimestampOutOfRange
+  | EntropyFailure
+  | UnexpectedEntropyLength
+
+/// Offsets address UTF-8 bytes in the original text. Length diagnostics count
+/// text scalars for text inputs and bytes for binary inputs. Cause retains an
+/// entropy provider's original failure message.
+public type Error = {
+  actual : Option Int,
+  cause : Option String,
+  expected : Option Int,
+  kind : ErrorKind,
+  message : String,
+  offset : Option Int
+}
+
+let error kind message = {
+  actual = None,
+  cause = None,
+  expected = None,
+  kind = kind,
+  message = message,
+  offset = None
+}
+
+let lengthError kind message expected actual = { (error kind message) with
+  actual = Some actual,
+  expected = Some expected
+}
+
+let located kind message offset = { (error kind message) with offset = Some offset }
+
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.offset with
+  | None -> ""
+  | Some offset -> " at byte " ++ Int.toString offset)
+
+let hexDigit byte =
+  if byte >= 48 && byte <= 57 then
+    byte - 48
+  else if byte >= 65 && byte <= 70 then
+    byte - 55
+  else if byte >= 97 && byte <= 102 then byte - 87 else -1
+
+let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+let separator index = index = 8 || index = 13 || index = 18 || index = 23
+
+decode : Bytes -> Int -> Int -> Bool -> Int -> Int -> List Int -> Result Uuid Error
+let decode bytes base length hyphens index high output =
+  if index >= length then
+    Ok (Bytes.fromList (List.reverse output))
+  else
+    let byte = at bytes (base + index)
+    if hyphens && separator index then
+      if byte = 45 then
+        decode bytes base length hyphens (index + 1) high output
+      else
+        Err (located InvalidSeparator "expected UUID hyphen" (base + index))
+    else
+      let digit = hexDigit byte
+      if digit < 0 then
+        Err (located InvalidHex "expected ASCII UUID hexadecimal digit" (base + index))
+      else if high < 0 then
+        decode bytes base length hyphens (index + 1) digit output
+      else
+        decode bytes base length hyphens (index + 1) (-1) (high * 16 + digit :: output)
+
+/// Parse exactly the 8-4-4-4-12 spelling. ASCII hex is case-insensitive;
+/// whitespace is significant and all 128-bit values are accepted.
+public parse : String -> Result Uuid Error
+let parse text =
+  let length = String.length text
+  if length <> 36 then
+    Err (lengthError InvalidTextLength "expected 36 UUID characters" 36 length)
+  else
+    decode (Bytes.fromString text) 0 36 true 0 (-1) []
+
+/// Parse exactly 32 hexadecimal digits without separators.
+public parseCompact : String -> Result Uuid Error
+let parseCompact text =
+  let length = String.length text
+  if length <> 32 then
+    Err (lengthError InvalidTextLength "expected 32 compact UUID characters" 32 length)
+  else
+    decode (Bytes.fromString text) 0 32 false 0 (-1) []
+
+let prefix bytes expected index =
+  if index = 9 then
+    Ok ()
+  else
+    let byte = at bytes index
+    let lower = if byte >= 65 && byte <= 90 then byte + 32 else byte
+    if lower = at expected index then
+      prefix bytes expected (index + 1)
+    else
+      Err (located InvalidPrefix "expected urn:uuid: prefix" index)
+
+/// Parse a case-insensitive urn:uuid: prefix followed by the canonical spelling.
+public parseUrn : String -> Result Uuid Error
+let parseUrn text =
+  let length = String.length text
+  if length <> 45 then
+    Err (lengthError InvalidTextLength "expected 45 UUID URN characters" 45 length)
+  else
+    let bytes = Bytes.fromString text
+    match prefix bytes (Bytes.fromString "urn:uuid:") 0 with
+    | Err error -> Err error
+    | Ok _ -> decode bytes 9 36 true 0 (-1) []
+
+/// Construct from exactly 16 bytes, in network order on every platform.
+public fromBytes : Bytes -> Result Uuid Error
+let fromBytes bytes =
+  let length = Bytes.length bytes
+  if length = 16 then
+    Ok bytes
+  else
+    Err (lengthError InvalidByteLength "expected 16 UUID bytes" 16 length)
+
+/// Return the immutable 16-byte network-order representation.
+public toBytes : Uuid -> Bytes
+let toBytes uuid = uuid
+
+let hex = "0123456789abcdef"
+
+let hexByte byte = String.substring (byte / 16) 1 hex ++ String.substring (byte % 16) 1 hex
+
+let render uuid index hyphens output =
+  if index = 16 then
+    String.join "" (List.reverse output)
+  else
+    let digit = hexByte (Bytes.unsafeGet index uuid)
+    let piece =
+      (if hyphens && (index = 4 || index = 6 || index = 8 || index = 10) then "-" else "") ++ digit
+    render uuid (index + 1) hyphens (piece :: output)
+
+/// Render lowercase 8-4-4-4-12 text, independent of the input spelling.
+public toString : Uuid -> String
+let toString uuid = render uuid 0 true []
+
+public toCompact : Uuid -> String
+let toCompact uuid = render uuid 0 false []
+
+public toUrn : Uuid -> String
+let toUrn uuid = "urn:uuid:" ++ toString uuid
+
+public nil : Uuid
+let nil = Bytes.fromList [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+public max : Uuid
+let max = Bytes.fromList [
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255,
+  255
+]
+
+public isNil : Uuid -> Bool
+let isNil uuid = uuid = nil
+
+public isMax : Uuid -> Bool
+let isMax uuid = uuid = max
+
+public type Variant =
+  | Ncs
+  | Rfc
+  | Microsoft
+  | Reserved
+
+public variant : Uuid -> Variant
+let variant uuid =
+  let byte = Bytes.unsafeGet 8 uuid
+  if byte < 128 then Ncs else if byte < 192 then Rfc else if byte < 224 then Microsoft else Reserved
+
+/// The raw version nibble for the RFC variant, including currently reserved
+/// version numbers. Other variants, including nil and max, return None.
+public version : Uuid -> Option Int
+let version uuid = if variant uuid = Rfc then Some (Bytes.unsafeGet 6 uuid / 16) else None
+
+public isV4 : Uuid -> Bool
+let isV4 uuid = version uuid = Some 4
+
+public isV7 : Uuid -> Bool
+let isV7 uuid = version uuid = Some 7
+
+/// Set the v4 version and RFC variant, preserving the other 122 supplied bits.
+public v4FromRandom : Bytes -> Result Uuid Error
+let v4FromRandom bytes =
+  if Bytes.length bytes <> 16 then
+    Err (lengthError InvalidByteLength "expected 16 random bytes for UUIDv4" 16 (Bytes.length bytes))
+  else
+    Ok (Bytes.fromList (List.map (fun index -> v4Byte bytes index) (List.range 0 16)))
+
+let v4Byte bytes index =
+  let byte = Bytes.unsafeGet index bytes
+  if index = 6 then
+    Int.or 64 (Int.and byte 15)
+  else if index = 8 then Int.or 128 (Int.and byte 63) else byte
+
+maxUnixMillis : Int
+let maxUnixMillis = 281474976710655
+
+let timestamp millis =
+  if millis < 0 || millis > maxUnixMillis then
+    Err { (error TimestampOutOfRange "UUIDv7 Unix milliseconds must be in 0..281474976710655") with
+      actual = Some millis
+    }
+  else
+    Ok ()
+
+/// Combine 48-bit Unix milliseconds with ten random bytes. Random byte 0 keeps
+/// its low four bits; byte 2 keeps its low six bits. The other bytes are unchanged.
+public v7FromRandom : Int -> Bytes -> Result Uuid Error
+let v7FromRandom millis bytes =
+  match timestamp millis with
+  | Err error -> Err error
+  | Ok _ ->
+    if Bytes.length bytes <> 10 then
+      Err (lengthError InvalidByteLength "expected 10 random bytes for UUIDv7" 10 (Bytes.length bytes))
+    else
+      Ok (Bytes.fromList (List.map (fun index -> v7Byte millis bytes index) (List.range 0 16)))
+
+let v7Byte millis bytes index =
+  if index < 6 then
+    Int.and 255 (Int.shiftRightLogical millis ((5 - index) * 8))
+  else
+    let byte = Bytes.unsafeGet (index - 6) bytes
+    if index = 6 then
+      Int.or 112 (Int.and byte 15)
+    else if index = 8 then Int.or 128 (Int.and byte 63) else byte
+
+let unixMillis uuid index millis =
+  if index = 6 then
+    millis
+  else
+    unixMillis uuid (index + 1) (millis * 256 + Bytes.unsafeGet index uuid)
+
+public v7UnixMillis : Uuid -> Option Int
+let v7UnixMillis uuid = if isV7 uuid then Some (unixMillis uuid 0 0) else None
+
+public v7Instant : Uuid -> Option Instant
+let v7Instant uuid = Option.map Instant.fromUnixTimeMillis (v7UnixMillis uuid)

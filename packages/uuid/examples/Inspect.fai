@@ -1,0 +1,10 @@
+module UuidInspect
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  match Uuid.parse "017f22e2-79b0-7cc3-98c4-dc0c0c07398f" with
+  | Err error -> env.console.writeLine (Uuid.errorToString error)
+  | Ok uuid ->
+    env.console.writeLine (Uuid.toString uuid ++ " unix-ms=" ++ (match Uuid.v7UnixMillis uuid with
+    | Some millis -> Int.toString millis
+    | None -> "none"))

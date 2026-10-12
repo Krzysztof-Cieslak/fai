@@ -1,0 +1,45 @@
+module UuidValueSpec
+
+let inspect text = Result.map (fun uuid -> (Uuid.variant uuid, Uuid.version uuid)) (Uuid.parse text)
+example: inspect "00000000-0000-7000-0000-000000000000" = Ok (Uuid.Ncs, None)
+example: inspect "00000000-0000-7000-8000-000000000000" = Ok (Uuid.Rfc, Some 7)
+example: inspect "00000000-0000-f000-bfff-000000000000" = Ok (Uuid.Rfc, Some 15)
+example: inspect "00000000-0000-0000-8000-000000000000" = Ok (Uuid.Rfc, Some 0)
+example: inspect "00000000-0000-7000-c000-000000000000" = Ok (Uuid.Microsoft, None)
+example: inspect "00000000-0000-7000-e000-000000000000" = Ok (Uuid.Reserved, None)
+example: Uuid.version Uuid.nil = None && Uuid.variant Uuid.nil = Uuid.Ncs
+example: Uuid.version Uuid.max = None && Uuid.variant Uuid.max = Uuid.Reserved
+example: compare Uuid.nil Uuid.max < 0
+
+let ordering =
+  match (Uuid.parse "7fffffff-ffff-ffff-ffff-ffffffffffff", Uuid.parse "80000000-0000-0000-0000-000000000000") with
+  | (Ok a, Ok b) ->
+    a < b && compare a b < 0 && Uuid.toBytes a < Uuid.toBytes b && Uuid.toString a < Uuid.toString b
+  | _ -> false
+example: ordering
+
+let equalKeys =
+  match (Uuid.parse "ABCDEF01-2345-4678-9ABC-DEF012345678", Uuid.parse "abcdef01-2345-4678-9abc-def012345678") with
+  | (Ok a, Ok b) ->
+    a = b && compare a b = 0 && HashSet.size (HashSet.fromList [
+      a,
+      b
+    ]) = 1 && Dict.get b (Dict.singleton a 42) = Some 42
+  | _ -> false
+example: equalKeys
+example: Uuid.v7UnixMillis Uuid.nil = None && Uuid.v7Instant Uuid.max = None
+example: inspect "00000000-0000-7000-7fff-000000000000" = Ok (Uuid.Ncs, None)
+example: inspect "00000000-0000-7000-dfff-000000000000" = Ok (Uuid.Microsoft, None)
+
+let wordBytes word =
+  List.map (fun index ->
+    Int.and 255 (Int.shiftRightLogical word ((7 - index) * 8))) (List.range 0 8)
+
+let orderingMatches high low otherHigh otherLow =
+  let left = Bytes.fromList (List.append (wordBytes high) (wordBytes low))
+  let right = Bytes.fromList (List.append (wordBytes otherHigh) (wordBytes otherLow))
+  match (Uuid.fromBytes left, Uuid.fromBytes right) with
+  | (Ok a, Ok b) ->
+    compare a b = compare left right && compare a b = compare (Uuid.toString a) (Uuid.toString b)
+  | _ -> false
+forall high low otherHigh otherLow: orderingMatches high low otherHigh otherLow

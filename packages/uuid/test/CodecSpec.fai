@@ -1,0 +1,121 @@
+module UuidCodecSpec
+
+let canonical = "01234567-89ab-cdef-0123-456789abcdef"
+example: Result.map Uuid.toString (Uuid.parse "01234567-89AB-CDEF-0123-456789ABCDEF") = Ok canonical
+example: Result.map Uuid.toBytes (Uuid.parse canonical) = Ok (Bytes.fromList [
+  1,
+  35,
+  69,
+  103,
+  137,
+  171,
+  205,
+  239,
+  1,
+  35,
+  69,
+  103,
+  137,
+  171,
+  205,
+  239
+])
+example: Result.map Uuid.toString (Uuid.fromBytes (Bytes.fromList [
+  1,
+  35,
+  69,
+  103,
+  137,
+  171,
+  205,
+  239,
+  1,
+  35,
+  69,
+  103,
+  137,
+  171,
+  205,
+  239
+])) = Ok canonical
+example: Result.map Uuid.toString (Uuid.parseCompact "0123456789ABCDEF0123456789ABCDEF") = Ok canonical
+example: Result.map Uuid.toString (Uuid.parseUrn "UrN:UuId:01234567-89AB-CDEF-0123-456789ABCDEF") = Ok canonical
+example: Uuid.toString Uuid.nil = "00000000-0000-0000-0000-000000000000"
+example: Uuid.toString Uuid.max = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+example: Uuid.toCompact Uuid.nil = "00000000000000000000000000000000"
+example: Uuid.toUrn Uuid.nil = "urn:uuid:00000000-0000-0000-0000-000000000000"
+example: Uuid.isNil Uuid.nil && not (Uuid.isNil Uuid.max) && Uuid.isMax Uuid.max
+example: Uuid.fromBytes Bytes.empty |> Result.isErr
+example: Uuid.fromBytes (Bytes.fromList (List.range 0 15)) |> Result.isErr
+example: Uuid.fromBytes (Bytes.fromList (List.range 0 17)) |> Result.isErr
+example: Uuid.parse "0123456789abcdef0123456789abcdef" |> Result.isErr
+example: Uuid.parse (" " ++ canonical) |> Result.isErr
+example: Uuid.parse (canonical ++ " ") |> Result.isErr
+example: Uuid.parse ("{" ++ canonical ++ "}") |> Result.isErr
+example: Uuid.parse ("urn:uuid:" ++ canonical) |> Result.isErr
+example: Uuid.parseCompact canonical |> Result.isErr
+example: (match Uuid.parse "01234567_89ab-cdef-0123-456789abcdef" with
+| Err error -> error.kind = Uuid.InvalidSeparator && error.offset = Some 8
+| _ -> false)
+example: (match Uuid.parse "01234567-89ab_cdef-0123-456789abcdef" with
+| Err error -> error.kind = Uuid.InvalidSeparator && error.offset = Some 13
+| _ -> false)
+example: (match Uuid.parse "01234567-89ab-cdef_0123-456789abcdef" with
+| Err error -> error.kind = Uuid.InvalidSeparator && error.offset = Some 18
+| _ -> false)
+example: (match Uuid.parse "01234567-89ab-cdef-0123_456789abcdef" with
+| Err error -> error.kind = Uuid.InvalidSeparator && error.offset = Some 23
+| _ -> false)
+example: (match Uuid.parse "01234567-89ab-cdef-0123-456789abcdeg" with
+| Err error -> error.kind = Uuid.InvalidHex && error.offset = Some 35
+| _ -> false)
+example: (match Uuid.parse "01234567-89ab-cdef-0123-456789abcdeé" with
+| Err error -> error.kind = Uuid.InvalidHex && error.offset = Some 35
+| _ -> false)
+example: (match Uuid.parse "01234567-89ab-cdef-0123-456789abcde\u{0}" with
+| Err error -> error.kind = Uuid.InvalidHex && error.offset = Some 35
+| _ -> false)
+example: (match Uuid.parse "" with
+| Err error ->
+  error.kind = Uuid.InvalidTextLength && error.expected = Some 36 && error.actual = Some 0 && error.offset = None
+| _ -> false)
+example: (match Uuid.parseUrn "urn:guid:01234567-89ab-cdef-0123-456789abcdef" with
+| Err error -> error.kind = Uuid.InvalidPrefix && error.offset = Some 4
+| _ -> false)
+example: (match Uuid.parseUrn "urn:uuid:01234567-89ab-cdef-0123-456789abcdeg" with
+| Err error -> error.kind = Uuid.InvalidHex && error.offset = Some 44
+| _ -> false)
+
+let wordBytes word =
+  List.map (fun index ->
+    Int.and 255 (Int.shiftRightLogical word ((7 - index) * 8))) (List.range 0 8)
+
+let roundTrip high low =
+  let bytes = Bytes.fromList (List.append (wordBytes high) (wordBytes low))
+  match Uuid.fromBytes bytes with
+  | Err _ -> false
+  | Ok uuid ->
+    Uuid.toBytes uuid = bytes && Uuid.parse (Uuid.toString uuid) = Ok uuid && Uuid.parseCompact (Uuid.toCompact uuid) = Ok uuid && Uuid.parseUrn (Uuid.toUrn uuid) = Ok uuid
+forall high low: roundTrip high low
+
+let total text =
+  match Uuid.parse text with
+  | Ok uuid -> Bytes.length (Uuid.toBytes uuid) = 16 && String.length (Uuid.toString uuid) = 36
+  | Err error ->
+    match error.offset with
+    | None -> true
+    | Some offset -> offset >= 0 && offset < Bytes.length (Bytes.fromString text)
+forall text: total text
+example: (match Uuid.parseCompact "0123456789abcdef0123456789abcdeg" with
+| Err error -> error.kind = Uuid.InvalidHex && error.offset = Some 31
+| _ -> false)
+example: (match Uuid.parseUrn "urn:uuİd:01234567-89ab-cdef-0123-456789abcdef" with
+| Err error -> error.kind = Uuid.InvalidPrefix && error.offset = Some 6
+| _ -> false)
+example: (match Uuid.parse (String.joinArray "" (Array.repeat 4096 "0")) with
+| Err error -> error.kind = Uuid.InvalidTextLength && error.actual = Some 4096
+| _ -> false)
+example: (match Uuid.fromBytes (Bytes.fromList [1, 2]) with
+| Err error ->
+  error.kind = Uuid.InvalidByteLength && error.expected = Some 16 && error.actual = Some 2
+| _ -> false)

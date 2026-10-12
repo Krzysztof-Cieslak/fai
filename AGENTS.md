@@ -1165,6 +1165,11 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/uuid` library stores UUIDs as opaque 16-byte network-order
+values. Canonical, compact and URN codecs are pure; syntax validation accepts all
+bit patterns while version/variant inspection remains explicit. Pure v4/v7
+constructors preserve random payload bits and check the v7 timestamp's 48-bit range.
+
 The optional `packages/csv` source package uses a pure incremental byte parser
 for text and arbitrary-byte records. It retains byte-addressed source spans,
 validates text UTF-8 across chunks, and emits at most one record per feed step.
