@@ -151,6 +151,29 @@ impl ManifestDocument {
         Self::parse(self.source, &document.to_string())
     }
 
+    /// Sets the root's vendor directory without discarding authored TOML comments.
+    pub fn with_vendor_directory(
+        &self,
+        directory: &crate::PackagePath,
+    ) -> Result<Self, Vec<Diagnostic>> {
+        let mut document = self.document.clone().into_mut();
+        let vendor =
+            document.as_table_mut().entry("vendor").or_insert(Item::Table(toml_edit::Table::new()));
+        let Some(table) = vendor.as_table_like_mut() else {
+            return Err(vec![self.diagnostic(
+                INVALID_MANIFEST,
+                "vendor settings must be a table",
+                "vendor",
+            )]);
+        };
+        let mut value = Value::from(directory.to_string());
+        if let Some(previous) = table.get("directory").and_then(Item::as_value) {
+            *value.decor_mut() = previous.decor().clone();
+        }
+        table.insert("directory", Item::Value(value));
+        Self::parse(self.source, &document.to_string())
+    }
+
     /// Sets one root dependency while retaining surrounding authored TOML trivia.
     pub fn with_dependency(
         &self,

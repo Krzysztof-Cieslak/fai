@@ -25,6 +25,8 @@ pub enum PackageCommand {
     Update(Vec<String>),
     /// Inspect recorded graphs without restoring or changing selections.
     Deps { why: Option<String> },
+    /// Snapshot selected locked Git sources under a project-owned directory.
+    Vendor { directory: Option<fai_package::PackagePath> },
     /// Add a dependency, deriving a caret requirement when requested.
     Add {
         dependency: Dependency,
@@ -103,11 +105,15 @@ pub fn run_package_command(
     options: &ProjectOptions,
     targets: &[TargetPlatform],
 ) -> Result<PackageOutput, DriverError> {
+    if let PackageCommand::Vendor { directory } = command {
+        return vendor_project(root, directory.as_ref(), options, targets);
+    }
     let name = match command {
         PackageCommand::Resolve => "resolve",
         PackageCommand::Fetch => "fetch",
         PackageCommand::Update(_) => "update",
         PackageCommand::Deps { .. } => "deps",
+        PackageCommand::Vendor { .. } => "vendor",
         PackageCommand::Add { .. } => "add",
         PackageCommand::Remove { .. } => "remove",
     };
@@ -122,6 +128,7 @@ pub fn run_package_command(
             mode.inspect = true;
             mode.write = false;
         }
+        PackageCommand::Vendor { .. } => unreachable!("handled before graph mutation"),
         PackageCommand::Add { .. } | PackageCommand::Remove { .. } => {
             if mode.targets.is_empty() {
                 mode.targets.push(host()?);
@@ -144,6 +151,10 @@ pub fn run_package_command(
             }
             let path = selected.roots[0].1.join("fai.toml");
             let original = read_manifest(&path)?;
+            mode.expected_inputs.insert(
+                path.clone(),
+                fai_package_store::FileEdit::fingerprint(original.text().as_bytes()),
+            );
             edited_root = Some(selected.roots[0].1.clone());
             match command {
                 PackageCommand::Remove { alias, development } => {
@@ -240,6 +251,12 @@ pub fn run_package_command(
                         })?;
                     mode.manifest_edits.insert(path.clone(), changed.text().into());
                     authored = Some(format!("added {selected_alias} at {}", package.version));
+                    mode.expected_lock = Some(
+                        preview
+                            .original_lock
+                            .as_ref()
+                            .map(|text| fai_package_store::FileEdit::fingerprint(text.as_bytes())),
+                    );
                     mode.seed_lock = preview.lock;
                     mode.write = true;
                 }
@@ -327,6 +344,134 @@ pub fn run_package_command(
 
 fn required_project(project: Option<PreparedProject>) -> Result<PreparedProject, DriverError> {
     project.ok_or_else(|| failure("package commands require a versioned fai.toml manifest"))
+}
+
+fn vendor_project(
+    root: &Utf8Path,
+    requested: Option<&fai_package::PackagePath>,
+    options: &ProjectOptions,
+    targets: &[TargetPlatform],
+) -> Result<PackageOutput, DriverError> {
+    let restore = ProjectOptions { no_vendor: true, ..options.clone() };
+    let project = required_project(prepare_request(
+        root,
+        &[],
+        &restore,
+        None,
+        PrepareMode {
+            metadata_only: true,
+            write: false,
+            targets: targets.to_vec(),
+            ..Default::default()
+        },
+    )?)?;
+    let mut result = output("vendor", &project)?;
+    let lock =
+        project.lock.as_ref().ok_or_else(|| failure("vendor preparation has no selected graph"))?;
+    let mut selected = lock.clone();
+    selected.graphs.retain(|graph| {
+        result.roots.contains(&graph.root) && project.targets.contains(&graph.target)
+    });
+    let used: BTreeSet<_> =
+        selected.graphs.iter().flat_map(|graph| &graph.packages).cloned().collect();
+    selected.packages.retain(|package| used.contains(&package.id));
+    for package in &selected.packages {
+        if let LockSource::Path { path } = &package.source {
+            let actual =
+                project.configuration_root.join(path).canonicalize_utf8().map_err(|source| {
+                    DriverError::Io { path: project.configuration_root.join(path), source }
+                })?;
+            if !actual.starts_with(&project.configuration_root) {
+                return Err(fai_package::ProviderFailure { code: fai_package::VENDOR_UNAVAILABLE, message: "vendor snapshots cannot include mutable paths outside the active project; use a shared in-project source or immutable Git dependency".into() }.into());
+            }
+        }
+    }
+    let manifest_path = project.configuration_root.join("fai.toml");
+    let document = read_manifest(&manifest_path)?;
+    if project.observed.iter().any(|(path, expected)| {
+        path == &manifest_path
+            && fai_package_store::FileEdit::fingerprint(document.text().as_bytes()) != *expected
+    }) {
+        return Err(fai_package::ProviderFailure {
+            code: fai_package::INPUTS_CHANGED,
+            message: "root manifest changed during vendor preparation".into(),
+        }
+        .into());
+    }
+    let directory = requested
+        .cloned()
+        .or_else(|| document.manifest().vendor_dir.clone())
+        .unwrap_or_else(|| fai_package::PackagePath::parse("vendor").expect("literal vendor path"));
+    if directory.is_root() {
+        return Err(failure("vendor directory must be a project subdirectory"));
+    }
+    let destination = project.configuration_root.join(directory.as_str());
+    let mut existing = destination.as_path();
+    while !existing.exists() {
+        existing = existing.parent().ok_or_else(|| failure("invalid vendor destination"))?;
+    }
+    if !existing
+        .canonicalize_utf8()
+        .map_err(|source| DriverError::Io { path: existing.to_owned(), source })?
+        .starts_with(&project.configuration_root)
+    {
+        return Err(failure("vendor directory escapes the active project through a symlink"));
+    }
+    let _guard =
+        fai_package_store::lock_file(&project.configuration_root.join(".fai/vendor.lock"))?;
+    let old_index = match std::fs::read_to_string(destination.join("fai-vendor.toml")) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(source) => {
+            return Err(DriverError::Io { path: destination.join("fai-vendor.toml"), source });
+        }
+    };
+    let cache = crate::cache::cache_dir().unwrap_or_else(|| std::env::temp_dir().join("fai-cache"));
+    let cache =
+        Utf8PathBuf::from_path_buf(cache).map_err(|_| failure("cache path is not UTF-8"))?;
+    let index = fai_package_store::VendorIndex::prepare(
+        &destination,
+        &selected,
+        &fai_package_store::GitStore::new(cache.join("packages"), options.offline),
+    )?;
+    let changed = document
+        .with_vendor_directory(&directory)
+        .map_err(|diagnostics| manifest_failure(&manifest_path, document.text(), diagnostics))?;
+    let mut edits = vec![fai_package_store::FileEdit::new(
+        format!("{directory}/fai-vendor.toml"),
+        old_index.as_deref(),
+        index.to_toml()?,
+    )];
+    if changed.text() != document.text() {
+        edits.push(fai_package_store::FileEdit::new(
+            "fai.toml".into(),
+            Some(document.text()),
+            changed.text().into(),
+        ));
+    }
+    if project.previous_lock.as_ref() != Some(lock) {
+        edits.push(fai_package_store::FileEdit::new(
+            result.lockfile.clone(),
+            project.original_lock.as_deref(),
+            lock.to_toml()?,
+        ));
+    }
+    let observed = project
+        .observed
+        .iter()
+        .map(|(path, digest)| (path.to_string(), Some(digest.clone())))
+        .collect();
+    fai_package_store::MetadataTransaction::new(edits, observed)
+        .commit(&project.configuration_root)?;
+    result.notices.push(format!(
+        "vendored {} Git package sources into {directory}",
+        selected
+            .packages
+            .iter()
+            .filter(|package| matches!(package.source, LockSource::Git { .. }))
+            .count()
+    ));
+    Ok(result)
 }
 
 fn output(command: &str, project: &PreparedProject) -> Result<PackageOutput, DriverError> {

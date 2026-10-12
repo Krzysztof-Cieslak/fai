@@ -12,6 +12,9 @@ queries and the pure `fai-package` models.
   require explicit support rather than becoming incomplete source trees.
 - `MetadataTransaction` journals exact manifest/lock replacements and checks
   preconditions before writing. Recovery preserves independently edited files.
+- `VendorIndex` maps full locked descriptors to verified content-addressed trees.
+  Configured entries are strict; callers explicitly select cache/Git bypass or
+  regenerate source trees before journaling the index and root configuration.
 
 Callers own root selection, source eligibility, resolution policy, and lock
 validity. Retrieval errors are distinct from version incompatibilities.

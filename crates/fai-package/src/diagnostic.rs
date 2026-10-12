@@ -38,6 +38,8 @@ pub const RELEASE_MOVED: DiagnosticCode = DiagnosticCode::new("FAI0815");
 pub const INPUTS_CHANGED: DiagnosticCode = DiagnosticCode::new("FAI0825");
 /// The source tree requires unsupported external content or link semantics.
 pub const UNSUPPORTED_SOURCE_LAYOUT: DiagnosticCode = DiagnosticCode::new("FAI0827");
+/// A required vendored source has no matching verified entry.
+pub const VENDOR_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("FAI0820");
 /// More than one replacement can apply to the same package and root.
 pub const OVERLAPPING_OVERRIDES: DiagnosticCode = DiagnosticCode::new("FAI0816");
 /// More than one dependency declaration can bind the same active alias.
@@ -47,6 +49,12 @@ pub const INVALID_TARGET: DiagnosticCode = DiagnosticCode::new("FAI0819");
 
 /// Package metadata diagnostics, shared by the parser and source planner.
 pub const CODES: &[CodeInfo] = &[
+    CodeInfo {
+        code: VENDOR_UNAVAILABLE,
+        title: "vendored source unavailable",
+        default_severity: Severity::Error,
+        explanation: "A required source has no matching verified vendor entry or its bytes changed. Refresh the vendor snapshot, or explicitly use --no-vendor to restore through the normal source provider. Configured vendoring never silently falls through to the network.",
+    },
     CodeInfo {
         code: AUTHENTICATION_REQUIRED,
         title: "Git authentication required",

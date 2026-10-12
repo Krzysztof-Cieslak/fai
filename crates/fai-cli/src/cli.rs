@@ -128,6 +128,12 @@ pub enum Command {
     Resolve,
     /// Prepare selected graphs and materialize their sources.
     Fetch,
+    /// Snapshot locked Git dependencies for cache-independent offline builds.
+    Vendor {
+        /// Project-relative source snapshot directory.
+        #[arg(long = "dir")]
+        directory: Option<String>,
+    },
     /// Update all dependencies or the specified aliases/logical keys.
     Update { packages: Vec<String> },
     /// Inspect recorded dependency graphs without updating them.

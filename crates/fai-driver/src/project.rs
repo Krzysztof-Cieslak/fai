@@ -51,6 +51,8 @@ pub(crate) struct PrepareMode {
     pub targets: Vec<TargetPlatform>,
     pub manifest_edits: BTreeMap<Utf8PathBuf, String>,
     pub seed_lock: Option<fai_package::LockFile>,
+    pub expected_lock: Option<Option<fai_package::Digest>>,
+    pub expected_inputs: BTreeMap<Utf8PathBuf, fai_package::Digest>,
 }
 
 impl Default for PrepareMode {
@@ -64,6 +66,8 @@ impl Default for PrepareMode {
             targets: Vec::new(),
             manifest_edits: BTreeMap::new(),
             seed_lock: None,
+            expected_lock: None,
+            expected_inputs: BTreeMap::new(),
         }
     }
 }
@@ -136,6 +140,7 @@ pub(crate) struct PreparedProject {
     pub configuration_root: Utf8PathBuf,
     pub lock: Option<fai_package::LockFile>,
     pub previous_lock: Option<fai_package::LockFile>,
+    pub original_lock: Option<String>,
     pub targets: Vec<TargetPlatform>,
     pub stale_graphs: Vec<String>,
     pub notices: Vec<String>,
@@ -170,6 +175,7 @@ struct Loader<'a> {
     project: PreparedProject,
     mode: PrepareMode,
     observed: BTreeMap<Utf8PathBuf, fai_package::Digest>,
+    vendor_dir: Option<Utf8PathBuf>,
 }
 
 /// Returns `None` for a directory/legacy-native project.
@@ -226,12 +232,14 @@ pub(crate) fn prepare_request(
             configuration_root: base.clone(),
             lock: None,
             previous_lock: None,
+            original_lock: None,
             targets: Vec::new(),
             stale_graphs: Vec::new(),
             notices: Vec::new(),
         },
         mode,
         observed: BTreeMap::new(),
+        vendor_dir: None,
     };
     let document = loader.document(&base.join(fai_package::MANIFEST_NAME), false)?;
     if document.kind() == ManifestKind::LegacyNative {
@@ -337,6 +345,11 @@ pub(crate) fn prepare_request(
         roots = selected;
     }
     loader.project.configuration_root = loader.configuration_root.clone();
+    loader.vendor_dir = configuration
+        .manifest()
+        .vendor_dir
+        .as_ref()
+        .map(|path| loader.configuration_root.join(path.as_str()));
     let one_root = roots.len() == 1;
     let explicit_targets = !loader.mode.targets.is_empty();
     let targets = if explicit_targets {
@@ -554,6 +567,15 @@ impl Loader<'_> {
         }
         let text = std::fs::read_to_string(path)
             .map_err(|source| DriverError::Io { path: path.to_owned(), source })?;
+        if self.mode.expected_inputs.get(path).is_some_and(|expected| {
+            fai_package_store::FileEdit::fingerprint(text.as_bytes()) != *expected
+        }) {
+            return Err(fai_package::ProviderFailure {
+                code: fai_package::INPUTS_CHANGED,
+                message: format!("manifest {path} changed while its edit was being prepared"),
+            }
+            .into());
+        }
         self.observed
             .insert(path.to_owned(), fai_package_store::FileEdit::fingerprint(text.as_bytes()));
         let text = self.mode.manifest_edits.get(path).cloned().unwrap_or(text);
