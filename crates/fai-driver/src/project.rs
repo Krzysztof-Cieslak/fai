@@ -415,22 +415,16 @@ impl Loader<'_> {
         };
         let mut members = BTreeSet::new();
         for (index, pattern) in workspace.members.iter().enumerate() {
-            let pattern =
-                format!("{}/{}", glob::Pattern::escape(&root.as_str().replace('\\', "/")), pattern);
-            let matches = glob::glob(&pattern).map_err(|error| {
+            let matches = workspace_matches(root, pattern).map_err(|error| {
                 self.error(
                     document,
                     &format!("workspace.members[{index}]"),
                     fai_package::INVALID_SOURCE,
-                    error.to_string(),
+                    error,
                 )
             })?;
             let mut found = false;
-            for entry in matches {
-                let path = entry.map_err(|error| project_message(error.to_string()))?;
-                let path = Utf8PathBuf::from_path_buf(path).map_err(|path| {
-                    DriverError::NonUtf8Path(path.to_string_lossy().into_owned())
-                })?;
+            for path in matches {
                 let path = canonical(&path)?;
                 if !path.starts_with(root) || !path.join(fai_package::MANIFEST_NAME).is_file() {
                     return Err(self.error(
@@ -666,6 +660,55 @@ impl Loader<'_> {
         };
         self.local.iter().find(matches).or_else(|| self.shared.iter().find(matches))
     }
+}
+
+/// Match only relative member names; native roots can contain glob metacharacters
+/// and Windows verbatim prefixes that must never be parsed as pattern syntax.
+fn workspace_matches(root: &Utf8Path, pattern: &str) -> Result<Vec<Utf8PathBuf>, String> {
+    let matcher = glob::Pattern::new(pattern).map_err(|error| error.to_string())?;
+    if !pattern.contains(['*', '?', '[']) {
+        let path = root.join(pattern);
+        return Ok(if path.exists() { vec![path] } else { Vec::new() });
+    }
+    let mut start = root.to_owned();
+    for part in pattern.split('/').take_while(|part| !part.contains(['*', '?', '['])) {
+        start.push(part);
+    }
+    if !start.is_dir() {
+        return Ok(Vec::new());
+    }
+    let options = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: true,
+    };
+    let mut pending = vec![start];
+    let mut visited = BTreeSet::new();
+    let mut result = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let relative = directory.strip_prefix(root).map_err(|error| error.to_string())?;
+        let relative =
+            relative.components().map(|part| part.as_str()).collect::<Vec<_>>().join("/");
+        if matcher.matches_with(&relative, options) {
+            result.push(directory.clone());
+        }
+        let real = directory.canonicalize_utf8().map_err(|error| error.to_string())?;
+        if !real.starts_with(root) || !visited.insert(real) {
+            continue;
+        }
+        for entry in std::fs::read_dir(&directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = Utf8PathBuf::from_path_buf(entry.path())
+                .map_err(|_| "workspace member path is not UTF-8".to_owned())?;
+            let name = path.file_name().unwrap_or_default();
+            if !name.starts_with('.') && !matches!(name, "target" | "node_modules") && path.is_dir()
+            {
+                pending.push(path);
+            }
+        }
+    }
+    result.sort();
+    Ok(result)
 }
 
 fn canonical(path: &Utf8Path) -> Result<Utf8PathBuf, DriverError> {
