@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- SQL UUIDs use the standalone Uuid.Uuid value through a transparent SqlUuid.Uuid
+  compatibility alias. Legacy canonical parsing and String errors are preserved.
+  SQLite UUID storage remains canonical text; PostgreSQL binary UUID results
+  decode directly from network-order bytes without a text intermediate.
+
 - UUIDv4/v7 generation uses explicit Crypto.Entropy and Clock capabilities with
   exact response-length checks. UUIDv7 is stateless: same-millisecond suffixes
   are random, and clock rollback is preserved rather than clamped. Timestamp

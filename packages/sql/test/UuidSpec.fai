@@ -1,0 +1,29 @@
+module SqlUuidSpec
+
+let text = "01234567-89ab-cdef-0123-456789abcdef"
+
+let compatibility =
+  match (Uuid.parse text, SqlUuid.parse "01234567-89AB-CDEF-0123-456789ABCDEF") with
+  | (Ok current, Ok legacy) ->
+    current = legacy && SqlUuid.toString current = text && Uuid.toBytes current = Uuid.toBytes legacy
+  | _ -> false
+example: compatibility
+example: SqlUuid.parse "" = Err "invalid UUID"
+example: SqlUuid.parse "0123456789abcdef0123456789abcdef" = Err "invalid UUID"
+example: SqlUuid.parse ("urn:uuid:" ++ text) = Err "invalid UUID"
+example: SqlUuid.parse ("{" ++ text ++ "}") = Err "invalid UUID"
+example: SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.nil) = Ok Uuid.nil
+example: SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.max) = Ok Uuid.max
+example: SqlDecode.decodeValue SqlDecode.uuid (Sql.Text text) = (Uuid.parse text |> Result.mapError (fun _ ->
+  Sql.error Sql.DecodeFailure "uuid" "invalid UUID"))
+example: SqlDecode.decodeValue SqlDecode.uuid (Sql.Integer 0) |> Result.isErr
+
+let roundTrip bits =
+  let bytes =
+    Bytes.fromList (List.map (fun index ->
+      Int.and 255 (Int.shiftRightLogical bits ((index % 8) * 8))) (List.range 0 16))
+  match Uuid.fromBytes bytes with
+  | Err _ -> false
+  | Ok uuid ->
+    SqlUuid.parse (Uuid.toString uuid) = Ok uuid && SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid uuid) = Ok uuid
+forall bits: roundTrip bits

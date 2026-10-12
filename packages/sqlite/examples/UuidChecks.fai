@@ -1,0 +1,53 @@
+module SqliteUuidChecks
+
+public type UuidRuntime = { console : Console, sqlite : SqliteHost.Sqlite }
+
+let runtime = { console = stdConsole, sqlite = SqliteHost.native }
+
+let bad message = Sql.error Sql.BackendFailure "UUID integration" message
+
+query : Uuid.Uuid -> SqlUuid.Uuid -> Sql.Session { SqliteHost.Sqlite } -> Result Bool Sql.Error / { SqliteHost.Sqlite }
+let query generated legacy session =
+  let statement = Sql.statement "select ? as generated, ? as legacy, ? as nil, ? as max, typeof(?) as storage" [|
+    Sql.Uuid generated,
+    Sql.Uuid legacy,
+    Sql.Uuid Uuid.nil,
+    Sql.Uuid Uuid.max,
+    Sql.Uuid generated
+  |]
+  match Sql.query session statement with
+  | Err error -> Err error
+  | Ok rows ->
+    if Array.length rows <> 1 then
+      Err (bad "expected one row")
+    else
+      let row = Array.unsafeGet 0 rows
+      Ok (SqlDecode.decode (SqlDecode.field "generated" SqlDecode.uuid) row = Ok generated && SqlDecode.decode (SqlDecode.field "legacy" SqlDecode.uuid) row = Ok legacy && SqlDecode.decode (SqlDecode.field "nil" SqlDecode.uuid) row = Ok Uuid.nil && SqlDecode.decode (SqlDecode.field "max" SqlDecode.uuid) row = Ok Uuid.max && SqlDecode.decode (SqlDecode.field "storage" SqlDecode.string) row = Ok "text" && Sql.values row = [|
+        Sql.Text (Uuid.toString generated),
+        Sql.Text (Uuid.toString legacy),
+        Sql.Text (Uuid.toString Uuid.nil),
+        Sql.Text (Uuid.toString Uuid.max),
+        Sql.Text "text"
+      |])
+
+public main : UuidRuntime -> Unit / { Console, SqliteHost.Sqlite }
+let main env =
+  match (Uuid.v7FromRandom 1645557742000 (Bytes.fromList [
+    12,
+    195,
+    24,
+    196,
+    220,
+    12,
+    12,
+    7,
+    57,
+    143
+  ]), SqlUuid.parse "01234567-89AB-CDEF-0123-456789ABCDEF") with
+  | (Ok generated, Ok legacy) ->
+    let result = Sqlite.withMemory env (query generated legacy)
+    env.console.writeLine (if result = Ok true then
+      "SQLite UUID checks passed"
+    else
+      "SQLite UUID checks FAILED")
+  | _ -> env.console.writeLine "SQLite UUID fixture construction failed"

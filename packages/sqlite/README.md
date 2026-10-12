@@ -1,7 +1,7 @@
 # SQLite for Fai
 
 `Sqlite` implements the shared `Sql.Session` API using an embedded SQLite engine.
-Include both `packages/sql/src` and `packages/sqlite/src` in your workspace.
+Include `packages/uuid/src`, `packages/sql/src` and `packages/sqlite/src` in your workspace.
 The standard `SqliteHost` module supplies the native capability; application code
 passes it explicitly, usually in a custom runtime record:
 
@@ -51,6 +51,8 @@ binary content belongs in a blob. SQLite's own affinity rules still apply.
 Booleans bind as integers 0/1. Rich SQL scalars (decimal, UUID, temporal and JSON
 values) bind as text; their explicit decoders can read that text back. Store exact
 decimals in TEXT columns when their precision must survive SQLite affinity.
+UUID values use the shared `Uuid.Uuid` type; `SqlUuid.Uuid` is a compatible alias.
+They retain canonical lowercase text storage and decode through `SqlDecode.uuid`.
 
 `Sql.execute` requires a command without returned columns. For SELECT, PRAGMA
 results, and INSERT/UPDATE/DELETE RETURNING, use `Sql.query`, `SqlDecode.query`, or
@@ -93,6 +95,7 @@ fai test -C packages sqlite
 fai run -C packages sqlite/examples/SqliteExample.fai
 fai run -C packages sqlite/examples/TransactionChecks.fai
 fai run -C packages sqlite/examples/ValueChecks.fai
+fai run -C packages sqlite/examples/UuidChecks.fai
 fai run -C packages sqlite/examples/FileDatabase.fai -- visits.db
 ```
 
@@ -100,3 +103,5 @@ Package contracts cover pure values, decoding, options and fake-session behavior
 Native in-memory/file-backed tests cover binding, transactions, cancellation,
 cursor lifetime and JIT/AOT execution. The compiler embeds SQLite; applications
 do not need a separately installed SQLite library.
+The package's `ci.json` declares the UUID interoperability fixture for JIT/AOT
+execution by `scripts/package_integrations.py` with the prepared compiler.

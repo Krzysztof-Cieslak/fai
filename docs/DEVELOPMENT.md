@@ -15,6 +15,13 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+UUID contracts run with `fai test -C packages uuid`. Its `ci.json` declares a
+native fixture for injected and OS-backed entropy/clock generation. Run
+`python3 scripts/package_integrations.py uuid --fai /path/to/fai` to exercise
+that fixture and selected dependents, including SQLite UUID interoperability,
+through JIT and AOT. UUID source and package-local integration metadata use the
+cached-compiler lane.
+
 CSV contracts run with `fai test -C packages csv`. Its Fai `RuntimeChecks`,
 `StreamChecks` and `StressChecks` examples exercise scoped files, mixed effects,
 early stop, writer progress and bounded streaming through JIT and AOT. The CSV

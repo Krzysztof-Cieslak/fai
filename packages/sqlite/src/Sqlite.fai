@@ -68,7 +68,7 @@ let toNative value =
   | Sql.Blob value -> SqliteHost.Blob value
   | Sql.Boolean value -> SqliteHost.Integer (if value then 1 else 0)
   | Sql.Decimal value -> SqliteHost.Text (SqlDecimal.toString value)
-  | Sql.Uuid value -> SqliteHost.Text (SqlUuid.toString value)
+  | Sql.Uuid value -> SqliteHost.Text (Uuid.toString value)
   | Sql.Date value -> SqliteHost.Text (Sql.temporalText LocalDate.toString value)
   | Sql.Time value -> SqliteHost.Text (Sql.timeText value)
   | Sql.Timestamp value -> SqliteHost.Text (Sql.temporalText LocalDateTime.toString value)
