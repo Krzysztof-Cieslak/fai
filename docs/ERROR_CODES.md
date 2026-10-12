@@ -54,6 +54,54 @@ The program launcher must be able to force the selected zero-argument runtime va
 
 The daemon connection failed after an effectful command may have been accepted. The command is not automatically restarted, because doing so could repeat program or filesystem side effects. Inspect its output and resulting state before choosing whether to run it again.
 
+### FAI0800 — invalid package manifest
+
+**Severity:** error
+
+A project manifest contains malformed TOML, an unknown field, a missing required field, or a value of the wrong type. Versioned manifests declare `manifest-version = 1` and a package, a workspace, or both. Personal manifests contain only their format version and root overrides.
+
+### FAI0801 — unsupported manifest version
+
+**Severity:** error
+
+The declared manifest format is not supported by this tool. Use a supported format or a compiler that understands the declared version; an unfamiliar format is never silently interpreted as an older one.
+
+### FAI0802 — invalid package source
+
+**Severity:** error
+
+A package source has an invalid repository locator, revision, branch, package-relative path, or combination of selectors. Git dependencies choose exactly one release requirement, full commit, or branch. A package-relative source path cannot escape its owning package.
+
+### FAI0803 — invalid package version requirement
+
+**Severity:** error
+
+A package version or requirement is malformed. Versions have three numeric components and an optional prerelease. A bare dependency version is exact; `^` and `~` request compatible ranges. Commas intersect requirements and `||` joins alternatives. Partial versions and build metadata are not accepted.
+
+### FAI0810 — invalid or unsupported package platform
+
+**Severity:** error
+
+A target triple or platform predicate is invalid, or the package does not support the requested target. Platform predicates contain exact operating-system, architecture, and environment values and must contain at least one condition.
+
+### FAI0816 — overlapping package overrides
+
+**Severity:** error
+
+Two overrides in the same manifest can replace the same logical package for the same workspace member. Their order does not choose a winner. Use disjoint member scopes or a single replacement.
+
+### FAI0818 — duplicate active dependency alias
+
+**Severity:** error
+
+A dependency alias has multiple declarations that can be active on one target, including normal/development and common/platform declarations. Use distinct aliases or disjoint platform conditions; platform declarations do not implicitly replace common dependencies.
+
+### FAI0819 — invalid package source target
+
+**Severity:** error
+
+A package has duplicate executable names, invalid source-root ownership, a missing entry file, an invalid default executable, or an entry outside its package boundary. Executable and test sources are separate from the shared library surface.
+
 ## FAI1xxx — Lexing & parsing
 
 ### FAI1001 — unexpected character

@@ -1,0 +1,26 @@
+[package]
+name = "fai-package"
+description = "Package identities, version requirements, and project manifests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+fai-span.workspace = true
+fai-diagnostics.workspace = true
+semver.workspace = true
+toml_edit.workspace = true
+target-lexicon.workspace = true
+url.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+indoc.workspace = true
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

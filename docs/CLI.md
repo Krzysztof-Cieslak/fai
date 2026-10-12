@@ -96,6 +96,10 @@ fai <command> [subcommand] [arguments] [flags]
 
 ### Workspace model (v1)
 
+The package/project design is specified in **`docs/PACKAGES.md`**, whose status
+section distinguishes implemented metadata tooling from the proposed package-aware
+CLI. The workspace behavior described here is the currently available interface.
+
 `fai build-info` prints JSON without opening a workspace: `schemaVersion`,
 `version`, `sourceId`, `toolBuildId`, `backendBuildId`, `target`, `profile`,
 `debugAssertions`, `rustcVersion`, and `nativeLibraries`. The whole-tool identity

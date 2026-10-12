@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/fai-span",
     "crates/fai-diagnostics",
+    "crates/fai-package",
     "crates/fai-db",
     "crates/fai-syntax",
     "crates/fai-fmt",
@@ -134,12 +135,17 @@ target-lexicon = "0.13"
 object = "0.39"
 # Native-dependency manifest (`fai.toml`) parsing for the foreign-function FFI.
 toml = "0.8"
+# Span-preserving project manifests and explicit package version requirements.
+toml_edit = "0.22.27"
+semver = "1"
+url = "2"
 # Dynamic loading of user native libraries for the JIT run/test path.
 libloading = "0.8"
 
 # Internal crates (path deps, versions inherited from the workspace).
 fai-span = { path = "crates/fai-span" }
 fai-diagnostics = { path = "crates/fai-diagnostics" }
+fai-package = { path = "crates/fai-package" }
 fai-db = { path = "crates/fai-db" }
 fai-syntax = { path = "crates/fai-syntax" }
 fai-fmt = { path = "crates/fai-fmt" }

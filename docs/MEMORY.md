@@ -37,7 +37,7 @@ retired; IDs are not reused).
 | R1 | Cranelift integration + linking harder than expected | Med | High | Driven early via a thin native slice on a tiny subset; runtime ABI kept minimal and stable. Realized; platform-specific codegen/link edge cases remain (tracked in #9, #10). |
 | R2 | RC correctness (leaks / double-free), esp. with closures & existentials | Med | High | Plain RC first; a debug leak counter in every e2e test; precise reuse added only after green. Standing invariant. |
 | R6 | Exhaustiveness checking bugs (rows/literals) | Med | Med | A known algorithm (Maranget-style); golden tests for false pos/neg. An unresolved/ill-typed pattern that left an arity-inconsistent matrix row once panicked the checker (#27); such rows are now lowered to a distinct unmatchable value and the matrix splits guard against short rows. |
-| R8 | Scope creep from "AI-first" features | Med | Med | Effect rows are now built (D115); extension/restriction and a package manager remain out of scope — tracked as proposals (#36, #37). |
+| R8 | Scope creep from "AI-first" features | Med | Med | Effect rows are built (D115); extension/restriction remains a proposal (#36). The package system has a bounded design and pure metadata foundation (D160, #37); compiler integration proceeds through explicit package/source boundaries. |
 | R9 | Docs drifting from implementation | Med | Low | Self-hosted check: `samples/` files are part of the test suite (DoD #6). |
 | R11 | salsa API churn / version instability | Med | Med | Pin a version; wrap behind `fai-db` so the engine is swappable; keep query definitions framework-agnostic. |
 | R12 | Incremental-cache correctness (stale results → wrong diagnostics) | Med | High | Incremental-vs-clean **verifier** in CI; content-addressed keys stamped with compiler version + flags; determinism is a locked invariant. |
@@ -5386,6 +5386,25 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   changes reflow explicitly, and display text never carries raw terminal control.
   Native terminal polling uses a positive platform-representable timeout and
   level-triggered Unix readiness so a resize cannot consume a keyboard wakeup.
+
+- **D160 Git-backed package metadata and project boundaries.** Package identity is
+  a canonical Git repository plus package subdirectory. Independent subpackages
+  publish through path-scoped tags; shared/local lockfiles will retain exact source
+  selections for root/platform graphs. The agreed model and remaining detailed
+  defaults are in `docs/PACKAGES.md`.
+  The `fai-package` crate provides pure, typed source identities, explicit full
+  version requirements, platform predicates, strict located manifest parsing,
+  comment-preserving package-version edits, and deterministic source plans over
+  supplied file inventories. Bare requirements are exact; caret ranges retain
+  their tighter zero-major bounds, and prereleases need release-specific opt-in.
+  Manifest semantic values exclude spans and comments; the document keeps a
+  separate field-location map. Malformed fields accumulate diagnostics, including
+  overlapping override scopes and potentially duplicate active dependency aliases.
+  Source plans isolate executable entries and tests from the shared library and
+  reserve inactive platform roots and nested package boundaries. These APIs perform
+  no filesystem/network access or compiler queries. The current compiler loader
+  and CLI retain their existing native-manifest behavior until package-aware
+  compilation is integrated.
 
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
