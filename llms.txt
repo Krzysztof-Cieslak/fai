@@ -1963,6 +1963,13 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/uuid` supplies opaque `Uuid.Uuid` values: `parse`/`toString`, explicit
+compact and URN codecs, and exact 16-byte network-order conversion. All bit
+patterns round-trip; `variant`, `version`, `isV4` and `isV7` inspect their layout.
+`v4FromRandom` and `v7FromRandom` are pure constructors with explicit byte inputs;
+v7 requires unsigned 48-bit Unix milliseconds. `v7UnixMillis`/`v7Instant` extract
+only RFC-variant v7 timestamps. Test with `fai test -C packages uuid`.
+
 Package CI entrypoints live in each package's `ci.json`. Declare ordinary Fai
 integration programs there instead of editing GitHub workflows; the generic
 `scripts/package_integrations.py` runner uses an existing compiler for JIT/AOT.
