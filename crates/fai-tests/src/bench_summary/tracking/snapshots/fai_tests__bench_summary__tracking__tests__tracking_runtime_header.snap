@@ -1,46 +1,29 @@
 ---
 source: crates/fai-tests/src/bench_summary/tracking/tests.rs
-expression: "reports[\"language-runtime.md\"].split(\"### Warm AOT\\n\").next().unwrap()"
+expression: "reports[\"language-runtime.md\"].split(\"### At a glance\\n\").next().unwrap()"
 ---
 <!-- fai-performance-tracker:runtime -->
-# Native runtime: Fai / Rust / OCaml
+# Runtime performance: Fai, Rust and OCaml
 
-**Snapshot:** `fixture-checkpoint` · **Completed:** 2026-10-12T00:00:01Z
+**Measured:** 2026-10-12 · **Source:** [`aaaaaaaaaaaa`](https://github.com/example/fai/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · [Data and reproducibility](https://example.test/evidence)
 
-**Measured main revision:** [`aaaaaaaaaaaa`](https://github.com/example/fai/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · **Method:** `isolated-aot-v2`
+Time taken by native compiled programs after startup. Program startup and shutdown are reported separately below.
 
-**Host:** fixture / fixture · **CPU:** fixture
+**Lower ratios favor Fai.** Each ratio is Fai ÷ the comparison language: **0.80× means 20% less time**; **1.20× means 20% more**.
 
-**Peers:** fixture · OCaml fixture (Flambda, `-O3`)
+[Shared algorithms](#shared-algorithms) · [Standard-library workloads](#standard-library-workloads) · [Measurement details](#measurement-details)
 
-[Raw data, identities and reproducibility record](https://example.test/evidence)
+## Shared algorithms
 
-[Matched kernels](#matched-kernels) · [Application comparisons](#application-comparisons)
+The same algorithms and logical data structures in all three languages. Compiler optimizations and runtime representations may differ.
 
-Warm measurements use 3 passes of 21 paired observations after calibration and warmup. Matched kernels and application comparisons have their own tables and coverage.
+**Coverage:** 33 benchmarks · 66 input cases.
 
-## Matched kernels
+### Summary — all measured inputs
 
-Peers share the reviewed algorithm, logical data and evaluation phases. Native representation, allocation and reclamation costs remain observable.
-
-**33 workloads · 66 size cases.**
-
-### Warm-AOT summary
-
-Ratios are **Fai ÷ peer; lower is faster**. Aggregates include only this category's cases that clear the floor gate. Arithmetic and geometric means weight unrounded case ratios equally; p90 is nearest-rank across case ratios, not a latency percentile. These are point estimates for the reviewed workload set.
-
-| Peer | Eligible / matched cases | Geometric mean | Arithmetic mean | P90 |
+| Compared with | Cases used | Geometric mean | Arithmetic mean | 90th percentile |
 |---|---:|---:|---:|---:|
-| rust | 66 / 66 | 0.500× | 0.500× | 0.500× |
-| ocaml | 66 / 66 | 0.400× | 0.400× | 0.400× |
+| Rust | 66 / 66 | 0.500× | 0.500× | 0.500× |
+| OCaml | 66 / 66 | 0.400× | 0.400× | 0.400× |
 
-### Eligibility legend
-
-`F/R` means Fai divided by Rust, and `F/O` means Fai divided by OCaml. Lower ratios mean faster Fai execution. The timing floor is measured using the same harness without the workload.
-
-| Eligibility | Meaning |
-|---|---|
-| `matched kernel` | Peers share the reviewed algorithm and logical data structures, and all clear the timing-floor check. Their ratios qualify for matched-kernel comparisons. |
-| `floor: <languages>` | Each named peer's measured harness floor reaches 10% of its elapsed time. Ratios involving those peers are withheld; another peer comparison may still qualify. |
-
-For example, `floor: rust` suppresses F/R while F/O may remain; `floor: ocaml` suppresses F/O while F/R may remain; `floor: fai` suppresses both. `—` means an excluded ratio, rather than a missing measurement. Only eligible ratios from these main kernels enter the summary above; supplemental components have their own section.
+Each included case has equal weight. The geometric mean summarizes multiplicative ratios; the arithmetic mean averages them directly. The 90th percentile is the ratio at or below which 90% of the included cases fall.

@@ -10,17 +10,17 @@
   "trackers": {
     "perceus": {
       "issue": 745,
-      "title": "Perceus: memory guarantees and allocation evidence",
+      "title": "Memory guarantees and allocation evidence",
       "report": "perceus-memory.md"
     },
     "memory": {
       "issue": 746,
-      "title": "Native process memory: Fai / Rust / OCaml",
+      "title": "Memory footprint: Fai, Rust and OCaml",
       "report": "language-memory.md"
     },
     "runtime": {
       "issue": 747,
-      "title": "Native runtime: Fai / Rust / OCaml",
+      "title": "Runtime performance: Fai, Rust and OCaml",
       "report": "language-runtime.md"
     }
   },

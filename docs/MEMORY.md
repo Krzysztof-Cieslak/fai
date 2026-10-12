@@ -1920,6 +1920,14 @@ Editor integration:
     own peak/residency tables and input axes. There is no blended all-case average.
     Equal weighting is per workload/input/repetition case within a category;
     aggregate process footprints are not a count of compiler-memory wins.
+    Reader-facing headings use **Shared algorithms** and **Standard-library
+    workloads**, retaining the raw classification tags. Overview tables select
+    the largest registered input consistently, with the lowest repetition count
+    for RSS, while summaries retain every declared case. Full curves, overhead,
+    complete-process timing, before/after residency and provenance are expandable.
+    Readable names link to measured source, units are human-sized, and ratios use
+    unrounded observations. Omitted ratios have short explanations rather than
+    repeated status columns or a classification legend.
     Reviewed workload contracts fix the logical algorithm, construction and
     materialization phases, and traversal order before measurement. Sorting uses
     explicit shared algorithms and general shuffled input; native library sorts

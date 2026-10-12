@@ -1489,6 +1489,13 @@ category owns its ratios, arithmetic/geometric means, nearest-rank p90, paired
 coverage, residency table and input axes, with no blended all-case average.
 Each declared case has equal weight within its category; memory statistics remain
 descriptive process-footprint comparisons.
+Reader-facing headings are **Shared algorithms** and **Standard-library workloads**;
+raw classification tags stay stable. Compact overviews consistently select the
+largest input, with the lowest repetition count for RSS. Summaries still use all
+declared cases. Full curves, overhead, process startup/shutdown, residency, input
+definitions and provenance are expandable. Source-linked names, grouped numbers
+and human-sized units aid reading; ratios use unrounded observations, and short
+notes explain omissions without repeated classification/status columns.
 
 Benchmark contracts also pin construction, materialization and traversal phases.
 The main sorting peers share explicit algorithms; linked parser/evaluator,

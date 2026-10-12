@@ -383,23 +383,35 @@ fn complete_snapshot_renders_three_deterministic_bodies() {
     assert_eq!(a.len(), 3);
     assert!(a.values().all(|text| text.contains("fixture-checkpoint") && text.len() < 60000));
     assert!(a["language-runtime.md"].contains("0.500×"));
-    assert!(a["perceus-memory.md"].contains("1000 → 0"));
+    assert!(a["perceus-memory.md"].contains("1,000 → 0"));
     assert!(!a["language-memory.md"].contains("memory wins"));
     assert_eq!(snapshot.to_json().unwrap(), observations);
 }
 
 #[test]
-fn current_report_presentation_is_stable() {
+fn perceus_report_presentation_is_stable() {
     let fixture = Fixture::new();
     let reports = fixture.load().unwrap().render("https://example.test/evidence").unwrap();
     insta::assert_snapshot!("tracking_perceus", reports["perceus-memory.md"]);
+}
+
+#[test]
+fn runtime_report_presentation_is_stable() {
+    let fixture = Fixture::new();
+    let reports = fixture.load().unwrap().render("https://example.test/evidence").unwrap();
     insta::assert_snapshot!(
         "tracking_runtime_header",
-        reports["language-runtime.md"].split("### Warm AOT\n").next().unwrap()
+        reports["language-runtime.md"].split("### At a glance\n").next().unwrap()
     );
+}
+
+#[test]
+fn memory_report_presentation_is_stable() {
+    let fixture = Fixture::new();
+    let reports = fixture.load().unwrap().render("https://example.test/evidence").unwrap();
     insta::assert_snapshot!(
         "tracking_memory_header",
-        reports["language-memory.md"].split("### Peak process footprints\n").next().unwrap()
+        reports["language-memory.md"].split("### At a glance\n").next().unwrap()
     );
 }
 
@@ -426,7 +438,9 @@ type WorkloadCounts = BTreeMap<String, usize>;
 fn workload_counts(text: &str) -> WorkloadCounts {
     let mut counts = BTreeMap::new();
     for line in text.lines().filter(|line| line.starts_with("| ")) {
-        let name = line.split('|').nth(1).unwrap().trim();
+        let cell = line.split('|').nth(1).unwrap().trim();
+        let name =
+            cell.strip_suffix(']').and_then(|value| value.rsplit('[').next()).unwrap_or(cell);
         if contracts::for_module(name).is_some() {
             *counts.entry(name.into()).or_default() += 1;
         }
@@ -439,13 +453,13 @@ fn runtime_tables_keep_kernel_and_application_workloads_separate() {
     let fixture = Fixture::new();
     let reports = fixture.load().unwrap().render("").unwrap();
     let text = &reports["language-runtime.md"];
-    let observed: Vec<_> = ["Matched kernels", "Application comparisons"]
+    let observed: Vec<_> = ["Shared algorithms", "Standard-library workloads"]
         .into_iter()
         .map(|class| {
             let text = section(text, class);
             (
-                workload_counts(subsection(text, "Warm AOT")),
-                workload_counts(subsection(text, "End-to-end AOT")),
+                workload_counts(subsection(text, "All input sizes")),
+                workload_counts(subsection(text, "Complete process time")),
             )
         })
         .collect();
@@ -465,10 +479,10 @@ fn runtime_tables_keep_kernel_and_application_workloads_separate() {
             })
             .collect();
     assert_eq!(observed, expected);
-    let applications = section(text, "Application comparisons");
-    assert!(!applications.contains("| F/R | F/O |"));
+    let applications = section(text, "Standard-library workloads");
+    assert!(!applications.contains("| Time vs Rust |"));
     assert!(!applications.contains("Geometric mean"));
-    assert!(applications.contains("Floor share F/R/O"));
+    assert!(applications.contains("Timing overhead"));
 }
 
 #[test]
@@ -476,14 +490,14 @@ fn memory_tables_keep_every_observation_in_its_own_category() {
     let fixture = Fixture::new();
     let reports = fixture.load().unwrap().render("").unwrap();
     let text = &reports["language-memory.md"];
-    let observed: Vec<_> = ["Matched kernels", "Application comparisons"]
+    let observed: Vec<_> = ["Shared algorithms", "Standard-library workloads"]
         .into_iter()
         .map(|class| {
             let text = section(text, class);
             (
-                workload_counts(subsection(text, "Peak process footprints")),
-                workload_counts(subsection(text, "Post-workload resident memory")),
-                workload_counts(subsection(text, "Input axes")),
+                workload_counts(subsection(text, "All input sizes")),
+                workload_counts(subsection(text, "Before and after execution")),
+                workload_counts(subsection(text, "Input definitions")),
             )
         })
         .collect();
@@ -532,15 +546,15 @@ fn application_rss_changes_cannot_change_kernel_tables_or_averages() {
     });
     let after = fixture.load().unwrap().render("").unwrap();
     assert_eq!(
-        section(&before["language-memory.md"], "Matched kernels"),
-        section(&after["language-memory.md"], "Matched kernels")
+        section(&before["language-memory.md"], "Shared algorithms"),
+        section(&after["language-memory.md"], "Shared algorithms")
     );
     let applications = subsection(
-        section(&after["language-memory.md"], "Application comparisons"),
-        "Process-RSS ratio summary",
+        section(&after["language-memory.md"], "Standard-library workloads"),
+        "Summary — all measured inputs",
     );
-    assert!(applications.contains("| rust | 46 / 46 | 3.000× | 3.000× | 3.000× |"));
-    assert!(applications.contains("| ocaml | 46 / 46 | 3.000× | 3.000× | 3.000× |"));
+    assert!(applications.contains("| Rust | 46 / 46 | 3.000× | 3.000× | 3.000× |"));
+    assert!(applications.contains("| OCaml | 46 / 46 | 3.000× | 3.000× | 3.000× |"));
 }
 
 #[test]
@@ -561,10 +575,66 @@ fn application_runtime_changes_cannot_change_kernel_tables_or_rankings() {
     });
     let after = fixture.load().unwrap().render("").unwrap();
     assert_eq!(
-        section(&before["language-runtime.md"], "Matched kernels"),
-        section(&after["language-runtime.md"], "Matched kernels")
+        section(&before["language-runtime.md"], "Shared algorithms"),
+        section(&after["language-runtime.md"], "Shared algorithms")
     );
-    assert!(section(&after["language-runtime.md"], "Application comparisons").contains("1000.000"));
+    assert!(section(&after["language-runtime.md"], "Standard-library workloads").contains("1 ms"));
+}
+
+#[test]
+fn runtime_summary_includes_inputs_hidden_from_the_overview() {
+    let mut fixture = Fixture::new();
+    let before = fixture.load().unwrap().render("").unwrap();
+    fixture.rewrite("raw/warm.stdout", |text| {
+        text.lines()
+            .map(|line| {
+                let mut row = WarmSample::parse(line).unwrap();
+                if row.algorithm == "Fib" && row.size == 28 && row.side == "fai" {
+                    row.samples_ns = vec![40_000; 21];
+                }
+                row.to_line()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    let after = fixture.load().unwrap().render("").unwrap();
+    let before = section(&before["language-runtime.md"], "Shared algorithms");
+    let after = section(&after["language-runtime.md"], "Shared algorithms");
+    assert_eq!(subsection(before, "At a glance"), subsection(after, "At a glance"));
+    assert_ne!(
+        subsection(before, "Summary — all measured inputs"),
+        subsection(after, "Summary — all measured inputs")
+    );
+}
+
+#[test]
+fn memory_summary_includes_repetitions_hidden_from_the_overview() {
+    let mut fixture = Fixture::new();
+    let before = fixture.load().unwrap().render("").unwrap();
+    fixture.rewrite("raw/memory.stdout", |text| {
+        text.lines()
+            .map(|line| {
+                let mut row = FootprintSample::parse(line).unwrap();
+                if row.algorithm == "BinaryTrees"
+                    && row.size == 12
+                    && row.iterations == 16
+                    && row.side == "fai"
+                {
+                    row.samples_kib = vec![150_000; 5];
+                }
+                row.to_line()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    let after = fixture.load().unwrap().render("").unwrap();
+    let before = section(&before["language-memory.md"], "Shared algorithms");
+    let after = section(&after["language-memory.md"], "Shared algorithms");
+    assert_eq!(subsection(before, "At a glance"), subsection(after, "At a glance"));
+    assert_ne!(
+        subsection(before, "Summary — all measured inputs"),
+        subsection(after, "Summary — all measured inputs")
+    );
 }
 
 #[test]
@@ -777,6 +847,66 @@ fn floor_limited_measurements_remain_visible_without_ratios() {
     let reports = fixture.load().unwrap().render("").unwrap();
     assert!(
         reports["language-runtime.md"]
-            .contains("| Fib | 28 | 10.000 | 20.000 | 25.000 | — | 0.400× | floor: rust |")
+            .contains("| [Fib] | 28 | 10 µs | 20 µs | 25 µs | — | 0.400× |")
     );
+    assert!(reports["language-runtime.md"].contains("measurement overhead reached the 10% limit"));
+}
+
+fn visible_overview(text: &str) -> String {
+    let mut depth = 0;
+    let mut visible = String::new();
+    for line in text.lines() {
+        if line == "<details>" {
+            depth += 1;
+        } else if line == "</details>" {
+            assert!(depth > 0);
+            depth -= 1;
+        } else if depth == 0 {
+            visible.push_str(line);
+            visible.push('\n');
+        }
+    }
+    assert_eq!(depth, 0, "unclosed details block");
+    visible
+}
+
+#[test]
+fn runtime_overview_uses_the_largest_input_and_hides_overhead() {
+    let fixture = Fixture::new();
+    let reports = fixture.load().unwrap().render("").unwrap();
+    let text = visible_overview(&reports["language-runtime.md"]);
+    let shared = section(&text, "Shared algorithms");
+    let expected: WorkloadCounts = algorithms::ALGORITHMS
+        .iter()
+        .filter(|case| {
+            contracts::for_module(case.module).unwrap().comparison == contracts::Comparison::Kernel
+        })
+        .map(|case| (case.module.into(), 1))
+        .collect();
+    assert_eq!(workload_counts(subsection(shared, "At a glance")), expected);
+    assert!(text.contains("| [Recursive Fibonacci][Fib] | 33 |"));
+    assert!(!text.contains("| [Recursive Fibonacci][Fib] | 28 |"));
+    assert!(!text.contains("Timing overhead"));
+    assert!(!text.contains("Eligibility"));
+    assert!(text.contains("0.80× means 20% less time"));
+}
+
+#[test]
+fn memory_overview_uses_largest_inputs_and_one_invocation() {
+    let fixture = Fixture::new();
+    let reports = fixture.load().unwrap().render("").unwrap();
+    let text = visible_overview(&reports["language-memory.md"]);
+    let shared = section(&text, "Shared algorithms");
+    let expected: WorkloadCounts = memory_workloads::algorithms()
+        .filter(|case| {
+            contracts::for_module(case.module).unwrap().comparison == contracts::Comparison::Kernel
+        })
+        .map(|case| (case.module.into(), 1))
+        .collect();
+    assert_eq!(workload_counts(subsection(shared, "At a glance")), expected);
+    assert!(text.contains("1 invocation per process"));
+    assert!(text.contains("| [Binary-tree construction][BinaryTrees] | 21 | 48.83 MiB |"));
+    assert!(!text.contains("Baseline peak"));
+    assert!(!text.contains("Comparison / omitted ratios"));
+    assert!(text.contains("0.80× means 20% less memory"));
 }

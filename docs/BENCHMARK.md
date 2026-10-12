@@ -59,13 +59,21 @@ Changes to workload algorithms, data construction, or sharing require a new
 contract version and matching structural/answer checks. Current artifact content
 identities use BLAKE3; historical SHA-256 manifests retain their original scheme.
 
-Generated tracker bodies give **Matched kernels** and **Application comparisons**
+Generated tracker bodies give **Shared algorithms** and **Standard-library workloads**
 independent sections and tables. Runtime kernel summaries and rankings cover only
 qualified kernels; applications have their own absolute warm and end-to-end
 timings. Each memory category has its own ratios, averages, p90, coverage,
 post-workload residency and input axes. The reports do not blend their ratios
 into an all-case average. The application label records comparison scope; claims
 of idiomatic language usage require reviewing the individual source choices.
+
+The reader-facing labels retain the `matched-kernel`/`application` tags in raw
+records. Overview tables show the largest registered input (and the lowest
+repetition count for RSS), while summaries use all inputs. Full input curves,
+overhead, startup/shutdown, residency and environment information are expandable.
+Readable names link to measured source; detailed tables keep source identifiers.
+Time and memory units are formatted for reading, with ratios computed before
+rounding. A short note explains omitted time ratios in place of a status column.
 
 ### Source-matched workload contracts
 

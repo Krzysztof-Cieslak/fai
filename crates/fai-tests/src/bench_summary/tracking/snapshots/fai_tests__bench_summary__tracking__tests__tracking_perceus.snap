@@ -3,43 +3,71 @@ source: crates/fai-tests/src/bench_summary/tracking/tests.rs
 expression: "reports[\"perceus-memory.md\"]"
 ---
 <!-- fai-performance-tracker:perceus -->
-# Perceus memory guarantees and allocation evidence
+# Memory guarantees and allocation evidence
 
-**Snapshot:** `fixture-checkpoint` · **Completed:** 2026-10-12T00:00:01Z
+**Measured:** 2026-10-12 · **Source:** [`aaaaaaaaaaaa`](https://github.com/example/fai/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · [Data and reproducibility](https://example.test/evidence)
 
-**Measured main revision:** [`aaaaaaaaaaaa`](https://github.com/example/fai/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · **Method:** `isolated-aot-v2`
+Perceus is Fai's reference-counting and storage-reuse model. These checks verify ownership, reuse and memory release within Fai.
 
-**Host:** fixture / fixture · **CPU:** fixture
+## Memory guarantees
 
-**Compiler:** fixture · optimized `allocation-stats` build
+**All required memory checks passed.**
 
-[Raw data, identities and reproducibility record](https://example.test/evidence)
-
-## Current status
-
-**All required memory guards passed.** Reference counting remains active in every control. Each allocation pair uses identical Fai source, compiler and input; only the named optimization changes.
-
-| Guarantee suite | Passed | Scope |
+| Check suite | Tests passed | What it checks |
 |---|---:|---|
-| Live-space / ownership | 2 | Reference balance, reuse, sharing, fixed-state and resource lifetimes |
-| Retained storage | 2 | Slabs, mappings, repeated work and prompt large-buffer release |
+| Live memory and ownership | 2 | Reference balance, reuse, sharing and resource lifetimes |
+| Retained runtime storage | 2 | Bounded allocator storage and release of large buffers |
 
-## Source-identical allocation controls
+## Effect of memory optimizations
 
-Arrows are **optimization disabled → enabled**. Values are counts or bytes, not percentages. Additional peak live bytes are measured above the same retained harness owner within each run. Every window finishes with its baseline live objects and bytes. Backing includes owned slabs, mappings and system allocations; retained backing is measured at window end.
+Arrows mean **optimization disabled → enabled** on the same source and input. Reference counting stays active in both runs. This overview uses each benchmark's largest input.
 
-| Workload | Input | Disabled control | Allocation requests | Allocated bytes | Additional peak live bytes | Peak backing bytes | Retained backing bytes |
+| Benchmark | Input size | Allocation requests | Extra peak live memory | Retained runtime storage |
+|---|---:|---:|---:|---:|
+| Sequence fusion | 100,000 | 1,000 → 0 | 24 B → 24 B | 64 KiB → 64 KiB |
+| Scalar replacement | 4,096 | 1,000 → 0 | 24 B → 24 B | 64 KiB → 64 KiB |
+| Shared list | 4,096 | 1,000 → 0 | 24 B → 24 B | 64 KiB → 64 KiB |
+| Unique list | 4,096 | 1,000 → 0 | 24 B → 24 B | 64 KiB → 64 KiB |
+
+Extra live memory is above the retained harness baseline. Runtime storage includes allocator-owned memory even after its objects are released. Every measured run finishes with its baseline live-object count and live bytes.
+
+<details>
+<summary>All inputs and allocation counters</summary>
+
+| Benchmark | Input size | Disabled control | Allocation requests | Allocated memory | Extra peak live memory | Peak runtime storage | Retained runtime storage |
 |---|---:|---|---:|---:|---:|---:|---:|
-| Fusion | 4096 | no-fusion | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
-| Fusion | 100000 | no-fusion | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
-| Scalars | 8 | no-scalar-replacement | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
-| Scalars | 4096 | no-scalar-replacement | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
-| SharedList | 8 | no-reuse | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
-| SharedList | 4096 | no-reuse | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
-| UniqueList | 8 | no-reuse | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
-| UniqueList | 4096 | no-reuse | 1000 → 0 | 24000 → 0 | 24 → 24 | 65536 → 65536 | 65536 → 65536 |
+| Sequence fusion | 4,096 | no-fusion | 1,000 → 0 | 23.44 KiB → 0 B | 24 B → 24 B | 64 KiB → 64 KiB | 64 KiB → 64 KiB |
+| Sequence fusion | 100,000 | no-fusion | 1,000 → 0 | 23.44 KiB → 0 B | 24 B → 24 B | 64 KiB → 64 KiB | 64 KiB → 64 KiB |
+| Scalar replacement | 8 | no-scalar-replacement | 1,000 → 0 | 23.44 KiB → 0 B | 24 B → 24 B | 64 KiB → 64 KiB | 64 KiB → 64 KiB |
+| Scalar replacement | 4,096 | no-scalar-replacement | 1,000 → 0 | 23.44 KiB → 0 B | 24 B → 24 B | 64 KiB → 64 KiB | 64 KiB → 64 KiB |
+| Shared list | 8 | no-reuse | 1,000 → 0 | 23.44 KiB → 0 B | 24 B → 24 B | 64 KiB → 64 KiB | 64 KiB → 64 KiB |
+| Shared list | 4,096 | no-reuse | 1,000 → 0 | 23.44 KiB → 0 B | 24 B → 24 B | 64 KiB → 64 KiB | 64 KiB → 64 KiB |
+| Unique list | 8 | no-reuse | 1,000 → 0 | 23.44 KiB → 0 B | 24 B → 24 B | 64 KiB → 64 KiB | 64 KiB → 64 KiB |
+| Unique list | 4,096 | no-reuse | 1,000 → 0 | 23.44 KiB → 0 B | 24 B → 24 B | 64 KiB → 64 KiB | 64 KiB → 64 KiB |
 
-**Accounting domain:** `fai-object-storage-v1`. Object requests include headers and pooled allocations; reset/reuse avoids a request. Live bytes exclude dead recycling cells, while backing bytes include owned slabs and mappings. Host-language temporaries, allocator arenas and OS rounding are outside these counters. Timing uses separate uninstrumented builds.
+</details>
+
+## Measurement details
+
+<details>
+<summary>Methods, environment and reproducibility</summary>
+
+Each pair uses identical Fai source, compiler and input; only the named optimization changes. The measurements use an optimized build with allocation counters.
+
+The accounting domain is `fai-object-storage-v1`. Allocation requests include headers and pooled allocations; reset/reuse avoids a request. Live bytes exclude dead recycling cells. Runtime storage includes owned slabs, mappings and system allocations. Host-language temporaries, allocator arenas and OS page rounding are outside these counters. These figures are distinct from whole-process RSS and cross-language memory comparisons.
+
+- **Snapshot:** `fixture-checkpoint`
+- **Completed:** 2026-10-12T00:00:01Z
+- **Host:** fixture / fixture
+- **CPU:** fixture
+- **Rust compiler:** fixture
+- **Measurement protocol:** `isolated-aot-v2`
+
+[Raw observations, executable identities and reproduction record](https://example.test/evidence)
+
+The evidence includes all inputs, compiler settings, workload versions and implementation notes.
+
+</details>
 
 ---
-Generated report. Refresh history is linked from the issue comments.
+Generated from validated measurements. Earlier reports are linked from the issue comments.
