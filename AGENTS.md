@@ -1877,6 +1877,12 @@ shared-workflow edit. Metadata-only changes stay in the package lane; shared
 runner/classifier/workflow changes retain full checks. See `docs/DEVELOPMENT.md`
 for the schema and local command. Protected check names remain the same across
 lanes; the job summary identifies which Rust steps were selected or skipped.
+Changes to `packages/fai.toml` or `packages/fai.lock` select all source packages
+through the cached-compiler lane. Before native package checks, the prepared
+compiler validates every declared root/platform graph with `fai resolve --locked`;
+stale or malformed metadata fails without repair. Empty package selections still
+validate workspace metadata. Ordinary package edits retain dependency-aware
+selection, and mixed compiler/infrastructure edits retain the full Rust checks.
 Presentation-only diffs under `scripts/performance_report/` run Python syntax and
 the two renderer fixtures, with no compiler build. Mixed package/presentation
 diffs run both relevant lanes. Compiler/runtime/std/infrastructure or unknown

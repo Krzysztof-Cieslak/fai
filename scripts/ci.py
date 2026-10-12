@@ -12,6 +12,9 @@ import tomllib
 import packages
 
 
+PACKAGE_WORKSPACE_METADATA = {"packages/fai.toml", "packages/fai.lock"}
+
+
 def git(root, *arguments):
     return subprocess.check_output(["git", *arguments], cwd=root, stderr=subprocess.DEVNULL)
 
@@ -56,9 +59,15 @@ def documentation(path):
 def classify(paths, current, previous, root=packages.ROOT):
     full = False
     reporting = False
+    workspace_changed = False
     selected = set()
     reasons = []
     for path in paths:
+        if path in PACKAGE_WORKSPACE_METADATA:
+            workspace_changed = True
+            selected.update(current)
+            reasons.append(f"package workspace: {path}")
+            continue
         owners = set()
         for catalog in (current, previous):
             candidates = []
@@ -80,7 +89,7 @@ def classify(paths, current, previous, root=packages.ROOT):
         else:
             full = True
             reasons.append(f"compiler/infrastructure: {path}")
-    package_change = bool(selected)
+    package_change = workspace_changed or bool(selected)
     if full:
         selected = set(current)
     else:
@@ -130,6 +139,16 @@ def lane_summary(title, mode, compiler_checks, names):
             "Package checks and declared integrations use the prepared compiler bundle.")
 
 
+def validate_package_workspace(root=packages.ROOT, compiler="fai"):
+    """Validate all declared root/platform graphs without repairing committed metadata."""
+    workspace = root / "packages"
+    if not (workspace / packages.MANIFEST).exists():
+        if (workspace / "fai.lock").exists():
+            raise packages.PackageError("package workspace lock requires a fai.toml manifest")
+        return
+    subprocess.run([compiler, "resolve", "--locked", "-C", str(workspace)], check=True)
+
+
 def require(result, mode, compiler_flag, reporting_flag="false"):
     if result != "success":
         raise ValueError(f"change classification did not succeed: {result}")
@@ -157,10 +176,15 @@ def main():
     classify_parser.add_argument("--base", default=os.environ.get("CHANGE_BASE"))
     classify_parser.add_argument("--head", default="HEAD")
     classify_parser.add_argument("--github-output", action="store_true")
+    validation = sub.add_parser("validate-packages")
+    validation.add_argument("--fai", default="fai")
     gate = sub.add_parser("require")
     gate.add_argument("--result", default=os.environ.get("SCOPE_RESULT", "missing"))
     args = parser.parse_args()
     try:
+        if args.action == "validate-packages":
+            validate_package_workspace(compiler=args.fai)
+            return
         if args.action == "scope":
             result = scope(packages.ROOT, args.base, args.head)
             print(json.dumps(result, sort_keys=True))
