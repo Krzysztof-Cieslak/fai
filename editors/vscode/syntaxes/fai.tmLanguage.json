@@ -142,7 +142,7 @@
           "name": "keyword.control.match.fai"
         },
         {
-          "match": "\\b(?:let|fun|type|interface|module)\\b",
+          "match": "\\b(?:let|fun|type|interface|module|import)\\b",
           "name": "storage.type.fai"
         },
         {

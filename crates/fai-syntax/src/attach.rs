@@ -20,6 +20,8 @@ pub type CommentId = usize;
 /// A node that can own attached comments.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum NodeId {
+    /// A file-local import declaration.
+    Import(usize),
     /// A top-level item.
     Item(ItemId),
     /// An expression.
@@ -63,7 +65,10 @@ pub fn attach_comments(
     line_index: &LineIndex,
 ) -> CommentMap {
     let mut nodes: Vec<(NodeId, TextRange)> =
-        Vec::with_capacity(module.items.len() + module.exprs.len());
+        Vec::with_capacity(module.items.len() + module.exprs.len() + module.imports.len());
+    for (index, import) in module.imports.iter().enumerate() {
+        nodes.push((NodeId::Import(index), import.span));
+    }
     for (index, item) in module.items.iter().enumerate() {
         nodes.push((NodeId::Item(ItemId::from_index(index)), item.span));
     }
@@ -76,6 +81,15 @@ pub fn attach_comments(
         let start = comment.range.start();
         let end = comment.range.end();
         let comment_line = line_index.line(start);
+        if let Some((index, _)) = module
+            .imports
+            .iter()
+            .enumerate()
+            .find(|(_, import)| import.span.start() <= start && end <= import.span.end())
+        {
+            push(&mut map.trailing, NodeId::Import(index), id);
+            continue;
+        }
 
         // The outermost node ending closest before the comment.
         let mut preceding: Option<(NodeId, TextRange)> = None;

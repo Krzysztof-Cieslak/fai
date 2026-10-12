@@ -27,8 +27,8 @@ use crate::decls::{InterfaceDecls, TypeDecls, interface_decls, type_decls};
 use crate::ids::{CtorRef, DefId, LocalId, Res, is_upper, qualify};
 use crate::intrinsics;
 use crate::module::{
-    ModuleName, emit_duplicate_module_errors, emit_duplicate_prelude_export_errors, module_defs,
-    module_file_from, module_interface, prelude_exports,
+    emit_duplicate_module_errors, emit_duplicate_prelude_export_errors, module_defs,
+    module_interface, prelude_exports,
 };
 use crate::{
     INTERNAL_REFERENCE, INTRINSIC_OUTSIDE_STD, MODULE_AS_VALUE, OPAQUE_CONSTRUCTOR,
@@ -241,23 +241,12 @@ fn type_ref_reach(
     // A cross-file qualified type. Walk the leading module path, then read the
     // member type's declared visibility in its own file.
     let segments: Vec<Symbol> = text.split('.').map(Symbol::intern).collect();
-    let target = module_file_from(db, file, ModuleName(segments[0]))?;
-    let target_defs = module_defs(db, target);
-    let mut inner: Vec<Symbol> = Vec::new();
-    let mut i = 1;
-    while i < segments.len() {
-        let cand = qualify(&inner, segments[i]);
-        if target_defs.is_module(cand) {
-            inner.push(segments[i]);
-            i += 1;
-        } else {
-            break;
-        }
-    }
+    let (module, i) = crate::module_prefix(db, file, &segments).ok().flatten()?;
+    let target = module.file;
     if i + 1 != segments.len() {
         return None;
     }
-    let member = qualify(&inner, segments[i]);
+    let member = qualify(&module.path, segments[i]);
     let target_decls = type_decls(db, target);
     let visibility = target_decls.types.get(&member).map(|info| info.visibility).or_else(|| {
         interface_decls(db, target).interface_named(member).map(|info| info.visibility)
@@ -368,6 +357,7 @@ fn visit_exported_types(
 pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
     emit_duplicate_module_errors(db, file);
     emit_duplicate_prelude_export_errors(db, file);
+    crate::emit_import_diagnostics(db, file);
 
     let parsed = fai_syntax::parse(db, file);
     let module = &parsed.module;
@@ -650,7 +640,7 @@ impl Resolver<'_> {
                     let (code, msg) = if !is_upper(*name) {
                         (UNBOUND_NAME, format!("cannot find `{name}` in scope"))
                     } else if self.same_file_module_anchor(*name).is_some()
-                        || module_file_from(self.db, self.file, ModuleName(*name)).is_some()
+                        || crate::module_target(self.db, self.file, *name).ok().flatten().is_some()
                     {
                         // A bare module name used where a value is expected.
                         (MODULE_AS_VALUE, format!("`{name}` is a module, not a value"))
@@ -941,8 +931,15 @@ impl Resolver<'_> {
 
         // A workspace file module (the current file's own name resolves here too,
         // so a self-qualified reference is treated like any cross-module one).
-        if let Some(target) = module_file_from(self.db, self.file, ModuleName(head)) {
-            return Some(self.walk_cross_file(target, segments, span));
+        match crate::module_prefix(self.db, self.file, segments) {
+            Ok(Some((target, consumed))) => {
+                return Some(self.walk_cross_file(target, consumed, segments, span));
+            }
+            Err(error) => {
+                emit(self.db, Diagnostic::error(error.code, error.message, self.span(span)));
+                return Some((Res::Error, segments.len()));
+            }
+            Ok(None) => {}
         }
 
         None
@@ -1001,30 +998,20 @@ impl Resolver<'_> {
     /// origin, gated by explicit source metadata.
     fn walk_cross_file(
         &self,
-        target: SourceFile,
+        module: crate::ModuleTarget,
+        mut consumed: usize,
         segments: &[Symbol],
         span: TextRange,
     ) -> (Res, usize) {
+        let target = module.file;
         let target_source = target.source(self.db);
         let target_defs = module_defs(self.db, target);
-        // Walk nested-module segments within the target file.
-        let mut inner: Vec<Symbol> = Vec::new();
-        let mut consumed = 1;
-        while consumed < segments.len() {
-            let cand = qualify(&inner, segments[consumed]);
-            if target_defs.is_module(cand) {
-                inner.push(segments[consumed]);
-                consumed += 1;
-            } else {
-                break;
-            }
-        }
         if consumed >= segments.len() {
             self.emit_module_as_value(join_segments(&segments[..consumed]), span);
             return (Res::Error, consumed);
         }
         let member = segments[consumed];
-        let member_qual = qualify(&inner, member);
+        let member_qual = qualify(&module.path, member);
         consumed += 1;
         // Internal visibility follows semantic ownership, not a shared user/std flag.
         let target_is_std = target.is_std(self.db);

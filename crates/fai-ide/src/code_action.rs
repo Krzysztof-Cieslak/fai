@@ -16,7 +16,6 @@ use fai_syntax::Symbol;
 use serde::Serialize;
 
 use crate::repr::SpanJson;
-use crate::target::module_label;
 
 /// A single text replacement within a file.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -101,24 +100,23 @@ fn qualify_actions(
     };
 
     let mut modules: Vec<String> = Vec::new();
-    for candidate in db.all_source_files() {
-        if !fai_db::automatically_visible(db, file, candidate) {
-            continue;
-        }
+    for (alias, module) in fai_resolve::visible_module_bindings(db, file) {
+        let candidate = module.file;
         if candidate.source(db) == file.source(db) {
             continue; // the name is unbound *here*, so this file is no candidate
         }
-        let label = module_label(db, candidate);
+        let label = alias.as_str().to_owned();
         if label == fai_resolve::intrinsics::PRIM_MODULE {
             continue; // `Prim` is reachable only inside the standard library
         }
         let interface = fai_resolve::module_interface(db, candidate);
-        let mut found = interface.get(sym).is_some() || interface.has_ctor(sym);
+        let member = fai_resolve::qualify(&module.path, sym);
+        let mut found = interface.get(member).is_some() || interface.has_ctor(member);
         // An `internal` member is qualifiable only from a same-origin file
         // (std vs. user today), matching what name resolution will accept.
         if !found && file.origin(db) == candidate.origin(db) {
             let internal = fai_resolve::module_internal_interface(db, candidate);
-            found = internal.get(sym).is_some() || internal.has_ctor(sym);
+            found = internal.get(member).is_some() || internal.has_ctor(member);
         }
         if found {
             modules.push(label);

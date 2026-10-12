@@ -14,7 +14,9 @@ locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and to
 > comment-preserving version edits, platform activation, and target source plans.
 > The compiler also carries package environments and target-local source ownership,
 > with scoped module lookup, internal visibility, and package-qualified native symbols.
-> The package-aware project loader and the dependency, lockfile, import, vendor,
+> Explicit module imports and identity-preserving public re-exports are implemented
+> in syntax, resolution, formatting, and IDE lookup for package-aware compiler inputs.
+> The package-aware project loader and the dependency, lockfile, vendor,
 > and publishing commands below describe the intended interface. The current CLI
 > still uses the native-only manifest and directory-based source loader.
 

@@ -1,0 +1,11 @@
+module Main
+
+import facade.Facade.Values
+import collections.Values as DirectValues
+
+public increment : Values.Wrapped -> Int
+let increment wrapped = Values.unwrap wrapped + 1
+example: increment (DirectValues.Wrapped 41) = 42
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Int.toString (increment (DirectValues.Wrapped 41)))

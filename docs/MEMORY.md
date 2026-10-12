@@ -5419,5 +5419,18 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   independent of registration order. Legacy directory sessions retain the shared
   user origin until their loader is migrated to manifest-owned packages.
 
+- **D162 Explicit external module bindings and public re-exports.** A file can
+  declare `import dependency.Module` with an optional upper-case `as` alias before
+  ordinary items. The first component resolves through that source scope's own
+  direct dependencies. Imports bind modules only; values, constructors, types,
+  interfaces and effect names remain qualified. `public import` exposes the
+  target's public module surface under the current module while retaining all
+  original identities. Private imports cannot be followed across files, and
+  aliases colliding with local/std modules or the type/module namespace require
+  a different name. Import summaries are span-free; declaration locations remain
+  in the syntax tree. Re-export traversal detects cycles and bounds its depth.
+  Formatting preserves import comments and aliases; IDE module completion and
+  definition lookup use the resolved original namespace.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

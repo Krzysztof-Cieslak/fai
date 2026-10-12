@@ -100,6 +100,12 @@ The package/project design is specified in **`docs/PACKAGES.md`**, whose status
 section distinguishes implemented metadata tooling from the proposed package-aware
 CLI. The workspace behavior described here is the currently available interface.
 
+Package-aware compiler environments support file-local `import dependency.Module`
+and `public import` re-exports. Their aliases are supplied by the project loader;
+the package loader's current status and intended commands are in `docs/PACKAGES.md`.
+An API query additionally returns `modules` when public module re-exports exist:
+each entry has the alias `name`, original module `target`, and original source `span`.
+
 `fai build-info` prints JSON without opening a workspace: `schemaVersion`,
 `version`, `sourceId`, `toolBuildId`, `backendBuildId`, `target`, `profile`,
 `debugAssertions`, `rustcVersion`, and `nativeLibraries`. The whole-tool identity

@@ -13,8 +13,8 @@ use std::sync::Arc;
 use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
 use fai_resolve::{
-    AdtRef, INTERNAL_REFERENCE, InterfaceInfo, InterfaceRef, ModuleName, TypeDeclInfo,
-    interface_decls, module_defs, prelude_exports, qualify, type_decls,
+    AdtRef, INTERNAL_REFERENCE, InterfaceInfo, InterfaceRef, TypeDeclInfo, interface_decls,
+    prelude_exports, qualify, type_decls,
 };
 use fai_span::{SourceId, Span, TextRange};
 use fai_syntax::Symbol;
@@ -564,23 +564,12 @@ impl Lowerer<'_> {
     /// inner segments name nested modules within it).
     fn cross_file_member(&self, name: Symbol) -> Option<(SourceFile, Symbol)> {
         let segments: Vec<Symbol> = name.as_str().split('.').map(Symbol::intern).collect();
-        let target = fai_resolve::module_file_from(self.db, self.file, ModuleName(segments[0]))?;
-        let target_defs = module_defs(self.db, target);
-        let mut inner: Vec<Symbol> = Vec::new();
-        let mut consumed = 1;
-        while consumed < segments.len() {
-            let cand = qualify(&inner, segments[consumed]);
-            if target_defs.is_module(cand) {
-                inner.push(segments[consumed]);
-                consumed += 1;
-            } else {
-                break;
-            }
-        }
+        let (target, consumed) =
+            fai_resolve::module_prefix(self.db, self.file, &segments).ok().flatten()?;
         if consumed != segments.len() - 1 {
             return None;
         }
-        Some((target, qualify(&inner, segments[consumed])))
+        Some((target.file, qualify(&target.path, segments[consumed])))
     }
 }
 

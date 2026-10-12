@@ -52,6 +52,26 @@ impl Printer<'_> {
         };
         parts.push(text(header));
 
+        if !self.module.imports.is_empty() {
+            parts.push(Doc::Hardline);
+            parts.push(Doc::Hardline);
+            for (index, import) in self.module.imports.iter().enumerate() {
+                if index != 0 {
+                    parts.push(Doc::Hardline);
+                }
+                parts.extend(self.leading_docs(NodeId::Import(index)));
+                let path =
+                    import.path.iter().map(|part| part.as_str()).collect::<Vec<_>>().join(".");
+                let mut declaration =
+                    format!("{}import {path}", visibility_prefix(import.visibility));
+                if let Some(alias) = import.alias {
+                    declaration.push_str(&format!(" as {alias}"));
+                }
+                parts.push(text(declaration));
+                parts.extend(self.trailing_docs(NodeId::Import(index)));
+            }
+        }
+
         if !self.module.roots.is_empty() {
             parts.push(Doc::Hardline);
             parts.push(Doc::Hardline);

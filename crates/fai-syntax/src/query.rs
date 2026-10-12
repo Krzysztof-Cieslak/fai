@@ -46,8 +46,21 @@ pub struct ParsedModule {
 pub struct ItemTree {
     /// The declared module name, if any.
     pub module_name: Option<crate::Symbol>,
+    /// Position-independent external module bindings.
+    pub imports: Vec<ImportSummary>,
     /// The items, in source order.
     pub items: Vec<ItemSummary>,
+}
+
+/// A module import's semantic path, alias, and export visibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportSummary {
+    /// Dependency alias and module path.
+    pub path: Vec<crate::Symbol>,
+    /// Local binding name.
+    pub name: crate::Symbol,
+    /// Whether another file can follow this re-export.
+    pub visibility: Visibility,
 }
 
 /// One item's position-independent summary in an [`ItemTree`].
@@ -96,7 +109,18 @@ pub enum ItemTreeKind {
 #[must_use]
 pub fn build_item_tree(module: &Module) -> ItemTree {
     let items = module.roots.iter().map(|&id| summarize_item(module, id)).collect();
-    ItemTree { module_name: module.name, items }
+    let imports = module
+        .imports
+        .iter()
+        .filter_map(|import| {
+            Some(ImportSummary {
+                path: import.path.clone(),
+                name: import.binding()?,
+                visibility: import.visibility,
+            })
+        })
+        .collect();
+    ItemTree { module_name: module.name, imports, items }
 }
 
 /// Summarizes one item (recursing into nested-module bodies).
@@ -154,10 +178,11 @@ pub fn item_tree(db: &dyn Db, file: SourceFile) -> ItemTree {
     build_item_tree(&parsed.module)
 }
 
-/// The number of `public` items in `file` — a small dependent of [`item_tree`]
-/// used to demonstrate early cutoff. (In M1 `public` sits on signatures; binding
-/// visibility is associated during resolution.)
+/// The number of public declarations and module re-exports in `file`.
+/// Binding visibility is associated with its signature during resolution.
 #[salsa::tracked]
 pub fn public_item_count(db: &dyn Db, file: SourceFile) -> usize {
-    item_tree(db, file).items.iter().filter(|item| item.visibility == Visibility::Public).count()
+    let tree = item_tree(db, file);
+    tree.items.iter().filter(|item| item.visibility == Visibility::Public).count()
+        + tree.imports.iter().filter(|import| import.visibility == Visibility::Public).count()
 }

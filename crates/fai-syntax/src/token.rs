@@ -61,6 +61,7 @@ pub enum TokenKind {
     Forall,
     As,
     Foreign,
+    Import,
 
     // Grouping & punctuation.
     LParen,
@@ -121,6 +122,7 @@ impl TokenKind {
             "forall" => TokenKind::Forall,
             "as" => TokenKind::As,
             "foreign" => TokenKind::Foreign,
+            "import" => TokenKind::Import,
             _ => return None,
         })
     }

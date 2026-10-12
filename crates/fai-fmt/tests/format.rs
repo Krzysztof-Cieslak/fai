@@ -14,6 +14,22 @@ fn fmt(src: &str) -> String {
     fai_fmt::format(&parsed.module, &parsed.comments, src)
 }
 
+#[test]
+fn imports_preserve_aliases_comments_and_public_reexports() {
+    let source = "module App\n// chosen\npublic import json.Json as J // tail\n(* next *)\nimport tools.Tool\nlet value=1\n";
+    let formatted = comments_roundtrip(source);
+    assert!(formatted.contains("public import json.Json as J // tail"), "{formatted}");
+    assert_eq!(
+        build_item_tree(&parse_module(SourceId::new(0), source).module),
+        build_item_tree(&parse_module(SourceId::new(0), &formatted).module)
+    );
+}
+
+#[test]
+fn comments_inside_import_paths_are_retained() {
+    comments_roundtrip("module App\nimport json.(* keep *) Json\nlet value = 1\n");
+}
+
 #[track_caller]
 fn comments_roundtrip(src: &str) -> String {
     let before = parse_module(SourceId::new(0), src);

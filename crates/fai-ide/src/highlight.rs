@@ -134,6 +134,7 @@ pub fn semantic_tokens(db: &dyn Db, file: SourceFile) -> Vec<SemToken> {
         let start = token.range.start().raw();
         let kind = match token.kind {
             TokenKind::Module
+            | TokenKind::Import
             | TokenKind::Let
             | TokenKind::Type
             | TokenKind::Interface
@@ -182,6 +183,11 @@ fn build_kind_map(
     resolved: &ResolvedBodies,
 ) -> FxHashMap<u32, SemKind> {
     let mut map: FxHashMap<u32, SemKind> = FxHashMap::default();
+    for import in &module.imports {
+        for span in import.path_spans.iter().chain(import.alias_span.iter()) {
+            map.insert(span.start().raw(), SemKind::Namespace);
+        }
+    }
     for (i, expr) in module.exprs.iter().enumerate() {
         let id = ExprId::from_index(i);
         match &expr.kind {

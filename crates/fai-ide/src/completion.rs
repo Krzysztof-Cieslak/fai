@@ -15,8 +15,7 @@
 
 use fai_db::{Db, SourceFile};
 use fai_resolve::{
-    ModuleName, module_defs, module_file_from, module_interface, module_internal_interface,
-    prelude_exports, type_decls,
+    module_defs, module_interface, module_internal_interface, prelude_exports, type_decls,
 };
 use fai_syntax::Symbol;
 use fai_syntax::ast::{ExprId, ExprKind, ItemKind, Module, PatId, PatKind};
@@ -210,16 +209,29 @@ fn completion_data(db: &dyn Db, file: SourceFile, name: Symbol) -> CompletionDat
 /// constructors, or a same-file nested module's (visible) members.
 fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionItem> {
     let sym = Symbol::intern(path);
-    if let Some(mfile) = module_file_from(db, file, ModuleName(sym)) {
+    let segments: Vec<_> = path.split('.').map(Symbol::intern).collect();
+    if let Some(target) = fai_resolve::module_path_target(db, file, &segments) {
+        let mfile = target.file;
+        let prefix = if target.path.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "{}.",
+                target.path.iter().map(|part| part.as_str()).collect::<Vec<_>>().join(".")
+            )
+        };
+        let child = |name: Symbol| {
+            name.as_str().strip_prefix(&prefix).is_some_and(|tail| !tail.contains('.'))
+        };
         let mut out = Vec::new();
         let mut offer = |interface: &fai_resolve::ModuleInterface| {
-            for export in &interface.exports {
+            for export in interface.exports.iter().filter(|export| child(export.name)) {
                 let scheme =
                     fai_types::signature_scheme_observed(db, mfile, export.name, Some(file))
                         .unwrap_or_else(|| def_type(db, mfile, export.name));
                 out.push(value_item(db, mfile, export.name, &scheme));
             }
-            for &ctor in &interface.ctors {
+            for &ctor in interface.ctors.iter().filter(|&&ctor| child(ctor)) {
                 out.push(ctor_item(db, mfile, ctor, file));
             }
         };
@@ -228,6 +240,44 @@ fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionIt
         // origin, matching name resolution from this file.
         if file.origin(db) == mfile.origin(db) {
             offer(&module_internal_interface(db, mfile));
+        }
+        for &module in &module_defs(db, mfile).modules {
+            if child(module) {
+                out.push(CompletionItem {
+                    label: last_segment(module.as_str()).to_owned(),
+                    kind: CompletionKind::Module,
+                    detail: None,
+                    data: None,
+                });
+            }
+        }
+        if target.path.is_empty() {
+            for binding in fai_resolve::import_bindings(db, mfile).iter() {
+                if binding.target.is_ok()
+                    && (binding.visibility == fai_syntax::ast::Visibility::Public || file == mfile)
+                {
+                    out.push(CompletionItem {
+                        label: binding.name.as_str().to_owned(),
+                        kind: CompletionKind::Module,
+                        detail: None,
+                        data: None,
+                    });
+                }
+            }
+        }
+        if file == mfile {
+            for definition in &module_defs(db, mfile).defs {
+                if definition.visibility == fai_syntax::ast::Visibility::Private
+                    && child(definition.name)
+                {
+                    out.push(value_item(
+                        db,
+                        mfile,
+                        definition.name,
+                        &def_type(db, mfile, definition.name),
+                    ));
+                }
+            }
         }
         return out;
     }
@@ -299,6 +349,16 @@ fn bare_candidates(db: &dyn Db, file: SourceFile, offset: u32) -> Vec<Completion
     out.extend(module_def_candidates(db, file, offset));
     out.extend(ctor_candidates(db, file, offset));
     out.extend(prelude_value_candidates(db, file));
+    out.extend(
+        fai_resolve::import_bindings(db, file).iter().filter(|binding| binding.target.is_ok()).map(
+            |binding| CompletionItem {
+                label: binding.name.as_str().to_owned(),
+                kind: CompletionKind::Module,
+                detail: None,
+                data: None,
+            },
+        ),
+    );
     out
 }
 

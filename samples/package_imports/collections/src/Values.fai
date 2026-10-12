@@ -1,0 +1,9 @@
+module Values
+
+public type Wrapped =
+  | Wrapped Int
+
+public unwrap : Wrapped -> Int
+let unwrap wrapped =
+  match wrapped with
+  | Wrapped value -> value
