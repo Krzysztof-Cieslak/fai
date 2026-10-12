@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- CSV decoding uses explicit text or byte field readers composed into row
+  decoders. Missing, empty and invalid fields remain distinct; null conventions
+  and trimming are opt-in. Row composition accumulates bounded errors and allows
+  extra columns unless exact consumption is requested.
+
 - CSV text and byte APIs have distinct opaque record/parser types. Header policy
   is explicit; normalization retains original fields and checks resulting name
   collisions. Whole-input budgets include input headers, while incremental

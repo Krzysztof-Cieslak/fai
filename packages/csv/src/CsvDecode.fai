@@ -1,0 +1,90 @@
+module CsvDecode
+
+public type Value 'a = CsvDecodeCore.Value String 'a
+
+public type Decoder 'a = CsvDecodeCore.Decoder String 'a
+
+public custom : (String -> Result 'a String) -> Value 'a
+let custom read = CsvDecodeCore.custom read
+
+public fromText : (String -> Result 'a String) -> Value 'a
+let fromText read = custom read
+
+public parseValue : Value 'a -> String -> Result 'a String
+let parseValue value text = CsvDecodeCore.parseValue value text
+
+public string : Value String
+let string = custom (fun text -> Ok text)
+
+public int : Value Int
+let int = custom CsvNumber.int
+
+public float : Value Float
+let float = custom CsvNumber.float
+
+public bool : Value Bool
+let bool = custom CsvNumber.bool
+
+public mapValue : ('a -> 'b) -> Value 'a -> Value 'b
+let mapValue transform value = CsvDecodeCore.mapValue transform value
+
+public refineValue : ('a -> Result 'b String) -> Value 'a -> Value 'b
+let refineValue transform value = CsvDecodeCore.refineValue transform value
+
+public trim : Value 'a -> Value 'a
+let trim value = custom (fun text -> parseValue value (String.trim text))
+
+public emptyAsNone : Value 'a -> Value (Option 'a)
+let emptyAsNone value = CsvDecodeCore.optionalValue (fun text -> text = "") value
+
+public nullToken : String -> Value 'a -> Value (Option 'a)
+let nullToken token value = CsvDecodeCore.optionalValue (fun text -> text = token) value
+
+public decodeWith : Int -> Decoder 'a -> Option Csv.Headers -> Csv.Record -> Result 'a (List CsvTypes.Error)
+let decodeWith maxErrors decoder headers record =
+  CsvDecodeCore.decode maxErrors Bytes.fromString decoder (Option.map Csv.unwrapHeaders headers) (Csv.inspect record)
+
+public decode : Decoder 'a -> Option Csv.Headers -> Csv.Record -> Result 'a (List CsvTypes.Error)
+let decode decoder headers record = decodeWith CsvTypes.limits.maxErrors decoder headers record
+
+public index : Int -> Value 'a -> Decoder 'a
+let index index value = CsvDecodeCore.index index value
+
+public optionalIndex : Int -> Value 'a -> Decoder (Option 'a)
+let optionalIndex index value = CsvDecodeCore.optionalIndex index value
+
+public field : String -> Value 'a -> Decoder 'a
+let field name value = CsvDecodeCore.field name value
+
+public optionalField : String -> Value 'a -> Decoder (Option 'a)
+let optionalField name value = CsvDecodeCore.optionalField name value
+
+public withDefault : 'a -> Decoder 'a -> Decoder 'a
+let withDefault fallback decoder = CsvDecodeCore.withDefault fallback decoder
+
+public succeed : 'a -> Decoder 'a
+let succeed value = CsvDecodeCore.succeed value
+
+public map : ('a -> 'b) -> Decoder 'a -> Decoder 'b
+let map transform decoder = CsvDecodeCore.map transform decoder
+
+public map2 : ('a -> 'b -> 'c) -> Decoder 'a -> Decoder 'b -> Decoder 'c
+let map2 apply a b = CsvDecodeCore.map2 apply a b
+
+public map3 : ('a -> 'b -> 'c -> 'd) -> Decoder 'a -> Decoder 'b -> Decoder 'c -> Decoder 'd
+let map3 apply a b c = CsvDecodeCore.map3 apply a b c
+
+public andMap : Decoder 'a -> Decoder ('a -> 'b) -> Decoder 'b
+let andMap argument function = CsvDecodeCore.andMap argument function
+
+public andThen : ('a -> Decoder 'b) -> Decoder 'a -> Decoder 'b
+let andThen next decoder = CsvDecodeCore.andThen next decoder
+
+public refine : ('a -> Result 'b String) -> Decoder 'a -> Decoder 'b
+let refine check decoder = CsvDecodeCore.refine check decoder
+
+public oneOf : List (Decoder 'a) -> Decoder 'a
+let oneOf decoders = CsvDecodeCore.oneOf decoders
+
+public exactColumns : Decoder 'a -> Decoder 'a
+let exactColumns decoder = CsvDecodeCore.exactColumns decoder

@@ -1,0 +1,88 @@
+module CsvDecodeSpec
+
+let decode decoder fields =
+  match Csv.record fields with
+  | Err error -> Err [error]
+  | Ok record -> CsvDecode.decode decoder None record
+
+let named decoder text =
+  match Csv.parseTable text with
+  | Err error -> Err [error]
+  | Ok table -> CsvDecode.decode decoder table.headers (Array.unsafeGet 0 table.records)
+example: decode (CsvDecode.index 0 CsvDecode.int) [| "42" |] = Ok 42
+example: decode (CsvDecode.index 0 CsvDecode.int) [|
+  "-9223372036854775808"
+|] = Ok (-9223372036854775807 - 1)
+example: decode (CsvDecode.index 0 CsvDecode.int) [| "9223372036854775808" |] |> Result.isErr
+example: decode (CsvDecode.index 0 CsvDecode.int) [| " 42" |] |> Result.isErr
+example: decode (CsvDecode.index 0 (CsvDecode.trim CsvDecode.int)) [| " 42 " |] = Ok 42
+example: decode (CsvDecode.index 0 CsvDecode.int) [| "0x10" |] |> Result.isErr
+example: decode (CsvDecode.index 0 CsvDecode.int) [| "1_000" |] |> Result.isErr
+example: decode (CsvDecode.index 0 CsvDecode.float) [| "1.25e2" |] = Ok 125.0
+example: decode (CsvDecode.index 0 CsvDecode.float) [| "NaN" |] |> Result.isErr
+example: decode (CsvDecode.index 0 CsvDecode.float) [| "1e9999" |] |> Result.isErr
+example: decode (CsvDecode.index 0 CsvDecode.bool) [| "false" |] = Ok false
+example: decode (CsvDecode.index 0 CsvDecode.bool) [| "0" |] |> Result.isErr
+example: decode (CsvDecode.optionalIndex 1 CsvDecode.int) [| "x" |] = Ok None
+example: decode (CsvDecode.optionalIndex 0 CsvDecode.int) [| "" |] |> Result.isErr
+example: decode (CsvDecode.index 0 (CsvDecode.emptyAsNone CsvDecode.int)) [| "" |] = Ok None
+example: decode (CsvDecode.index 0 (CsvDecode.nullToken "NULL" CsvDecode.int)) [|
+  "NULL"
+|] = Ok None
+example: decode (CsvDecode.withDefault 7 (CsvDecode.index 1 CsvDecode.int)) [| "x" |] = Ok 7
+example: decode (CsvDecode.withDefault 7 (CsvDecode.index 0 CsvDecode.int)) [|
+  "bad"
+|] |> Result.isErr
+
+let person =
+  CsvDecode.map3 (fun name age active -> {
+    active = active,
+    age = age,
+    name = name
+  }) (CsvDecode.field "name" CsvDecode.string) (CsvDecode.field "age" CsvDecode.int) (CsvDecode.field "active" CsvDecode.bool)
+example: named person "name,age,active,extra\nAlice,42,true,ignored" = Ok {
+  active = true,
+  age = 42,
+  name = "Alice"
+}
+example: named (CsvDecode.exactColumns person) "name,age,active,extra\nAlice,42,true,ignored" |> Result.isErr
+
+let accumulated =
+  match named person "name,age,active\nAlice,bad,bad" with
+  | Err errors ->
+    List.map (fun error ->
+      (error.fieldIndex, error.header, error.recordIndex)) errors = [
+      (Some 1, Some (Bytes.fromString "age"), Some 1),
+      (Some 2, Some (Bytes.fromString "active"), Some 1)
+    ]
+  | _ -> false
+example: accumulated
+
+let capped =
+  match Csv.parseTable "name,age,active\nAlice,bad,bad" with
+  | Err _ -> false
+  | Ok table ->
+    (match CsvDecode.decodeWith 1 person table.headers (Array.unsafeGet 0 table.records) with
+    | Err errors -> List.length errors = 1
+    | _ -> false)
+example: capped
+
+let located =
+  match named (CsvDecode.field "age" CsvDecode.int) "name,age\r\n\"é\n🙂\",oops" with
+  | Err [error] -> error.position = Some { byteColumn = 7, byteOffset = 20, line = 3 }
+  | _ -> false
+example: located
+example: decode (CsvDecode.index (-1) CsvDecode.string) [| "x" |] |> Result.isErr
+example: decode (CsvDecode.field "name" CsvDecode.string) [| "x" |] |> Result.isErr
+example: named (CsvDecode.optionalField "absent" CsvDecode.int) "name\nx" = Ok None
+
+let binary =
+  match CsvBytes.record [| Bytes.fromList [255], Bytes.fromString "42" |] with
+  | Err _ -> false
+  | Ok record ->
+    CsvBytesDecode.decode (CsvBytesDecode.map2 (fun raw number ->
+      (raw, number)) (CsvBytesDecode.index 0 CsvBytesDecode.bytes) (CsvBytesDecode.index 1 CsvBytesDecode.int)) None record = Ok (Bytes.fromList [
+      255
+    ], 42)
+example: binary
+forall number: decode (CsvDecode.index 0 CsvDecode.int) [| Int.toString number |] = Ok number

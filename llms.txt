@@ -1966,6 +1966,10 @@ Text UTF-8/BOM and CRLF handling are independent of chunk boundaries.
 `parserWith`/`feedFrom`/`finish` expose incremental consumption. `parseTableWith`
 selects NoHeader, FirstRecord or Supplied headers; names match exactly and
 `headersWith` performs explicit normalization with duplicate detection.
+`CsvDecode` and `CsvBytesDecode` compose typed field readers with index/field and
+map2/map3/andMap. Decoding accumulates located errors; optional/default columns
+handle absence, while emptyAsNone/nullToken and trim are explicit. Extra columns
+are accepted by default; exactColumns requires complete consumption.
 
 `packages/config` provides sourced layers (`Config.fromValue`, `toml`,
 `ConfigSource.snapshot`) and later-wins `Config.merge`. Tables merge recursively;

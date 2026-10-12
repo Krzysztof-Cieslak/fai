@@ -70,6 +70,9 @@ let headerMode mode =
 internal wrapHeaders : CsvRecord.Headers Bytes -> Headers
 let wrapHeaders headers = headers
 
+internal unwrapHeaders : Headers -> CsvRecord.Headers Bytes
+let unwrapHeaders headers = headers
+
 public parseTableWith : CsvTypes.Options -> HeaderMode -> Bytes -> Result Table CsvTypes.Error
 let parseTableWith options mode bytes =
   match CsvRecord.optionsFor options (headerMode mode) with

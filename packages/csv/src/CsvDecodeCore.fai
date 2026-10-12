@@ -1,0 +1,246 @@
+module CsvDecodeCore
+
+public opaque type Value 'field 'a =
+  | Value ('field -> Result 'a String)
+
+type Context 'field = {
+  headers : Option (CsvRecord.Headers 'field),
+  maxErrors : Int,
+  nameBytes : 'field -> Bytes,
+  record : CsvTypes.Record 'field
+}
+
+type Outcome 'a = { result : Result 'a (List CsvTypes.Error), used : Set Int }
+
+public opaque type Decoder 'field 'a =
+  | Decoder (Context 'field -> Outcome 'a)
+
+public custom : ('field -> Result 'a String) -> Value 'field 'a
+let custom read = Value read
+
+public parseValue : Value 'field 'a -> 'field -> Result 'a String
+let parseValue value field =
+  match value with
+  | Value read -> read field
+
+public mapValue : ('a -> 'b) -> Value 'field 'a -> Value 'field 'b
+let mapValue transform value = Value (fun field -> Result.map transform (parseValue value field))
+
+public refineValue : ('a -> Result 'b String) -> Value 'field 'a -> Value 'field 'b
+let refineValue transform value = Value (fun field -> refineCell transform value field)
+
+let refineCell transform value field =
+  match parseValue value field with
+  | Err error -> Err error
+  | Ok value -> transform value
+
+public optionalValue : ('field -> Bool) -> Value 'field 'a -> Value 'field (Option 'a)
+let optionalValue empty value =
+  Value (fun field -> if empty field then Ok None else Result.map Some (parseValue value field))
+
+let run decoder context =
+  match decoder with
+  | Decoder read -> read context
+
+let errors result =
+  match result with
+  | Ok _ -> []
+  | Err errors -> errors
+
+let success value = { result = Ok value, used = Set.empty }
+
+failure : Context 'field -> Option Int -> CsvTypes.ErrorKind -> String -> Outcome 'a
+let failure context index kind message = {
+  result = Err [located context index (CsvTypes.error kind message)],
+  used = Set.empty
+}
+
+located : Context 'field -> Option Int -> CsvTypes.Error -> CsvTypes.Error
+let located context index error =
+  let header =
+    match (context.headers, index) with
+    | (Some headers, Some index) -> Option.map context.nameBytes (Array.get index headers.names)
+    | _ -> None
+  { (CsvTypes.at context.record index error) with header = header }
+
+public decode : Int -> ('field -> Bytes) -> Decoder 'field 'a -> Option (CsvRecord.Headers 'field) -> CsvTypes.Record 'field -> Result 'a (List CsvTypes.Error)
+let decode maxErrors nameBytes decoder headers record =
+  if maxErrors < 1 then
+    Err [CsvTypes.error CsvTypes.InvalidOptions "CSV decode error limit must be positive"]
+  else
+    (run decoder {
+      headers = headers,
+      maxErrors = maxErrors,
+      nameBytes = nameBytes,
+      record = record
+    }).result
+
+public succeed : 'a -> Decoder 'field 'a
+let succeed value = Decoder (fun _ -> success value)
+
+public map : ('a -> 'b) -> Decoder 'field 'a -> Decoder 'field 'b
+let map transform decoder = Decoder (fun context -> mapped transform (run decoder context))
+
+mapped : ('a -> 'b) -> Outcome 'a -> Outcome 'b
+let mapped transform outcome = { outcome with result = Result.map transform outcome.result }
+
+combine : Context 'field -> Outcome ('a -> 'b) -> Outcome 'a -> Outcome 'b
+let combine context first second = {
+  result = match (first.result, second.result) with
+  | (Ok apply, Ok value) -> Ok (apply value)
+  | _ ->
+    Err (List.take context.maxErrors (List.append (errors first.result) (errors second.result))),
+  used = Set.union first.used second.used
+}
+
+public andMap : Decoder 'field 'a -> Decoder 'field ('a -> 'b) -> Decoder 'field 'b
+let andMap argument function = Decoder (fun context -> both context function argument)
+
+both : Context 'field -> Decoder 'field ('a -> 'b) -> Decoder 'field 'a -> Outcome 'b
+let both context function argument =
+  let first = run function context
+  let remaining = context.maxErrors - List.length (errors first.result)
+  if remaining <= 0 then
+    { first with result = Err (errors first.result) }
+  else
+    combine context first (run argument { context with maxErrors = remaining })
+
+public map2 : ('a -> 'b -> 'c) -> Decoder 'field 'a -> Decoder 'field 'b -> Decoder 'field 'c
+let map2 apply first second = andMap second (map apply first)
+
+public map3 : ('a -> 'b -> 'c -> 'd) -> Decoder 'field 'a -> Decoder 'field 'b -> Decoder 'field 'c -> Decoder 'field 'd
+let map3 apply first second third = andMap third (map2 apply first second)
+
+public andThen : ('a -> Decoder 'field 'b) -> Decoder 'field 'a -> Decoder 'field 'b
+let andThen next decoder = Decoder (fun context -> dependent context next decoder)
+
+dependent : Context 'field -> ('a -> Decoder 'field 'b) -> Decoder 'field 'a -> Outcome 'b
+let dependent context next decoder =
+  let first = run decoder context
+  match first.result with
+  | Err errors -> { first with result = Err errors }
+  | Ok value ->
+    let second = run (next value) context
+    { second with used = Set.union first.used second.used }
+
+public refine : ('a -> Result 'b String) -> Decoder 'field 'a -> Decoder 'field 'b
+let refine check decoder = Decoder (fun context -> refined context check decoder)
+
+refined : Context 'field -> ('a -> Result 'b String) -> Decoder 'field 'a -> Outcome 'b
+let refined context check decoder =
+  let outcome = run decoder context
+  { outcome with
+    result = match outcome.result with
+    | Err errors -> Err errors
+    | Ok value ->
+      Result.mapError (fun message -> [
+        CsvTypes.at context.record None (CsvTypes.error CsvTypes.InvalidValue message)
+      ]) (check value)
+  }
+
+readIndex : Context 'field -> Bool -> Int -> Value 'field 'a -> Outcome (Option 'a)
+let readIndex context optional index value =
+  if index < 0 then
+    failure context (Some index) CsvTypes.InvalidOptions "CSV column index must be nonnegative"
+  else
+    match Array.get index context.record.fields with
+    | None ->
+      if optional then
+        success None
+      else
+        failure context (Some index) CsvTypes.MissingColumn "CSV column is absent"
+    | Some field -> {
+      result = Result.map Some (Result.mapError (fun message -> [
+        located context (Some index) (CsvTypes.error CsvTypes.InvalidValue message)
+      ]) (parseValue value field.value)),
+      used = Set.singleton index
+    }
+
+require : Outcome (Option 'a) -> Outcome 'a
+let require outcome = { outcome with
+  result = match outcome.result with
+  | Err errors -> Err errors
+  | Ok (Some value) -> Ok value
+  | Ok None -> Err [CsvTypes.error CsvTypes.InvalidState "required CSV decoder returned absence"]
+}
+
+public index : Int -> Value 'field 'a -> Decoder 'field 'a
+let index index value = Decoder (fun context -> require (readIndex context false index value))
+
+public optionalIndex : Int -> Value 'field 'a -> Decoder 'field (Option 'a)
+let optionalIndex index value = Decoder (fun context -> readIndex context true index value)
+
+readName : Context 'field -> Bool -> 'field -> Value 'field 'a -> Outcome (Option 'a)
+let readName context optional name value =
+  match context.headers with
+  | None -> failure context None CsvTypes.MissingHeader "named CSV decoding requires headers"
+  | Some headers ->
+    match CsvRecord.lookup name headers with
+    | Ok index -> readIndex context optional index value
+    | Err error ->
+      if optional then
+        success None
+      else
+        {
+          result = Err [
+            { (CsvTypes.at context.record None error) with header = Some (context.nameBytes name) }
+          ],
+          used = Set.empty
+        }
+
+public field : 'field -> Value 'field 'a -> Decoder 'field 'a
+let field name value = Decoder (fun context -> require (readName context false name value))
+
+public optionalField : 'field -> Value 'field 'a -> Decoder 'field (Option 'a)
+let optionalField name value = Decoder (fun context -> readName context true name value)
+
+public withDefault : 'a -> Decoder 'field 'a -> Decoder 'field 'a
+let withDefault fallback decoder = Decoder (fun context -> defaulted fallback (run decoder context))
+
+defaulted : 'a -> Outcome 'a -> Outcome 'a
+let defaulted fallback outcome =
+  match outcome.result with
+  | Err [error] ->
+    if error.kind = CsvTypes.MissingColumn || error.kind = CsvTypes.UnknownColumn then
+      { outcome with result = Ok fallback }
+    else
+      outcome
+  | _ -> outcome
+
+public oneOf : List (Decoder 'field 'a) -> Decoder 'field 'a
+let oneOf decoders = Decoder (fun context -> alternatives context decoders [] Set.empty)
+
+alternatives : Context 'field -> List (Decoder 'field 'a) -> List CsvTypes.Error -> Set Int -> Outcome 'a
+let alternatives context decoders failures used =
+  match decoders with
+  | [] -> {
+    result = Err (if List.isEmpty failures then
+      [
+        CsvTypes.at context.record None (CsvTypes.error CsvTypes.InvalidValue "no CSV decoder alternatives")
+      ]
+    else
+      failures),
+    used = used
+  }
+  | decoder :: rest ->
+    let result = run decoder context
+    match result.result with
+    | Ok _ -> result
+    | Err errors ->
+      alternatives context rest (List.take context.maxErrors (List.append failures errors)) (Set.union used result.used)
+
+public exactColumns : Decoder 'field 'a -> Decoder 'field 'a
+let exactColumns decoder = Decoder (fun context -> exact context (run decoder context) 0)
+
+exact : Context 'field -> Outcome 'a -> Int -> Outcome 'a
+let exact context result index =
+  if index >= Array.length context.record.fields || List.length (errors result.result) >= context.maxErrors then
+    result
+  else if Set.member index result.used then
+    exact context result (index + 1)
+  else
+    exact context { result with
+      result = Err (List.append (errors result.result) [
+        CsvTypes.at context.record (Some index) (CsvTypes.error CsvTypes.UnknownColumn "CSV column was not consumed by the decoder")
+      ])
+    } (index + 1)

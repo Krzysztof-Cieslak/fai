@@ -1173,6 +1173,10 @@ record/field/input limits and BOM/newline policies are explicit.
 explicit header modes. Header normalization detects collisions and retains the
 original field metadata. Supplied headers establish strict width; flexible mode
 preserves ragged records. Parsed records own their contents, not the whole input.
+`CsvDecode` and `CsvBytesDecode` separate field readers from row composition.
+Checked scalar readers preserve missing/empty/invalid distinctions; independent
+errors accumulate with field indexes, header bytes and source spans. Extra
+columns are accepted unless `exactColumns` is explicitly requested.
 
 The optional `packages/toml` source library supplies pure TOML scalar and string
 parsing. Integer conversion checks signed 64-bit bounds; temporal values retain

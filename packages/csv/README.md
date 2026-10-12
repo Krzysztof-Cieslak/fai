@@ -51,3 +51,23 @@ normalized names. Text matching is exact and case-sensitive; bytes match exactly
 Whole-input collection budgets include an input header record. They bound both
 record count and total decoded field-content bytes. Streaming does not use these
 collection budgets. No whole-file byte limit is imposed unless configured.
+
+`CsvDecode.Value 'a` decodes one String field, and `CsvDecode.Decoder 'a` composes
+fields into a row. Use `index` or `field`, then `map2`/`map3`/`andMap`. Pass an
+optional header to `decode`; named access requires one. Independent failures
+accumulate in declaration order (64 by default, configurable with `decodeWith`).
+Errors retain field index, header bytes and source span. Extra columns are allowed
+unless the row decoder is wrapped in `exactColumns`.
+
+`int` is checked decimal (optional sign, leading zeroes allowed); `float` is
+checked finite decimal binary64; `bool` accepts exactly true/false. No reader
+trims implicitly: wrap it in `trim` if desired. `custom`/`fromText`, `mapValue`
+and `refineValue` define field conversions; `refine` validates the whole row.
+Missing columns, empty fields and invalid values are distinct. `optionalField`
+and `optionalIndex` handle absence, `emptyAsNone`/`nullToken` give explicit null
+policies, and `withDefault` handles a single absent column without hiding invalid
+present values. `CsvBytesDecode` supplies the byte-record counterpart, including
+raw `bytes` and explicit `utf8` conversion through a text value decoder.
+
+See `examples/People.fai` for a typed row decoder and `fai run -C packages
+csv/examples/People.fai` to execute it.
