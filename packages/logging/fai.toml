@@ -1,0 +1,34 @@
+manifest-version = 1
+
+[package]
+name = "logging"
+version = "0.1.0"
+fai-version = "^0.1.0"
+test-dir = "."
+
+[dependencies]
+json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
+
+[[bin]]
+name = "examples-backpressure-checks"
+path = "examples/BackpressureChecks.fai"
+
+[[bin]]
+name = "examples-capture-checks"
+path = "examples/CaptureChecks.fai"
+
+[[bin]]
+name = "examples-direct-checks"
+path = "examples/DirectChecks.fai"
+
+[[bin]]
+name = "examples-example"
+path = "examples/Example.fai"
+
+[[bin]]
+name = "examples-file-queue-checks"
+path = "examples/FileQueueChecks.fai"
+
+[[bin]]
+name = "examples-queue-checks"
+path = "examples/QueueChecks.fai"

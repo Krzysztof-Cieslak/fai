@@ -1,5 +1,7 @@
 module LlmCoreSpec
 
+import json.Json
+
 let person =
   LlmSchema.map2 (fun name age ->
     (name, age)) (LlmSchema.field "name" LlmSchema.string) (LlmSchema.field "age" LlmSchema.int)

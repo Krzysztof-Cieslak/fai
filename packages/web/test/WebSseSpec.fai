@@ -1,5 +1,8 @@
 module WebSseSpec
 
+import sse.Sse
+import sse.SseServer
+
 let rendered =
   match Web.mockContext Http.GET "/events" with
   | Err error -> Err error

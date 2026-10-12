@@ -1,5 +1,7 @@
 module PgSession
 
+import sql.Sql
+
 type Cursor = {
   columns : Array PgWire.Column,
   done : Bool,

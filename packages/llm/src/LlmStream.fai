@@ -1,5 +1,8 @@
 module LlmStream
 
+import json.Json
+import json.JsonDecode
+
 public type Draft = { arguments : String, id : String, itemId : Option String, name : String }
 
 public type State = {

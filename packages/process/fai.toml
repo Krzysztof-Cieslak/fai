@@ -1,0 +1,22 @@
+manifest-version = 1
+
+[package]
+name = "process"
+version = "0.1.0"
+fai-version = "^0.1.0"
+test-dir = "."
+
+[dependencies]
+tui = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/tui", version = "^0.1.0" }
+
+[[bin]]
+name = "examples-capture"
+path = "examples/Capture.fai"
+
+[[bin]]
+name = "examples-runtime-checks"
+path = "examples/RuntimeChecks.fai"
+
+[[bin]]
+name = "examples-task-runner"
+path = "examples/TaskRunner.fai"

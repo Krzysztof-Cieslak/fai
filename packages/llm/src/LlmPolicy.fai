@@ -1,5 +1,8 @@
 module LlmPolicy
 
+import http_client.HttpClient
+import http_client.HttpClientPolicy
+
 let backoff count delay maximum =
   if count <= 0 || delay = 0 || delay >= maximum then
     if delay > maximum then maximum else delay

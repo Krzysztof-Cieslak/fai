@@ -1,5 +1,9 @@
 module ConfigApplication
 
+import config.Config
+import config.ConfigDecode
+import config.ConfigSource
+
 public main : Runtime -> Unit / { Console, Env, FileSystem }
 let main env =
   match (env.fs.currentDirectory (), ConfigExampleSettings.defaults, ConfigExampleSettings.cli (env.env.args ())) with

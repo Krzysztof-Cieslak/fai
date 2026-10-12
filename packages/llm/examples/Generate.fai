@@ -1,5 +1,9 @@
 module LlmGenerate
 
+import llm.Llm
+import llm.LlmAnthropic
+import llm.LlmOpenAI
+
 generate : Runtime -> String -> String -> String -> Unit / { Clock, Concurrency, Console, Env, Net, Tls }
 let generate env provider model prompt =
   let variable = if provider = "anthropic" then "ANTHROPIC_API_KEY" else "OPENAI_API_KEY"

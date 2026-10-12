@@ -1,5 +1,9 @@
 module LogFormatSpec
 
+import json.Json
+import json.JsonDecode
+import json.JsonNumber
+
 let record = {
   event = Some "event",
   fields = Json.Object [||],

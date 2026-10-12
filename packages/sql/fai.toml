@@ -1,0 +1,10 @@
+manifest-version = 1
+
+[package]
+name = "sql"
+version = "0.1.0"
+fai-version = "^0.1.0"
+test-dir = "."
+
+[dependencies]
+uuid = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/uuid", version = "^0.1.0" }

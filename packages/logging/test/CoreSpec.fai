@@ -1,5 +1,8 @@
 module LogCoreSpec
 
+import json.Json
+import json.JsonNumber
+
 let limits = LogTypes.limits
 
 let record = {

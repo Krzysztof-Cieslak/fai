@@ -1,5 +1,11 @@
 module PgTypes
 
+import json.Json
+import sql.Sql
+import sql.SqlDecimal
+import sql.SqlUuid
+import uuid.Uuid
+
 /// Supported PostgreSQL scalar type names. Unknown types require an explicit cast.
 public name : Int -> Option String
 let name oid =

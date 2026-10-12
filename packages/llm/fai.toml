@@ -1,0 +1,15 @@
+manifest-version = 1
+
+[package]
+name = "llm"
+version = "0.1.0"
+fai-version = "^0.1.0"
+test-dir = "."
+
+[dependencies]
+http_client = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/http-client", version = "^0.1.0" }
+json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
+sse = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sse", version = "^0.1.0" }
+
+[dev-dependencies]
+llm_examples = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/llm/examples", version = "^0.1.0" }

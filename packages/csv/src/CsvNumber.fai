@@ -1,5 +1,7 @@
 module CsvNumber
 
+import json.JsonNumber
+
 let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
 
 let decimal bytes index limit value =

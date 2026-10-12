@@ -243,9 +243,9 @@ fai test -C packages web/test/WebJsonSpec.fai
 ```
 
 Repeated calls reuse the warm daemon. Library edits do not require rebuilding
-the compiler. Keep `web` and `json` beside each other when moving them to another
-source workspace. `ci.json` declares the dependency for repository CI selection;
-the Fai test runner does not require it.
+the compiler. The `fai.toml` manifest declares JSON and SSE dependencies for both
+the package loader and repository CI. Applications import modules explicitly,
+for example `import web.Web`.
 
 The effectful `.fai` programs in `test/` also serve as compiler execution fixtures.
 Compiler CI runs their transport, header, and shutdown checks through JIT and AOT,

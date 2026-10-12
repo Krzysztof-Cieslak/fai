@@ -1,5 +1,7 @@
 module TomlScalar
 
+import json.JsonNumber
+
 let digit byte =
   if byte >= 48 && byte <= 57 then
     byte - 48

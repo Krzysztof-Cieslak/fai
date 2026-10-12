@@ -1,5 +1,7 @@
 module LlmConfig
 
+import http_client.HttpClient
+
 public type Config = {
   events : HttpClient.EventOptions,
   http : HttpClient.Config,

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 import packages
 
@@ -31,14 +32,20 @@ def diff_paths(data):
 
 def catalog_at(root, revision):
     catalog = {}
+    documents = {}
     files = git(root, "ls-tree", "-r", "--name-only", "-z", revision, "--", "packages").decode().split("\0")
     for path in files:
         parts = path.split("/")
-        if len(parts) == 3 and parts[-1] == packages.MANIFEST:
-            package = packages.parse(root / "packages" / parts[1], git(root, "show", f"{revision}:{path}").decode())
-            catalog[package.name] = package
-    packages.validate(catalog)
-    return catalog
+        if len(parts) >= 3 and parts[-1] in {packages.MANIFEST, packages.LEGACY_MANIFEST}:
+            text = git(root, "show", f"{revision}:{path}").decode()
+            documents.setdefault(root / Path(path).parent, {})[parts[-1]] = text
+    for directory, contents in documents.items():
+        manifest = contents.get(packages.MANIFEST)
+        if manifest is not None and "package" not in tomllib.loads(manifest):
+            continue
+        package = packages.from_documents(directory, manifest, contents.get(packages.LEGACY_MANIFEST))
+        catalog[package.name] = package
+    return packages.bind(catalog, root)
 
 
 def documentation(path):
@@ -46,16 +53,25 @@ def documentation(path):
             or (path.startswith("docs/") and path.endswith((".md", ".txt"))))
 
 
-def classify(paths, current, previous):
+def classify(paths, current, previous, root=packages.ROOT):
     full = False
     reporting = False
     selected = set()
     reasons = []
     for path in paths:
-        parts = path.split("/")
-        if len(parts) >= 3 and parts[0] == "packages" and parts[1] in current.keys() | previous.keys():
-            selected.add(parts[1])
-            reasons.append(f"package: {parts[1]}")
+        owners = set()
+        for catalog in (current, previous):
+            candidates = []
+            for name, package in catalog.items():
+                relative = package.directory.relative_to(root) if package.directory.is_absolute() else package.directory
+                if Path(path).is_relative_to(relative):
+                    candidates.append((len(relative.parts), name))
+            if candidates:
+                depth = max(depth for depth, _ in candidates)
+                owners.update(name for size, name in candidates if size == depth)
+        if owners:
+            selected.update(owners)
+            reasons.extend(f"package: {name}" for name in owners)
         elif path.startswith("scripts/performance_report/"):
             reporting = True
             reasons.append("report presentation")
@@ -70,7 +86,7 @@ def classify(paths, current, previous):
     else:
         while True:
             expanded = selected | {name for catalog in (current, previous) for name, package in catalog.items()
-                                   if selected.intersection(package.dependencies)}
+                                   if selected.intersection(package.all_dependencies)}
             if expanded == selected:
                 break
             selected = expanded
@@ -94,7 +110,7 @@ def scope(root, base, head="HEAD"):
     except (subprocess.CalledProcessError, ValueError) as error:
         return {"compiler": True, "reporting": True, "packages": packages.validate(current), "mode": "compiler",
                 "reasons": [f"conservative full check: {type(error).__name__}"]}
-    result = classify(paths, current, previous)
+    result = classify(paths, current, previous, root)
     result["base"] = baseline
     return result
 

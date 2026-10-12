@@ -1,5 +1,8 @@
 module ConfigTree
 
+import toml.Toml
+import toml.TomlTypes
+
 public type Node =
   | Node ConfigTypes.StoredOrigin Body
 

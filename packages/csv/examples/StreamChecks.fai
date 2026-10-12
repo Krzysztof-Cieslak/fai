@@ -1,5 +1,10 @@
 module CsvStreamChecks
 
+import csv.Csv
+import csv.CsvEncode
+import csv.CsvStream
+import csv.CsvTypes
+
 readClock : Clock -> Int -> Result (Option (Bytes * Int)) String / { Clock }
 let readClock clock index =
   let tick = clock.now ()

@@ -1,5 +1,9 @@
 module Basic
 
+import postgres.Postgres
+import sql.Sql
+import sql.SqlDecode
+
 public type Runtime = {
   clock : Clock,
   concurrency : Concurrency,

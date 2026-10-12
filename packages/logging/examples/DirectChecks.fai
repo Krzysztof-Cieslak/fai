@@ -1,5 +1,7 @@
 module LogDirectChecks
 
+import json.JsonDecode
+
 writeOne : Log.Logger { FileSystem } -> Int -> Result Log.Receipt Log.Error / { FileSystem }
 let writeOne logger index = Log.info logger "concurrent" [LogField.int "index" index]
 

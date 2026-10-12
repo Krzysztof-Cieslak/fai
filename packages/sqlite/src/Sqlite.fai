@@ -1,5 +1,10 @@
 module Sqlite
 
+import sql.Sql
+import sql.SqlDecimal
+import sql.SqlUuid
+import uuid.Uuid
+
 /// How the outer transaction acquires its SQLite locks. Nested scopes use savepoints.
 public type TransactionMode =
   | Deferred

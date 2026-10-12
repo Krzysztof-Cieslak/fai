@@ -77,6 +77,18 @@ class ClassificationTests(unittest.TestCase):
         result = ci.classify(["packages/json/src/Json.fai"], catalog(()), catalog())
         self.assertEqual(result["packages"], ["json", "web"])
 
+    def test_nested_example_edit_uses_its_own_package_and_development_dependents(self):
+        nested = catalog()
+        nested["web-examples"] = packages.Package("web-examples", Path("packages/web/examples"), ("web",))
+        nested["web"] = packages.Package("web", Path("packages/web"), ("json",), development=("web-examples",))
+        result = ci.classify(["packages/web/examples/App.fai"], nested, nested)
+        self.assertEqual(result["packages"], ["web", "web-examples"])
+        self.assertFalse(result["compiler"])
+
+    def test_workspace_manifest_changes_run_full_checks(self):
+        result = ci.classify(["packages/fai.toml"], catalog(), catalog())
+        self.assertTrue(result["compiler"])
+
     def test_removed_package_selects_remaining_previous_dependents(self):
         current = {"web": catalog(())["web"]}
         result = ci.classify(["packages/json/src/Json.fai"], current, catalog())
@@ -129,8 +141,8 @@ class ClassificationTests(unittest.TestCase):
             for name, package in catalog().items():
                 directory = root / "packages" / name
                 directory.mkdir(parents=True)
-                (directory / packages.MANIFEST).write_text(json.dumps({"schemaVersion": 1, "name": name,
-                                                                      "dependencies": package.dependencies}))
+                dependencies = "\n".join(f'{dependency} = {{path = "../{dependency}"}}' for dependency in package.dependencies)
+                (directory / packages.MANIFEST).write_text(f'manifest-version = 1\n[package]\nname = "{name}"\nversion = "0.1.0"\n[dependencies]\n{dependencies}\n')
                 (directory / "Code.fai").write_text("module Code\n")
             (root / "compiler.rs").write_text("old")
             git("add", ".")
@@ -159,14 +171,15 @@ class ClassificationTests(unittest.TestCase):
             git("config", "user.name", "Test")
             directory = root / "packages/example"
             directory.mkdir(parents=True)
-            manifest = {"schemaVersion": 1, "name": "example", "dependencies": []}
-            (directory / packages.MANIFEST).write_text(json.dumps(manifest))
+            manifest = {"schemaVersion": 1}
+            (directory / packages.MANIFEST).write_text('manifest-version = 1\n[package]\nname = "example"\nversion = "0.1.0"\n')
+            (directory / packages.LEGACY_MANIFEST).write_text(json.dumps(manifest))
             git("add", ".")
             git("commit", "-m", "Add package")
             base = git("rev-parse", "HEAD")
             (directory / "Run.fai").write_text("module Run\n")
             manifest["integrations"] = [{"name": "runtime", "entry": "Run.fai", "stdoutLines": ["passed"]}]
-            (directory / packages.MANIFEST).write_text(json.dumps(manifest))
+            (directory / packages.LEGACY_MANIFEST).write_text(json.dumps(manifest))
             git("add", ".")
             git("commit", "-m", "Add integration entrypoint")
             result = ci.scope(root, base)

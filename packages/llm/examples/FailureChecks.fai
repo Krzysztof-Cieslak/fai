@@ -1,5 +1,9 @@
 module LlmFailureChecks
 
+import llm.Llm
+import llm.LlmOpenAI
+import llm.LlmTypes
+
 type Case = { mode : String, retry : Int, total : Option Int }
 
 let basic = { mode = "normal", retry = 0, total = None }

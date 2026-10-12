@@ -14,6 +14,11 @@ fai run -C samples/package_imports --package app
 fai test -C samples/package_imports --package app
 ```
 
+The in-tree libraries use the same manifest and import model under
+[`packages/`](../../packages/README.md). Their workspace explicitly replaces
+portable Git dependencies with checkout paths, and CI reads those declarations
+directly for dependency-aware selection.
+
 The compiler integration test also checks formatting, type identity, and execution:
 
 ```sh

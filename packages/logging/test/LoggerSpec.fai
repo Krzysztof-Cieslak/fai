@@ -1,5 +1,8 @@
 module LogLoggerSpec
 
+import json.Json
+import json.JsonNumber
+
 let checked = Log.create Log.defaults (LogSink.discard "test")
 example: (match checked with
 | Err _ -> false

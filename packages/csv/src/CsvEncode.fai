@@ -1,5 +1,7 @@
 module CsvEncode
 
+import json.JsonNumber
+
 public type Options = CsvWrite.Options
 
 public options : Options

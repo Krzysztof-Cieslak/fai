@@ -1,5 +1,7 @@
 module TypedClient
 
+import json.JsonDecode
+
 let handler request = Ok {
   body = Http.stringBody "{\"id\":42,\"name\":\"Ada\"}",
   headers = Headers.fromList [("Content-Type", "application/json")],

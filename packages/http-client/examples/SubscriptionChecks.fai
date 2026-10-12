@@ -1,5 +1,7 @@
 module SubscriptionChecks
 
+import sse.Sse
+
 type Scenario = {
   cancel : Bool,
   options : HttpClient.SubscriptionOptions,

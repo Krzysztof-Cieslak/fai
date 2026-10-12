@@ -1,5 +1,7 @@
 module LogFileQueueChecks
 
+import json.JsonDecode
+
 writeLoop : Log.Logger { Concurrency } -> Int -> Result Unit Log.Error / { Concurrency }
 let writeLoop logger count =
   if count <= 0 then

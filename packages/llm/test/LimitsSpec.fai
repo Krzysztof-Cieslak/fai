@@ -1,5 +1,7 @@
 module LlmLimitsSpec
 
+import llm_examples.LlmFixtures
+
 let request = Llm.request "fixture"
 example: LlmOpenAI.encode Llm.limits (request |> Llm.topP 1.1) |> Result.isErr
 example: LlmOpenAI.encode Llm.limits (request |> Llm.temperature (-0.1)) |> Result.isErr

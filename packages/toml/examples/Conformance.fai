@@ -1,5 +1,7 @@
 module TomlConformance
 
+import json.Json
+
 let member key pairs = Array.foldl (fun found pair -> choose key pair found) None pairs
 
 let choose key pair found =

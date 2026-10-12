@@ -1,5 +1,7 @@
 module PgPool
 
+import sql.Sql
+
 public type Options = {
   acquireTimeoutMs : Option Int,
   idleTimeoutMs : Option Int,

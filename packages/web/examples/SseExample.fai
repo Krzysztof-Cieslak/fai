@@ -1,5 +1,7 @@
 module SseExample
 
+import sse.Sse
+
 source : Concurrency -> Channel Sse.Frame -> Stream Sse.Frame { Concurrency }
 let source c channel = Stream.defer (fun _ -> sourceStep c channel)
 

@@ -1,5 +1,8 @@
 module FileDatabase
 
+import sql.Sql
+import sql.SqlDecode
+
 public type Runtime = { console : Console, env : Env, sqlite : SqliteHost.Sqlite }
 
 let runtime = { console = stdConsole, env = stdEnv, sqlite = SqliteHost.native }

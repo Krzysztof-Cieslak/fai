@@ -1,5 +1,8 @@
 module JsonEffects
 
+import json.JsonDecode
+import json.JsonEncode
+
 source : Console -> Unit -> Stream Bytes { Console } / { Console }
 let source console unit =
   let printed = console.writeLine "read"

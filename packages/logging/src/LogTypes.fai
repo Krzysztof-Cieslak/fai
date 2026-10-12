@@ -1,5 +1,8 @@
 module LogTypes
 
+import json.Json
+import json.JsonEncode
+
 public type Level =
   | Trace
   | Debug

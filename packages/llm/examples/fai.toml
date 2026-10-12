@@ -1,0 +1,16 @@
+manifest-version = 1
+
+[package]
+name = "llm-examples"
+version = "0.1.0"
+fai-version = "^0.1.0"
+source-dir = "."
+auto-main = false
+
+[dependencies]
+cli = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/cli", version = "^0.1.0" }
+json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
+llm = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/llm", version = "^0.1.0" }
+process = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/process", version = "^0.1.0" }
+sql = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sql", version = "^0.1.0" }
+tui = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/tui", version = "^0.1.0" }

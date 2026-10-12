@@ -1,5 +1,7 @@
 module TomlEncode
 
+import json.Json
+
 public type Options = { maxBytes : Int, maxDepth : Int, maxNodes : Int }
 
 public options : Options

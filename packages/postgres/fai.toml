@@ -1,0 +1,12 @@
+manifest-version = 1
+
+[package]
+name = "postgres"
+version = "0.1.0"
+fai-version = "^0.1.0"
+test-dir = "."
+
+[dependencies]
+json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
+sql = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sql", version = "^0.1.0" }
+uuid = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/uuid", version = "^0.1.0" }

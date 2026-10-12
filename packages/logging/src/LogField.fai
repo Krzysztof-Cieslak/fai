@@ -1,5 +1,8 @@
 module LogField
 
+import json.Json
+import json.JsonEncode
+
 public type Field = LogTypes.Field
 
 /// Field encoding is checked only when an enabled event is prepared.

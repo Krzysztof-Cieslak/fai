@@ -1,5 +1,7 @@
 module LlmStructuredSpec
 
+import json.Json
+
 let schema =
   LlmSchema.object0 (fun name count -> {
     count = count,

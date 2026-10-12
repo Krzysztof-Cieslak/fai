@@ -1,5 +1,7 @@
 module PgWire
 
+import sql.Sql
+
 /// A length-validated PostgreSQL backend message.
 public type Message = { body : Bytes, tag : Int }
 

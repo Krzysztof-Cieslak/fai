@@ -1,7 +1,7 @@
 """Package selection and fast-loop command contracts."""
 
-import json
 from pathlib import Path
+import json
 import sys
 import tempfile
 import unittest
@@ -22,8 +22,8 @@ class PackageTests(unittest.TestCase):
     def add_package(self, name, dependencies):
         directory = self.root / "packages" / name
         (directory / "test").mkdir(parents=True, exist_ok=True)
-        (directory / packages.MANIFEST).write_text(json.dumps({"schemaVersion": 1, "name": name,
-                                                              "dependencies": dependencies}))
+        declarations = "\n".join(f'{dependency} = {{path = "../{dependency}"}}' for dependency in dependencies) if all(isinstance(value, str) for value in dependencies) else 'invalid = false'
+        (directory / packages.MANIFEST).write_text(f'manifest-version = 1\n[package]\nname = "{name}"\nversion = "0.1.0"\n[dependencies]\n{declarations}\n')
 
     def test_json_selects_transitive_dependents(self):
         self.assertEqual(packages.affected(packages.discover(self.root), ["json"]), ["json", "web", "app"])
@@ -60,8 +60,40 @@ class PackageTests(unittest.TestCase):
         with self.assertRaisesRegex(packages.PackageError, "unknown packages"):
             packages.affected(packages.discover(self.root), ["unknown"])
 
+    def test_nested_example_packages_are_selected_by_manifest_identity(self):
+        directory = self.root / "packages/web/examples"
+        directory.mkdir()
+        (directory / packages.MANIFEST).write_text('manifest-version = 1\n[package]\nname = "web-examples"\nversion = "0.1.0"\n[dependencies]\nweb = {path = ".."}\n')
+        self.assertEqual(packages.affected(packages.discover(self.root), ["web"]), ["web", "app", "web-examples"])
+
+    def test_development_helper_back_edges_do_not_form_a_normal_cycle(self):
+        directory = self.root / "packages/json"
+        with (directory / packages.MANIFEST).open("a") as output:
+            output.write('[dev-dependencies]\nhelper = {path = "../app"}\n')
+        catalog = packages.discover(self.root)
+        self.assertEqual(packages.affected(catalog, ["app"]), ["json", "web", "app"])
+
+    def test_github_shorthand_preserves_checkout_dependency_identity(self):
+        directory = self.root / "packages/web"
+        (directory / packages.MANIFEST).write_text('manifest-version = 1\n[package]\nname = "web"\nversion = "0.1.0"\n[dependencies]\ndata = {git = "github:Krzysztof-Cieslak/fai", subdir = "packages/json", version = "*"}\n')
+        self.assertEqual(packages.discover(self.root)["web"].dependencies, ("json",))
+
+    def test_ssh_repository_urls_preserve_checkout_dependency_identity(self):
+        self.assertTrue(packages.in_tree_repository("ssh://git@github.com/Krzysztof-Cieslak/fai.git"))
+
 
 class IntegrationMetadataTests(unittest.TestCase):
+    def test_integration_metadata_uses_the_real_manifest_identity(self):
+        manifest = 'manifest-version = 1\n[package]\nname = "example-app"\nversion = "0.1.0"\n'
+        metadata = '{"schemaVersion":1,"integrations":[{"name":"run","entry":"Main.fai"}]}'
+        package = packages.from_documents(Path("packages/example"), manifest, metadata)
+        self.assertEqual((package.name, package.integrations[0].entry), ("example-app", "Main.fai"))
+
+    def test_integration_metadata_cannot_duplicate_dependency_declarations(self):
+        manifest = 'manifest-version = 1\n[package]\nname = "example"\nversion = "0.1.0"\n'
+        with self.assertRaisesRegex(packages.PackageError, "unknown integration metadata fields"):
+            packages.from_documents(Path("packages/example"), manifest, '{"schemaVersion":1,"dependencies":[]}')
+
     def manifest(self, **updates):
         data = {"schemaVersion": 1, "name": "example", "dependencies": [],
                 "integrations": [{"name": "runtime", "entry": "examples/Runtime.fai"}]}

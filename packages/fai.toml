@@ -1,0 +1,95 @@
+manifest-version = 1
+lock-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+
+[workspace]
+members = ["cli", "config", "config/examples", "csv", "csv/examples", "dotenv", "http-client", "json", "llm", "llm/examples", "logging", "postgres", "postgres/examples", "process", "regex", "sql", "sqlite", "sse", "toml", "tui", "uuid", "web"]
+
+# Portable declarations use this checkout explicitly during workspace development.
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/csv" }
+with = { path = "csv" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/csv/examples" }
+with = { path = "csv/examples" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/uuid" }
+with = { path = "uuid" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/cli" }
+with = { path = "cli" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/config" }
+with = { path = "config" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/config/examples" }
+with = { path = "config/examples" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/dotenv" }
+with = { path = "dotenv" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/http-client" }
+with = { path = "http-client" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json" }
+with = { path = "json" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/llm" }
+with = { path = "llm" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/llm/examples" }
+with = { path = "llm/examples" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/logging" }
+with = { path = "logging" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/postgres" }
+with = { path = "postgres" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/postgres/examples" }
+with = { path = "postgres/examples" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/process" }
+with = { path = "process" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/regex" }
+with = { path = "regex" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sql" }
+with = { path = "sql" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sqlite" }
+with = { path = "sqlite" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sse" }
+with = { path = "sse" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/toml" }
+with = { path = "toml" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/tui" }
+with = { path = "tui" }
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/web" }
+with = { path = "web" }

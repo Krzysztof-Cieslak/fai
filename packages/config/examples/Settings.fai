@@ -1,5 +1,12 @@
 module ConfigExampleSettings
 
+import cli.Args
+import config.Config
+import config.ConfigDecode
+import config.ConfigSource
+import config.ConfigTypes
+import toml.TomlTypes
+
 public type Settings = { data : Path, debug : Bool, host : String, port : Int }
 
 public bindings : List Config.Binding

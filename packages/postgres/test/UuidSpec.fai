@@ -1,5 +1,8 @@
 module PgUuidSpec
 
+import sql.Sql
+import uuid.Uuid
+
 let text = "01234567-89ab-cdef-0123-456789abcdef"
 
 let bytes = Bytes.fromList [1, 35, 69, 103, 137, 171, 205, 239, 1, 35, 69, 103, 137, 171, 205, 239]

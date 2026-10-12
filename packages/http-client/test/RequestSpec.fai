@@ -1,5 +1,7 @@
 module RequestSpec
 
+import json.JsonEncode
+
 let cfg = HttpClient.config "https://api.test/v1/"
 
 let prepared req = HttpClient.prepare cfg req

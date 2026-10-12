@@ -1,5 +1,7 @@
 module EdgeSpec
 
+import sql.Sql
+
 example: PgWire.parameters (PgWire.join [
   PgWire.int16 2,
   PgWire.int32 20,

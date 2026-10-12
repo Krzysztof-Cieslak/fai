@@ -1,5 +1,9 @@
 module WebJsonSpec
 
+import json.Json
+import json.JsonDecode
+import json.JsonEncode
+
 run : Web.HttpHandler 'e -> Option String -> Stream Bytes 'e -> Web.Outcome 'e / 'e
 let run handler media body =
   match Web.mockContext Http.POST "/" with

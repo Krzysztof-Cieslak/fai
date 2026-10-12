@@ -1,0 +1,19 @@
+manifest-version = 1
+
+[package]
+name = "uuid"
+version = "0.1.0"
+fai-version = "^0.1.0"
+test-dir = "."
+
+[[bin]]
+name = "examples-generate"
+path = "examples/Generate.fai"
+
+[[bin]]
+name = "examples-inspect"
+path = "examples/Inspect.fai"
+
+[[bin]]
+name = "examples-runtime-checks"
+path = "examples/RuntimeChecks.fai"

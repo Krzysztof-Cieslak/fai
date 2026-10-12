@@ -1,5 +1,7 @@
 module ConfigSource
 
+import toml.TomlTypes
+
 public type Requirement =
   | Required
   | Optional

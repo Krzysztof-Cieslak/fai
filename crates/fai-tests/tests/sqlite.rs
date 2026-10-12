@@ -1,9 +1,10 @@
 //! SQL package and native SQLite bridge integration on the real JIT runtime.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
-use fai_db::Db;
+use fai_db::{Db, SourceOrigin, SourceRole};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -12,8 +13,23 @@ fn run(body: &str, effects: &str) -> String {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
+    let sql = db.register_package("sql-fixture".into());
+    let sqlite = db.register_package("sqlite-fixture".into());
+    let uuid = db.register_package("uuid-fixture".into());
+    db.set_package_dependencies(sql, BTreeMap::from([("uuid".into(), uuid)]), BTreeMap::new());
+    db.set_package_dependencies(
+        sqlite,
+        BTreeMap::from([("sql".into(), sql), ("uuid".into(), uuid)]),
+        BTreeMap::new(),
+    );
+    let app = db.register_package("sqlite-app-fixture".into());
+    db.set_package_dependencies(
+        app,
+        BTreeMap::from([("sql".into(), sql), ("sqlite".into(), sqlite)]),
+        BTreeMap::new(),
+    );
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
-    for package in ["sql", "sqlite", "uuid"] {
+    for (package, owner) in [("sql", sql), ("sqlite", sqlite), ("uuid", uuid)] {
         let mut files: Vec<_> = std::fs::read_dir(root.join(package).join("src"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -21,11 +37,19 @@ fn run(body: &str, effects: &str) -> String {
             .collect();
         files.sort();
         for path in files {
-            db.add_source(path.to_str().unwrap().into(), std::fs::read_to_string(&path).unwrap());
+            db.add_source_scoped(
+                path.to_str().unwrap().into(),
+                std::fs::read_to_string(&path).unwrap(),
+                SourceOrigin::Package(owner),
+                SourceRole::Library,
+            );
         }
     }
     let source = format!(
         r#"module SqliteTest
+import sql.Sql
+import sql.SqlDecode
+import sqlite.Sqlite
 public type R = {{ clock : Clock, concurrency : Concurrency, console : Console, sqlite : SqliteHost.Sqlite }}
 let runtime = {{ clock = stdClock, concurrency = stdConcurrency, console = stdConsole, sqlite = SqliteHost.native }}
 {body}
@@ -33,7 +57,12 @@ public main : R -> Unit / {{ Console, {effects} }}
 let main r = r.console.writeLine (if check r then "ok" else "failed")
 "#
     );
-    let id = db.add_source("SqliteTest.fai".into(), source);
+    let id = db.add_source_scoped(
+        "SqliteTest.fai".into(),
+        source,
+        SourceOrigin::Package(app),
+        SourceRole::Library,
+    );
     fai_runtime::capture_start();
     let outcome = fai_driver::jit_run_program(&db, db.source_file(id).unwrap());
     let output = fai_runtime::capture_take();

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from package_fixture import prepare
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,16 +23,14 @@ def run(command, **kwargs):
 
 
 def negative_checks(compiler, directory):
-    for package in ("llm", "json", "http-client", "sse"):
-        for source in (ROOT / "packages" / package / "src").glob("*.fai"):
-            shutil.copy2(source, directory)
+    prepare(directory, ["llm"])
     cases = [
         "public bad : Llm.Client -> Llm.Request -> Result Llm.Response Llm.Error\nlet bad client request = Llm.generate client request\n",
         "log : Console -> Llm.Event -> Result LlmTypes.Decision Llm.Error / { Console }\nlet log console event =\n  let sent = console.writeLine \"event\"\n  Ok LlmTypes.Continue\npublic bad : Console -> Llm.Client -> Llm.Request -> Result LlmTypes.StreamResult Llm.Error / { Clock, Concurrency, Net, Tls }\nlet bad console client request = Llm.withStream client request (log console)\n",
         "public bad : LlmTool.Registry { FileSystem } -> LlmTypes.ToolCall -> Result LlmTypes.ToolResult Llm.Error\nlet bad tools call = LlmTool.execute tools call\n",
     ]
     for source in cases:
-        source = "module Negative\n// é\n" + source
+        source = "module Negative\nimport llm.Llm\nimport llm.LlmTool\nimport llm.LlmTypes\n// é\n" + source
         path = directory / "Negative.fai"
         path.write_bytes(source.encode("utf-8"))
         result = subprocess.run([compiler, "check", "--no-daemon", "--no-examples", "--message-format=json", "-C", str(directory), str(path)], capture_output=True, timeout=90)
