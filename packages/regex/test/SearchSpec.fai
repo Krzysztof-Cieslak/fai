@@ -1,0 +1,64 @@
+module RegexSearchSpec
+
+let find pattern text =
+  match Regex.compile pattern with
+  | Err error -> Err error
+  | Ok regex -> Result.map (Option.map Regex.detach) (Regex.find regex text)
+example: find "🙂" "Aé🙂B" = Ok (Some {
+  span = { endByte = 7, endChar = 3, startByte = 3, startChar = 2 },
+  text = "🙂"
+})
+example: find "[0-9]+" "letters" = Ok None
+example: find "sam|samwise" "samwise" = Ok (Some {
+  span = { endByte = 3, endChar = 3, startByte = 0, startChar = 0 },
+  text = "sam"
+})
+example: (match Regex.compileWhole "a|ab" with
+| Err _ -> false
+| Ok regex -> Regex.isMatch regex "ab" = Ok true && Regex.isMatch regex "cab" = Ok false)
+example: (match Regex.compile "é" with
+| Err _ -> false
+| Ok regex -> Regex.findFromByte 1 regex "é" |> Result.isErr)
+example: (match Regex.compile "^a" with
+| Err _ -> false
+| Ok regex -> Regex.findFromChar 1 regex "ba" = Ok None)
+example: (match RegexBytes.compile "\\xFF" with
+| Err _ -> false
+| Ok regex ->
+  (RegexBytes.find regex (Bytes.fromList [
+    1,
+    255,
+    2
+  ]) |> Result.map (Option.map RegexBytes.bytes)) = Ok (Some (Bytes.fromList [255])))
+example: (match Regex.compile "[" with
+| Err error ->
+  error.kind = RegexTypes.Syntax && error.location = Some {
+    byteEnd = 1,
+    byteStart = 0,
+    column = 1,
+    endColumn = 2,
+    endLine = 1,
+    line = 1
+  }
+| Ok _ -> false)
+example: (match Regex.compile "(?=a)" with
+| Err error -> error.kind = RegexTypes.Unsupported
+| Ok _ -> false)
+example: Regex.compileWith { Regex.options with maxPatternBytes = 0 } "a" |> Result.isErr
+example: Regex.compileWith { Regex.options with nestingLimit = -1 } "a" |> Result.isErr
+example: Regex.compileWith { Regex.options with maxCaptureGroups = 0 } "(a)" |> Result.isErr
+example: (match Regex.compile "a" with
+| Err _ -> false
+| Ok regex ->
+  Regex.findWithLimits { Regex.limits with maxInputBytes = 0 } regex "a" |> Result.isErr)
+example: (match Regex.compile "(a)?(b*)" with
+| Err _ -> false
+| Ok regex ->
+  (match Regex.captures regex "" with
+  | Ok (Some captures) ->
+    Regex.group 1 captures = Ok None && (Regex.group 2 captures |> Result.map (Option.map Regex.text)) = Ok (Some "") && (Regex.group 5 captures |> Result.isErr)
+  | _ -> false))
+example: Regex.compile "a" = Regex.compile "a"
+forall text: match Regex.compile (Regex.escape text) with
+| Err _ -> false
+| Ok regex -> Regex.isMatch regex text = Ok true

@@ -1169,6 +1169,10 @@ description-based equality, ordering and hashing, independent of their bounded
 scratch caches. Text search reports UTF-8 ranges and scalar offsets relative to
 an explicit byte checkpoint; binary search supports arbitrary bytes. Whole-input
 mode anchors parsed HIR, preserving alternatives and verbose pattern comments.
+The optional `packages/regex` package provides distinct text and binary regex,
+match and capture types. Text spans expose Unicode-scalar and UTF-8 coordinates;
+search offsets preserve original-input anchor context. Capture access separates
+unknown groups, unmatched groups and empty matches. All APIs remain pure.
 
 The optional `packages/logging` source package provides structured log records,
 typed fields, target-prefix filtering and pure human/JSON Lines formatting.

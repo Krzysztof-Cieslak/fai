@@ -1,0 +1,152 @@
+module RegexTypes
+
+public type Mode =
+  | Search
+  | WholeInput
+
+public type CompileOptions = {
+  caseInsensitive : Bool,
+  crlf : Bool,
+  dotMatchesNewline : Bool,
+  ignoreWhitespace : Bool,
+  maxCacheBytes : Int,
+  maxCaptureGroups : Int,
+  maxCompiledBytes : Int,
+  maxPatternBytes : Int,
+  maxRetainedCaches : Int,
+  mode : Mode,
+  multiLine : Bool,
+  nestingLimit : Int,
+  swapGreed : Bool,
+  unicode : Bool
+}
+
+public compileOptions : CompileOptions
+let compileOptions = {
+  caseInsensitive = false,
+  crlf = false,
+  dotMatchesNewline = false,
+  ignoreWhitespace = false,
+  maxCacheBytes = 2097152,
+  maxCaptureGroups = 256,
+  maxCompiledBytes = 10485760,
+  maxPatternBytes = 65536,
+  maxRetainedCaches = 1,
+  mode = Search,
+  multiLine = false,
+  nestingLimit = 128,
+  swapGreed = false,
+  unicode = true
+}
+
+public type Limits = {
+  maxCaptureSlots : Int,
+  maxInputBytes : Int,
+  maxOutputBytes : Int,
+  maxResults : Int
+}
+
+public limits : Limits
+let limits = {
+  maxCaptureSlots = 1000000,
+  maxInputBytes = 16777216,
+  maxOutputBytes = 16777216,
+  maxResults = 100000
+}
+
+public type ErrorKind =
+  | InvalidOptions
+  | Syntax
+  | Unsupported
+  | PatternLimit
+  | NestingLimit
+  | CompiledLimit
+  | CaptureLimit
+  | InvalidOffset
+  | WrongMode
+  | InputLimit
+  | ResultLimit
+  | OutputLimit
+  | UnknownCapture
+  | InvalidTemplate
+  | InternalFailure
+
+public type Location = {
+  byteEnd : Int,
+  byteStart : Int,
+  column : Int,
+  endColumn : Int,
+  endLine : Int,
+  line : Int
+}
+
+public type Error = { kind : ErrorKind, location : Option Location, message : String }
+
+public type CompileError = Error
+
+public error : ErrorKind -> String -> Error
+let error kind message = { kind = kind, location = None, message = message }
+
+public errorToString : Error -> String
+let errorToString error = error.message
+
+public type TextSpan = { endByte : Int, endChar : Int, startByte : Int, startChar : Int }
+
+public type ByteSpan = { endByte : Int, startByte : Int }
+
+public validateLimits : Limits -> Result Unit Error
+let validateLimits limits =
+  if limits.maxCaptureSlots < 0 || limits.maxInputBytes < 0 || limits.maxOutputBytes < 0 || limits.maxResults < 0 then
+    Err (error InvalidOptions "regex limits must be nonnegative")
+  else
+    Ok ()
+
+let position bytes finish index line column =
+  if index >= finish then
+    (line, column)
+  else
+    let byte = Bytes.unsafeGet index bytes
+    if byte = 10 then
+      position bytes finish (index + 1) (line + 1) 1
+    else
+      position bytes finish (index + 1) line (column + (if byte < 128 || byte >= 192 then 1 else 0))
+
+public located : String -> Int -> Int -> Error -> Error
+let located source start finish error =
+  let bytes = Bytes.fromString source
+  if start < 0 || finish < start || finish > Bytes.length bytes then
+    error
+  else
+    let (line, column) = position bytes start 0 1 1
+    let (endLine, endColumn) = position bytes finish start line column
+    { error with
+      location = Some {
+        byteEnd = finish,
+        byteStart = start,
+        column = column,
+        endColumn = endColumn,
+        endLine = endLine,
+        line = line
+      }
+    }
+
+public nativeError : Option String -> RegexEngine.Error -> Error
+let nativeError source native =
+  let (RegexEngine.EngineError code message start finish) = native
+  let kind =
+    match code with
+    | 1 -> InvalidOptions
+    | 2 -> Syntax
+    | 3 -> Unsupported
+    | 4 -> PatternLimit
+    | 5 -> CompiledLimit
+    | 6 -> CaptureLimit
+    | 7 -> InvalidOffset
+    | 8 -> WrongMode
+    | 10 -> InputLimit
+    | 11 -> NestingLimit
+    | _ -> InternalFailure
+  let error = error kind message
+  match source with
+  | None -> error
+  | Some source -> located source start finish error

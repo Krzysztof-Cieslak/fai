@@ -1,0 +1,92 @@
+module RegexBytes
+
+public opaque type Regex = RegexInternal.Compiled
+
+public opaque type Match = RegexInternal.Match
+
+public opaque type Captures = RegexInternal.Captures
+
+public type CompileOptions = RegexTypes.CompileOptions
+
+public type CompileError = RegexTypes.CompileError
+
+public type Error = RegexTypes.Error
+
+public type Limits = RegexTypes.Limits
+
+public type Span = RegexTypes.ByteSpan
+
+public options : CompileOptions
+let options = { RegexTypes.compileOptions with unicode = false }
+
+public limits : Limits
+let limits = RegexTypes.limits
+
+public compileWith : CompileOptions -> String -> Result Regex CompileError
+let compileWith options pattern = RegexInternal.compile true options pattern
+
+public compile : String -> Result Regex CompileError
+let compile pattern = compileWith options pattern
+
+public compileWhole : String -> Result Regex CompileError
+let compileWhole pattern = compileWith { options with mode = RegexTypes.WholeInput } pattern
+
+public pattern : Regex -> String
+let pattern regex = regex.pattern
+
+public describe : Regex -> CompileOptions
+let describe regex = regex.options
+
+public captureNames : Regex -> Array (Option String)
+let captureNames regex = regex.names
+
+public captureCount : Regex -> Int
+let captureCount regex = Array.length regex.names
+
+public errorToString : Error -> String
+let errorToString error = error.message
+
+public isMatchWithLimits : Limits -> Regex -> Bytes -> Result Bool Error
+let isMatchWithLimits limits regex bytes =
+  RegexInternal.isMatch limits regex (RegexInternal.Binary bytes)
+
+public isMatch : Regex -> Bytes -> Result Bool Error
+let isMatch regex bytes = isMatchWithLimits limits regex bytes
+
+public findFromByteWithLimits : Limits -> Int -> Regex -> Bytes -> Result (Option Match) Error
+let findFromByteWithLimits limits start regex bytes =
+  Result.map (Option.map RegexInternal.whole) (RegexInternal.first limits regex (RegexInternal.Binary bytes) start false)
+
+public findWithLimits : Limits -> Regex -> Bytes -> Result (Option Match) Error
+let findWithLimits limits regex bytes = findFromByteWithLimits limits 0 regex bytes
+
+public find : Regex -> Bytes -> Result (Option Match) Error
+let find regex bytes = findWithLimits limits regex bytes
+
+public findFromByte : Int -> Regex -> Bytes -> Result (Option Match) Error
+let findFromByte start regex bytes = findFromByteWithLimits limits start regex bytes
+
+public span : Match -> Span
+let span found = { endByte = found.span.endByte, startByte = found.span.startByte }
+
+public bytes : Match -> Bytes
+let bytes found = RegexInternal.bytes found
+
+public detach : Match -> { bytes : Bytes, span : Span }
+let detach found = { bytes = bytes found, span = span found }
+
+public capturesWithLimits : Limits -> Regex -> Bytes -> Result (Option Captures) Error
+let capturesWithLimits limits regex bytes =
+  RegexInternal.first limits regex (RegexInternal.Binary bytes) 0 true
+
+public captures : Regex -> Bytes -> Result (Option Captures) Error
+let captures regex bytes = capturesWithLimits limits regex bytes
+
+public whole : Captures -> Match
+let whole captures = RegexInternal.whole captures
+
+public group : Int -> Captures -> Result (Option Match) Error
+let group index captures = RegexInternal.group index captures
+
+public groupNamed : String -> Captures -> Result (Option Match) Error
+let groupNamed name captures = RegexInternal.groupNamed name captures
