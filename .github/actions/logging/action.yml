@@ -1,0 +1,10 @@
+name: Native logging integration
+description: Check record framing, queue backpressure, cancellation and scoped cleanup
+runs:
+  using: composite
+  steps:
+    - name: Logging JIT AOT and effect checks
+      shell: python
+      run: |
+        import subprocess, sys
+        subprocess.run([sys.executable, "scripts/tests/logging_toolchain.py"], check=True)

@@ -30,7 +30,7 @@ let insert fuel fields result =
   | [] -> Ok result
   | field :: rest ->
     if fuel <= 0 then
-      Err (LogTypes.error LogTypes.Validation "" "field input limit exceeded")
+      Err (LogTypes.asKind LogTypes.LimitExceeded (LogTypes.error LogTypes.Validation "" "field input limit exceeded"))
     else if field.name = "" then
       Err (LogTypes.error LogTypes.Validation "" "field names must not be empty")
     else
@@ -46,6 +46,7 @@ let values fields result =
       {
         destination = "",
         encoding = Some { detail with path = JsonEncode.Field name :: detail.path },
+        kind = LogTypes.InvalidRecord,
         message = JsonEncode.errorToString detail,
         native = None,
         stage = LogTypes.Validation,
@@ -62,6 +63,6 @@ let merge limits fields =
   | Err error -> Err error
   | Ok fields ->
     if Dict.size fields > limits.maxFields then
-      Err (LogTypes.error LogTypes.Validation "" "merged field limit exceeded")
+      Err (LogTypes.asKind LogTypes.LimitExceeded (LogTypes.error LogTypes.Validation "" "merged field limit exceeded"))
     else
       values (Dict.toList fields) []

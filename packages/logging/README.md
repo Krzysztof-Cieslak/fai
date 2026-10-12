@@ -4,12 +4,28 @@
 filtering and human/JSON Lines formatting are pure Fai. Copy/include package sources
 under the same workspace root as the application.
 
+```fai
+let sink = LogSink.formatted "stderr" Log.limits LogFormat.JsonLines (LogSink.stderr env.console)
+match Log.create Log.defaults sink with
+| Err error -> env.console.writeError (Log.errorToString error)
+| Ok logger ->
+  let request = logger |> Log.withClock env.clock |> Log.withTarget "http.server"
+    |> Log.withFields [LogField.string "request_id" "request-1"]
+  let result = Log.info request "request completed" [LogField.int "status" 200]
+  ()
+```
+
+The complete runnable version is `examples/Example.fai`. Logger values carry
+their effects in their types; applications pass them as ordinary dependencies.
+
 `LogTypes` defines levels, records, checked delivery receipts and errors.
 `LogField` builds typed fields; later fields override earlier ones, and final keys
 are sorted. Field encoding failures remain data until an enabled event is prepared.
 `LogFilter` supports a minimum level (None disables logging) and longest dotted
 target-prefix overrides. `LogFormat` emits a versioned JSON envelope or a quoted
 human-readable line. Lines exclude their final newline; outputs own framing.
+Human output also escapes DEL, C1 controls and Unicode line separators, preserving
+one display record per line. Colour is explicit with `LogFormat.Human true`.
 
 Limits bound the complete encoded record, merged fields, value depth and value
 nodes. Validation counts escaped UTF-8 bytes before JSON rendering and rejects
@@ -71,8 +87,66 @@ Defaults are 1024 outstanding slots, 8 MiB of accepted UTF-8 record bytes,
 optional deadlines are validated before the worker starts. Close the file owner
 outside the queue scope so its Writer survives draining.
 
+## Checked outcomes
+
+Log calls return `Filtered` or `Emitted outcomes`. Each named outcome contains
+`Completed` (the direct output call returned) or `Accepted sequence` (a queued
+transfer was acknowledged). A flush waits through its FIFO barrier and flushes
+the output; it does not promise disk durability. Across concurrent callers,
+ordering follows admission, not timestamps. Sequences include flush barriers.
+
+Failures contain a machine-readable `kind`, `stage`, destination, message,
+optional native/encoding detail and an `uncertain` flag. The kinds distinguish
+invalid configuration/records, limits, output failure, Closed, Cancelled and
+DeadlineExceeded. Partial fan-out successes remain in `error.outcomes`.
+`LogBestEffort` handles only errors observed by its operation; failures after
+queued acceptance remain available from flush, snapshots and scope completion.
+
+Queue completion returns `{ value, summary }` or `{ body, summary }` on failure.
+The summary keeps accepted/completed/failed/abandoned record counts, flush failure
+count, peak slots/bytes, admission waits, and the first output/shutdown error.
+At quiescence, `accepted = completed + failed + abandoned`. A failed record may
+already have written bytes. Error handling never repeats the write.
+
+## Capture and limits
+
+`LogCapture.withRecords concurrency options work` supplies a record sink and
+snapshot function. The result retains both the callback value and captured records,
+or callback failure and the same records. Records are immutable snapshots in
+acceptance order. Capture is bounded and performs Concurrency; preparation,
+filtering and formatting can instead be tested as pure functions. Closing clears
+the collector behind retained aliases, which subsequently return Closed.
+
+| Setting | Default |
+|---|---|
+| Minimum level | Info |
+| Timestamp | None until explicitly attached |
+| Record UTF-8 bytes, including newline | 256 KiB |
+| Merged fields | 128 |
+| JSON tree depth / nodes | 32 / 4096 |
+| Destinations / target overrides | 64 / 128 |
+| Capture records / encoded bytes | 256 / 1 MiB |
+| Queued slots / encoded bytes | 1024 / 8 MiB |
+| Drain deadline | None |
+
+Limits count logical encoded bytes, not allocator overhead. Queue limits include
+in-flight output and bounded control slots. The number of callers waiting to
+submit is application-owned. `maxValueNodes` also bounds the number of supplied
+field entries before override merging. JSON depth/node limits include the metadata
+envelope. Invalid configuration is rejected before a scoped worker/file is opened.
+
+## Verification
+
 ```sh
 fai fmt --check -C packages logging
 fai check -C packages logging
 fai test -C packages logging
+python scripts/tests/logging_toolchain.py --fai /path/to/fai
 ```
+
+Native contracts cover pure fields, filters, rendering, errors and boundaries.
+The integration script runs the examples through JIT and AOT, checks exact JSON
+line identities/order, mixed-effect signatures, disabled lazy builders, capture
+and best-effort handling, both queue budgets, admission cancellation, close races,
+output failure, drain deadlines and expired aliases. Concurrency checks wait for
+observable state/handshakes rather than assuming scheduling delays.

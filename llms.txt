@@ -1949,6 +1949,11 @@ OnFlush policy. `writer` borrows an existing Writer; `stdout`/`stderr` use Conso
 snapshots. Accepted receipts acknowledge reservation and transfer; flush is FIFO.
 The scope carries output effects and returns shutdown counts/failure details.
 Queued calls perform Concurrency, while filtering/formatting remain on the caller.
+`LogCapture.withRecords` provides bounded structured capture and immutable
+snapshots. Closing expires aliases and releases collector storage. Errors retain
+machine-readable kinds and partial fan-out outcomes; queue summaries account for
+accepted, completed, failed and abandoned records. See `packages/logging/README.md`
+and its runnable examples for direct, queued and best-effort usage.
 
 `packages/llm` supplies pure `Llm.request` builders, ordered `LlmTypes` content and
 provider-tagged continuation items. `LlmSchema` combines a wire schema and typed

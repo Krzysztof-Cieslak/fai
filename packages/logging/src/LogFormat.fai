@@ -28,7 +28,53 @@ let toJson record =
     [("message", Json.String record.message), ("fields", record.fields)]
   ]))
 
-let quoted text = Json.toString (Json.String text)
+let hex byte =
+  String.substring (byte / 16) 1 "0123456789abcdef" ++ String.substring (byte % 16) 1 "0123456789abcdef"
+
+let piece bytes start finish =
+  Option.withDefault "" (Bytes.toString (Bytes.slice start finish bytes))
+
+let byteAt bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+let safeLoop bytes index start pieces =
+  if index >= Bytes.length bytes then
+    String.join "" (List.reverse (piece bytes start index :: pieces))
+  else
+    let byte = Bytes.unsafeGet index bytes
+    let second = byteAt bytes (index + 1)
+    let third = byteAt bytes (index + 2)
+    let size =
+      if byte = 127 then
+        1
+      else if byte = 194 && second >= 128 && second <= 159 then
+        2
+      else if byte = 226 && second = 128 && (third = 168 || third = 169) then 3 else 0
+    if size = 0 then
+      safeLoop bytes (index + 1) start pieces
+    else
+      let escaped =
+        if size = 1 then
+          "\\u007f"
+        else if size = 2 then
+          "\\u00" ++ hex second
+        else if third = 168 then "\\u2028" else "\\u2029"
+      safeLoop bytes (index + size) (index + size) (escaped :: piece bytes start index :: pieces)
+
+let safeJson value =
+  let bytes = Bytes.fromString (Json.toString value)
+  safeLoop bytes 0 0 []
+
+let quoted text = safeJson (Json.String text)
+
+public validate : LogTypes.Limits -> LogTypes.Record -> Result Int LogTypes.Error
+let validate limits record =
+  match record.fields with
+  | Json.Object fields ->
+    if Array.length fields > limits.maxFields then
+      Err (LogTypes.asKind LogTypes.LimitExceeded (LogTypes.error LogTypes.Validation "" "merged field limit exceeded"))
+    else
+      LogBudget.check limits (toJson record)
+  | _ -> Err (LogTypes.error LogTypes.Validation "" "log fields must be a JSON object")
 
 let colour level =
   match level with
@@ -41,11 +87,11 @@ let colour level =
 public render : LogTypes.Limits -> Format -> LogTypes.Record -> Result String LogTypes.Error
 let render limits format record =
   let value = toJson record
-  match LogBudget.check limits value with
+  match validate limits record with
   | Err error -> Err error
   | Ok size ->
     if size >= limits.maxRecordBytes then
-      Err (LogTypes.error LogTypes.Formatting "" "record newline exceeds byte limit")
+      Err (LogTypes.asKind LogTypes.LimitExceeded (LogTypes.error LogTypes.Formatting "" "record newline exceeds byte limit"))
     else
       let line =
         match format with
@@ -62,5 +108,5 @@ let render limits format record =
           else
             "") ++ " " ++ quoted record.target ++ " " ++ quoted record.message ++ (match record.event with
           | None -> ""
-          | Some event -> " event=" ++ quoted event) ++ " " ++ Json.toString record.fields
+          | Some event -> " event=" ++ quoted event) ++ " " ++ safeJson record.fields
       Result.map (fun _ -> line) (LogBudget.textBytes (limits.maxRecordBytes - 1) line)

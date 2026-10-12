@@ -39,7 +39,7 @@ let create options sink =
   match LogFilter.validate options with
   | Err error -> Err error
   | Ok _ ->
-    match LogSink.validate sink with
+    match LogSink.validateWith options.limits.maxDestinations sink with
     | Err error -> Err error
     | Ok _ -> Ok { context = [], options = options, run = runSink sink, target = "" }
 

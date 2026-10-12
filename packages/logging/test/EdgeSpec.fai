@@ -1,0 +1,57 @@
+module LogEdgeSpec
+
+let entry = Log.entry "message" []
+
+let limits = Log.limits
+example: LogField.merge limits [LogField.string "" "invalid"] |> Result.isErr
+example: LogField.merge { limits with maxFields = 0 } [LogField.int "x" 1] |> Result.isErr
+example: LogField.merge { limits with
+  maxValueNodes = 1
+} [LogField.int "x" 1, LogField.int "x" 2] |> Result.isErr
+example: LogField.merge limits [
+  LogField.string "timestamp" "user"
+] = Ok (Json.Object [| ("timestamp", Json.String "user") |])
+example: Log.prepare Log.defaults "test" [] LogTypes.Info (Log.entry "nested" [
+  LogField.json "x" (Json.Object [| ("duplicate", Json.Null), ("duplicate", Json.Null) |])
+]) |> Result.isErr
+example: Log.prepare { Log.defaults with
+  minimum = None
+} "test" [] LogTypes.Fatal (Log.entry "hidden" [
+  LogField.float "x" (Float.fromBits 0x7ff8000000000000)
+]) = Ok None
+example: LogBudget.check { limits with maxRecordBytes = 3 } (Json.String "é") |> Result.isErr
+example: LogBudget.check { limits with maxRecordBytes = 4 } (Json.String "é") = Ok 4
+example: LogBudget.check { limits with maxRecordBytes = 4 } (Json.String "\n") = Ok 4
+example: LogBudget.check { limits with maxRecordBytes = 7 } (Json.String "\u{0}") |> Result.isErr
+example: LogBudget.check { limits with maxRecordBytes = 8 } (Json.String "\u{0}") = Ok 8
+example: LogFilter.enabled { Log.defaults with
+  minimum = Some LogTypes.Fatal,
+  overrides = [
+    { minimum = Some LogTypes.Debug, target = "db" },
+    { minimum = None, target = "db.pool" }
+  ]
+} "db.cache" LogTypes.Debug
+example: not (LogFilter.enabled { Log.defaults with
+  overrides = [
+    { minimum = Some LogTypes.Trace, target = "db" },
+    { minimum = None, target = "db.pool" }
+  ]
+} "db.pool.writer" LogTypes.Fatal)
+example: LogSink.validateLine "line\nextra" |> Result.isErr
+example: LogSink.validateLine "line\rextra" |> Result.isErr
+example: LogSink.validateLine "" = Ok ()
+
+let cleanupError = LogTypes.error LogTypes.Close "file" "close failed"
+example: LogTypes.scopeResult (Err "body failed") (Err cleanupError) = Err {
+  body = Some "body failed",
+  cleanup = Some cleanupError
+}
+example: LogTypes.scopeResult (Ok 5) (Err cleanupError) = Err {
+  body = None,
+  cleanup = Some cleanupError
+}
+example: LogTypes.scopeResult (Ok 5) (Ok ()) = Ok 5
+forall a b: LogField.merge limits [
+  LogField.int "x" a,
+  LogField.int "x" b
+] = LogField.merge limits [LogField.int "x" b]

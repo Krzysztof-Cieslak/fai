@@ -83,10 +83,11 @@ type Admission =
   | Wait (Channel Unit)
   | Rejected Log.Error
 
-let closedError = LogTypes.error LogTypes.Admission "queue" "logging queue is closed"
+let closedError =
+  LogTypes.asKind LogTypes.Closed (LogTypes.error LogTypes.Admission "queue" "logging queue is closed")
 
 let cancelledError =
-  LogTypes.error LogTypes.Admission "queue" "logging admission cancelled before acceptance"
+  LogTypes.asKind LogTypes.Cancelled (LogTypes.error LogTypes.Admission "queue" "logging admission cancelled before acceptance")
 
 alive : Concurrency -> Bool / { Concurrency }
 let alive concurrency =
@@ -122,7 +123,7 @@ let admission client line bytes barrier unit =
       Rejected (Option.withDefault closedError state.summary.failure)
     else if state.sequence = 9223372036854775807 then
       let restored = client.concurrency.send client.gate state
-      Rejected (LogTypes.error LogTypes.Admission "queue" "queue sequence limit exceeded")
+      Rejected (LogTypes.asKind LogTypes.LimitExceeded (LogTypes.error LogTypes.Admission "queue" "queue sequence limit exceeded"))
     else if state.slots >= client.options.maxRecords || bytes > client.options.maxBytes - state.bytes then
       let state = { state with
         summary = { state.summary with
@@ -188,7 +189,7 @@ let flush client unit =
     match client.concurrency.recv reply with
     | Some result -> result
     | None ->
-      Err (LogTypes.uncertain (LogTypes.error LogTypes.Flush "queue" "cancelled while waiting for an accepted flush barrier"))
+      Err (LogTypes.asKind LogTypes.Cancelled (LogTypes.uncertain (LogTypes.error LogTypes.Flush "queue" "cancelled while waiting for an accepted flush barrier")))
 
 readState : Client -> Unit -> Option State / { Concurrency }
 let readState client unit =
@@ -298,13 +299,13 @@ timer : Clock -> Client -> Int -> Unit -> Unit / { Clock, Concurrency }
 let timer clock client ms unit =
   let slept = clock.sleep ms
   Wire.cleanup client.concurrency (fun _ ->
-    stop client (Some (LogTypes.uncertain (LogTypes.error LogTypes.Close "queue" "queue drain deadline exceeded"))))
+    stop client (Some (LogTypes.asKind LogTypes.DeadlineExceeded (LogTypes.uncertain (LogTypes.error LogTypes.Close "queue" "queue drain deadline exceeded")))))
 
 closeScope : Clock -> Client -> Nursery -> Task Unit -> Bool -> Unit -> Summary / { Clock, Concurrency }
 let closeScope clock client nursery task cancelled unit =
   let stopped =
     stop client (if cancelled then
-      Some (LogTypes.uncertain (LogTypes.error LogTypes.Close "queue" "queue scope cancelled"))
+      Some (LogTypes.asKind LogTypes.Cancelled (LogTypes.uncertain (LogTypes.error LogTypes.Close "queue" "queue scope cancelled")))
     else
       None)
   let deadline =

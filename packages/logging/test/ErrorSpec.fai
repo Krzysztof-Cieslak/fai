@@ -1,0 +1,12 @@
+module LogErrorSpec
+
+let native = FileSystem.error FileSystem.IoFailure "flushWriter" None "flush failed"
+example: List.all (fun failure ->
+  failure.uncertain && failure.native = Some native) (LogTypes.nativeError LogTypes.Flush "file" native).failures
+example: List.all (fun failure ->
+  failure.kind = LogTypes.Closed) (LogTypes.nativeError LogTypes.Write "file" (FileSystem.error FileSystem.Closed "write" None "closed")).failures
+example: (match LogBudget.textBytes 1 "large" with
+| Err error ->
+  error.failures <> [] && List.all (fun failure ->
+    failure.kind = LogTypes.LimitExceeded) error.failures
+| Ok _ -> false)

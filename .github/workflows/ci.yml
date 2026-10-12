@@ -163,6 +163,9 @@ jobs:
       - uses: ./.github/actions/llm
         if: contains(fromJSON(needs.changes.outputs.packages), 'llm')
         timeout-minutes: 10
+      - uses: ./.github/actions/logging
+        if: contains(fromJSON(needs.changes.outputs.packages), 'logging')
+        timeout-minutes: 10
       - name: Native filesystem compiler fixture
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: python scripts/tests/filesystem_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
@@ -274,6 +277,9 @@ jobs:
         timeout-minutes: 10
       - uses: ./.github/actions/llm
         if: contains(fromJSON(needs.changes.outputs.packages), 'llm')
+        timeout-minutes: 10
+      - uses: ./.github/actions/logging
+        if: contains(fromJSON(needs.changes.outputs.packages), 'logging')
         timeout-minutes: 10
       - name: Native filesystem compiler fixture
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'

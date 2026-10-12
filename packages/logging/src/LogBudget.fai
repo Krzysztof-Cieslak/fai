@@ -2,10 +2,13 @@ module LogBudget
 
 let invalid message = Err (LogTypes.error LogTypes.Validation "" message)
 
+let exceeded message =
+  Err (LogTypes.asKind LogTypes.LimitExceeded (LogTypes.error LogTypes.Validation "" message))
+
 public validate : LogTypes.Limits -> Result Unit LogTypes.Error
 let validate limits =
-  if limits.maxRecordBytes <= 0 || limits.maxFields < 0 || limits.maxValueDepth <= 0 || limits.maxValueDepth > 128 || limits.maxValueNodes <= 0 then
-    invalid "invalid logging limits"
+  if limits.maxRecordBytes <= 0 || limits.maxFields < 0 || limits.maxDestinations <= 0 || limits.maxTargetOverrides < 0 || limits.maxValueDepth <= 0 || limits.maxValueDepth > 128 || limits.maxValueNodes <= 0 then
+    Err (LogTypes.error LogTypes.Configuration "" "invalid logging limits")
   else
     Ok ()
 
@@ -13,10 +16,10 @@ let validate limits =
 public textBytes : Int -> String -> Result Int LogTypes.Error
 let textBytes limit text =
   if limit < 0 || String.length text > limit then
-    invalid "record byte limit exceeded"
+    exceeded "record byte limit exceeded"
   else
     let size = Bytes.length (Bytes.fromString text)
-    if size > limit then invalid "record byte limit exceeded" else Ok size
+    if size > limit then exceeded "record byte limit exceeded" else Ok size
 
 escapedLoop : Bytes -> Int -> Int -> Result Int LogTypes.Error
 let escapedLoop bytes index remaining =
@@ -29,7 +32,7 @@ let escapedLoop bytes index remaining =
         2
       else if byte < 32 then 6 else 1
     if size > remaining then
-      invalid "record byte limit exceeded"
+      exceeded "record byte limit exceeded"
     else
       escapedLoop bytes (index + 1) (remaining - size)
 
@@ -39,14 +42,14 @@ let escaped remaining text =
   | Err error -> Err error
   | Ok _ ->
     if remaining < 2 then
-      invalid "record byte limit exceeded"
+      exceeded "record byte limit exceeded"
     else
       escapedLoop (Bytes.fromString text) 0 (remaining - 2)
 
 walk : Int -> Int -> Int -> Json.Value -> Result (Int * Int) LogTypes.Error
 let walk depth fuel remaining value =
   if depth < 0 || fuel <= 0 then
-    invalid "value depth or node limit exceeded"
+    exceeded "value depth or node limit exceeded"
   else
     match value with
     | Json.Null -> scalar 4 fuel remaining
@@ -58,18 +61,21 @@ let walk depth fuel remaining value =
     | Json.String text -> Result.map (fun left -> (fuel - 1, left)) (escaped remaining text)
     | Json.Array items ->
       if remaining < 2 then
-        invalid "record byte limit exceeded"
+        exceeded "record byte limit exceeded"
       else
         array (depth - 1) (fuel - 1) (remaining - 2) items 0
     | Json.Object fields ->
       if remaining < 2 then
-        invalid "record byte limit exceeded"
+        exceeded "record byte limit exceeded"
       else
         object (depth - 1) (fuel - 1) (remaining - 2) fields 0 Set.empty
 
 scalar : Int -> Int -> Int -> Result (Int * Int) LogTypes.Error
 let scalar size fuel remaining =
-  if size > remaining then invalid "record byte limit exceeded" else Ok (fuel - 1, remaining - size)
+  if size > remaining then
+    exceeded "record byte limit exceeded"
+  else
+    Ok (fuel - 1, remaining - size)
 
 array : Int -> Int -> Int -> Array Json.Value -> Int -> Result (Int * Int) LogTypes.Error
 let array depth fuel remaining items index =

@@ -15,6 +15,12 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Logging contracts run with `fai test -C packages logging`.
+`scripts/tests/logging_toolchain.py --fai /path/to/fai` checks direct and queued
+logging through JIT/AOT, complete file records, scoped capture, cancellation,
+backpressure and effect-negative fixtures. `.github/actions/logging` runs the same
+checks with the cached compiler when logging or a dependency is selected.
+
 The LLM package runs its pure contracts with `fai test -C packages llm`.
 `scripts/tests/llm_toolchain.py --fai /path/to/fai` runs deterministic local-provider
 JIT/AOT checks, real file/process tools, SQLite persistence, effect-negative

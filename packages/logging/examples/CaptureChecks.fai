@@ -1,0 +1,68 @@
+module LogCaptureChecks
+
+bump : Concurrency -> Channel Int -> Int / { Concurrency }
+let bump c counter =
+  let value = Option.withDefault 0 (c.recv counter)
+  let saved = c.send counter (value + 1)
+  value + 1
+
+timestamp : Concurrency -> Channel Int -> Unit -> Option Instant / { Concurrency }
+let timestamp c counter unit = Some (Instant.fromUnixTimeSeconds (bump c counter))
+
+onError : Concurrency -> Channel Int -> LogCapture.Capture -> Log.Error -> Unit / { Concurrency }
+let onError c counter capture error =
+  let snapshot = capture.snapshot ()
+  let counted = bump c counter
+  ()
+
+work : Runtime -> Channel Int -> Channel Int -> LogCapture.Capture -> Result (LogCapture.Capture * Bool) Log.Error / { Concurrency }
+let work env times errors capture =
+  match Log.create Log.defaults capture.sink with
+  | Err error -> Err error
+  | Ok logger ->
+    let logger =
+      logger |> Log.withTarget "parent" |> Log.withFields [
+        LogField.int "x" 1
+      ] |> Log.withTimestamp (timestamp env.concurrency times)
+    let hidden = Log.debugLazy logger (fun _ -> Log.entry (Int.toString (1 / 0)) [])
+    let invalid = Log.info logger "invalid" [LogField.float "x" (Float.fromBits 0x7ff0000000000000)]
+    let first = Log.info logger "one" []
+    let child = logger |> Log.withTarget "child" |> Log.withFields [LogField.int "x" 2]
+    let second = Log.info child "two" [LogField.int "x" 3]
+    let best = LogBestEffort.fromChecked child (onError env.concurrency errors capture)
+    let overLimit = LogBestEffort.info best "three" []
+    let snapshot = capture.snapshot ()
+    Ok (capture, hidden = Ok LogTypes.Filtered && Result.isErr invalid && Result.isOk first && Result.isOk second && (match snapshot with
+    | Ok records -> List.length records = 2
+    | _ -> false))
+
+recordValid : List Log.Record -> Bool
+let recordValid records =
+  match records with
+  | [first, second] ->
+    first.target = "parent" && second.target = "child" && first.timestamp = Some (Instant.fromUnixTimeSeconds 1) && second.timestamp = Some (Instant.fromUnixTimeSeconds 2) && JsonDecode.decode (JsonDecode.field "x" JsonDecode.int) second.fields = Ok 3
+  | _ -> false
+
+public main : Runtime -> Unit / { Concurrency, Console }
+let main env =
+  let times = env.concurrency.channel 1
+  let errors = env.concurrency.channel 1
+  let seededTime = env.concurrency.send times 0
+  let seededErrors = env.concurrency.send errors 0
+  let result =
+    LogCapture.withRecords env.concurrency { LogCapture.defaults with
+      maxRecords = 2
+    } (work env times errors)
+  let timeCount = env.concurrency.recv times
+  let errorCount = env.concurrency.recv errors
+  let good =
+    match result with
+    | Err _ -> false
+    | Ok result ->
+      let (capture, good) = result.value
+      let expired = capture.snapshot ()
+      good && recordValid result.records && Result.isErr expired
+  env.console.writeLine (if good && timeCount = Some 3 && errorCount = Some 1 then
+    "logging capture checks passed"
+  else
+    "logging capture checks FAILED")
