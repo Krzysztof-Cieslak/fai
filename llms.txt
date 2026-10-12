@@ -1953,6 +1953,11 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/toml` provides pure TOML scalar and string parsing, including checked
+64-bit integers, TOML 1.1 escapes and precision-preserving temporal values.
+It depends on `json` for checked decimal-to-Float conversion. Run its contracts
+with `fai test -C packages toml`.
+
 `packages/regex` supplies pure `Regex` (String) and `RegexBytes` (Bytes) APIs.
 `compile`/`compileWith` create reusable patterns; `compileWhole` anchors parsed
 syntax to the entire input. `isMatch`, `find` and `captures` return checked results.

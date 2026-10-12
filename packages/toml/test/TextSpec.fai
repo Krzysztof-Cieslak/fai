@@ -1,0 +1,16 @@
+module TomlTextSpec
+
+let first pair =
+  let (value, _) = pair
+  value
+
+let quoted text = Result.map first (TomlText.quoted (Bytes.fromString text) 0 true)
+example: quoted "\"abc\"" = Ok "abc"
+example: quoted "\"\\u00E9\\U0001F642\"" = Ok "é🙂"
+example: quoted "\"\\x41\\e\"" = Ok ("A" ++ Char.toString (Option.withDefault ' ' (Char.fromCode 27)))
+example: quoted "\"\"\"\r\na\r\nb\"\"\"" = Ok "a\nb"
+example: quoted "\"\"\"a\\  \r\n \t b\"\"\"" = Ok "ab"
+example: quoted "'''${HOST}\\n'''" = Ok "${HOST}\\n"
+example: quoted "\"\\uD800\"" |> Result.isErr
+example: quoted "\"line\nline\"" |> Result.isErr
+example: quoted "\"\"\"x\"\"\"\"\"" = Ok "x\"\""

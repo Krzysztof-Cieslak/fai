@@ -1164,6 +1164,11 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/toml` source library supplies pure TOML scalar and string
+parsing. Integer conversion checks signed 64-bit bounds; temporal values retain
+their spelling and fractional precision before checked standard-type conversion.
+Multiline strings normalize line endings while locations retain input byte spans.
+
 `RegexEngine` supplies typed pure native regex primitives. Compiled programs use
 description-based equality, ordering and hashing, independent of their bounded
 scratch caches. Text search reports UTF-8 ranges and scalar offsets relative to

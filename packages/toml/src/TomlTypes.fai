@@ -1,0 +1,136 @@
+module TomlTypes
+
+public type Span = { endByte : Int, startByte : Int }
+
+public type Location = {
+  column : Int,
+  endByte : Int,
+  endColumn : Int,
+  endLine : Int,
+  line : Int,
+  startByte : Int
+}
+
+public type ErrorKind =
+  | Syntax
+  | InvalidNumber
+  | InvalidTemporal
+  | DuplicateKey
+  | TableConflict
+  | LimitExceeded
+  | InvalidUtf8
+
+public type Issue = { kind : ErrorKind, message : String, previous : Option Span, span : Span }
+
+public type ParseError = {
+  kind : ErrorKind,
+  message : String,
+  primary : Location,
+  secondary : Option Location
+}
+
+public type Options = { maxBytes : Int, maxDepth : Int, maxNodes : Int }
+
+public options : Options
+let options = { maxBytes = 4194304, maxDepth = 128, maxNodes = 100000 }
+
+public type Value =
+  | String String
+  | Integer Int
+  | Float Float
+  | Boolean Bool
+  | Temporal TomlTemporal.Value
+  | Array (Array Value)
+  | Table (Dict String Value)
+
+public type Segment =
+  | Key String
+  | Index Int
+
+public type TableMode =
+  | Root
+  | Implicit
+  | Header
+  | Dotted
+  | Inline
+
+public type Node =
+  | Node Span (Option Span) Body
+
+public type Body =
+  | Scalar Value
+  | Items (Array Node)
+  | Mapping TableMode (Dict String Node)
+  | Tables (Array Node)
+
+public span : Node -> Span
+let span node =
+  match node with
+  | Node span _ _ -> span
+
+public keySpan : Node -> Option Span
+let keySpan node =
+  match node with
+  | Node _ key _ -> key
+
+public body : Node -> Body
+let body node =
+  match node with
+  | Node _ _ body -> body
+
+public withBody : Body -> Node -> Node
+let withBody body node =
+  match node with
+  | Node span key _ -> Node span key body
+
+public withKey : Span -> Node -> Node
+let withKey key node =
+  match node with
+  | Node span _ body -> Node span (Some key) body
+
+public issue : ErrorKind -> Int -> Int -> String -> Issue
+let issue kind start finish message = {
+  kind = kind,
+  message = message,
+  previous = None,
+  span = { endByte = finish, startByte = start }
+}
+
+let position bytes end index line column =
+  if index >= end || index >= Bytes.length bytes then
+    (line, column)
+  else
+    let byte = Bytes.unsafeGet index bytes
+    if byte = 10 then
+      position bytes end (index + 1) (line + 1) 1
+    else
+      position bytes end (index + 1) line (column + (if byte < 128 || byte >= 192 then 1 else 0))
+
+public location : Bytes -> Span -> Location
+let location bytes span =
+  let (line, column) = position bytes span.startByte 0 1 1
+  let (endLine, endColumn) = position bytes span.endByte span.startByte line column
+  {
+    column = column,
+    endByte = span.endByte,
+    endColumn = endColumn,
+    endLine = endLine,
+    line = line,
+    startByte = span.startByte
+  }
+
+public parseError : Bytes -> Issue -> ParseError
+let parseError bytes issue = {
+  kind = issue.kind,
+  message = issue.message,
+  primary = location bytes issue.span,
+  secondary = Option.map (location bytes) issue.previous
+}
+
+public value : Node -> Value
+let value node =
+  match body node with
+  | Scalar value -> value
+  | Items nodes -> Array (Array.map value nodes)
+  | Tables nodes -> Array (Array.map value nodes)
+  | Mapping _ nodes -> Table (Dict.map (fun key node -> value node) nodes)

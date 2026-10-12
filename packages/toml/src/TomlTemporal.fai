@@ -1,0 +1,194 @@
+module TomlTemporal
+
+public type Kind =
+  | Date
+  | Time
+  | Local
+  | Offset
+
+public type Parts = {
+  day : Int,
+  fraction : String,
+  hour : Int,
+  minute : Int,
+  month : Int,
+  offsetMinutes : Option Int,
+  second : Int,
+  year : Int
+}
+
+public opaque type Value = { kind : Kind, parts : Parts, spelling : String }
+
+let empty = {
+  day = 1,
+  fraction = "",
+  hour = 0,
+  minute = 0,
+  month = 1,
+  offsetMinutes = None,
+  second = 0,
+  year = 0
+}
+
+let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+let digit byte = byte >= 48 && byte <= 57
+
+let number bytes index count =
+  if count = 0 then
+    Some 0
+  else
+    if not (digit (at bytes index)) then
+      None
+    else
+      match number bytes (index + 1) (count - 1) with
+      | None -> None
+      | Some rest ->
+        Some ((at bytes index - 48) * (if count = 4 then
+          1000
+        else if count = 3 then 100 else if count = 2 then 10 else 1) + rest)
+
+let digitsEnd bytes index = if digit (at bytes index) then digitsEnd bytes (index + 1) else index
+
+let text bytes start finish =
+  Option.withDefault "" (Bytes.toString (Bytes.slice start finish bytes))
+
+dateParts : Bytes -> Option Parts
+let dateParts bytes =
+  match (number bytes 0 4, number bytes 5 2, number bytes 8 2) with
+  | (Some year, Some month, Some day) ->
+    if at bytes 4 = 45 && at bytes 7 = 45 && Option.isSome (LocalDate.of year month day) then
+      Some { empty with day = day, month = month, year = year }
+    else
+      None
+  | _ -> None
+
+timeParts : Bytes -> Int -> Parts -> Option (Parts * Int)
+let timeParts bytes start parts =
+  match (number bytes start 2, number bytes (start + 3) 2) with
+  | (Some hour, Some minute) ->
+    if at bytes (start + 2) <> 58 || hour > 23 || minute > 59 then
+      None
+    else
+      let seconds = at bytes (start + 5) = 58
+      let value = if seconds then number bytes (start + 6) 2 else Some 0
+      match value with
+      | None -> None
+      | Some second ->
+        if second > 60 then
+          None
+        else
+          let end = start + (if seconds then 8 else 5)
+          let fractionEnd = if seconds && at bytes end = 46 then digitsEnd bytes (end + 1) else end
+          if fractionEnd = end + 1 then
+            None
+          else
+            Some ({ parts with
+              fraction = if fractionEnd > end then text bytes (end + 1) fractionEnd else "",
+              hour = hour,
+              minute = minute,
+              second = second
+            }, fractionEnd)
+  | _ -> None
+
+offsetParts : Bytes -> Int -> Option Int
+let offsetParts bytes start =
+  if (at bytes start = 90 || at bytes start = 122) && start + 1 = Bytes.length bytes then
+    Some 0
+  else if (at bytes start = 43 || at bytes start = 45) && start + 6 = Bytes.length bytes && at bytes (start + 3) = 58 then
+    match (number bytes (start + 1) 2, number bytes (start + 4) 2) with
+    | (Some hour, Some minute) ->
+      if hour <= 23 && minute <= 59 then
+        Some ((hour * 60 + minute) * (if at bytes start = 45 then -1 else 1))
+      else
+        None
+    | _ -> None
+  else
+    None
+
+/// Validate TOML temporal syntax while preserving precision and offset spelling.
+public parse : String -> Result Value String
+let parse spelling =
+  let bytes = Bytes.fromString spelling
+  let dated = at bytes 4 = 45 && at bytes 7 = 45
+  let result =
+    if dated then
+      match dateParts bytes with
+      | None -> None
+      | Some date ->
+        if Bytes.length bytes = 10 then
+          Some { kind = Date, parts = date, spelling = spelling }
+        else if not (List.member (at bytes 10) [84, 116, 32]) then
+          None
+        else
+          match timeParts bytes 11 date with
+          | None -> None
+          | Some (parts, end) ->
+            if end = Bytes.length bytes then
+              Some { kind = Local, parts = parts, spelling = spelling }
+            else
+              Option.map (fun offset -> {
+                kind = Offset,
+                parts = { parts with offsetMinutes = Some offset },
+                spelling = spelling
+              }) (offsetParts bytes end)
+    else
+      match timeParts bytes 0 empty with
+      | Some (parts, end) ->
+        if end = Bytes.length bytes then
+          Some { kind = Time, parts = parts, spelling = spelling }
+        else
+          None
+      | _ -> None
+  match result with
+  | Some value -> Ok value
+  | None -> Err "invalid TOML date or time"
+
+public kind : Value -> Kind
+let kind value = value.kind
+
+public parts : Value -> Parts
+let parts value = value.parts
+
+public toString : Value -> String
+let toString value = value.spelling
+
+public toDate : Value -> Result LocalDate String
+let toDate value =
+  if value.kind = Time then
+    Err "time has no date"
+  else
+    match LocalDate.of value.parts.year value.parts.month value.parts.day with
+    | Some date -> Ok date
+    | None -> Err "date is not representable"
+
+public toTime : Value -> Result LocalTime String
+let toTime value =
+  if value.kind = Date then
+    Err "date has no time"
+  else
+    let fraction = value.parts.fraction
+    if String.trim (String.join "" (String.split "0" (String.drop 9 fraction))) <> "" then
+      Err "time precision exceeds nanoseconds"
+    else
+      let nanos = Option.withDefault 0 (Int.fromString (String.take 9 (fraction ++ "000000000")))
+      match LocalTime.ofNano value.parts.hour value.parts.minute value.parts.second nanos with
+      | Some time -> Ok time
+      | None -> Err "time is not representable"
+
+public toLocalDateTime : Value -> Result LocalDateTime String
+let toLocalDateTime value =
+  match (toDate value, toTime value) with
+  | (Ok date, Ok time) -> Ok (LocalDateTime.of date time)
+  | (Err error, _) -> Err error
+  | (_, Err error) -> Err error
+
+public toOffsetDateTime : Value -> Result OffsetDateTime String
+let toOffsetDateTime value =
+  match value.parts.offsetMinutes with
+  | None -> Err "date-time has no offset"
+  | Some minutes ->
+    match (toLocalDateTime value, Offset.ofSeconds (minutes * 60)) with
+    | (Ok local, Some offset) -> Ok (OffsetDateTime.of local offset)
+    | (Err error, _) -> Err error
+    | _ -> Err "offset is not representable"

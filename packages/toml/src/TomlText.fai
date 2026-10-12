@@ -1,0 +1,205 @@
+module TomlText
+
+/// Shared byte-addressed TOML scanning; callers validate UTF-8 once at entry.
+public at : Bytes -> Int -> Int
+let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+public text : Bytes -> Int -> Int -> String
+let text bytes start finish =
+  Option.withDefault "" (Bytes.toString (Bytes.slice start finish bytes))
+
+public horizontal : Bytes -> Int -> Int
+let horizontal bytes index =
+  if at bytes index = 32 || at bytes index = 9 then horizontal bytes (index + 1) else index
+
+let fail start finish message = Err (TomlTypes.issue TomlTypes.Syntax start finish message)
+
+let control byte = byte >= 0 && ((byte < 32 && byte <> 9) || byte = 127)
+
+let comment bytes index =
+  let byte = at bytes index
+  if byte = -1 || byte = 10 || byte = 13 then
+    Ok index
+  else if control byte then
+    fail index (index + 1) "control character in comment"
+  else
+    comment bytes (index + 1)
+
+/// Skip comments and complete line endings; bare carriage returns are invalid.
+public trivia : Bytes -> Int -> Result Int TomlTypes.Issue
+let trivia bytes index =
+  let index = horizontal bytes index
+  match at bytes index with
+  | 10 -> trivia bytes (index + 1)
+  | 13 ->
+    if at bytes (index + 1) = 10 then
+      trivia bytes (index + 2)
+    else
+      fail index (index + 1) "bare carriage return"
+  | 35 ->
+    match comment bytes (index + 1) with
+    | Err error -> Err error
+    | Ok index -> trivia bytes index
+  | _ -> Ok index
+
+public lineEnd : Bytes -> Int -> Result Int TomlTypes.Issue
+let lineEnd bytes index =
+  let index = horizontal bytes index
+  match at bytes index with
+  | -1 -> Ok index
+  | 10 -> Ok (index + 1)
+  | 13 ->
+    if at bytes (index + 1) = 10 then
+      Ok (index + 2)
+    else
+      fail index (index + 1) "bare carriage return"
+  | 35 ->
+    match comment bytes (index + 1) with
+    | Err error -> Err error
+    | Ok index -> lineEnd bytes index
+  | _ -> fail index (index + 1) "expected end of line"
+
+let hex byte =
+  if byte >= 48 && byte <= 57 then
+    byte - 48
+  else if byte >= 97 && byte <= 102 then
+    byte - 87
+  else if byte >= 65 && byte <= 70 then byte - 55 else -1
+
+let hexCode bytes index count value =
+  if count = 0 then
+    match Char.fromCode value with
+    | Some char -> Ok (Char.toString char, index)
+    | None -> fail index index "invalid Unicode scalar"
+  else
+    let digit = hex (at bytes index)
+    if digit < 0 then
+      fail index (index + 1) "expected hexadecimal escape digit"
+    else
+      hexCode bytes (index + 1) (count - 1) (value * 16 + digit)
+
+let quoteEnd bytes quote index =
+  if at bytes index = quote then quoteEnd bytes quote (index + 1) else index
+
+let continuation bytes index =
+  let index = horizontal bytes index
+  if at bytes index = 10 then
+    continuation bytes (index + 1)
+  else if at bytes index = 13 && at bytes (index + 1) = 10 then
+    continuation bytes (index + 2)
+  else
+    index
+
+let escape bytes index multiline =
+  match at bytes index with
+  | 98 -> Ok (Char.toString (Option.withDefault ' ' (Char.fromCode 8)), index + 1)
+  | 116 -> Ok ("\t", index + 1)
+  | 110 -> Ok ("\n", index + 1)
+  | 102 -> Ok (Char.toString (Option.withDefault ' ' (Char.fromCode 12)), index + 1)
+  | 114 -> Ok ("\r", index + 1)
+  | 101 -> Ok (Char.toString (Option.withDefault ' ' (Char.fromCode 27)), index + 1)
+  | 34 -> Ok ("\"", index + 1)
+  | 92 -> Ok ("\\", index + 1)
+  | 120 -> hexCode bytes (index + 1) 2 0
+  | 117 -> hexCode bytes (index + 1) 4 0
+  | 85 -> hexCode bytes (index + 1) 8 0
+  | _ ->
+    let next = horizontal bytes index
+    if multiline && (at bytes next = 10 || (at bytes next = 13 && at bytes (next + 1) = 10)) then
+      Ok ("", continuation bytes next)
+    else
+      fail (index - 1) (index + 1) "invalid string escape"
+
+let stringLoop bytes quote multiline start index chunk pieces =
+  let byte = at bytes index
+  if byte < 0 then
+    fail start index "unterminated string"
+  else if byte = quote then
+    let finish = if multiline then quoteEnd bytes quote index else index + 1
+    let count = finish - index
+    if multiline && count < 3 then
+      stringLoop bytes quote multiline start finish chunk pieces
+    else if count > 5 then
+      fail index finish "too many closing quotes"
+    else
+      let last = text bytes chunk (if multiline then finish - 3 else index)
+      Ok (String.join "" (List.reverse (last :: pieces)), finish)
+  else if byte = 92 && quote = 34 then
+    match escape bytes (index + 1) multiline with
+    | Err error -> Err error
+    | Ok (escaped, next) ->
+      stringLoop bytes quote multiline start next next (escaped :: text bytes chunk index :: pieces)
+  else if byte = 10 || byte = 13 then
+    if not multiline then
+      fail index (index + 1) "newline in single-line string"
+    else if byte = 13 && at bytes (index + 1) <> 10 then
+      fail index (index + 1) "bare carriage return"
+    else
+      let next = index + (if byte = 13 then 2 else 1)
+      stringLoop bytes quote multiline start next next ("\n" :: text bytes chunk index :: pieces)
+  else if control byte then
+    fail index (index + 1) "control character in string"
+  else
+    stringLoop bytes quote multiline start (index + 1) chunk pieces
+
+public quoted : Bytes -> Int -> Bool -> Result (String * Int) TomlTypes.Issue
+let quoted bytes start allowMultiline =
+  let quote = at bytes start
+  let multiline = allowMultiline && at bytes (start + 1) = quote && at bytes (start + 2) = quote
+  let index = start + (if multiline then 3 else 1)
+  let index =
+    if multiline && at bytes index = 10 then
+      index + 1
+    else if multiline && at bytes index = 13 && at bytes (index + 1) = 10 then index + 2 else index
+  stringLoop bytes quote multiline start index index []
+
+let bare byte =
+  (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) || byte = 45 || byte = 95
+
+let bareEnd bytes index = if bare (at bytes index) then bareEnd bytes (index + 1) else index
+
+let keyLoop bytes index maximum parts =
+  let start = horizontal bytes index
+  let parsed =
+    if at bytes start = 34 || at bytes start = 39 then
+      quoted bytes start false
+    else
+      let finish = bareEnd bytes start
+      if finish = start then
+        fail start (start + 1) "expected key"
+      else
+        Ok (text bytes start finish, finish)
+  if maximum <= 0 then
+    Err (TomlTypes.issue TomlTypes.LimitExceeded start start "key depth limit exceeded")
+  else
+    match parsed with
+    | Err error -> Err error
+    | Ok (name, finish) ->
+      let parts = (name, { endByte = finish, startByte = start }) :: parts
+      let next = horizontal bytes finish
+      if at bytes next = 46 then
+        keyLoop bytes (next + 1) (maximum - 1) parts
+      else
+        Ok (List.reverse parts, next)
+
+public key : Bytes -> Int -> Int -> Result (List (String * TomlTypes.Span) * Int) TomlTypes.Issue
+let key bytes index maximum = keyLoop bytes index maximum []
+
+let atomEnd bytes index =
+  if List.member (at bytes index) [-1, 9, 10, 13, 32, 35, 44, 93, 125] then
+    index
+  else
+    atomEnd bytes (index + 1)
+
+public atom : Bytes -> Int -> Result (TomlTypes.Value * Int) TomlTypes.Issue
+let atom bytes start =
+  let finish = atomEnd bytes start
+  let finish =
+    if finish = start + 10 && at bytes (start + 4) = 45 && at bytes finish = 32 && at bytes (finish + 3) = 58 then
+      atomEnd bytes (finish + 1)
+    else
+      finish
+  let raw = text bytes start finish
+  match TomlScalar.parse raw with
+  | Ok value -> Ok (value, finish)
+  | Err message -> fail start finish message

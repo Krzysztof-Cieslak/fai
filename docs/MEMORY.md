@@ -51,6 +51,10 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- TOML is a pure source library. Temporal tokens retain precision and spelling
+  separately from checked conversions into standard date/time values. Integer
+  overflow fails; decimal Float conversion uses the checked JSON number machinery.
+
 - Regex split counts intentionally preserve the untouched final tail, separately
   from result/output budgets. Native text boundary checks use the runtime String
   invariant rather than revalidating the full input at every cursor step. Tests
