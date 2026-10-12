@@ -28,7 +28,7 @@ use crate::ids::{CtorRef, DefId, LocalId, Res, is_upper, qualify};
 use crate::intrinsics;
 use crate::module::{
     ModuleName, emit_duplicate_module_errors, emit_duplicate_prelude_export_errors, module_defs,
-    module_file, module_interface, prelude_exports,
+    module_file_from, module_interface, prelude_exports,
 };
 use crate::{
     INTERNAL_REFERENCE, INTRINSIC_OUTSIDE_STD, MODULE_AS_VALUE, OPAQUE_CONSTRUCTOR,
@@ -241,7 +241,7 @@ fn type_ref_reach(
     // A cross-file qualified type. Walk the leading module path, then read the
     // member type's declared visibility in its own file.
     let segments: Vec<Symbol> = text.split('.').map(Symbol::intern).collect();
-    let target = module_file(db, ModuleName(segments[0]))?;
+    let target = module_file_from(db, file, ModuleName(segments[0]))?;
     let target_defs = module_defs(db, target);
     let mut inner: Vec<Symbol> = Vec::new();
     let mut i = 1;
@@ -400,6 +400,7 @@ pub fn resolve(db: &dyn Db, file: SourceFile) -> Arc<ResolvedBodies> {
 
     let mut cx = Resolver {
         db,
+        file,
         module,
         source,
         is_std,
@@ -498,6 +499,7 @@ fn resolve_items(cx: &mut Resolver, module: &Module, items: &[ItemId]) {
 /// The per-file resolution walker.
 struct Resolver<'a> {
     db: &'a dyn Db,
+    file: SourceFile,
     module: &'a Module,
     source: fai_span::SourceId,
     /// Whether this is a standard-library module (may use `Prim`).
@@ -648,7 +650,7 @@ impl Resolver<'_> {
                     let (code, msg) = if !is_upper(*name) {
                         (UNBOUND_NAME, format!("cannot find `{name}` in scope"))
                     } else if self.same_file_module_anchor(*name).is_some()
-                        || module_file(self.db, ModuleName(*name)).is_some()
+                        || module_file_from(self.db, self.file, ModuleName(*name)).is_some()
                     {
                         // A bare module name used where a value is expected.
                         (MODULE_AS_VALUE, format!("`{name}` is a module, not a value"))
@@ -939,7 +941,7 @@ impl Resolver<'_> {
 
         // A workspace file module (the current file's own name resolves here too,
         // so a self-qualified reference is treated like any cross-module one).
-        if let Some(target) = module_file(self.db, ModuleName(head)) {
+        if let Some(target) = module_file_from(self.db, self.file, ModuleName(head)) {
             return Some(self.walk_cross_file(target, segments, span));
         }
 
@@ -995,8 +997,8 @@ impl Resolver<'_> {
 
     /// Resolves the member of a cross-file (possibly nested) module path.
     /// `public` members are visible across all files; `internal` members are
-    /// visible only to files of the same origin (the standard library, or — in
-    /// future — the same package), gated by explicit source-origin metadata.
+    /// visible only to files of the same package or legacy/standard-library
+    /// origin, gated by explicit source metadata.
     fn walk_cross_file(
         &self,
         target: SourceFile,
@@ -1024,10 +1026,9 @@ impl Resolver<'_> {
         let member = segments[consumed];
         let member_qual = qualify(&inner, member);
         consumed += 1;
-        // `internal` members are visible only within the same origin (std vs. user
-        // today; a package boundary later). The referrer's origin is `self.is_std`.
+        // Internal visibility follows semantic ownership, not a shared user/std flag.
         let target_is_std = target.is_std(self.db);
-        let same_origin = self.is_std == target_is_std;
+        let same_origin = self.file.origin(self.db) == target.origin(self.db);
         let origin_desc = if target_is_std { "the standard library" } else { "its package" };
         match target_defs.get(member_qual) {
             Some(def) if def.visibility == Visibility::Public => {

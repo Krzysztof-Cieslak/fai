@@ -46,7 +46,7 @@
 use std::sync::Arc;
 
 use fai_db::{Db, SourceFile};
-use fai_resolve::{DefId, LocalId, ModuleName, module_file, recursive_defs};
+use fai_resolve::{DefId, LocalId, ModuleName, recursive_defs, std_module_file as module_file};
 use fai_span::SourceId;
 use fai_syntax::Symbol;
 use fai_types::Ty;

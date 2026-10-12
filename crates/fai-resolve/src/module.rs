@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use fai_db::{Db, SourceFile, emit};
+use fai_db::{Db, SourceFile, automatically_visible, automatically_visible_sources, emit};
 use fai_diagnostics::{Diagnostic, Severity};
 use fai_span::Span;
 use fai_syntax::Symbol;
@@ -415,16 +415,43 @@ pub fn module_name(db: &dyn Db, file: SourceFile) -> Option<ModuleName> {
 /// header name, so body edits never recompute it.
 #[salsa::tracked]
 pub fn duplicate_module_files(db: &dyn Db) -> Arc<Vec<SourceFile>> {
+    let conflicts = module_conflict_index(db);
+    let mut duplicates: Vec<_> = db
+        .all_source_files()
+        .into_iter()
+        .filter(|file| conflicts.contains_key(&file.source(db)))
+        .collect();
+    duplicates.sort_by_key(|file| file.source(db));
+    Arc::new(duplicates)
+}
+
+#[salsa::tracked]
+fn module_conflict_index(db: &dyn Db) -> Arc<FxHashMap<fai_span::SourceId, Vec<SourceFile>>> {
     let mut by_name: FxHashMap<Symbol, Vec<SourceFile>> = FxHashMap::default();
     for file in db.all_source_files() {
         if let Some(ModuleName(name)) = module_name(db, file) {
             by_name.entry(name).or_default().push(file);
         }
     }
-    let mut duplicates: Vec<SourceFile> =
-        by_name.into_values().filter(|files| files.len() > 1).flatten().collect();
-    duplicates.sort_by_key(|f| f.source(db));
-    Arc::new(duplicates)
+    let mut conflicts = FxHashMap::default();
+    for files in by_name.into_values().filter(|files| files.len() > 1) {
+        for &file in &files {
+            let visible: Vec<_> = files
+                .iter()
+                .copied()
+                .filter(|&other| automatically_visible(db, file, other))
+                .collect();
+            if visible.len() > 1 {
+                conflicts.insert(file.source(db), visible);
+            }
+        }
+    }
+    Arc::new(conflicts)
+}
+
+#[salsa::tracked]
+fn module_conflicts(db: &dyn Db, file: SourceFile) -> Arc<Vec<SourceFile>> {
+    Arc::new(module_conflict_index(db).get(&file.source(db)).cloned().unwrap_or_default())
 }
 
 /// Resolves a module *name* to its file, honoring uniqueness.
@@ -447,6 +474,27 @@ pub fn module_file(db: &dyn Db, name: ModuleName) -> Option<SourceFile> {
         }
     }
     found
+}
+
+/// Resolves an automatically available module within the referring source scope.
+#[must_use]
+pub fn module_file_from(db: &dyn Db, from: SourceFile, name: ModuleName) -> Option<SourceFile> {
+    let mut found = None;
+    for &file in automatically_visible_sources(db, from).iter() {
+        if module_name(db, file) == Some(name) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(file);
+        }
+    }
+    found
+}
+
+/// Resolves a known standard module by trusted ownership rather than user names.
+#[must_use]
+pub fn std_module_file(db: &dyn Db, name: ModuleName) -> Option<SourceFile> {
+    std_files(db).into_iter().find(|&file| module_name(db, file) == Some(name))
 }
 
 /// The reserved module whose public interface is auto-imported everywhere.
@@ -658,8 +706,8 @@ pub fn emit_duplicate_prelude_export_errors(db: &dyn Db, file: SourceFile) {
 /// Called from the per-file resolution pass so the error is reported on each
 /// colliding file (with the others as context).
 pub fn emit_duplicate_module_errors(db: &dyn Db, file: SourceFile) {
-    let duplicates = duplicate_module_files(db);
-    if !duplicates.contains(&file) {
+    let duplicates = module_conflicts(db, file);
+    if duplicates.is_empty() {
         return;
     }
     let Some(ModuleName(name)) = module_name(db, file) else {
@@ -673,7 +721,9 @@ pub fn emit_duplicate_module_errors(db: &dyn Db, file: SourceFile) {
         format!("module `{name}` is declared in more than one file"),
         Span::new(source, header),
     )
-    .with_help("top-level module names must be unique across the workspace");
+    .with_help(
+        "top-level module names must be unique within the source's package and target scope",
+    );
     for other in duplicates.iter().copied() {
         if other == file {
             continue;

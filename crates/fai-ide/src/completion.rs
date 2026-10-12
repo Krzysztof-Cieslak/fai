@@ -15,7 +15,7 @@
 
 use fai_db::{Db, SourceFile};
 use fai_resolve::{
-    ModuleName, module_defs, module_file, module_interface, module_internal_interface,
+    ModuleName, module_defs, module_file_from, module_interface, module_internal_interface,
     prelude_exports, type_decls,
 };
 use fai_syntax::Symbol;
@@ -210,7 +210,7 @@ fn completion_data(db: &dyn Db, file: SourceFile, name: Symbol) -> CompletionDat
 /// constructors, or a same-file nested module's (visible) members.
 fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionItem> {
     let sym = Symbol::intern(path);
-    if let Some(mfile) = module_file(db, ModuleName(sym)) {
+    if let Some(mfile) = module_file_from(db, file, ModuleName(sym)) {
         let mut out = Vec::new();
         let mut offer = |interface: &fai_resolve::ModuleInterface| {
             for export in &interface.exports {
@@ -224,8 +224,8 @@ fn module_members(db: &dyn Db, file: SourceFile, path: &str) -> Vec<CompletionIt
             }
         };
         offer(&module_interface(db, mfile));
-        // `internal` members are offered only within the same origin (std vs. user
-        // today), matching what name resolution will accept from this file.
+        // Internal members are offered only within the same package or legacy/std
+        // origin, matching name resolution from this file.
         if file.origin(db) == mfile.origin(db) {
             offer(&module_internal_interface(db, mfile));
         }

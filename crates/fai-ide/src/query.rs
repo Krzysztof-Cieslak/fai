@@ -1105,6 +1105,7 @@ fn rename_preserves_resolution(
     edits: &[Location],
 ) -> bool {
     let mut scratch = fai_db::FaiDatabase::new();
+    scratch.copy_package_environments(db);
     let mut copied = Vec::new();
     let mut ids = FxHashMap::default();
     let mut applied = 0;
@@ -1121,8 +1122,12 @@ fn rename_preserves_resolution(
             text.replace_range(range, new_name);
             applied += 1;
         }
-        let id =
-            scratch.add_source_with_origin(file.path(db).clone().into(), text, file.origin(db));
+        let id = scratch.add_source_scoped(
+            file.path(db).clone().into(),
+            text,
+            file.origin(db),
+            file.role(db).clone(),
+        );
         ids.insert(file.source(db), id);
         let Some(copy) = scratch.source_file(id) else {
             return false;

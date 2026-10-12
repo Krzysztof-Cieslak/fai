@@ -10,7 +10,7 @@
 use fai_core::ir::{CExpr, CoreFn, ExprKind as K, FieldIndex, LoweredDef};
 use fai_core::lower_params_body;
 use fai_db::{Db, SourceFile};
-use fai_resolve::{DefId, LocalId, ModuleName, module_file};
+use fai_resolve::{DefId, LocalId, ModuleName, std_module_file as module_file};
 use fai_syntax::Symbol;
 use fai_syntax::ast::ItemKind;
 use fai_types::{Ty, contract_body_types};

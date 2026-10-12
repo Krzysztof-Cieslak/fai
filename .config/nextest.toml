@@ -59,7 +59,7 @@ path = "junit.xml"
 fail-fast = false
 failure-output = "immediate-final"
 final-status-level = "fail"
-default-filter = "(package(fai-package) | package(fai-runtime) | package(fai-codegen) | package(fai-driver) | package(fai-server) | package(fai-cli) | binary(native) | binary(bundle) | binary(cli) | binary(samples) | binary(std_stack_safety) | binary(paths) | binary(filesystem) | binary(regex)) - (test(/proptest/) | test(/prop_test/) | binary(properties) | binary(proptest))"
+default-filter = "(package(fai-package) | package(fai-runtime) | package(fai-codegen) | package(fai-driver) | package(fai-server) | package(fai-cli) | binary(native) | binary(bundle) | binary(cli) | binary(samples) | binary(std_stack_safety) | binary(paths) | binary(filesystem) | binary(regex) | binary(package_scopes)) - (test(/proptest/) | test(/prop_test/) | binary(properties) | binary(proptest))"
 
 [profile.cross-os.junit]
 path = "junit.xml"
