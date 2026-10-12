@@ -10,6 +10,7 @@ mod layout;
 mod manifest;
 mod model;
 mod platform;
+mod resolver;
 mod version;
 
 pub use diagnostic::{
@@ -26,6 +27,12 @@ pub use model::{
     Override, Package, PlatformSection, Workspace,
 };
 pub use platform::{PlatformPredicate, TargetPlatform};
+pub use resolver::{
+    CandidateSet, PackageCandidate, PackageKey, PackagePin, PackageRequirement, PackageSelector,
+    PackageSource, ProviderFailure, RequirementOrigin, ResolutionConflict, ResolutionError,
+    ResolutionPolicy, ResolutionRequest, ResolvedEdge, ResolvedGraph, ResolverProvider,
+    resolve_graph,
+};
 pub use version::{PackageVersion, VersionRequirement};
 
 /// A malformed package identifier, source locator, path, or requirement.

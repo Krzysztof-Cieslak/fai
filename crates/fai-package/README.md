@@ -1,5 +1,12 @@
 # fai-package
 
+`resolve_graph` selects one source per logical package for a root/compiler/target
+request. Source providers supply immutable candidate metadata and branch snapshots.
+The resolver combines the root's normal/development constraints, follows only
+normal edges in consumed packages, and supports conservative, targeted-update,
+and full-update preferences. Retrieval failures stay distinct from unsatisfiable
+constraints. Replacements preserve the original logical key and version ranges.
+
 Pure project metadata for Fai's package system. The crate validates manifests,
 package source identities, version requirements, platform declarations, and source
 ownership without filesystem access or compiler database queries.
