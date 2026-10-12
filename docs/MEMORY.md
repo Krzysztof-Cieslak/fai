@@ -51,6 +51,10 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Dotenv has an explicit literal dialect: optional export, ASCII environment
+  names, unquoted comments, literal single quotes and a small double-quote escape
+  set. Duplicate names fail with both locations; interpolation is not implicit.
+
 - TOML documents preserve source spans and table-definition state independently
   from their values. Explicit traversal frames bound native stack use; normalized
   output sorts keys and uses TOML 1.1 inline containers. The conformance runner is

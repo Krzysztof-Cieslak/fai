@@ -1,0 +1,236 @@
+module Dotenv
+
+public type Location = {
+  column : Int,
+  endByte : Int,
+  endColumn : Int,
+  endLine : Int,
+  line : Int,
+  startByte : Int
+}
+
+public type ErrorKind =
+  | Syntax
+  | InvalidUtf8
+  | DuplicateName
+  | LimitExceeded
+
+public type Error = {
+  kind : ErrorKind,
+  message : String,
+  primary : Location,
+  secondary : Option Location
+}
+
+public type Options = { maxBytes : Int, maxEntries : Int }
+
+public options : Options
+let options = { maxBytes = 4194304, maxEntries = 1024 }
+
+public type Entry = {
+  name : String,
+  nameLocation : Location,
+  value : String,
+  valueLocation : Location
+}
+
+public opaque type Document = { entries : Array Entry }
+
+public entries : Document -> Array Entry
+let entries document = document.entries
+
+public values : Document -> Dict String String
+let values document =
+  Array.foldl (fun values entry ->
+    Dict.insert entry.name entry.value values) Dict.empty document.entries
+
+let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+let text bytes start finish =
+  Option.withDefault "" (Bytes.toString (Bytes.slice start finish bytes))
+
+let position bytes finish index line column =
+  if index >= finish || index >= Bytes.length bytes then
+    (line, column)
+  else
+    let byte = at bytes index
+    if byte = 10 then
+      position bytes finish (index + 1) (line + 1) 1
+    else
+      position bytes finish (index + 1) line (column + (if byte < 128 || byte >= 192 then 1 else 0))
+
+let location bytes start finish =
+  let (line, column) = position bytes start 0 1 1
+  let (endLine, endColumn) = position bytes finish start line column
+  {
+    column = column,
+    endByte = finish,
+    endColumn = endColumn,
+    endLine = endLine,
+    line = line,
+    startByte = start
+  }
+
+let fail bytes start finish message = Err {
+  kind = Syntax,
+  message = message,
+  primary = location bytes start finish,
+  secondary = None
+}
+
+let horizontal bytes index =
+  if at bytes index = 32 || at bytes index = 9 then horizontal bytes (index + 1) else index
+
+let lineEnd bytes index =
+  if List.member (at bytes index) [-1, 10, 13] then index else lineEnd bytes (index + 1)
+
+let finishLine bytes index =
+  let index = horizontal bytes index
+  let index = if at bytes index = 35 then lineEnd bytes index else index
+  if at bytes index = -1 then
+    Ok index
+  else if at bytes index = 10 then
+    Ok (index + 1)
+  else if at bytes index = 13 && at bytes (index + 1) = 10 then
+    Ok (index + 2)
+  else
+    fail bytes index (index + 1) "expected end of line"
+
+let initial byte = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte = 95
+
+let subsequent byte = initial byte || (byte >= 48 && byte <= 57)
+
+let nameEnd bytes index = if subsequent (at bytes index) then nameEnd bytes (index + 1) else index
+
+let unquotedEnd bytes index =
+  if List.member (at bytes index) [-1, 10, 13, 35] then index else unquotedEnd bytes (index + 1)
+
+let trimEnd bytes start finish =
+  if finish > start && (at bytes (finish - 1) = 32 || at bytes (finish - 1) = 9) then
+    trimEnd bytes start (finish - 1)
+  else
+    finish
+
+let escaped byte =
+  match byte with
+  | 92 -> Some "\\"
+  | 34 -> Some "\""
+  | 110 -> Some "\n"
+  | 114 -> Some "\r"
+  | 116 -> Some "\t"
+  | _ -> None
+
+let quoted bytes quote start index chunk pieces =
+  let byte = at bytes index
+  if byte = -1 then
+    fail bytes start index "unterminated quoted value"
+  else if byte = quote then
+    Ok (String.join "" (List.reverse (text bytes chunk index :: pieces)), index + 1)
+  else if byte = 92 && quote = 34 then
+    match escaped (at bytes (index + 1)) with
+    | None -> fail bytes index (index + 2) "invalid double-quoted escape"
+    | Some value ->
+      quoted bytes quote start (index + 2) (index + 2) (value :: text bytes chunk index :: pieces)
+  else if byte = 13 then
+    if at bytes (index + 1) <> 10 then
+      fail bytes index (index + 1) "bare carriage return"
+    else
+      quoted bytes quote start (index + 2) (index + 2) ("\n" :: text bytes chunk index :: pieces)
+  else
+    quoted bytes quote start (index + 1) chunk pieces
+
+let parseValue bytes start =
+  let quote = at bytes start
+  if quote = 34 || quote = 39 then
+    quoted bytes quote start (start + 1) (start + 1) []
+  else
+    let finish = unquotedEnd bytes start
+    Ok (text bytes start (trimEnd bytes start finish), finish)
+
+let loop options bytes index names output =
+  let start = horizontal bytes index
+  if start >= Bytes.length bytes then
+    Ok { entries = output }
+  else if List.member (at bytes start) [35, 10, 13] then
+    match finishLine bytes start with
+    | Err error -> Err error
+    | Ok next -> loop options bytes next names output
+  else if Array.length output >= options.maxEntries then
+    Err {
+      kind = LimitExceeded,
+      message = "dotenv entry limit exceeded",
+      primary = location bytes start start,
+      secondary = None
+    }
+  else
+    let nameStart =
+      if text bytes start (start + 6) = "export" && List.member (at bytes (start + 6)) [32, 9] then
+        horizontal bytes (start + 6)
+      else
+        start
+    let nameFinish = nameEnd bytes nameStart
+    let equals = horizontal bytes nameFinish
+    if not (initial (at bytes nameStart)) then
+      fail bytes nameStart (nameStart + 1) "expected environment name"
+    else if at bytes equals <> 61 then
+      fail bytes equals (equals + 1) "expected ="
+    else
+      let name = text bytes nameStart nameFinish
+      let nameLocation = location bytes nameStart nameFinish
+      match Dict.get name names with
+      | Some previous -> Err {
+        kind = DuplicateName,
+        message = "duplicate environment name",
+        primary = nameLocation,
+        secondary = Some previous
+      }
+      | None ->
+        let valueStart = horizontal bytes (equals + 1)
+        match parseValue bytes valueStart with
+        | Err error -> Err error
+        | Ok (value, finish) ->
+          match finishLine bytes finish with
+          | Err error -> Err error
+          | Ok next ->
+            loop options bytes next (Dict.insert name nameLocation names) (Array.push {
+              name = name,
+              nameLocation = nameLocation,
+              value = value,
+              valueLocation = location bytes valueStart finish
+            } output)
+
+let nul bytes index =
+  if index >= Bytes.length bytes then
+    None
+  else if at bytes index = 0 then Some index else nul bytes (index + 1)
+
+/// Parse literal dotenv entries without expansion or process-environment mutation.
+public parseBytesWith : Options -> Bytes -> Result Document Error
+let parseBytesWith options bytes =
+  if options.maxBytes < 0 || options.maxEntries < 0 || Bytes.length bytes > options.maxBytes then
+    Err {
+      kind = LimitExceeded,
+      message = "invalid or exceeded dotenv limits",
+      primary = location bytes 0 0,
+      secondary = None
+    }
+  else if not (Option.isSome (Bytes.toString bytes)) then
+    Err {
+      kind = InvalidUtf8,
+      message = "dotenv input is not UTF-8",
+      primary = location bytes 0 (Bytes.length bytes),
+      secondary = None
+    }
+  else
+    match nul bytes 0 with
+    | Some index -> fail bytes index (index + 1) "NUL is not allowed"
+    | None -> loop options bytes 0 Dict.empty [||]
+
+public parseBytes : Bytes -> Result Document Error
+let parseBytes bytes = parseBytesWith options bytes
+
+public parseWith : Options -> String -> Result Document Error
+let parseWith options text = parseBytesWith options (Bytes.fromString text)
+
+public parse : String -> Result Document Error
+let parse text = parseWith options text
