@@ -11,6 +11,7 @@ use fai_diagnostics::CodeInfo;
 fn all_codes() -> Vec<CodeInfo> {
     let mut codes = Vec::new();
     codes.extend_from_slice(fai_diagnostics::CODES);
+    codes.extend_from_slice(fai_package::CODES);
     codes.extend_from_slice(fai_driver::CODES);
     codes.extend_from_slice(fai_syntax::CODES);
     codes.extend_from_slice(fai_resolve::CODES);
@@ -156,7 +157,7 @@ fn every_defined_code_is_catalogued() {
 
 #[test]
 fn tooling_codes_are_in_the_fai0xxx_range() {
-    for info in fai_driver::CODES {
+    for info in fai_driver::CODES.iter().chain(fai_package::CODES) {
         assert!(
             info.code.as_str().starts_with("FAI0"),
             "tooling code {} should be in the FAI0xxx range",

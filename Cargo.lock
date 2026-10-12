@@ -991,6 +991,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fai-package"
+version = "0.1.0"
+dependencies = [
+ "fai-diagnostics",
+ "fai-span",
+ "indoc",
+ "proptest",
+ "semver",
+ "serde",
+ "serde_json",
+ "target-lexicon",
+ "thiserror 2.0.18",
+ "toml_edit",
+ "url",
+]
+
+[[package]]
 name = "fai-rc"
 version = "0.1.0"
 dependencies = [
@@ -1112,6 +1129,7 @@ dependencies = [
  "fai-fmt",
  "fai-ide",
  "fai-lsp",
+ "fai-package",
  "fai-rc",
  "fai-resolve",
  "fai-runtime",

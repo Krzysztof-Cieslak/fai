@@ -1,0 +1,46 @@
+# A source package with independent executable and test scopes.
+manifest-version = 1
+lock-targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[package]
+name = "example-app"
+version = "0.1.0"
+fai-version = "^0.5.3"
+default-run = "example-app"
+
+[toolchain]
+version = "0.5.3"
+
+[dependencies]
+json = { git = "https://github.com/Example/Libraries", subdir = "packages/json", version = "^1.4.0" }
+
+[dev-dependencies]
+fixtures = { path = "../fixtures", version = "^0.1.0" }
+
+[[bin]]
+name = "migrate"
+path = "tools/Migrate.fai"
+
+[native]
+library-dirs = ["native"]
+libraries = ["common"]
+
+[[platform]]
+when = { os = "windows" }
+source-dirs = ["platform/windows"]
+test-source-dirs = ["tests/windows"]
+
+[platform.dependencies]
+windows = { git = "https://example.com/windows.git", branch = "main" }
+
+[platform.native]
+libraries = ["ws2_32"]
+
+[[platform]]
+when = { os = "linux" }
+source-dirs = ["platform/linux"]
+test-source-dirs = ["tests/linux"]
+
+[metadata]
+owner = "example-team"
+arbitrary = { values = [1, 2, 3] }
