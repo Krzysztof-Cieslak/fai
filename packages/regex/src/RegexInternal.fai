@@ -1,0 +1,188 @@
+module RegexInternal
+
+public type Compiled = {
+  binary : Bool,
+  names : Array (Option String),
+  options : RegexTypes.CompileOptions,
+  pattern : String,
+  program : RegexEngine.Program
+}
+
+public type Source =
+  | Text String
+  | Binary Bytes
+
+public type Match = { source : Source, span : RegexTypes.TextSpan }
+
+public type Captures = {
+  groups : Array (Option RegexTypes.TextSpan),
+  regex : Compiled,
+  source : Source
+}
+
+public compile : Bool -> RegexTypes.CompileOptions -> String -> Result Compiled RegexTypes.CompileError
+let compile binary options pattern =
+  let bit enabled value = if enabled then value else 0
+  let flags =
+    bit binary 1 + bit options.unicode 2 + bit options.caseInsensitive 4 + bit options.multiLine 8 + bit options.dotMatchesNewline 16 + bit options.crlf 32 + bit options.ignoreWhitespace 64 + bit options.swapGreed 128 + bit (options.mode = RegexTypes.WholeInput) 256
+  let wire = [|
+    flags,
+    options.maxPatternBytes,
+    options.maxCompiledBytes,
+    options.maxCacheBytes,
+    options.nestingLimit,
+    options.maxCaptureGroups,
+    options.maxRetainedCaches
+  |]
+  match RegexEngine.compile pattern wire with
+  | Err error -> Err (RegexTypes.nativeError (Some pattern) error)
+  | Ok program ->
+    match RegexEngine.names program with
+    | Err error -> Err (RegexTypes.nativeError None error)
+    | Ok names -> Ok {
+      binary = binary,
+      names = names,
+      options = options,
+      pattern = pattern,
+      program = program
+    }
+
+public sourceSize : Source -> Result Int RegexTypes.Error
+let sourceSize source =
+  match source with
+  | Binary bytes -> Ok (Bytes.length bytes)
+  | Text text ->
+    match RegexEngine.byteIndex text 0 with
+    | Err error -> Err (RegexTypes.nativeError None error)
+    | Ok (_, size) -> Ok size
+
+public validate : RegexTypes.Limits -> Compiled -> Source -> Int -> Result Int RegexTypes.Error
+let validate limits regex source start =
+  match RegexTypes.validateLimits limits with
+  | Err error -> Err error
+  | Ok _ ->
+    let binary =
+      match source with
+      | Binary _ -> true
+      | Text _ -> false
+    if binary <> regex.binary then
+      Err (RegexTypes.error RegexTypes.WrongMode "text/binary regex mode mismatch")
+    else
+      match sourceSize source with
+      | Err error -> Err error
+      | Ok size ->
+        if size > limits.maxInputBytes then
+          Err (RegexTypes.error RegexTypes.InputLimit "input byte limit exceeded")
+        else if start < 0 || start > size then
+          Err (RegexTypes.error RegexTypes.InvalidOffset "search offset is out of bounds")
+        else
+          match source with
+          | Binary _ -> Ok size
+          | Text text ->
+            Result.map (fun _ ->
+              size) (Result.mapError (RegexTypes.nativeError None) (RegexEngine.slice text start start))
+
+let span base raw =
+  let (start, finish, startChar, endChar) = raw
+  if start < 0 then
+    None
+  else
+    Some {
+      endByte = finish,
+      endChar = base + endChar,
+      startByte = start,
+      startChar = base + startChar
+    }
+
+/// Search offsets remain relative to the complete source; the byte checkpoint
+/// only accelerates conversion of newly discovered scalar positions.
+public search : RegexTypes.Limits -> Compiled -> Source -> Int -> Int -> Int -> Bool -> Result (Option Captures) RegexTypes.Error
+let search limits regex source start baseByte baseChar captures =
+  let request = [| start, if captures then 1 else 0, baseByte, limits.maxInputBytes |]
+  let result =
+    match source with
+    | Binary bytes -> RegexEngine.findBytes regex.program bytes request
+    | Text text -> RegexEngine.findText regex.program text request
+  match result with
+  | Err error -> Err (RegexTypes.nativeError None error)
+  | Ok spans ->
+    if Array.isEmpty spans then
+      Ok None
+    else
+      Ok (Some { groups = Array.map (span baseChar) spans, regex = regex, source = source })
+
+public first : RegexTypes.Limits -> Compiled -> Source -> Int -> Bool -> Result (Option Captures) RegexTypes.Error
+let first limits regex source start captures =
+  match validate limits regex source start with
+  | Err error -> Err error
+  | Ok _ ->
+    match search limits regex source start 0 0 captures with
+    | Err error -> Err error
+    | Ok None -> Ok None
+    | Ok (Some found) ->
+      if limits.maxResults = 0 then
+        Err (RegexTypes.error RegexTypes.ResultLimit "match result limit exceeded")
+      else if Array.length found.groups > limits.maxCaptureSlots then
+        Err (RegexTypes.error RegexTypes.CaptureLimit "capture slot limit exceeded")
+      else
+        Ok (Some found)
+
+public isMatch : RegexTypes.Limits -> Compiled -> Source -> Result Bool RegexTypes.Error
+let isMatch limits regex source =
+  match validate limits regex source 0 with
+  | Err error -> Err error
+  | Ok _ ->
+    let request = [| 0, 0, 0, limits.maxInputBytes |]
+    Result.mapError (RegexTypes.nativeError None) (match source with
+    | Binary bytes -> RegexEngine.isMatchBytes regex.program bytes request
+    | Text text -> RegexEngine.isMatchText regex.program text request)
+
+public whole : Captures -> Match
+let whole captures = {
+  source = captures.source,
+  span = Option.withDefault {
+    endByte = 0,
+    endChar = 0,
+    startByte = 0,
+    startChar = 0
+  } (Option.withDefault None (Array.get 0 captures.groups))
+}
+
+public group : Int -> Captures -> Result (Option Match) RegexTypes.Error
+let group index captures =
+  match Array.get index captures.groups with
+  | None -> Err (RegexTypes.error RegexTypes.UnknownCapture "capture index does not exist")
+  | Some span -> Ok (Option.map (fun span -> { source = captures.source, span = span }) span)
+
+let nameIndex name names index =
+  if index >= Array.length names then
+    None
+  else if Array.unsafeGet index names = Some name then
+    Some index
+  else
+    nameIndex name names (index + 1)
+
+public groupNamed : String -> Captures -> Result (Option Match) RegexTypes.Error
+let groupNamed name captures =
+  match nameIndex name captures.regex.names 0 with
+  | None -> Err (RegexTypes.error RegexTypes.UnknownCapture ("unknown capture: " ++ name))
+  | Some index -> group index captures
+
+public text : Match -> String
+let text found =
+  match found.source with
+  | Text input ->
+    Result.withDefault "" (RegexEngine.slice input found.span.startByte found.span.endByte)
+  | Binary _ -> ""
+
+public bytes : Match -> Bytes
+let bytes found =
+  match found.source with
+  | Binary input -> Bytes.slice found.span.startByte found.span.endByte input
+  | Text _ -> Bytes.empty
+
+public fromChar : String -> Int -> Result Int RegexTypes.Error
+let fromChar text index =
+  match RegexEngine.byteIndex text index with
+  | Err error -> Err (RegexTypes.nativeError None error)
+  | Ok (byte, _) -> Ok byte

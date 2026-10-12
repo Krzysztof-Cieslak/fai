@@ -1939,6 +1939,16 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/regex` supplies pure `Regex` (String) and `RegexBytes` (Bytes) APIs.
+`compile`/`compileWith` create reusable patterns; `compileWhole` anchors parsed
+syntax to the entire input. `isMatch`, `find` and `captures` return checked results.
+Text spans include explicitly named scalar and byte coordinates. `findFromChar`
+and `findFromByte` preserve full-input anchor context; malformed offsets fail.
+`group`/`groupNamed` return Err for unknown groups and Ok None for unmatched ones.
+`text`/`bytes` copy matched contents; `detach` pairs a copy with original spans.
+Keep compiled values in local/application state rather than repeatedly forcing a
+top-level initializer. Run contracts with `fai test -C packages regex`.
+
 `packages/logging` supplies structured log records and typed `LogField` builders,
 longest dotted-prefix `LogFilter` rules, and pure `LogFormat` human/JSON Lines
 rendering. Later fields override earlier context; final keys are sorted. Record

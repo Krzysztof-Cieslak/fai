@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Text regex matches expose both Unicode-scalar and UTF-8 byte coordinates, while
+  binary matches expose byte coordinates. Search offsets retain full-input anchor
+  context. Match values retain their inputs; extraction and detached results make
+  independent copies. Unknown captures are errors, distinct from nonparticipation.
+
 - Compiled regular expressions are pure native values identified by their pattern
   and fully specified options, never by a native address or search-cache state.
   The typed RegexEngine bridge separates text and binary calls; whole-input mode

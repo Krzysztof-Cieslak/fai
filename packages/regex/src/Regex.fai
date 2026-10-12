@@ -1,0 +1,108 @@
+module Regex
+
+public opaque type Regex = RegexInternal.Compiled
+
+public opaque type Match = RegexInternal.Match
+
+public opaque type Captures = RegexInternal.Captures
+
+public type CompileOptions = RegexTypes.CompileOptions
+
+public type CompileError = RegexTypes.CompileError
+
+public type Error = RegexTypes.Error
+
+public type Limits = RegexTypes.Limits
+
+public type Span = RegexTypes.TextSpan
+
+public options : CompileOptions
+let options = RegexTypes.compileOptions
+
+public limits : Limits
+let limits = RegexTypes.limits
+
+public compileWith : CompileOptions -> String -> Result Regex CompileError
+let compileWith options pattern = RegexInternal.compile false options pattern
+
+public compile : String -> Result Regex CompileError
+let compile pattern = compileWith options pattern
+
+public compileWhole : String -> Result Regex CompileError
+let compileWhole pattern = compileWith { options with mode = RegexTypes.WholeInput } pattern
+
+public pattern : Regex -> String
+let pattern regex = regex.pattern
+
+public describe : Regex -> CompileOptions
+let describe regex = regex.options
+
+public captureNames : Regex -> Array (Option String)
+let captureNames regex = regex.names
+
+public captureCount : Regex -> Int
+let captureCount regex = Array.length regex.names
+
+public escape : String -> String
+let escape pattern = RegexEngine.escape pattern
+
+public errorToString : Error -> String
+let errorToString error = error.message
+
+public isMatchWithLimits : Limits -> Regex -> String -> Result Bool Error
+let isMatchWithLimits limits regex text =
+  RegexInternal.isMatch limits regex (RegexInternal.Text text)
+
+public isMatch : Regex -> String -> Result Bool Error
+let isMatch regex text = isMatchWithLimits limits regex text
+
+public findFromByteWithLimits : Limits -> Int -> Regex -> String -> Result (Option Match) Error
+let findFromByteWithLimits limits start regex text =
+  Result.map (Option.map RegexInternal.whole) (RegexInternal.first limits regex (RegexInternal.Text text) start false)
+
+public findWithLimits : Limits -> Regex -> String -> Result (Option Match) Error
+let findWithLimits limits regex text = findFromByteWithLimits limits 0 regex text
+
+public find : Regex -> String -> Result (Option Match) Error
+let find regex text = findWithLimits limits regex text
+
+public findFromByte : Int -> Regex -> String -> Result (Option Match) Error
+let findFromByte start regex text = findFromByteWithLimits limits start regex text
+
+public findFromChar : Int -> Regex -> String -> Result (Option Match) Error
+let findFromChar start regex text = findFromCharWithLimits limits start regex text
+
+public findFromCharWithLimits : Limits -> Int -> Regex -> String -> Result (Option Match) Error
+let findFromCharWithLimits limits start regex text =
+  match RegexInternal.validate limits regex (RegexInternal.Text text) 0 with
+  | Err error -> Err error
+  | Ok _ ->
+    match RegexInternal.fromChar text start with
+    | Err error -> Err error
+    | Ok start -> findFromByteWithLimits limits start regex text
+
+public span : Match -> Span
+let span found = found.span
+
+public text : Match -> String
+let text found = RegexInternal.text found
+
+/// Copy the text with its original coordinates, allowing the match/input to drop.
+public detach : Match -> { span : Span, text : String }
+let detach found = { span = found.span, text = text found }
+
+public capturesWithLimits : Limits -> Regex -> String -> Result (Option Captures) Error
+let capturesWithLimits limits regex text =
+  RegexInternal.first limits regex (RegexInternal.Text text) 0 true
+
+public captures : Regex -> String -> Result (Option Captures) Error
+let captures regex text = capturesWithLimits limits regex text
+
+public whole : Captures -> Match
+let whole captures = RegexInternal.whole captures
+
+public group : Int -> Captures -> Result (Option Match) Error
+let group index captures = RegexInternal.group index captures
+
+public groupNamed : String -> Captures -> Result (Option Match) Error
+let groupNamed name captures = RegexInternal.groupNamed name captures
