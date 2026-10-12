@@ -346,6 +346,21 @@ mod package_projects {
         assert_eq!(result.stdout, b"42\n");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn contained_vendor_directory_aliases_keep_canonical_source_ownership() {
+        let (project, _) = vendored_project();
+        std::fs::rename(
+            project.workspace.join("vendor"),
+            project.workspace.join("source-snapshot"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("source-snapshot", project.workspace.join("vendor")).unwrap();
+        let result = project.run(&["run", "--no-daemon", "--frozen"], &[]);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(result.stdout, b"42\n");
+    }
+
     #[test]
     fn default_executable_agrees_between_daemon_and_direct_run() {
         let project = project();

@@ -125,7 +125,7 @@ impl VendorIndex {
         if checksum != entry.checksum {
             return Err(unavailable(format!("vendored package {} has been modified", package.id)));
         }
-        Ok(MaterializedPackage { directory, checksum, entries: entry.entries.clone() })
+        Ok(MaterializedPackage { directory: canonical, checksum, entries: entry.entries.clone() })
     }
 
     /// Stages and publishes content-addressed trees, returning the replacement
