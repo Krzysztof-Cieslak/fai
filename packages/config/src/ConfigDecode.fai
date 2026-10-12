@@ -1,0 +1,477 @@
+module ConfigDecode
+
+type Context = {
+  limits : Config.Limits,
+  node : Option ConfigTree.Node,
+  parent : Option ConfigTypes.StoredOrigin,
+  path : List TomlTypes.Segment
+}
+
+type Outcome 'a = { complete : Bool, fields : Set String, result : Result 'a (List Config.Error) }
+
+public opaque type Decoder 'a =
+  | Decoder (Context -> Outcome 'a)
+
+success : 'a -> Outcome 'a
+let success value = { complete = false, fields = Set.empty, result = Ok value }
+
+let run decoder context =
+  match decoder with
+  | Decoder read -> read context
+
+errorAt : Context -> ConfigTypes.ErrorKind -> String -> Config.Error
+let errorAt context kind message =
+  let stored =
+    match context.node with
+    | Some node -> Some (ConfigTree.storedOrigin node)
+    | None -> context.parent
+  { (ConfigTypes.error kind message) with
+    origin = Option.map ConfigTypes.explain stored,
+    path = List.reverse context.path
+  }
+
+failure : Context -> ConfigTypes.ErrorKind -> String -> Outcome 'a
+let failure context kind message = {
+  complete = true,
+  fields = Set.empty,
+  result = Err [errorAt context kind message]
+}
+
+let errors result =
+  match result with
+  | Ok _ -> []
+  | Err errors -> errors
+
+remaining : Context -> Outcome 'a -> Int
+let remaining context outcome = context.limits.maxErrors - List.length (errors outcome.result)
+
+let appendErrors maximum first second = List.take maximum (List.append first second)
+
+unknown : Context -> Set String -> List (String * ConfigTree.Node) -> Int -> List Config.Error
+let unknown context fields names available =
+  match names with
+  | [] -> []
+  | (name, node) :: rest ->
+    if available <= 0 then
+      []
+    else if Set.member name fields then
+      unknown context fields rest available
+    else
+      errorAt { context with
+        node = Some node,
+        path = TomlTypes.Key name :: context.path
+      } ConfigTypes.UnknownField "unknown configuration field" :: unknown context fields rest (available - 1)
+
+finish : Context -> Outcome 'a -> Outcome 'a
+let finish context outcome =
+  if outcome.complete then
+    outcome
+  else
+    match context.node with
+    | Some node ->
+      match ConfigTree.body node with
+      | ConfigTree.Table fields ->
+        let extra = unknown context outcome.fields (Dict.toList fields) (remaining context outcome)
+        if List.isEmpty extra then
+          outcome
+        else
+          { outcome with
+            result = Err (appendErrors context.limits.maxErrors (errors outcome.result) extra)
+          }
+      | _ -> outcome
+    | None -> outcome
+
+/// Decode strictly at every object boundary, accumulating independent failures.
+public decodeWith : Config.Limits -> Decoder 'a -> Config.Config -> Result 'a (List Config.Error)
+let decodeWith limits decoder config =
+  match ConfigTypes.validateLimits limits with
+  | Err error -> Err [error]
+  | Ok _ ->
+    match ConfigTree.validate limits (Config.inspect config) with
+    | Err error -> Err [error]
+    | Ok _ ->
+      let context = {
+        limits = limits,
+        node = Some (Config.inspect config),
+        parent = None,
+        path = []
+      }
+      (finish context (run decoder context)).result
+
+public decode : Decoder 'a -> Config.Config -> Result 'a (List Config.Error)
+let decode decoder config = decodeWith Config.limits decoder config
+
+public succeed : 'a -> Decoder 'a
+let succeed value = Decoder (fun _ -> success value)
+
+public map : ('a -> 'b) -> Decoder 'a -> Decoder 'b
+let map transform decoder = Decoder (fun context -> mapOutcome transform (run decoder context))
+
+mapOutcome : ('a -> 'b) -> Outcome 'a -> Outcome 'b
+let mapOutcome transform outcome = { outcome with result = Result.map transform outcome.result }
+
+combined : Context -> Outcome ('a -> 'b) -> Outcome 'a -> Outcome 'b
+let combined context left right =
+  let result =
+    match (left.result, right.result) with
+    | (Ok apply, Ok value) -> Ok (apply value)
+    | _ -> Err (appendErrors context.limits.maxErrors (errors left.result) (errors right.result))
+  {
+    complete = left.complete || right.complete,
+    fields = Set.union left.fields right.fields,
+    result = result
+  }
+
+public andMap : Decoder 'a -> Decoder ('a -> 'b) -> Decoder 'b
+let andMap argument function = Decoder (fun context -> applyBoth context argument function)
+
+let applyBoth context argument function =
+  let first = run function context
+  if remaining context first <= 0 then
+    { first with result = Err (errors first.result) }
+  else
+    combined context first (run argument { context with
+      limits = { context.limits with maxErrors = remaining context first }
+    })
+
+public map2 : ('a -> 'b -> 'c) -> Decoder 'a -> Decoder 'b -> Decoder 'c
+let map2 apply a b = andMap b (map apply a)
+
+public map3 : ('a -> 'b -> 'c -> 'd) -> Decoder 'a -> Decoder 'b -> Decoder 'c -> Decoder 'd
+let map3 apply a b c = andMap c (map2 apply a b)
+
+public andThen : ('a -> Decoder 'b) -> Decoder 'a -> Decoder 'b
+let andThen next decoder = Decoder (fun context -> dependent context next decoder)
+
+let dependent context next decoder =
+  let first = run decoder context
+  match first.result with
+  | Err errors -> { first with result = Err errors }
+  | Ok value ->
+    let second = run (next value) context
+    { second with
+      complete = first.complete || second.complete,
+      fields = Set.union first.fields second.fields
+    }
+
+public refine : ('a -> Result 'b String) -> Decoder 'a -> Decoder 'b
+let refine validate decoder =
+  Decoder (fun context -> validated context validate (run decoder context))
+
+validated : Context -> ('a -> Result 'b String) -> Outcome 'a -> Outcome 'b
+let validated context validate outcome = { outcome with
+  result = match outcome.result with
+  | Err errors -> Err errors
+  | Ok value ->
+    Result.mapError (fun message -> [
+      errorAt context ConfigTypes.InvalidValue message
+    ]) (validate value)
+}
+
+public allowUnknown : Decoder 'a -> Decoder 'a
+let allowUnknown decoder = Decoder (fun context -> { (run decoder context) with complete = true })
+
+let primitive read = Decoder (fun context -> primitiveRead context read)
+
+primitiveRead : Context -> (ConfigTree.Body -> Result 'a (ConfigTypes.ErrorKind * String)) -> Outcome 'a
+let primitiveRead context read =
+  match context.node with
+  | None -> failure context ConfigTypes.Missing "required configuration value is missing"
+  | Some node ->
+    match read (ConfigTree.body node) with
+    | Ok value -> { (success value) with complete = true }
+    | Err (kind, message) -> failure context kind message
+
+public string : Decoder String
+let string =
+  primitive (fun body ->
+    match body with
+    | ConfigTree.Text text -> Ok text
+    | ConfigTree.Scalar (TomlTypes.String text) -> Ok text
+    | _ -> Err (ConfigTypes.WrongType, "expected string"))
+
+let checkedDecimal text =
+  let raw = Bytes.fromString text
+  let start = if Bytes.get 0 raw = Some 45 || Bytes.get 0 raw = Some 43 then 1 else 0
+  if start >= Bytes.length raw || not (decimalDigits raw start) then
+    Err "expected decimal integer"
+  else
+    let digits = String.drop start text
+    let canonical = skipZeros digits 0
+    TomlScalar.integer ((if Bytes.get 0 raw = Some 45 then "-" else "") ++ canonical)
+
+let decimalDigits bytes index =
+  if index >= Bytes.length bytes then
+    true
+  else
+    (Bytes.unsafeGet index bytes >= 48 && Bytes.unsafeGet index bytes <= 57 && decimalDigits bytes (index + 1))
+
+let skipZeros text index =
+  if index < String.length text - 1 && String.substring index 1 text = "0" then
+    skipZeros text (index + 1)
+  else
+    String.drop index text
+
+public int : Decoder Int
+let int =
+  primitive (fun body ->
+    match body with
+    | ConfigTree.Scalar (TomlTypes.Integer value) -> Ok value
+    | ConfigTree.Text text ->
+      Result.mapError (fun message -> (ConfigTypes.InvalidValue, message)) (checkedDecimal text)
+    | _ -> Err (ConfigTypes.WrongType, "expected integer"))
+
+public bool : Decoder Bool
+let bool =
+  primitive (fun body ->
+    match body with
+    | ConfigTree.Scalar (TomlTypes.Boolean value) -> Ok value
+    | ConfigTree.Text "true" -> Ok true
+    | ConfigTree.Text "false" -> Ok false
+    | ConfigTree.Text _ -> Err (ConfigTypes.InvalidValue, "expected true or false")
+    | _ -> Err (ConfigTypes.WrongType, "expected boolean"))
+
+let floatText text =
+  if String.contains text "_" then Err "expected decimal float" else TomlScalar.floating text
+
+public floatAll : Decoder Float
+let floatAll =
+  primitive (fun body ->
+    match body with
+    | ConfigTree.Scalar (TomlTypes.Float value) -> Ok value
+    | ConfigTree.Text text ->
+      Result.mapError (fun message -> (ConfigTypes.InvalidValue, message)) (floatText text)
+    | _ -> Err (ConfigTypes.WrongType, "expected float"))
+
+public float : Decoder Float
+let float =
+  refine (fun value ->
+    if Int.and (Float.toBits value) 0x7fffffffffffffff >= 0x7ff0000000000000 then
+      Err "expected finite float"
+    else
+      Ok value) floatAll
+
+/// Explicitly opt into reading text, including native TOML strings.
+public fromText : (String -> Result 'a String) -> Decoder 'a
+let fromText read = refine read string
+
+public oneOf : List (Decoder 'a) -> Decoder 'a
+let oneOf alternatives = Decoder (fun context -> choose context alternatives [])
+
+choose : Context -> List (Decoder 'a) -> List Config.Error -> Outcome 'a
+let choose context alternatives failures =
+  match alternatives with
+  | [] -> {
+    complete = true,
+    fields = Set.empty,
+    result = Err (if List.isEmpty failures then
+      [errorAt context ConfigTypes.InvalidValue "no decoder alternatives"]
+    else
+      failures)
+  }
+  | decoder :: rest ->
+    let outcome = finish context (run decoder context)
+    match outcome.result with
+    | Ok _ -> { outcome with complete = true }
+    | Err errors -> choose context rest (appendErrors context.limits.maxErrors failures errors)
+
+public optional : Decoder 'a -> Decoder (Option 'a)
+let optional decoder =
+  Decoder (fun context ->
+    match context.node with
+    | None -> success None
+    | Some _ -> mapOutcome Some (run decoder context))
+
+public withDefault : 'a -> Decoder 'a -> Decoder 'a
+let withDefault fallback decoder =
+  Decoder (fun context ->
+    match context.node with
+    | None -> success fallback
+    | Some _ -> run decoder context)
+
+public field : String -> Decoder 'a -> Decoder 'a
+let field name decoder = Decoder (fun context -> readField context name decoder)
+
+readField : Context -> String -> Decoder 'a -> Outcome 'a
+let readField context name decoder =
+  match context.node with
+  | None -> failure context ConfigTypes.Missing "required table is missing"
+  | Some parent ->
+    match ConfigTree.body parent with
+    | ConfigTree.Table fields ->
+      let child = { context with
+        node = Dict.get name fields,
+        parent = Some (ConfigTree.storedOrigin parent),
+        path = TomlTypes.Key name :: context.path
+      }
+      let outcome = finish child (run decoder child)
+      { outcome with complete = false, fields = Set.singleton name }
+    | _ -> failure context ConfigTypes.WrongType "expected table"
+
+public optionalField : String -> Decoder 'a -> Decoder (Option 'a)
+let optionalField name decoder = field name (optional decoder)
+
+public path : Decoder Path
+let path =
+  fromText (fun text -> Result.mapError (fun _ -> "invalid native path") (Path.fromString text))
+
+let resolved base fromSource context =
+  let decoded = run path context
+  let origin =
+    match context.node with
+    | Some node -> Some (ConfigTree.origin node)
+    | None -> None
+  let actualBase =
+    if fromSource then
+      Option.withDefault base (Option.andThen (fun origin -> origin.base) origin)
+    else
+      base
+  validated context (fun path ->
+    if not (Path.isAbsolute actualBase) then
+      Err "path base must be absolute"
+    else
+      Result.mapError (fun _ ->
+        "path cannot be resolved against its base") (Path.resolve actualBase path)) decoded
+
+public pathRelativeTo : Path -> Decoder Path
+let pathRelativeTo base = Decoder (resolved base false)
+
+public pathFromSource : Path -> Decoder Path
+let pathFromSource fallback = Decoder (resolved fallback true)
+
+public temporal : Decoder TomlTemporal.Value
+let temporal =
+  primitive (fun body ->
+    match body with
+    | ConfigTree.Scalar (TomlTypes.Temporal value) -> Ok value
+    | ConfigTree.Text text ->
+      Result.mapError (fun message -> (ConfigTypes.InvalidValue, message)) (TomlTemporal.parse text)
+    | _ -> Err (ConfigTypes.WrongType, "expected temporal value"))
+
+public date : Decoder LocalDate
+let date =
+  refine (fun value ->
+    if TomlTemporal.kind value <> TomlTemporal.Date then
+      Err "expected local date"
+    else
+      TomlTemporal.toDate value) temporal
+
+public time : Decoder LocalTime
+let time =
+  refine (fun value ->
+    if TomlTemporal.kind value <> TomlTemporal.Time then
+      Err "expected local time"
+    else
+      TomlTemporal.toTime value) temporal
+
+public localDateTime : Decoder LocalDateTime
+let localDateTime =
+  refine (fun value ->
+    if TomlTemporal.kind value <> TomlTemporal.Local then
+      Err "expected local date-time"
+    else
+      TomlTemporal.toLocalDateTime value) temporal
+
+public offsetDateTime : Decoder OffsetDateTime
+let offsetDateTime =
+  refine (fun value ->
+    if TomlTemporal.kind value <> TomlTemporal.Offset then
+      Err "expected offset date-time"
+    else
+      TomlTemporal.toOffsetDateTime value) temporal
+
+addDecoded : Context -> Decoder 'a -> ConfigTree.Node -> TomlTypes.Segment -> Result (List 'a) (List Config.Error) -> Result (List 'a) (List Config.Error)
+let addDecoded context decoder node segment result =
+  let child = { context with node = Some node, path = segment :: context.path }
+  let outcome =
+    finish child (run decoder { child with
+      limits = { child.limits with
+        maxErrors = child.limits.maxErrors - List.length (errors result)
+      }
+    })
+  match (result, outcome.result) with
+  | (Ok values, Ok value) -> Ok (value :: values)
+  | _ -> Err (appendErrors context.limits.maxErrors (errors result) (errors outcome.result))
+
+arrayLoop : Context -> Decoder 'a -> Array ConfigTree.Node -> Int -> Result (List 'a) (List Config.Error) -> Outcome (Array 'a)
+let arrayLoop context decoder values index result =
+  if index >= Array.length values || List.length (errors result) >= context.limits.maxErrors then
+    {
+      complete = true,
+      fields = Set.empty,
+      result = Result.map (fun values -> Array.fromList (List.reverse values)) result
+    }
+  else
+    arrayLoop context decoder values (index + 1) (addDecoded context decoder (Array.unsafeGet index values) (TomlTypes.Index index) result)
+
+public array : Decoder 'a -> Decoder (Array 'a)
+let array decoder = Decoder (fun context -> readArray context decoder)
+
+let readArray context decoder =
+  match context.node with
+  | None -> failure context ConfigTypes.Missing "required array is missing"
+  | Some node ->
+    match ConfigTree.body node with
+    | ConfigTree.Array values -> arrayLoop context decoder values 0 (Ok [])
+    | _ -> failure context ConfigTypes.WrongType "expected array"
+
+public list : Decoder 'a -> Decoder (List 'a)
+let list decoder = map Array.toList (array decoder)
+
+dictLoop : Context -> Decoder 'a -> List (String * ConfigTree.Node) -> List (String * 'a) -> List Config.Error -> Outcome (Dict String 'a)
+let dictLoop context decoder fields output failures =
+  match fields with
+  | [] -> {
+    complete = true,
+    fields = Set.empty,
+    result = if List.isEmpty failures then
+      Ok (Dict.fromList (List.reverse output))
+    else
+      Err failures
+  }
+  | (name, node) :: rest ->
+    if List.length failures >= context.limits.maxErrors then
+      { complete = true, fields = Set.empty, result = Err failures }
+    else
+      let child = { context with
+        limits = { context.limits with
+          maxErrors = context.limits.maxErrors - List.length failures
+        },
+        node = Some node,
+        path = TomlTypes.Key name :: context.path
+      }
+      let outcome = finish child (run decoder child)
+      match outcome.result with
+      | Ok value -> dictLoop context decoder rest ((name, value) :: output) failures
+      | Err errors ->
+        dictLoop context decoder rest output (appendErrors context.limits.maxErrors failures errors)
+
+public dict : Decoder 'a -> Decoder (Dict String 'a)
+let dict decoder = Decoder (fun context -> readDict context decoder)
+
+let readDict context decoder =
+  match context.node with
+  | None -> failure context ConfigTypes.Missing "required table is missing"
+  | Some node ->
+    match ConfigTree.body node with
+    | ConfigTree.Table fields -> dictLoop context decoder (Dict.toList fields) [] []
+    | _ -> failure context ConfigTypes.WrongType "expected table"
+
+public range : Int -> Int -> Decoder Int
+let range minimum maximum =
+  refine (fun value ->
+    if value < minimum || value > maximum then
+      Err "integer is outside the allowed range"
+    else
+      Ok value) int
+
+public choice : List (String * 'a) -> Decoder 'a
+let choice choices =
+  fromText (fun value ->
+    match List.find (matchesName value) choices with
+    | Some (_, value) -> Ok value
+    | None -> Err "value is not an allowed choice")
+
+let matchesName value pair =
+  let (name, _) = pair
+  name = value

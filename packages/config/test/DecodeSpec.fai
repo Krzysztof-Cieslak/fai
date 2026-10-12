@@ -1,0 +1,128 @@
+module ConfigDecodeSpec
+
+let decode decoder source =
+  match Config.toml Config.limits (ConfigTypes.origin ConfigTypes.Supplied "test.toml") (Bytes.fromString source) with
+  | Err error -> Err [error]
+  | Ok layer ->
+    match Config.merge [layer] with
+    | Err error -> Err [error]
+    | Ok config -> ConfigDecode.decode decoder config
+
+let text decoder value =
+  match ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "env") [
+    { name = "VALUE", path = ["value"] }
+  ] [("VALUE", value)] with
+  | Err error -> Err [error]
+  | Ok layer ->
+    match Config.merge [layer] with
+    | Err error -> Err [error]
+    | Ok config -> ConfigDecode.decode (ConfigDecode.field "value" decoder) config
+
+let intField = ConfigDecode.field "value" ConfigDecode.int
+
+let kinds result = Result.mapError (List.map (fun error -> error.kind)) result
+example: decode intField "value=42" = Ok 42
+example: kinds (decode intField "value='42'") = Err [ConfigTypes.WrongType]
+example: text ConfigDecode.int "42" = Ok 42
+example: text ConfigDecode.int "00042" = Ok 42
+example: text ConfigDecode.int "-9223372036854775808" = Ok (-9223372036854775807 - 1)
+example: text ConfigDecode.int "9223372036854775808" |> Result.isErr
+example: text ConfigDecode.int "0x10" |> Result.isErr
+example: text ConfigDecode.int "1_000" |> Result.isErr
+example: text ConfigDecode.int " 42" |> Result.isErr
+example: text ConfigDecode.int "" |> Result.isErr
+example: text ConfigDecode.bool "false" = Ok false
+example: text ConfigDecode.bool "False" |> Result.isErr
+example: text ConfigDecode.float "1.25e2" = Ok 125.0
+example: text ConfigDecode.float "nan" |> Result.isErr
+example: text ConfigDecode.floatAll "inf" = Ok (Float.fromBits 0x7ff0000000000000)
+example: decode (ConfigDecode.field "value" (ConfigDecode.withDefault 10 ConfigDecode.int)) "" = Ok 10
+example: kinds (decode (ConfigDecode.field "value" (ConfigDecode.withDefault 10 ConfigDecode.int)) "value='bad'") = Err [
+  ConfigTypes.WrongType
+]
+example: decode (ConfigDecode.optionalField "value" ConfigDecode.int) "" = Ok None
+example: kinds (decode (ConfigDecode.optionalField "value" ConfigDecode.int) "value='bad'") = Err [
+  ConfigTypes.WrongType
+]
+example: kinds (decode intField "value=42\ntypo=1") = Err [ConfigTypes.UnknownField]
+example: decode (ConfigDecode.allowUnknown intField) "value=42\nextra=1" = Ok 42
+example: kinds (decode (ConfigDecode.field "table" intField) "[table]\nvalue=1\ntypo=2") = Err [
+  ConfigTypes.UnknownField
+]
+
+let two =
+  ConfigDecode.map2 (fun a b ->
+    (a, b)) (ConfigDecode.field "a" ConfigDecode.int) (ConfigDecode.field "b" ConfigDecode.bool)
+example: kinds (decode two "a='bad'\nb=42") = Err [ConfigTypes.WrongType, ConfigTypes.WrongType]
+example: (match decode two "" with
+| Err errors ->
+  List.map (fun error -> error.path) errors = [[TomlTypes.Key "a"], [TomlTypes.Key "b"]]
+| _ -> false)
+example: decode (ConfigDecode.field "values" (ConfigDecode.array ConfigDecode.int)) "values=[1,2,3]" = Ok [|
+  1,
+  2,
+  3
+|]
+example: kinds (decode (ConfigDecode.field "values" (ConfigDecode.array ConfigDecode.int)) "values=['bad',true]") = Err [
+  ConfigTypes.WrongType,
+  ConfigTypes.WrongType
+]
+example: decode (ConfigDecode.field "values" (ConfigDecode.dict ConfigDecode.int)) "[values]\na=1\nb=2" = Ok (Dict.fromList [
+  ("a", 1),
+  ("b", 2)
+])
+example: decode (ConfigDecode.field "value" (ConfigDecode.oneOf [
+  ConfigDecode.map Int.toString ConfigDecode.int,
+  ConfigDecode.string
+])) "value='text'" = Ok "text"
+example: text (ConfigDecode.choice [("small", 1), ("large", 2)]) "large" = Ok 2
+example: text (ConfigDecode.range 1 65535) "0" |> Result.isErr
+example: text (ConfigDecode.fromText (fun value ->
+  if value = "on" then Ok true else Err "expected on")) "on" = Ok true
+
+let located =
+  match decode intField "value='bad'" with
+  | Err [error] ->
+    error.path = [
+      TomlTypes.Key "value"
+    ] && Option.andThen (fun origin ->
+      origin.location) error.origin = Some {
+      column = 7,
+      endByte = 11,
+      endColumn = 12,
+      endLine = 1,
+      line = 1,
+      startByte = 6
+    }
+  | _ -> false
+example: located
+
+let capped =
+  match Config.toml Config.limits (ConfigTypes.origin ConfigTypes.Supplied "test") (Bytes.fromString "a='bad'\nb=42\ntypo=1") with
+  | Err _ -> false
+  | Ok layer ->
+    match Config.merge [layer] with
+    | Err _ -> false
+    | Ok config ->
+      (ConfigDecode.decodeWith { Config.limits with
+        maxErrors = 1
+      } two config |> Result.mapError List.length) = Err 1
+example: capped
+
+let pathBase =
+  let base =
+    Result.withDefault Path.empty (Path.fromString (if Path.nativeEncoding = "windows" then
+      "C:\\app"
+    else
+      "/app"))
+  let fileBase = Path.join base (Result.withDefault Path.empty (Path.fromString "config"))
+  let origin = { (ConfigTypes.origin ConfigTypes.TomlFile "settings") with base = Some fileBase }
+  match Config.toml Config.limits origin (Bytes.fromString "value='data'") with
+  | Err _ -> false
+  | Ok layer ->
+    match Config.merge [layer] with
+    | Err _ -> false
+    | Ok config ->
+      ConfigDecode.decode (ConfigDecode.field "value" (ConfigDecode.pathFromSource base)) config = Ok (Path.join fileBase (Result.withDefault Path.empty (Path.fromString "data")))
+example: pathBase
+forall number: text ConfigDecode.int (Int.toString number) = Ok number

@@ -1959,6 +1959,11 @@ arrays/scalars replace. Explicit environment bindings use literal path segments.
 `ConfigSource.load` takes FileSystem/Env capabilities, limits, an absolute base,
 and an ordered source plan. Optional files skip only NotFound. `Config.origin`
 reports the winning source; parsing/merging remains pure.
+`ConfigDecode` composes strict fields and scalar/collection readers with
+`map2`/`map3`/`andMap`. Independent errors accumulate, unknown fields fail unless
+`allowUnknown` is explicit, and optional/default readers only handle absence.
+`fromText`, `refine`, `range` and `choice` support application validation;
+`pathFromSource` resolves against the winning file or an explicit fallback base.
 
 `packages/dotenv` provides literal `Dotenv.parse`/`parseBytes` with configurable
 byte/entry limits. `entries` retains name/value locations; `values` extracts a

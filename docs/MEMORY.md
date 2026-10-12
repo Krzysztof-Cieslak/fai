@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Typed configuration decoding distinguishes native scalar kinds from unparsed
+  textual overrides. Defaults apply only to absence. Applicative decoders collect
+  bounded independent errors and check unknown fields at each object boundary;
+  source-relative path decoding uses the winning file's directory explicitly.
+
 - Configuration layers are explicit, immutable and later-wins. Tables merge;
   arrays/scalars replace. Named environment bindings preserve missing versus empty
   input and reject overlapping target paths. Optional file loading skips only
