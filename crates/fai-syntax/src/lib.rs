@@ -32,8 +32,8 @@ pub use literal::{
 };
 pub use parser::{Parsed, parse_module};
 pub use query::{
-    ItemSummary, ItemTree, ItemTreeKind, ParsedModule, build_item_tree, item_tree, parse,
-    public_item_count,
+    ImportSummary, ItemSummary, ItemTree, ItemTreeKind, ParsedModule, build_item_tree, item_tree,
+    parse, public_item_count,
 };
 pub use symbol::Symbol;
 pub use token::{Comment, CommentKind, Token, TokenKind};

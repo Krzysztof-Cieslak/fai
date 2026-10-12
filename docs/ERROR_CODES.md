@@ -292,6 +292,30 @@ A `foreign` declaration binds a raw native function and is always module-private
 
 A qualified reference names an `internal` member of another origin — `internal` exports a member only to files in the same origin (the standard library, or a package), not across that boundary. Use the public API instead, or, for your own code, mark the member `public`.
 
+### FAI2021 — unknown imported dependency
+
+**Severity:** error
+
+The first component of an import must name a direct dependency declared for the importing package and source scope. Production source cannot import development-only dependencies, and transitive dependencies require a public module re-export or a direct declaration.
+
+### FAI2022 — unavailable imported module
+
+**Severity:** error
+
+An import or re-export path names a missing, ambiguous, or private module binding. External imports select library modules; executable and test-only sources are not a dependency's public surface. Follow only public re-exports across files.
+
+### FAI2023 — import name conflict
+
+**Severity:** error
+
+A module import collides with another import, an automatically available module, or a name in the same module/type namespace. Choose a distinct upper-case alias with `as`; import order never selects a winner.
+
+### FAI2024 — cyclic module re-export
+
+**Severity:** error
+
+Module re-exports form a cycle or exceed 128 import layers. Break the cycle or expose a shorter public module path. Resolution reports a diagnostic instead of recursing through an unbounded import chain.
+
 ## FAI3xxx — Types & rows
 
 ### FAI3001 — type mismatch

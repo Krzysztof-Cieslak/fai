@@ -37,6 +37,13 @@ their feature lands.
 Because there is one canonical layout, generated code is low-entropy: there is
 essentially one correct way to write a given program.
 
+## Package imports
+
+The [`package_imports/`](package_imports/README.md) example demonstrates explicit
+external imports, public module re-exports, and shared nominal type identity.
+Its dedicated compiler integration test supplies the package environments and
+checks formatting, types, and contracts.
+
 ## `algorithms/` — runtime benchmark samples
 
 The `algorithms/` subdirectory holds well-known algorithms (Fibonacci, Collatz,

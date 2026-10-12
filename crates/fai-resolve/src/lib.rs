@@ -38,6 +38,13 @@ pub use module::{
     module_file_from, module_interface, module_internal_interface, module_name, prelude_exports,
     prelude_module_file, prelude_source, std_files, std_module_file,
 };
+
+#[allow(unsafe_code)]
+mod imports;
+pub use imports::{
+    ImportBinding, ImportFailure, ModuleTarget, emit_import_diagnostics, import_bindings,
+    module_path_target, module_prefix, module_target, visible_module_bindings,
+};
 pub use scc::{ModuleSccs, Scc, def_deps, module_sccs, recursive_defs};
 
 use fai_diagnostics::{CodeInfo, DiagnosticCode, Severity};
@@ -86,9 +93,41 @@ pub const PUBLIC_FOREIGN: DiagnosticCode = DiagnosticCode::new("FAI2019");
 /// An `internal` member is referenced from a different origin (e.g. user code
 /// naming a standard-library `internal` binding).
 pub const INTERNAL_REFERENCE: DiagnosticCode = DiagnosticCode::new("FAI2020");
+/// An import names an unavailable normal/development dependency alias.
+pub const UNKNOWN_DEPENDENCY: DiagnosticCode = DiagnosticCode::new("FAI2021");
+/// An imported module or public re-export path is unavailable.
+pub const INVALID_IMPORT: DiagnosticCode = DiagnosticCode::new("FAI2022");
+/// An imported binding conflicts with an existing module/type namespace name.
+pub const IMPORT_NAME_CONFLICT: DiagnosticCode = DiagnosticCode::new("FAI2023");
+/// Module import/re-export traversal is cyclic or exceeds its depth bound.
+pub const CYCLIC_IMPORT: DiagnosticCode = DiagnosticCode::new("FAI2024");
 
 /// Diagnostic codes owned by name resolution/visibility (the `FAI2xxx` range).
 pub const CODES: &[CodeInfo] = &[
+    CodeInfo {
+        code: UNKNOWN_DEPENDENCY,
+        title: "unknown imported dependency",
+        default_severity: Severity::Error,
+        explanation: "The first component of an import must name a direct dependency declared for the importing package and source scope. Production source cannot import development-only dependencies, and transitive dependencies require a public module re-export or a direct declaration.",
+    },
+    CodeInfo {
+        code: INVALID_IMPORT,
+        title: "unavailable imported module",
+        default_severity: Severity::Error,
+        explanation: "An import or re-export path names a missing, ambiguous, or private module binding. External imports select library modules; executable and test-only sources are not a dependency's public surface. Follow only public re-exports across files.",
+    },
+    CodeInfo {
+        code: IMPORT_NAME_CONFLICT,
+        title: "import name conflict",
+        default_severity: Severity::Error,
+        explanation: "A module import collides with another import, an automatically available module, or a name in the same module/type namespace. Choose a distinct upper-case alias with `as`; import order never selects a winner.",
+    },
+    CodeInfo {
+        code: CYCLIC_IMPORT,
+        title: "cyclic module re-export",
+        default_severity: Severity::Error,
+        explanation: "Module re-exports form a cycle or exceed 128 import layers. Break the cycle or expose a shorter public module path. Resolution reports a diagnostic instead of recursing through an unbounded import chain.",
+    },
     CodeInfo {
         code: UNBOUND_NAME,
         title: "unbound name",

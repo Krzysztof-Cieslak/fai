@@ -1341,6 +1341,7 @@ mod proptests {
     /// Every reserved keyword lexeme.
     const KEYWORDS: &[&str] = &[
         "module",
+        "import",
         "let",
         "type",
         "interface",

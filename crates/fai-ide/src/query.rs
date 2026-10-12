@@ -451,6 +451,19 @@ pub fn definition_at(
         target,
         definitions: vec![location],
     };
+    let parsed = fai_syntax::parse(db, file);
+    if let Some((index, _)) =
+        parsed.module.imports.iter().enumerate().find(|(_, import)| {
+            import.span.start().raw() <= offset && offset < import.span.end().raw()
+        })
+        && let Some(binding) = fai_resolve::import_bindings(db, file).get(index)
+        && let Ok(target) = &binding.target
+    {
+        let header = fai_syntax::parse(db, target.file).module.header;
+        if let Some(span) = SpanJson::resolve(Span::new(target.file.source(db), header), resolver) {
+            return one(None, Location { span, preview: None });
+        }
+    }
     match target_at(db, file, offset) {
         Some((RefTarget::Def(d), _)) => db
             .source_file(d.file)
@@ -1971,6 +1984,20 @@ pub struct ApiResult {
     pub schema_version: u32,
     pub module: String,
     pub exports: Vec<ApiExport>,
+    /// Public module re-exports, retaining the original module's source location.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<ApiModuleExport>,
+}
+
+/// A module alias exported through `public import`.
+#[derive(Debug, Serialize)]
+pub struct ApiModuleExport {
+    /// Name visible under the exporting module.
+    pub name: String,
+    /// Original top-level/nested module path.
+    pub target: String,
+    /// Location of the original module's file header.
+    pub span: SpanJson,
 }
 
 /// The public interface of a module.
@@ -1983,6 +2010,7 @@ pub fn api(
 ) -> ApiResult {
     let file = files.iter().copied().find(|&f| module_label(db, f) == module);
     let mut exports = Vec::new();
+    let mut modules = Vec::new();
     if let Some(file) = file {
         let defs = module_defs(db, file);
         let mut by_subject = contracts_by_subject(db, file, resolver);
@@ -2004,8 +2032,32 @@ pub fn api(
             }
         }
         exports.sort_by(|a, b| a.symbol.name.cmp(&b.symbol.name));
+        for binding in fai_resolve::import_bindings(db, file)
+            .iter()
+            .filter(|binding| binding.visibility == AstVis::Public)
+        {
+            let Ok(target) = &binding.target else {
+                continue;
+            };
+            let mut path = module_label(db, target.file);
+            for segment in &target.path {
+                path.push('.');
+                path.push_str(segment.as_str());
+            }
+            let header = fai_syntax::parse(db, target.file).module.header;
+            if let Some(span) =
+                SpanJson::resolve(Span::new(target.file.source(db), header), resolver)
+            {
+                modules.push(ApiModuleExport {
+                    name: binding.name.as_str().to_owned(),
+                    target: path,
+                    span,
+                });
+            }
+        }
+        modules.sort_by(|a, b| a.name.cmp(&b.name));
     }
-    ApiResult { schema_version: SCHEMA_VERSION, module: module.to_owned(), exports }
+    ApiResult { schema_version: SCHEMA_VERSION, module: module.to_owned(), exports, modules }
 }
 
 /// Collects a file's contracts, grouped by the top-level binding they describe

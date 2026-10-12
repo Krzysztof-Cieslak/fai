@@ -11,9 +11,9 @@ use fai_diagnostics::{Diagnostic, DiagnosticCode};
 use fai_span::{ByteOffset, SourceId, Span, TextRange};
 
 use crate::ast::{
-    EffectAnnot, Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, Item, ItemId, ItemKind,
-    LetStmt, MatchArm, MethodImpl, MethodSig, Module, Pat, PatId, PatKind, RowTail, Type, TypeDef,
-    TypeId, TypeKind, Variant, Visibility,
+    EffectAnnot, Expr, ExprId, ExprKind, FieldInit, FieldPat, FieldType, ImportDecl, Item, ItemId,
+    ItemKind, LetStmt, MatchArm, MethodImpl, MethodSig, Module, Pat, PatId, PatKind, RowTail, Type,
+    TypeDef, TypeId, TypeKind, Variant, Visibility,
 };
 use crate::token::{Token, TokenKind};
 use crate::{Comment, MODULE_HEADER, NESTING_LIMIT, SYNTAX_ERROR, Symbol, layout, lex};
@@ -409,6 +409,28 @@ impl Parser<'_> {
             }
             let before = self.pos;
             let errors_before = self.diagnostics.len();
+            if self.at(TokenKind::Import)
+                || (self.at(TokenKind::Public) && self.peek_at(1) == TokenKind::Import)
+            {
+                if !self.module.roots.is_empty() {
+                    self.error(
+                        SYNTAX_ERROR,
+                        self.cur().range,
+                        "imports must precede ordinary declarations",
+                    );
+                }
+                let start = self.start();
+                let visibility = if self.eat(TokenKind::Public) {
+                    Visibility::Public
+                } else {
+                    Visibility::Private
+                };
+                if let Some(import) = self.parse_import(start, visibility) {
+                    self.module.imports.push(import);
+                }
+                self.finish_declaration(errors_before);
+                continue;
+            }
             let item = self.parse_item();
             let id = self.alloc_item(item);
             self.module.roots.push(id);
@@ -418,6 +440,72 @@ impl Parser<'_> {
                 self.bump(); // guarantee forward progress
             }
         }
+    }
+
+    fn parse_import(&mut self, start: ByteOffset, visibility: Visibility) -> Option<ImportDecl> {
+        self.bump(); // import
+        if !matches!(self.peek(), TokenKind::LowerIdent | TokenKind::UpperIdent) {
+            self.error(
+                SYNTAX_ERROR,
+                self.cur().range,
+                "expected a dependency alias after `import`",
+            );
+            return None;
+        }
+        let token = self.bump();
+        let mut path = vec![self.symbol(token)];
+        let mut path_spans = vec![token.range];
+        while self.eat(TokenKind::Dot) {
+            if !self.at(TokenKind::UpperIdent) {
+                self.error(
+                    SYNTAX_ERROR,
+                    self.cur().range,
+                    "expected an upper-case module name in the import path",
+                );
+                return None;
+            }
+            let token = self.bump();
+            path.push(self.symbol(token));
+            path_spans.push(token.range);
+            if path.len() > usize::from(MAX_TREE_DEPTH) {
+                self.error(
+                    NESTING_LIMIT,
+                    self.span_from(start),
+                    "import path exceeds the syntax depth limit",
+                );
+                return None;
+            }
+        }
+        if path.len() < 2 {
+            self.error(
+                SYNTAX_ERROR,
+                self.span_from(start),
+                "an import needs a dependency alias and module, e.g. `import json.Json`",
+            );
+            return None;
+        }
+        let (alias, alias_span) = if self.eat(TokenKind::As) {
+            if !self.at(TokenKind::UpperIdent) {
+                self.error(
+                    SYNTAX_ERROR,
+                    self.cur().range,
+                    "expected an upper-case module alias after `as`",
+                );
+                return None;
+            }
+            let token = self.bump();
+            (Some(self.symbol(token)), Some(token.range))
+        } else {
+            (None, None)
+        };
+        Some(ImportDecl {
+            path,
+            path_spans,
+            alias,
+            alias_span,
+            visibility,
+            span: self.span_from(start),
+        })
     }
 
     fn parse_header(&mut self) {
@@ -501,6 +589,15 @@ impl Parser<'_> {
             TokenKind::Interface => self.parse_interface_decl(Visibility::Private),
             TokenKind::Foreign => self.parse_foreign(Visibility::Private),
             TokenKind::Module => self.parse_nested_module(),
+            TokenKind::Import => {
+                self.error(
+                    SYNTAX_ERROR,
+                    self.cur().range,
+                    "imports are file-level declarations before ordinary items",
+                );
+                self.parse_import(start, Visibility::Private);
+                ItemKind::Error
+            }
             TokenKind::Opaque => {
                 // `opaque` only marks a `public` type; written alone it is an
                 // error. Recover by parsing it as `public opaque`, the intent.
@@ -556,6 +653,16 @@ impl Parser<'_> {
                 }
             }
             TokenKind::Interface => self.parse_interface_decl(visibility),
+            TokenKind::Import => {
+                let start = self.start();
+                self.error(
+                    SYNTAX_ERROR,
+                    self.cur().range,
+                    "only file-level `import` and `public import` are permitted",
+                );
+                self.parse_import(start, visibility);
+                ItemKind::Error
+            }
             // A `public`/`internal foreign` parses (carrying its visibility) so
             // resolution can report the dedicated "foreign must be module-private"
             // diagnostic rather than a bare syntax error.

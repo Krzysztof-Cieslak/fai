@@ -67,6 +67,8 @@ pub struct Module {
     pub name: Option<Symbol>,
     /// Span of the module header (`module Name`), for diagnostics.
     pub header: TextRange,
+    /// File-local external module imports, before ordinary declarations.
+    pub imports: Vec<ImportDecl>,
     /// The arena of all items (top-level and nested), addressed by [`ItemId`].
     pub items: Vec<Item>,
     /// The top-level items, in source order (indices into `items`).
@@ -77,6 +79,31 @@ pub struct Module {
     pub pats: Vec<Pat>,
     /// Type-expression arena.
     pub types: Vec<Type>,
+}
+
+/// An external module binding, optionally re-exported under the current module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportDecl {
+    /// Dependency alias followed by module/re-export path components.
+    pub path: Vec<Symbol>,
+    /// Locations corresponding to the path components.
+    pub path_spans: Vec<TextRange>,
+    /// Explicit local module alias; otherwise use the final path component.
+    pub alias: Option<Symbol>,
+    /// Location of an explicit alias.
+    pub alias_span: Option<TextRange>,
+    /// Private file binding or public module re-export.
+    pub visibility: Visibility,
+    /// Complete declaration span.
+    pub span: TextRange,
+}
+
+impl ImportDecl {
+    /// The module name introduced by this declaration.
+    #[must_use]
+    pub fn binding(&self) -> Option<Symbol> {
+        self.alias.or_else(|| self.path.last().copied())
+    }
 }
 
 impl Module {

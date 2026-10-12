@@ -218,12 +218,11 @@ bindings. Formatting leaves files with this diagnostic unchanged.
 - **One top-level module per file**, named on the first line: `module Storefront`.
 - **Three visibility tiers, `public > internal > private` (default).**
   - **`public`** exports a binding/type/interface to every file.
-  - **`internal`** exports it only to files of the **same origin**. Today the only
-    origin boundary is the standard library vs. your code, so in your own programs
-    `internal` currently behaves like `public` (one origin); it exists for
-    forward-compatibility with a future package system. Prefer `public` for your
-    app's API and reach for `internal` only when you want a member shared across
-    your modules but excluded from a future package's surface.
+  - **`internal`** exports it only to files of the **same package origin**.
+    Package-owned sources include their library, executable, and test scopes;
+    another package can use only the public API. Legacy directory projects share
+    one user-code origin. Prefer `internal` for helpers shared between your
+    modules and `public` for the package API.
     Origin is assigned by the compiler's loader, not by a file or directory name.
     Even a real `<std>` directory remains user code and cannot replace embedded
     library sources or access their internal members.
@@ -271,8 +270,28 @@ modules `Instant`, `Duration`, `LocalDate`, `LocalTime`, `LocalDateTime`,
 `Offset`, `OffsetDateTime`, `Period`, `DayOfWeek`, `Month`, `DateTimeFormat`. The
 `Prim` namespace is compiler-internal and off-limits to user code (`FAI2014`).
 
-There are **no import statements**. The `Prelude` is auto-imported; everything
-else is reached by its qualified path directly.
+The `Prelude` is auto-imported. Same-package and standard-library modules are
+available directly through qualified names. External package modules use explicit,
+file-local imports before ordinary declarations:
+
+```fai
+module App
+
+import json.Json
+import alternate.Json as AlternateJson
+```
+
+The first path component is a direct dependency alias supplied by the package
+loader. Imports bind modules only; members remain qualified (`Json.parse`). A
+conflict with an existing module/type name requires a different `as` alias.
+
+`public import json.Json` in `module Web` re-exports the public module as
+`Web.Json`. A consumer with a `web` dependency can write `import web.Web.Json`.
+Both routes preserve the original type identities. Ordinary imports are private
+to their file and cannot be followed as transitive package paths.
+
+The compiler supports these bindings in package-aware source environments; the
+project loader's current integration status is recorded in `docs/PACKAGES.md`.
 
 ---
 
@@ -2304,7 +2323,7 @@ See `packages/web/README.md`.
 
 The current CLI uses the native-dependency `fai.toml` section described below.
 The package/project design and implementation status are in `docs/PACKAGES.md`;
-its proposed imports and dependency commands are not yet source-language/CLI APIs.
+its dependency commands and project-loader integration are being developed.
 
 `fai build-info` prints JSON describing the compiler's source digest, complete
 tool build identity, backend identity, target, profile and bundled native
