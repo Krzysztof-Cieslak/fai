@@ -55,6 +55,24 @@ impl SourcePlan {
         target: &TargetPlatform,
         files: &[PackagePath],
     ) -> Result<Self, Vec<Diagnostic>> {
+        Self::build_scopes(document, target, files, true)
+    }
+
+    /// Plans only a consumed dependency's shared library sources.
+    pub fn build_library(
+        document: &ManifestDocument,
+        target: &TargetPlatform,
+        files: &[PackagePath],
+    ) -> Result<Self, Vec<Diagnostic>> {
+        Self::build_scopes(document, target, files, false)
+    }
+
+    fn build_scopes(
+        document: &ManifestDocument,
+        target: &TargetPlatform,
+        files: &[PackagePath],
+        targets: bool,
+    ) -> Result<Self, Vec<Diagnostic>> {
         let manifest = document.manifest();
         let Some(package) = &manifest.package else {
             return Err(vec![document.diagnostic(
@@ -102,6 +120,9 @@ impl SourcePlan {
         }
         let mut errors = Vec::new();
         for (name, path) in &entries {
+            if !targets {
+                continue;
+            }
             let field =
                 manifest.binaries.iter().position(|binary| &binary.name == name).map_or_else(
                     || "package.source-dir".to_owned(),
@@ -117,7 +138,8 @@ impl SourcePlan {
                 errors.push(document.diagnostic(INVALID_TARGET, format!("executable `{name}` entry `{path}` is outside this package's source ownership"), &field));
             }
         }
-        if let Some(default) = &package.default_run
+        if targets
+            && let Some(default) = &package.default_run
             && !entries.contains_key(default)
         {
             errors.push(document.diagnostic(
@@ -172,12 +194,14 @@ impl SourcePlan {
             {
                 match root.kind {
                     RootKind::Library => library.push(file.clone()),
-                    RootKind::Tests => tests.push(file.clone()),
+                    RootKind::Tests if targets => tests.push(file.clone()),
+                    RootKind::Tests => {}
                 }
             }
         }
         let executables = entries
             .into_iter()
+            .filter(|_| targets)
             .map(|(name, entry)| {
                 let mut sources = library.clone();
                 sources.push(entry.clone());

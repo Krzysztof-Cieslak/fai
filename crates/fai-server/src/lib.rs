@@ -36,8 +36,20 @@ pub fn run_command(
     dirty: Vec<DirtyFile>,
     log: Option<PathBuf>,
 ) -> Result<Rendered, DaemonError> {
+    run_command_in_context(root, spec, opts, dirty, log, false)
+}
+
+/// Runs a command in a shared or personal project context of the workspace daemon.
+pub fn run_command_in_context(
+    root: &Utf8Path,
+    spec: CommandSpec,
+    opts: RenderOpts,
+    dirty: Vec<DirtyFile>,
+    log: Option<PathBuf>,
+    no_local: bool,
+) -> Result<Rendered, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
-    client.command(spec, opts, dirty)
+    client.command_in_context(spec, opts, dirty, no_local)
 }
 
 /// Runs a program under daemon supervision (spawning the daemon if needed),
@@ -50,8 +62,21 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, DaemonError> {
+    run_in_context(root, path, args, log, out, err, false)
+}
+
+/// Runs a program against the requested shared or personal project context.
+pub fn run_in_context(
+    root: &Utf8Path,
+    path: &str,
+    args: &[String],
+    log: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    no_local: bool,
+) -> Result<i32, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
-    client.stream_run(path, args, out, err)
+    client.stream_run_in_context(path, args, out, err, no_local)
 }
 
 /// Runs `example`/`forall` contracts under daemon supervision (spawning the
@@ -70,8 +95,27 @@ pub fn test(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, DaemonError> {
+    test_in_context(root, path, r#match, seed, count, max_size, opts, log, out, err, false)
+}
+
+/// Runs contracts against a selected shared or personal project context.
+#[allow(clippy::too_many_arguments)]
+pub fn test_in_context(
+    root: &Utf8Path,
+    path: Option<&Utf8Path>,
+    r#match: Option<&str>,
+    seed: Option<i64>,
+    count: Option<i64>,
+    max_size: Option<i64>,
+    opts: RenderOpts,
+    log: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    no_local: bool,
+) -> Result<i32, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
     let request = TestRequest {
+        no_local,
         path: path.map(|p| p.as_str().to_owned()),
         r#match: r#match.map(str::to_owned),
         seed,

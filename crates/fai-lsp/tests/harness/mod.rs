@@ -63,6 +63,7 @@ impl Harness {
     ) -> (Self, Value) {
         let workspace = unique_workspace(tag);
         for (name, contents) in files {
+            std::fs::create_dir_all(workspace.join(name).parent().unwrap()).unwrap();
             std::fs::write(workspace.join(name), contents).unwrap();
         }
         let root = Utf8PathBuf::from_path_buf(workspace.clone()).unwrap();

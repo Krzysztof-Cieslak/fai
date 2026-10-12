@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_driver::{
-    ContractEvent, DirtyFile, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, OutputFormat, Rendered,
-    Session, TestConfig, TestPlan, WireBundle, assemble_outcome, build_test_plan,
+    ContractEvent, DirtyFile, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, OutputFormat, RenderOpts,
+    Rendered, Session, TestConfig, TestPlan, WireBundle, assemble_outcome, build_test_plan,
     catch_cancellation, run_command, run_test_workers,
 };
 use interprocess::TryClone;
@@ -77,7 +77,8 @@ struct Daemon {
     /// database, which is `Send` but not `Sync`, so it cannot be shared as `&T`
     /// across threads; concurrency comes from per-request cloned handles, not
     /// from shared borrows.)
-    session: Mutex<Session>,
+    session: Mutex<std::collections::BTreeMap<bool, Session>>,
+    root: Utf8PathBuf,
     start: Instant,
     /// Full request lifetimes, including workers and final response streaming.
     activity: IdleTimer,
@@ -144,7 +145,7 @@ fn test_hold() {
 
 /// Locks the session (for a sync or a snapshot), recovering from a poisoned lock.
 /// Held only briefly: the actual command runs off-lock on the cloned snapshot.
-fn lock_session(daemon: &Daemon) -> MutexGuard<'_, Session> {
+fn lock_session(daemon: &Daemon) -> MutexGuard<'_, std::collections::BTreeMap<bool, Session>> {
     daemon.session.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -159,12 +160,28 @@ fn lock_session(daemon: &Daemon) -> MutexGuard<'_, Session> {
 fn with_fresh_snapshot<T>(
     daemon: &Daemon,
     dirty: &[DirtyFile],
+    no_local: bool,
+    opts: Option<RenderOpts>,
     f: impl Fn(&Session) -> T,
 ) -> Result<T, Rendered> {
     {
-        let mut session = lock_session(daemon);
+        let mut sessions = lock_session(daemon);
+        if let std::collections::btree_map::Entry::Vacant(entry) = sessions.entry(no_local) {
+            let mut session = Session::open_with_local(daemon.root.clone(), !no_local).map_err(
+                |error| match opts {
+                    Some(opts) => fai_driver::render_workspace_error(&error, opts),
+                    None => sync_error(&error.to_string()),
+                },
+            )?;
+            session.set_object_cache_capacity(object_cache_capacity());
+            entry.insert(session);
+        }
+        let session = sessions.get_mut(&no_local).expect("session inserted");
         if let Err(error) = session.sync_from_disk() {
-            return Err(sync_error(&error.to_string()));
+            return Err(match opts {
+                Some(opts) => fai_driver::render_workspace_error(&error, opts),
+                None => sync_error(&error.to_string()),
+            });
         }
         if !dirty.is_empty()
             && let Err(error) = session.apply_dirty(dirty)
@@ -172,15 +189,18 @@ fn with_fresh_snapshot<T>(
             return Err(sync_error(&error.to_string()));
         }
     }
-    Ok(with_snapshot(daemon, f))
+    Ok(with_snapshot(daemon, no_local, f))
 }
 
 /// Runs the read `f` on an off-lock snapshot taken under a read lock (no sync),
 /// retrying if a concurrent edit cancels it. For follow-up reads (e.g. rendering
 /// a `test` report) that must reflect the current revision without re-scanning.
-fn with_snapshot<T>(daemon: &Daemon, f: impl Fn(&Session) -> T) -> T {
+fn with_snapshot<T>(daemon: &Daemon, no_local: bool, f: impl Fn(&Session) -> T) -> T {
     loop {
-        let snapshot = lock_session(daemon).snapshot();
+        let snapshot = lock_session(daemon)
+            .get(&no_local)
+            .expect("context prepared before snapshot")
+            .snapshot();
         if let Some(value) = daemon.run_read(|| f(&snapshot)) {
             return value;
         }
@@ -200,11 +220,9 @@ pub fn serve(root: Utf8PathBuf) -> std::io::Result<()> {
         Err(BindError::Io(error)) => return Err(error),
     };
 
-    let mut session =
-        Session::open(root.clone()).map_err(|e| std::io::Error::other(e.to_string()))?;
-    // Bound the warm database's native-object cache so the large, on-disk-backed
-    // object blobs do not accumulate over a long-lived daemon (0 = unbounded).
-    session.set_object_cache_capacity(object_cache_capacity());
+    if !root.is_dir() {
+        return Err(std::io::Error::other("workspace root is not a directory"));
+    }
 
     let idle = Duration::from_secs(
         std::env::var("FAI_DAEMON_IDLE_TIMEOUT")
@@ -214,7 +232,8 @@ pub fn serve(root: Utf8PathBuf) -> std::io::Result<()> {
     );
 
     let daemon = Arc::new(Daemon {
-        session: Mutex::new(session),
+        session: Mutex::new(std::collections::BTreeMap::new()),
+        root: root.clone(),
         start: Instant::now(),
         activity: IdleTimer::new(Instant::now()),
         socket_path: transport::socket_path(&root),
@@ -475,9 +494,11 @@ fn subscribe_and_stream(conn: &mut Conn, activity: RequestActivity<'_>) {
 /// read snapshot (so concurrent commands run in parallel), retrying if a
 /// concurrent edit cancels it.
 fn run(daemon: &Daemon, command: CommandRequest) -> Rendered {
-    let CommandRequest { spec, opts, dirty } = command;
-    with_fresh_snapshot(daemon, &dirty, |snapshot| run_command(snapshot, &spec, opts))
-        .unwrap_or_else(|rendered| rendered)
+    let CommandRequest { spec, opts, dirty, no_local } = command;
+    with_fresh_snapshot(daemon, &dirty, no_local, Some(opts), |snapshot| {
+        run_command(snapshot, &spec, opts)
+    })
+    .unwrap_or_else(|rendered| rendered)
 }
 
 /// A rendered workspace/IO error (plain text on stderr, exit 3).
@@ -493,8 +514,8 @@ fn sync_error(message: &str) -> Rendered {
 /// worker, streaming its output and enforcing a timeout. Writes its own
 /// `$/output` frames and terminal `RunExit`.
 fn handle_run(conn: &mut Conn, request: &RunRequest) -> std::io::Result<()> {
-    let bundle = match prepare_run(conn.daemon, request) {
-        Prepared::Bundle(bundle) => bundle,
+    let (bundle, local) = match prepare_run(conn.daemon, request) {
+        Prepared::Bundle(bundle, local) => (bundle, local),
         Prepared::Failed(message) => {
             if !message.is_empty() {
                 conn.send(&ServerMessage::Output {
@@ -505,6 +526,12 @@ fn handle_run(conn: &mut Conn, request: &RunRequest) -> std::io::Result<()> {
             return conn.send(&ServerMessage::Result(Response::RunExit(COMPILE_ERROR_EXIT)));
         }
     };
+    if local {
+        conn.send(&ServerMessage::Output {
+            stream: OutputStream::Stderr,
+            chunk: fai_driver::LOCAL_CONTEXT_NOTICE.as_bytes().to_vec(),
+        })?;
+    }
 
     let bundle_path = match write_bundle(&bundle) {
         Ok(path) => path,
@@ -525,7 +552,7 @@ fn handle_run(conn: &mut Conn, request: &RunRequest) -> std::io::Result<()> {
 
 /// The result of preparing a run: a ready bundle, or rendered failure text.
 enum Prepared {
-    Bundle(WireBundle),
+    Bundle(WireBundle, bool),
     Failed(String),
 }
 
@@ -533,28 +560,32 @@ enum Prepared {
 /// diagnostics server-side. The snapshot is dropped before the worker runs, so a
 /// concurrent edit is never blocked behind the supervised program.
 fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
-    let prepared = with_fresh_snapshot(daemon, &request.dirty, |snapshot| {
-        let files = snapshot.select_files(Some(Utf8Path::new(&request.path)));
-        let Some(entry) = files.first().copied() else {
-            return Prepared::Failed(format!(
-                "error: no such file in workspace: {}\n",
-                request.path
-            ));
-        };
-        // Native dependencies for user `foreign` functions (from `fai.toml`).
-        let native = match fai_driver::read_native_manifest(snapshot.root()) {
-            Ok(deps) => deps,
-            Err(message) => return Prepared::Failed(format!("error: {message}\n")),
-        };
-        let result = fai_driver::build_run_bundle_with_deps(snapshot.db(), entry, &native);
-        match result.bundle {
-            Some(bundle) => Prepared::Bundle(bundle),
-            None => {
-                let resolver = snapshot.resolver();
-                Prepared::Failed(fai_driver::render_diagnostics(&result.diagnostics, &resolver))
+    let prepared =
+        with_fresh_snapshot(daemon, &request.dirty, request.no_local, None, |snapshot| {
+            let entry = match snapshot.entry_file(Utf8Path::new(&request.path)) {
+                Ok(entry) => entry,
+                Err(error) => return Prepared::Failed(format!("error: {error}\n")),
+            };
+            if snapshot.is_package_project() {
+                let checked = fai_driver::check(snapshot.db(), &[entry]);
+                if !checked.ok {
+                    return Prepared::Failed(checked.render_human(&snapshot.resolver(), false));
+                }
             }
-        }
-    });
+            // Native dependencies for user `foreign` functions (from `fai.toml`).
+            let native = match snapshot.native_dependencies(entry) {
+                Ok(deps) => deps,
+                Err(message) => return Prepared::Failed(format!("error: {message}\n")),
+            };
+            let result = fai_driver::build_run_bundle_with_deps(snapshot.db(), entry, &native);
+            match result.bundle {
+                Some(bundle) => Prepared::Bundle(bundle, snapshot.has_local_overrides()),
+                None => {
+                    let resolver = snapshot.resolver();
+                    Prepared::Failed(fai_driver::render_diagnostics(&result.diagnostics, &resolver))
+                }
+            }
+        });
     // A sync failure renders as plain `error: …` text (matching the prior path).
     prepared.unwrap_or_else(|rendered| Prepared::Failed(rendered.stderr))
 }
@@ -567,12 +598,18 @@ fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
 /// concurrent edit is never blocked; a crashing contract is a separate process,
 /// so the daemon always survives.
 fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
-    let plan = match prepare_test(conn.daemon, request) {
+    let (plan, local) = match prepare_test(conn.daemon, request) {
         Ok(plan) => plan,
         Err(rendered) => {
             return conn.send(&ServerMessage::Result(Response::Test(rendered)));
         }
     };
+    if local {
+        conn.send(&ServerMessage::Output {
+            stream: OutputStream::Stderr,
+            chunk: fai_driver::LOCAL_CONTEXT_NOTICE.as_bytes().to_vec(),
+        })?;
+    }
 
     let results = if plan.blocked {
         Vec::new()
@@ -597,8 +634,8 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
 /// Builds the test plan on a warm off-lock snapshot (front end). The snapshot is
 /// dropped before the worker(s) run, so a concurrent edit is never blocked behind
 /// the (potentially long) test execution.
-fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<TestPlan, Rendered> {
-    with_fresh_snapshot(daemon, &request.dirty, |snapshot| {
+fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<(TestPlan, bool), Rendered> {
+    with_fresh_snapshot(daemon, &request.dirty, request.no_local, Some(request.opts), |snapshot| {
         let files = snapshot
             .select_files_checked(request.path.as_deref().map(Utf8Path::new))
             .map_err(|error| fai_driver::render_workspace_error(&error, request.opts))?;
@@ -608,7 +645,10 @@ fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<TestPlan, Rend
             trials: request.count.unwrap_or(defaults.trials),
             max_size: request.max_size.unwrap_or(defaults.max_size),
         };
-        Ok(build_test_plan(snapshot.db(), &files, request.r#match.as_deref(), config))
+        Ok((
+            build_test_plan(snapshot.db(), &files, request.r#match.as_deref(), config),
+            snapshot.has_local_overrides(),
+        ))
     })?
 }
 

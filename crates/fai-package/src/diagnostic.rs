@@ -10,8 +10,16 @@ pub const UNSUPPORTED_FORMAT: DiagnosticCode = DiagnosticCode::new("FAI0801");
 pub const INVALID_SOURCE: DiagnosticCode = DiagnosticCode::new("FAI0802");
 /// Invalid package versions or dependency requirements.
 pub const INVALID_REQUIREMENT: DiagnosticCode = DiagnosticCode::new("FAI0803");
+/// Local source selections do not satisfy a dependency requirement.
+pub const RESOLUTION_CONFLICT: DiagnosticCode = DiagnosticCode::new("FAI0804");
+/// Normal package dependencies form a cycle.
+pub const PACKAGE_CYCLE: DiagnosticCode = DiagnosticCode::new("FAI0805");
+/// The selected compiler does not satisfy project requirements.
+pub const COMPILER_MISMATCH: DiagnosticCode = DiagnosticCode::new("FAI0809");
 /// Invalid target descriptors or unsupported package platforms.
 pub const INVALID_PLATFORM: DiagnosticCode = DiagnosticCode::new("FAI0810");
+/// A declared source cannot be materialized by the current source provider.
+pub const SOURCE_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("FAI0811");
 /// More than one replacement can apply to the same package and root.
 pub const OVERLAPPING_OVERRIDES: DiagnosticCode = DiagnosticCode::new("FAI0816");
 /// More than one dependency declaration can bind the same active alias.
@@ -21,6 +29,30 @@ pub const INVALID_TARGET: DiagnosticCode = DiagnosticCode::new("FAI0819");
 
 /// Package metadata diagnostics, shared by the parser and source planner.
 pub const CODES: &[CodeInfo] = &[
+    CodeInfo {
+        code: RESOLUTION_CONFLICT,
+        title: "dependency requirements conflict",
+        default_severity: Severity::Error,
+        explanation: "A selected package does not satisfy its dependency version requirements. Local paths and explicit replacements retain the declared compatibility constraints; select compatible sources or update the intended requirements.",
+    },
+    CodeInfo {
+        code: PACKAGE_CYCLE,
+        title: "package dependency cycle",
+        default_severity: Severity::Error,
+        explanation: "Normal package dependencies form a cycle. Move shared definitions into another package or remove an edge. A root's development dependencies are checked separately from its normal dependency node.",
+    },
+    CodeInfo {
+        code: COMPILER_MISMATCH,
+        title: "incompatible project compiler",
+        default_severity: Severity::Error,
+        explanation: "The selected compiler does not meet the package's compatible compiler requirement or the root's exact toolchain pin. Select the required installed compiler; compatibility requirements are not silently ignored.",
+    },
+    CodeInfo {
+        code: SOURCE_UNAVAILABLE,
+        title: "package source unavailable",
+        default_severity: Severity::Error,
+        explanation: "A declared package source is unavailable to the source provider. Local project loading supports path dependencies and explicit path replacements for Git sources. A Git source needs a materialized provider or a compatible local replacement.",
+    },
     CodeInfo {
         code: INVALID_MANIFEST,
         title: "invalid package manifest",

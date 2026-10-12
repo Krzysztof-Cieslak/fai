@@ -108,20 +108,44 @@ pub struct Rendered {
 /// Runs `spec` against `session` and renders the result to bytes.
 #[must_use]
 pub fn run_command(session: &Session, spec: &CommandSpec, opts: RenderOpts) -> Rendered {
-    match spec {
+    let mut rendered = match spec {
         CommandSpec::Check { path, examples } => {
             run_check(session, path.as_deref(), *examples, opts)
         }
         CommandSpec::Fmt { path, check } => run_fmt(session, path.as_deref(), *check, opts),
         CommandSpec::Build { path, out, release } => run_build(session, path, out, *release, opts),
         CommandSpec::Query(request) => run_query_command(session, request, opts),
+    };
+    if session.has_local_overrides() {
+        rendered.stderr.insert_str(0, crate::LOCAL_CONTEXT_NOTICE);
     }
+    rendered
 }
 
 /// Renders a hard workspace error using the common diagnostic envelope. Shared
 /// by command execution and daemon test preparation.
 #[must_use]
 pub fn render_workspace_error(error: &crate::DriverError, opts: RenderOpts) -> Rendered {
+    if let crate::DriverError::Project(error) = error {
+        let stdout = match opts.format {
+            OutputFormat::Human => error.human.clone(),
+            OutputFormat::Json => match serde_json::to_string_pretty(&crate::CommandOutput {
+                schema_version: fai_diagnostics::SCHEMA_VERSION,
+                diagnostics: error.diagnostics.clone(),
+                ok: false,
+            }) {
+                Ok(json) => format!("{json}\n"),
+                Err(error) => {
+                    return Rendered {
+                        stdout: String::new(),
+                        stderr: error.to_string(),
+                        exit: EXIT_INTERNAL,
+                    };
+                }
+            },
+        };
+        return Rendered { stdout, stderr: String::new(), exit: EXIT_WORKSPACE };
+    }
     let result = crate::error_result(error);
     let resolver = fai_span::SourceMap::new();
     let stdout = match opts.format {
@@ -242,23 +266,51 @@ fn run_build(
 ) -> Rendered {
     let _ = release; // accepted; no effect yet
     let mut r = Rendered::default();
-    let files = session.select_files(Some(path));
-    let Some(entry) = files.first().copied() else {
-        let _ = writeln!(r.stderr, "error: no such file in workspace: {path}");
-        r.exit = EXIT_WORKSPACE;
-        return r;
+    let entry = match session.entry_file(path) {
+        Ok(entry) => entry,
+        Err(error) => return render_workspace_error(&error, opts),
+    };
+    let checked = if session.is_package_project() {
+        check(session.db(), &[entry])
+    } else {
+        crate::CommandResult { diagnostics: Vec::new(), ok: true }
+    };
+    if !checked.ok {
+        let stdout = match opts.format {
+            OutputFormat::Human => checked.render_human(&session.resolver(), opts.color),
+            OutputFormat::Json => {
+                match serde_json::to_string_pretty(&checked.to_output(&session.resolver())) {
+                    Ok(json) => json + "\n",
+                    Err(error) => {
+                        return Rendered {
+                            stdout: String::new(),
+                            stderr: error.to_string(),
+                            exit: EXIT_INTERNAL,
+                        };
+                    }
+                }
+            }
+        };
+        return Rendered { stdout, stderr: String::new(), exit: EXIT_FAILURES };
+    }
+    let default_out;
+    let out = if out.as_str().is_empty() {
+        default_out = camino::Utf8PathBuf::from(format!(
+            "{}{}",
+            session.executable_name(entry).unwrap_or("a.out"),
+            std::env::consts::EXE_SUFFIX
+        ));
+        default_out.as_path()
+    } else {
+        out
     };
     let artifact = if out.is_absolute() { out.to_owned() } else { session.root().join(out) };
 
     // Native dependencies for user `foreign` functions are declared in `fai.toml`
     // at the workspace root (absent for the common, pure case).
-    let native = match crate::manifest::read_native_manifest(session.root()) {
+    let native = match session.native_dependencies(entry) {
         Ok(deps) => deps,
-        Err(message) => {
-            let _ = writeln!(r.stderr, "error: {message}");
-            r.exit = EXIT_WORKSPACE;
-            return r;
-        }
+        Err(error) => return render_workspace_error(&error, opts),
     };
     let outcome = build_native_with_deps(session.db(), entry, &artifact, &native);
     let resolver = session.resolver();

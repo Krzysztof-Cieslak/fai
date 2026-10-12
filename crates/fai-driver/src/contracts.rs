@@ -474,7 +474,12 @@ fn build_plan(
 
     // Type errors of the selected files must be clean before running (a broken
     // body would JIT to nonsense). Reported, and they fail the run.
-    let mut pre_diagnostics = Vec::new();
+    let mut pre_diagnostics =
+        if files.iter().any(|file| matches!(file.origin(db), fai_db::SourceOrigin::Package(_))) {
+            crate::check(db, files).diagnostics
+        } else {
+            Vec::new()
+        };
     let mut seen_files = FxHashSet::default();
     for (file, _) in &items {
         if seen_files.insert(file.source(db)) {

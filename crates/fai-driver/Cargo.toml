@@ -13,6 +13,7 @@ allocation-stats = ["fai-runtime/allocation-stats", "fai-codegen/allocation-stat
 [dependencies]
 fai-span.workspace = true
 fai-diagnostics.workspace = true
+fai-package.workspace = true
 fai-db.workspace = true
 fai-syntax.workspace = true
 fai-fmt.workspace = true
@@ -39,6 +40,7 @@ wait-timeout.workspace = true
 toml.workspace = true
 libloading.workspace = true
 tempfile.workspace = true
+glob.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

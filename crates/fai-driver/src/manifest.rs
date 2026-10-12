@@ -34,6 +34,8 @@ pub struct NativeDeps {
     pub libs: Vec<String>,
     /// Extra object/archive files (absolute), linked directly (AOT only).
     pub objects: Vec<PathBuf>,
+    /// Apple frameworks linked or loaded by a package target.
+    pub frameworks: Vec<String>,
 }
 
 impl NativeDeps {
@@ -41,7 +43,10 @@ impl NativeDeps {
     /// `fai.toml`, or an empty `[native]` section).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lib_dirs.is_empty() && self.libs.is_empty() && self.objects.is_empty()
+        self.lib_dirs.is_empty()
+            && self.libs.is_empty()
+            && self.objects.is_empty()
+            && self.frameworks.is_empty()
     }
 
     /// The shared-library files to load for the JIT run path (`fai run`), one per
@@ -60,7 +65,8 @@ impl NativeDeps {
         } else {
             ("lib", "so")
         };
-        self.libs
+        let mut paths: Vec<String> = self
+            .libs
             .iter()
             .map(|lib| {
                 let filename = format!("{prefix}{lib}.{ext}");
@@ -70,7 +76,25 @@ impl NativeDeps {
                     .find(|p| p.exists())
                     .map_or(filename, |p| p.to_string_lossy().into_owned())
             })
-            .collect()
+            .collect();
+        for framework in &self.frameworks {
+            let relative = format!("{framework}.framework/{framework}");
+            let path = self
+                .lib_dirs
+                .iter()
+                .map(|directory| directory.join(&relative))
+                .find(|path| path.exists())
+                .unwrap_or_else(|| PathBuf::from("/System/Library/Frameworks").join(relative));
+            paths.push(path.to_string_lossy().into_owned());
+        }
+        paths
+    }
+
+    pub(crate) fn append(&mut self, other: &Self) {
+        self.lib_dirs.extend_from_slice(&other.lib_dirs);
+        self.libs.extend_from_slice(&other.libs);
+        self.objects.extend_from_slice(&other.objects);
+        self.frameworks.extend_from_slice(&other.frameworks);
     }
 }
 
@@ -109,6 +133,7 @@ pub fn read_native_manifest(root: &Utf8Path) -> Result<NativeDeps, String> {
         lib_dirs: manifest.native.library_dirs.iter().map(|d| resolve(d)).collect(),
         libs: manifest.native.libraries,
         objects: manifest.native.objects.iter().map(|o| resolve(o)).collect(),
+        frameworks: Vec::new(),
     })
 }
 

@@ -54,6 +54,7 @@ impl Daemon {
         let workspace = unique(&format!("{name}-ws"));
         std::fs::create_dir_all(&workspace).unwrap();
         for (file, contents) in files {
+            std::fs::create_dir_all(workspace.join(file).parent().unwrap()).unwrap();
             std::fs::write(workspace.join(file), contents).unwrap();
         }
         Self {
@@ -126,6 +127,119 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         // Best-effort: stop the daemon so it doesn't linger past the test.
         let _ = self.run(&["daemon", "stop"], &[]);
+    }
+}
+
+mod package_projects {
+    use super::*;
+
+    const ROOT: &str = "manifest-version = 1\n[package]\nname = 'app'\nversion = '1.0.0'\n[dependencies]\nlib = {path = 'lib'}\n";
+    const LIB: &str = "manifest-version = 1\n[package]\nname = 'lib'\nversion = '1.0.0'\n";
+    const VALUE: &str = "module Values\npublic value : Int\nlet value = 42\n";
+    const MAIN: &str = "module Main\nimport lib.Values\npublic main : Runtime -> Unit / { Console }\nlet main rt = rt.console.writeLine (Int.toString Values.value)\nexample: Values.value = 42\n";
+
+    fn project() -> Daemon {
+        Daemon::new(
+            "package",
+            &[
+                ("fai.toml", ROOT),
+                ("src/Main.fai", MAIN),
+                ("lib/fai.toml", LIB),
+                ("lib/src/Values.fai", VALUE),
+            ],
+        )
+    }
+
+    #[test]
+    fn default_executable_agrees_between_daemon_and_direct_run() {
+        let project = project();
+        let direct = project.run(&["run", "--no-daemon"], &[]);
+        let warm = project.run(&["run"], &[]);
+        assert!(direct.status.success(), "{direct:?}");
+        assert!(warm.status.success(), "{warm:?}");
+        assert_eq!(direct.stdout, b"42\n");
+        assert_eq!(direct.stdout, warm.stdout);
+    }
+
+    #[test]
+    fn named_executable_builds_and_runs() {
+        let project = project();
+        let output = project.workspace.join(format!("program{}", std::env::consts::EXE_SUFFIX));
+        let built = project
+            .cmd()
+            .args(["build", "--no-daemon", "--bin", "app", "-C"])
+            .arg(&project.workspace)
+            .arg("--out")
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(built.status.success(), "{built:?}");
+        let ran = Command::new(output).output().unwrap();
+        assert!(ran.status.success(), "{ran:?}");
+        assert_eq!(ran.stdout, b"42\n");
+    }
+
+    #[test]
+    fn package_contracts_agree_between_daemon_and_direct_test() {
+        let project = project();
+        let direct = project.run(&["test", "--no-daemon", "--message-format=json"], &[]);
+        let warm = project.run(&["test", "--message-format=json"], &[]);
+        assert!(direct.status.success(), "{direct:?}");
+        assert!(warm.status.success(), "{warm:?}");
+        assert_eq!(direct.stdout, warm.stdout);
+    }
+
+    #[test]
+    fn personal_and_shared_overrides_have_separate_warm_contexts() {
+        let project = project();
+        std::fs::write(project.workspace.join("fai.toml"), "manifest-version = 1\n[package]\nname = 'app'\nversion = '1.0.0'\n[dependencies]\nlib = {git = 'https://example.com/lib', version = '^1.0.0'}\n[[overrides]]\nreplace = {git = 'https://example.com/lib'}\nwith = {path = 'lib'}\n").unwrap();
+        std::fs::create_dir_all(project.workspace.join("personal/src")).unwrap();
+        std::fs::write(project.workspace.join("personal/fai.toml"), LIB).unwrap();
+        std::fs::write(project.workspace.join("personal/src/Values.fai"), VALUE.replace("42", "7"))
+            .unwrap();
+        std::fs::write(project.workspace.join("fai.local.toml"), "manifest-version = 1\n[[overrides]]\nreplace = {git = 'https://example.com/lib'}\nwith = {path = 'personal'}\n").unwrap();
+        let local = project.run(&["run"], &[]);
+        let shared = project.run(&["run", "--no-local"], &[]);
+        let local_again = project.run(&["run"], &[]);
+        assert!(local.status.success(), "{local:?}");
+        assert!(shared.status.success(), "{shared:?}");
+        assert_eq!(local.stdout, b"7\n");
+        assert_eq!(shared.stdout, b"42\n");
+        assert_eq!(local.stdout, local_again.stdout);
+        assert!(String::from_utf8_lossy(&local.stderr).contains("local context"));
+        assert!(shared.stderr.is_empty());
+    }
+
+    #[test]
+    fn malformed_manifests_report_the_same_located_json_in_both_paths() {
+        let project = project();
+        std::fs::write(
+            project.workspace.join("fai.toml"),
+            "manifest-version = 1\n[package]\nname = 'app'\nversion = 'bad'\n",
+        )
+        .unwrap();
+        let direct = project.run(&["check", "--no-daemon", "--message-format=json"], &[]);
+        let warm = project.run(&["check", "--message-format=json"], &[]);
+        assert_eq!(direct.status.code(), Some(3), "{direct:?}");
+        assert_eq!(warm.status.code(), direct.status.code(), "{warm:?}");
+        assert_eq!(direct.stdout, warm.stdout);
+        let json: serde_json::Value = serde_json::from_slice(&warm.stdout).unwrap();
+        assert_eq!(json["diagnostics"][0]["primary"]["file"], "fai.toml");
+    }
+
+    #[test]
+    fn explicit_member_avoids_an_unselected_broken_dependency_graph() {
+        let project = Daemon::new(
+            "members",
+            &[
+                ("fai.toml", "manifest-version = 1\n[workspace]\nmembers = ['a', 'b']\n"),
+                ("a/fai.toml", LIB),
+                ("a/src/Values.fai", VALUE),
+                ("b/fai.toml", ROOT),
+            ],
+        );
+        let result = project.run(&["check", "--no-daemon", "--package", "a", "--no-examples"], &[]);
+        assert!(result.status.success(), "{result:?}");
     }
 }
 
