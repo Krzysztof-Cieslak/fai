@@ -178,3 +178,5 @@ fai run -C packages csv/examples/StressChecks.fai
 
 The package and its test logic are Fai. CI invokes these same programs on Linux,
 macOS and Windows; no compiler or standard-library extension is needed.
+The programs are declared in `ci.json`; run them with
+`python3 scripts/package_integrations.py csv --fai /path/to/fai`.

@@ -83,5 +83,8 @@ FAI_CONFIG_PORT=7100 FAI_CONFIG_HOST=localhost ./config-check --port 8100
 
 The expected output is `Configuration runtime checks passed`. CI invokes these
 same Fai programs on Linux, macOS and Windows, alongside the pinned TOML corpus.
-All assertions and test logic are Fai; the action only supplies inputs and runs
-the commands. No compiler or standard-library extension is needed.
+All assertions and test logic are Fai; the generic package runner supplies inputs
+and invokes the commands. `config/ci.json` declares the
+runtime fixture and environment, while `toml/ci.json` owns its conformance corpus.
+Run `python3 scripts/package_integrations.py config --fai /path/to/fai` locally.
+No compiler or standard-library extension is needed.

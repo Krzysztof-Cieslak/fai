@@ -106,6 +106,14 @@ def summary(text):
             stream.write(text + "\n")
 
 
+def lane_summary(title, mode, compiler_checks, names):
+    rust = "enabled" if compiler_checks else "skipped"
+    return (f"### {title}: {mode}\n"
+            f"Rust compiler checks: **{rust}**\n\n"
+            f"Affected packages: {', '.join(names) or '(none)'}\n"
+            "Package checks and declared integrations use the prepared compiler bundle.")
+
+
 def require(result, mode, compiler_flag, reporting_flag="false"):
     if result != "success":
         raise ValueError(f"change classification did not succeed: {result}")
@@ -147,12 +155,12 @@ def main():
                     print(f"packages={json.dumps(result['packages'], separators=(',', ':'))}", file=stream)
                     print(f"package_names={' '.join(result['packages'])}", file=stream)
                     print(f"mode={result['mode']}", file=stream)
-                summary(f"### Selected CI lane: {result['mode']}\nPackages: {', '.join(result['packages']) or '(none)'}")
+                summary(lane_summary("Selected CI lane", result["mode"], result["compiler"], result["packages"]))
             return
         require(args.result, os.environ.get("CI_MODE"), os.environ.get("CI_COMPILER"), os.environ.get("CI_REPORTING"))
         selected = selected_packages(os.environ.get("CI_PACKAGES", "null"), os.environ.get("PACKAGE_NAMES", ""))
         packages.affected(packages.discover(), selected, False)
-        summary(f"### CI lane: {os.environ.get('CI_MODE', 'unknown')}\nAffected packages: {os.environ.get('PACKAGE_NAMES') or '(none)'}")
+        summary(lane_summary("CI lane", os.environ["CI_MODE"], os.environ["CI_COMPILER"] == "true", selected))
     except (packages.PackageError, ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"CI: {error}\n")
 

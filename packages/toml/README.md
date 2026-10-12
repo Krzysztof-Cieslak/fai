@@ -32,6 +32,9 @@ The Fai executable `examples/Conformance.fai` reads the upstream TOML 1.1 corpus
 checks all valid values against its JSON oracle, rejects invalid inputs, and
 round-trips normalized output. The reviewed corpus is `toml-lang/toml-test` at
 `ff49d109861c1ad25af53f687f2aef19ab650600` (712 TOML files).
+The package's `ci.json` pins that fixture and declares the JIT/AOT entrypoint.
+`python3 scripts/package_integrations.py toml --fai /path/to/fai` prepares it
+and runs the conformance program plus selected dependent-package integrations.
 
 ```sh
 fai run -C packages toml/examples/Conformance.fai -- /path/to/toml-test/tests

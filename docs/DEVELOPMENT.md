@@ -18,14 +18,16 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 CSV contracts run with `fai test -C packages csv`. Its Fai `RuntimeChecks`,
 `StreamChecks` and `StressChecks` examples exercise scoped files, mixed effects,
 early stop, writer progress and bounded streaming through JIT and AOT. The CSV
-action invokes those programs directly on each platform, using the cached compiler.
+package declares those programs in `csv/ci.json`; the generic integration runner
+executes them on each platform using the prepared compiler.
 
 Configuration development uses native Fai contracts in `packages/toml`,
 `packages/dotenv`, and `packages/config`, with the same cached compiler. The Fai
 `config/examples/RuntimeChecks.fai` fixture exercises scoped temporary files,
 environment values and CLI overrides. `toml/examples/Conformance.fai` checks the
-pinned upstream corpus and normalized-output round trips. `.github/actions/config`
-supplies their inputs and runs both JIT and AOT; no separate test harness is used.
+pinned upstream corpus and normalized-output round trips. Their respective
+`ci.json` files declare the programs, inputs and pinned corpus. CI runs both JIT
+and AOT using the same generic runner.
 
 Regex package contracts run with `fai test -C packages regex`.
 `scripts/tests/regex_toolchain.py --fai /path/to/fai` exercises the pure native
@@ -85,16 +87,108 @@ $env:Path = "$(Split-Path $compiler);$env:Path"
 ```
 
 After changing compiler/runtime/std sources, run setup again to select the new
-matching bundle. Package edits keep the same binary and warm daemon. There is
-no Python test wrapper in this workflow.
+matching bundle. Package edits keep the same binary and warm daemon. Native
+contracts continue to run directly through `fai test`.
 
-Each package's `ci.json` declares its name and dependencies for repository CI.
-It does not change `fai test` or define another test framework. The package tests
-remain runnable wherever their Fai sources and dependencies are available.
+Each package's `ci.json` declares its name, dependencies and optional Fai
+integration entrypoints for repository CI. It does not change `fai test` or
+define another assertion framework. The package tests remain runnable wherever
+their Fai sources and dependencies are available.
 
 Measured on the development Linux host with the assertion-enabled optimized
 compiler: a cold JSON type check was 106 ms, a warm check 4 ms, and the warm
 143-contract JSON suite 308 ms. These are observations, not timing gates.
+
+## Package-local integration programs
+
+Add ordinary Fai integration programs to the owning package's `ci.json` rather
+than adding a package-specific GitHub action or editing the shared workflow:
+
+```json
+{
+  "schemaVersion": 1,
+  "name": "example",
+  "dependencies": [],
+  "integrations": [
+    {
+      "name": "runtime",
+      "entry": "examples/RuntimeChecks.fai",
+      "args": ["--port", "8100"],
+      "env": {"EXAMPLE_PORT": "7100"},
+      "stdoutLines": ["Example runtime checks passed"]
+    }
+  ]
+}
+```
+
+`entry` is a forward-slash `.fai` path relative to that package, and must stay
+inside it. Each integration name is unique within the package. The runner uses
+the existing compiler to execute JIT, build AOT, and execute the native binary,
+with identical application arguments and environment overrides. Commands use
+argument arrays, never shell evaluation. Both executions use the shared
+`packages/` directory as their working directory and Fai workspace. Temporary
+native executables are removed when the run ends, including after failures.
+
+All programs must exit successfully. Optional `stdoutLines` require complete
+lines in stdout; optional `stdout` instead requires an exact UTF-8 output match.
+They are mutually exclusive. `stdoutLines` accepts either LF or CRLF line
+endings; `stdout` compares the exact bytes, including line endings. No expectation
+means only the exit status is checked. Assertions and result markers remain in
+the Fai programs themselves.
+
+Optional fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `args` | `[]` | Application arguments, after `--` for JIT |
+| `env` | `{}` | Per-program overrides of the inherited environment |
+| `modes` | `["jit", "aot"]` | Nonempty, distinct execution modes |
+| `platforms` | `["linux", "macos", "windows"]` | Nonempty, distinct supported hosts |
+| `timeoutSeconds` | `180` | Positive timeout for each execution/build command |
+
+Arguments and environment values support `${package}`, `${workspace}`, `${temp}`
+and `${fixture:name}` path substitutions. Substitutions are performed once and do
+not expand shell expressions or environment variables. Environment names must
+be distinct ignoring case, matching Windows behavior. Unknown metadata fields,
+duplicate JSON keys, invalid paths/options and unknown substitutions fail catalog
+validation before execution.
+
+A package can declare read-only external data repositories under `fixtures`:
+
+```json
+"fixtures": [
+  {
+    "name": "toml-test",
+    "repository": "https://github.com/toml-lang/toml-test.git",
+    "revision": "ff49d109861c1ad25af53f687f2aef19ab650600"
+  }
+]
+```
+
+Use `"args": ["${fixture:toml-test}/tests"]` to pass its path. Repositories use
+HTTPS and a full pinned commit hash, verified after checkout. Only fixtures used
+by selected programs are fetched, once per package/run. They live outside the
+source checkout and are removed with the other temporary outputs. Checkout sets
+`core.autocrlf=false`; repository attributes still apply. See `packages/toml/ci.json`
+for a complete example.
+
+Run the same integrations locally:
+
+```sh
+python3 scripts/package_integrations.py csv --fai /path/to/fai
+python3 scripts/package_integrations.py toml --list
+python3 scripts/package_integrations.py config --no-dependents --fai /path/to/fai
+```
+
+Local selection includes transitive dependents unless `--no-dependents` is used.
+CI uses `--ci` to consume its already computed, validated package selection.
+The runner never builds the Rust compiler: compiler preparation is the separate
+cached-bundle step. Packages without integration entries need no extra action.
+
+Changes confined to these manifests, their Fai programs and package documentation
+select the package lane. Changes to the shared runner, classifier or workflow
+still select the full infrastructure/compiler lane. Adding another ordinary Fai
+integration therefore requires no workflow edit.
 
 ## Cached compilers for source packages
 
@@ -177,6 +271,7 @@ predecessor, not unconditionally with `main`.
 | `packages/web/**` | Web formatting, type checks, and Fai contracts |
 | `packages/sql/**` | SQL and SQLite formatting, type checks, and Fai contracts |
 | `packages/sqlite/**` | SQLite formatting, type checks, and Fai contracts |
+| Package-local `ci.json` integrations or Fai entrypoints | Affected packages' native contracts and declared JIT/AOT programs, using the prepared compiler |
 | `scripts/performance_report/**` | Python syntax and two presentation fixtures; no Cargo or compiler bundle |
 | Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures |
 | Root documentation and `docs/*.md` / `docs/*.txt` only | Change/catalog validation |
@@ -188,6 +283,11 @@ and missing dependencies fail classification. An unavailable comparison base
 selects the full lane conservatively.
 Mixed package/presentation changes run both relevant lanes. Changes to the Rust
 report-data exporter or CI infrastructure retain the full compiler checks.
+
+The protected check names (`fmt + clippy`, `unit + e2e tests (linux)`, and the
+two platform checks) are stable across lanes. A package-only run still has those
+names, but its Rust steps are skipped. The selection job and each job's summary
+show the active lane; compiler preparation reports cache, artifact or build.
 
 The four protected check names remain unchanged. They explicitly require a
 successful classification, so a failed selector cannot pass through skipped

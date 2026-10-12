@@ -51,6 +51,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Ordinary package integration programs are declared in package-local `ci.json`
+  metadata and executed by a generic JIT/AOT runner using the prepared compiler.
+  Arguments, environment, output checks and commit-pinned data fixtures remain
+  with the package. These edits select affected package checks; changes to the
+  shared runner, classifier and workflow retain full infrastructure validation.
+
 - CSV field and record accumulation use reversed lists plus one materialization.
   This keeps append work linear across immutable parser states, including when
   earlier states retain shared prefixes.

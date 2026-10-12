@@ -66,6 +66,12 @@ class CompilerTests(unittest.TestCase):
         self.write("packages/json/Json.fai", "changed library")
         self.assertEqual(before, self.identity())
 
+    def test_package_integration_metadata_does_not_change_compiler_key(self):
+        before = self.identity()
+        self.write("packages/json/ci.json", json.dumps({"schemaVersion": 1, "name": "json", "dependencies": [],
+                   "integrations": [{"name": "runtime", "entry": "examples/Runtime.fai"}]}))
+        self.assertEqual(before, self.identity())
+
     def test_report_presentation_does_not_change_compiler_key(self):
         before = self.identity()
         self.write("scripts/performance_report/__init__.py", "new report wording")
