@@ -79,6 +79,10 @@ fai <command> [subcommand] [arguments] [flags]
 | `--no-daemon` | Run the request in-process; do not spawn/connect to a daemon. |
 | `--package <name-or-path>` / `-p` | Select one member of a versioned workspace. |
 | `--no-local` | Ignore `fai.local.toml` and select the shared project context. |
+| `--locked` | Require a valid selected graph; exact source restoration is permitted. |
+| `--offline` | Use cached metadata and content without Git network access. |
+| `--frozen` | Combine `--locked` and `--offline`. |
+| `--target <triple>` | Metadata target selection, repeatable; compilation currently supports the host only. |
 | `--color <auto\|always\|never>` | Colorize human output. Default `auto`. |
 | `--quiet` / `--verbose` | Decrease / increase log verbosity. |
 | `--protocol-log <file>` | (debug) Append a JSON decode of all daemon traffic for this invocation. |
@@ -123,7 +127,7 @@ to the library, and `tests/` supplies additional test-only sources. `[[bin]]`
 declares additional entry files; `--bin <name>` or `package.default-run` selects
 one for `build`/`run`. Two entry files may both declare `module Main`.
 
-Path dependencies and root Git-to-path overrides are loaded recursively.
+Path and Git dependencies, including explicit root replacements, are loaded recursively.
 Consumed packages contribute their library and normal dependencies. Development
 aliases are available only to additional tests; production source keeps its
 normal environment during checks. Dependency code is validated, while its
@@ -133,8 +137,10 @@ sources, dependencies, and native settings.
 Root `fai.local.toml` overrides activate automatically and take precedence over
 shared overrides. Commands report the local context on stderr; `--no-local`
 selects shared configuration. The daemon retains separate warm databases for
-these contexts. Git restoration, lock operations, and installed-compiler dispatch
-are described by the package specification and are being integrated.
+these contexts. Ordinary commands retain valid graph selections, conservatively
+repair stale unlocked graphs, and restore exact Git source bytes. A lock incompatible
+with the selected compiler fails instead of silently choosing older dependencies.
+Installed-compiler dispatch is described by the package specification.
 
 Directory sessions without a versioned manifest retain recursive `.fai` discovery
 for compatibility, including native-only manifests described below.
@@ -195,6 +201,42 @@ implementation of the same `fai` binary; `--no-daemon` forces a one-shot
 in-process run. Full protocol in §7; lifecycle commands in §6.
 
 ---
+
+## Package dependency commands
+
+```sh
+fai init hello                 # application with src/Main.fai
+fai init helpers --lib         # library package
+fai add github:owner/library --as library --version '^1.2.0'
+fai add --path ../helpers --dev
+fai remove library
+fai resolve                    # conservative lock repair, declared target matrix
+fai fetch                      # prepare and materialize exact sources
+fai update library             # prioritize this dependency, retain other pins when feasible
+fai update                     # full update within authored requirements
+fai deps                       # read-only recorded graph inspection
+fai deps why library
+```
+
+`add` also accepts `--subdir`, `--branch`, and a full `--rev`. With no Git version
+intent it solves conservatively first, then records `^<selected-version>`. Bare
+full versions supplied explicitly are exact. Default aliases come from the selected
+package name with hyphens changed to underscores. `--dev` selects the development
+table for add/remove. Failed edits preserve the existing manifest and lock.
+
+Add/remove prepare the host graph by default. Explicit `--target` arguments replace
+that selection. Resolve/fetch/update use `lock-targets`, or the host when absent.
+All requested graph results are prepared before the active lock is replaced;
+unrelated graphs retain their selections. Local-context edits modify the shared
+manifest and `fai.local.lock`, report affected shared graphs stale, and retain
+the shared lock bytes.
+
+Package commands accept `--message-format=json`. Results carry `schemaVersion`,
+`command`, `ok`, `context`, `lockfile`, `roots`, `targets`, `changes`, `staleGraphs`,
+`diagnostics`, and `notices`. Changes identify the logical package, before/after
+version and source, reason, and affected `root@target` graphs. `deps` adds the
+selected `graph` records and optional `why` edges. It never refreshes refs or
+restores source content.
 
 ## 3. Conventions
 
@@ -495,9 +537,13 @@ Because the client and daemon are the **same binary**, a version mismatch means 
 The protocol requires the full executable build identity in both
 directions; matching `0.1.0` version strings alone cannot reuse a stale compiler.
 Source-qualified contract events remain required.
-Protocol 5 adds `no_local` to command, run, and test requests. Each context is
+Protocol 5 carries a `project` options record (`no_local`, `locked`, `offline`,
+`no_vendor`) on command, run, and test requests. Each context is
 prepared independently; located manifest failures use the same result envelope
 as one-shot execution, including when opening a project fails.
+Dependency restoration runs before acquiring the compiler database lock. Prepared
+metadata is checked again before publication so an older restore cannot replace
+newer manifest or lock inputs.
 
 ### 7.4 Session & consistency model
 

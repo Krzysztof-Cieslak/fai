@@ -18,12 +18,13 @@ locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and to
 > in syntax, resolution, formatting, and IDE lookup for package-aware compiler inputs.
 > The shared project loader now prepares local path dependencies, root path
 > overrides, host source scopes, and native requirements for CLI, daemon, and LSP.
-> Workspace/member and executable selection use those manifests. Git restoration,
-> dependency commands, locks, vendoring, and publication remain in development.
+> Workspace/member and executable selection use those manifests. `init`, `add`,
+> `remove`, `resolve`, `fetch`, `update`, and read-only `deps` are integrated with
+> Git restoration, graph-local locks, and shared/personal baseline reconciliation.
 > A provider-independent graph resolver implements conservative and eager policies,
 > source-selector unification, and compiler/target filtering against supplied catalogs.
-> Generated lock models and system-Git snapshot/transaction primitives are available
-> for the command integration, including offline integrity and moved-release checks.
+> Locked/offline/frozen commands verify exact sources and preserve valid selections.
+> Vendoring, publication, and installed-toolchain dispatch remain in development.
 > Native-only and unversioned directory sessions retain compatibility discovery.
 
 This document consolidates the agreed product decisions and proposes the concrete
@@ -869,7 +870,7 @@ may have different dependency bindings in different root/platform graphs.
 | Record | Fields |
 |---|---|
 | File | `lock-version: 1`, `resolver-version: 1`, `context: shared|local`, `packages[]`, `graphs[]` |
-| Package | `id`, `logical`, `version`, `source`, `manifest-fingerprint`, optional immutable `checksum` |
+| Package | `id`, `logical`, `version`, `source`, `manifest-fingerprint`, optional immutable `checksum`, and `released` evidence for accepted canonical tags |
 | Git logical locator | `git`, `subdir` |
 | Actual Git source | `git`, `subdir`, `rev` including Git object-format prefix |
 | Local logical/source locator | `path`, relative to active root where possible |

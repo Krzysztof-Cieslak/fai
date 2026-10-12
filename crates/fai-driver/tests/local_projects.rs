@@ -39,19 +39,27 @@ impl Project {
     }
 }
 
-fn sample_root() -> Utf8PathBuf {
-    Utf8PathBuf::from_path_buf(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../samples/package_imports")
-            .canonicalize()
-            .unwrap(),
-    )
-    .unwrap()
+fn sample_project() -> Project {
+    let project = Project::new();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/package_imports");
+    for path in [
+        "fai.toml",
+        "app/fai.toml",
+        "app/src/Main.fai",
+        "collections/fai.toml",
+        "collections/src/Values.fai",
+        "facade/fai.toml",
+        "facade/src/Facade.fai",
+    ] {
+        project.write(path, &std::fs::read_to_string(source.join(path)).unwrap());
+    }
+    project
 }
 
 #[test]
 fn sample_project_loads_path_dependencies_and_default_entry() {
-    let session = Session::open(sample_root().join("app")).unwrap();
+    let project = sample_project();
+    let session = project.open("app");
     assert!(session.is_package_project());
     assert_eq!(session.user_files().len(), 1);
     let entry = session.entry_file(Utf8Path::new("")).unwrap();
@@ -65,7 +73,8 @@ fn sample_project_loads_path_dependencies_and_default_entry() {
 
 #[test]
 fn workspace_selects_members_and_coalesces_shared_local_libraries() {
-    let session = Session::open(sample_root()).unwrap();
+    let project = sample_project();
+    let session = project.open("");
     assert_eq!(session.user_files().len(), 3);
     assert!(check(session.db(), &session.user_files()).ok);
     assert!(session.entry_file(Utf8Path::new("")).is_err());
@@ -157,12 +166,12 @@ fn checking_a_consumer_validates_dependency_code() {
 }
 
 #[test]
-fn missing_git_provider_is_an_explicit_project_error() {
+fn unavailable_git_source_is_an_explicit_project_error() {
     let project = Project::new();
     project.package(
         "app",
         "app",
-        "[dependencies]\njson = {git = 'https://example.com/json', version = '^1.0.0'}\n",
+        "[dependencies]\njson = {git = 'file:///fai-package-missing-source-for-tests', version = '^1.0.0'}\n",
     );
     let Err(DriverError::Project(error)) = Session::open(project.root.join("app")) else {
         panic!("expected located source error");

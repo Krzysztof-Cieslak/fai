@@ -296,7 +296,14 @@ package's library, executables and additional tests; workspace roots select thei
 members. Use `--package` to select a member and `--bin` to select an executable.
 Personal `fai.local.toml` overrides activate automatically; `--no-local` selects
 shared configuration. CLI, daemon and language server use the same preparation.
-The full package manager's integration status is recorded in `docs/PACKAGES.md`.
+`fai init`, `add`, `remove`, `resolve`, `fetch`, `update`, and `deps` manage Git-backed
+dependencies. Ordinary commands retain valid pins in `fai.lock` or
+`fai.local.lock`; `--locked` forbids graph changes, `--offline` forbids network
+access, and `--frozen` combines both. `fai add` defaults to a caret range from its
+conservatively selected release. `fai update dependency` prioritizes that dependency
+while preserving other pins where feasible. `fai deps why dependency` inspects
+recorded edges without network activity. The remaining package-system integration
+status is recorded in `docs/PACKAGES.md`.
 
 ---
 
@@ -2328,7 +2335,7 @@ See `packages/web/README.md`.
 
 The current CLI uses the native-dependency `fai.toml` section described below.
 The package/project design and implementation status are in `docs/PACKAGES.md`;
-its Git restoration, dependency commands, locks, and publishing are being developed.
+its vendoring, publishing, and toolchain-dispatch integration is being developed.
 
 `fai build-info` prints JSON describing the compiler's source digest, complete
 tool build identity, backend identity, target, profile and bundled native

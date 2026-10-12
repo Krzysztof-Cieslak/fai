@@ -252,7 +252,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) {
 
 /// The cache root: an explicit override, else `$FAI_CACHE_DIR`, else the platform
 /// user cache dir + `fai`, else `None` (caching disabled).
-fn cache_dir() -> Option<PathBuf> {
+pub(crate) fn cache_dir() -> Option<PathBuf> {
     if let Ok(guard) = CACHE_DIR_OVERRIDE.lock()
         && let Some(dir) = guard.as_ref()
     {

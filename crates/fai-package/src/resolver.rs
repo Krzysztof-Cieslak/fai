@@ -90,6 +90,8 @@ pub struct PackagePin {
     pub source: PackageSource,
     /// Previous declared version.
     pub version: PackageVersion,
+    /// Whether a canonical release mapping was accepted for this version/source.
+    pub released: bool,
     /// Branch selections to retain during conservative repair.
     pub branches: BTreeMap<GitBranch, GitRevision>,
 }
@@ -101,6 +103,7 @@ impl PackagePin {
         Self {
             source: candidate.source.clone(),
             version: candidate.version.clone(),
+            released: candidate.released,
             branches: BTreeMap::new(),
         }
     }
@@ -620,7 +623,8 @@ impl<P: ResolverProvider> Resolver<'_, P> {
     }
 }
 
-fn matches_selector(
+/// Checks one source selector against validated candidate and branch metadata.
+pub fn matches_selector(
     candidate: &PackageCandidate,
     selector: &PackageSelector,
     branches: &BTreeMap<GitBranch, GitRevision>,

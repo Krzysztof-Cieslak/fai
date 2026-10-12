@@ -14,6 +14,7 @@ allocation-stats = ["fai-runtime/allocation-stats", "fai-codegen/allocation-stat
 fai-span.workspace = true
 fai-diagnostics.workspace = true
 fai-package.workspace = true
+fai-package-store.workspace = true
 fai-db.workspace = true
 fai-syntax.workspace = true
 fai-fmt.workspace = true

@@ -146,7 +146,7 @@ impl MetadataTransaction {
 
     fn finish(&self, root: &Utf8Path) -> Result<(), ProviderFailure> {
         for (path, expected) in &self.observed {
-            if self.edits.iter().any(|edit| &edit.path == path) {
+            if self.edits.iter().any(|edit| root.join(&edit.path) == root.join(path)) {
                 continue;
             }
             if fingerprint(&root.join(path))? != *expected {

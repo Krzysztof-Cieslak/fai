@@ -84,9 +84,9 @@ pub struct InitResult {
 /// A command invocation plus the client's render options and dirty-set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandRequest {
-    /// Select the shared project context rather than personal overrides.
+    /// Package lock, network, and root-override policy for this request.
     #[serde(default)]
-    pub no_local: bool,
+    pub project: fai_driver::ProjectOptions,
     /// The command to run.
     pub spec: CommandSpec,
     /// Rendering options (format/color) from the client.
@@ -99,9 +99,9 @@ pub struct CommandRequest {
 /// A `run` invocation: an entry file, program arguments, and a dirty-set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRequest {
-    /// Select the shared project context.
+    /// Package lock, network, and root-override policy for this request.
     #[serde(default)]
-    pub no_local: bool,
+    pub project: fai_driver::ProjectOptions,
     /// The entry file (workspace-relative or absolute).
     pub path: String,
     /// Arguments passed to the program.
@@ -115,9 +115,9 @@ pub struct RunRequest {
 /// the client's render options, and a dirty-set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestRequest {
-    /// Select the shared project context.
+    /// Package lock, network, and root-override policy for this request.
     #[serde(default)]
-    pub no_local: bool,
+    pub project: fai_driver::ProjectOptions,
     /// File/dir to select contracts from; `None` = the whole workspace.
     pub path: Option<String>,
     /// Run only contracts whose subject/module matches this pattern.
@@ -304,7 +304,7 @@ mod tests {
             workspace_root: "/ws".to_owned(),
         }));
         round_trip(&Request::Command(CommandRequest {
-            no_local: true,
+            project: fai_driver::ProjectOptions { no_local: true, ..Default::default() },
             spec: CommandSpec::Check { path: None, examples: true },
             opts: opts(),
             dirty: vec![DirtyFile {
@@ -314,19 +314,19 @@ mod tests {
             }],
         }));
         round_trip(&Request::Command(CommandRequest {
-            no_local: false,
+            project: fai_driver::ProjectOptions::default(),
             spec: CommandSpec::Query(QueryRequest::Def { target: "M.f".to_owned() }),
             opts: opts(),
             dirty: Vec::new(),
         }));
         round_trip(&Request::Run(RunRequest {
-            no_local: true,
+            project: fai_driver::ProjectOptions { no_local: true, ..Default::default() },
             path: "Main.fai".to_owned(),
             args: vec!["--".to_owned(), "x".to_owned()],
             dirty: Vec::new(),
         }));
         round_trip(&Request::Test(TestRequest {
-            no_local: false,
+            project: fai_driver::ProjectOptions::default(),
             path: Some("M.fai".to_owned()),
             r#match: Some("foo".to_owned()),
             seed: Some(7),
@@ -505,7 +505,7 @@ mod tests {
         // A tap decode of a real request must itself be valid JSON the client can
         // re-parse, since `tap` consumers may pipe the stream into a JSON tool.
         let json = frame_to_json(&Request::Command(CommandRequest {
-            no_local: false,
+            project: fai_driver::ProjectOptions::default(),
             spec: CommandSpec::Check { path: None, examples: true },
             opts: opts(),
             dirty: Vec::new(),

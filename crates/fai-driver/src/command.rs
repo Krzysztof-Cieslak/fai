@@ -119,6 +119,9 @@ pub fn run_command(session: &Session, spec: &CommandSpec, opts: RenderOpts) -> R
     if session.has_local_overrides() {
         rendered.stderr.insert_str(0, crate::LOCAL_CONTEXT_NOTICE);
     }
+    for notice in session.package_notices().iter().rev() {
+        rendered.stderr.insert_str(0, &format!("{notice}\n"));
+    }
     rendered
 }
 

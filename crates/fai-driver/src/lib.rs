@@ -58,9 +58,17 @@ pub use contracts::{
 pub use fai_core::{TestWireBundle, WireBundle};
 pub use manifest::{MANIFEST_NAME, NativeDeps, read_native_manifest};
 pub use query::{QueryRequest, QueryResult, run_query};
-pub use session::Session;
+pub use session::{PreparedProjectUpdate, Session};
+mod packages;
 mod project;
-pub use project::{ProjectError, project_entry_path, project_package_root};
+pub use packages::{
+    PackageChange, PackageCommand, PackageOutput, PackageSelection, init_package,
+    run_package_command,
+};
+pub use project::{
+    ProjectError, ProjectOptions, project_entry_path, project_entry_path_with_options,
+    project_package_root, project_package_root_with_options,
+};
 
 /// Human-readable notice when personal package overrides are active.
 pub const LOCAL_CONTEXT_NOTICE: &str = "using personal package overrides (local context)\n";

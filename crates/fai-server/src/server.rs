@@ -160,36 +160,30 @@ fn lock_session(daemon: &Daemon) -> MutexGuard<'_, std::collections::BTreeMap<bo
 fn with_fresh_snapshot<T>(
     daemon: &Daemon,
     dirty: &[DirtyFile],
-    no_local: bool,
+    project: &fai_driver::ProjectOptions,
     opts: Option<RenderOpts>,
     f: impl Fn(&Session) -> T,
 ) -> Result<T, Rendered> {
+    let render_error = |error: fai_driver::DriverError| match opts {
+        Some(opts) => fai_driver::render_workspace_error(&error, opts),
+        None => sync_error(&error.to_string()),
+    };
+    let prepared = Session::prepare_update(daemon.root.clone(), dirty, project.clone())
+        .map_err(&render_error)?;
     {
         let mut sessions = lock_session(daemon);
-        if let std::collections::btree_map::Entry::Vacant(entry) = sessions.entry(no_local) {
-            let mut session = Session::open_with_local(daemon.root.clone(), !no_local).map_err(
-                |error| match opts {
-                    Some(opts) => fai_driver::render_workspace_error(&error, opts),
-                    None => sync_error(&error.to_string()),
-                },
-            )?;
-            session.set_object_cache_capacity(object_cache_capacity());
-            entry.insert(session);
-        }
-        let session = sessions.get_mut(&no_local).expect("session inserted");
-        if let Err(error) = session.sync_from_disk() {
-            return Err(match opts {
-                Some(opts) => fai_driver::render_workspace_error(&error, opts),
-                None => sync_error(&error.to_string()),
-            });
-        }
-        if !dirty.is_empty()
-            && let Err(error) = session.apply_dirty(dirty)
-        {
-            return Err(sync_error(&error.to_string()));
+        match sessions.entry(project.no_local) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let mut session = Session::open_prepared(prepared).map_err(&render_error)?;
+                session.set_object_cache_capacity(object_cache_capacity());
+                entry.insert(session);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().apply_prepared(prepared).map_err(&render_error)?
+            }
         }
     }
-    Ok(with_snapshot(daemon, no_local, f))
+    Ok(with_snapshot(daemon, project.no_local, f))
 }
 
 /// Runs the read `f` on an off-lock snapshot taken under a read lock (no sync),
@@ -494,8 +488,8 @@ fn subscribe_and_stream(conn: &mut Conn, activity: RequestActivity<'_>) {
 /// read snapshot (so concurrent commands run in parallel), retrying if a
 /// concurrent edit cancels it.
 fn run(daemon: &Daemon, command: CommandRequest) -> Rendered {
-    let CommandRequest { spec, opts, dirty, no_local } = command;
-    with_fresh_snapshot(daemon, &dirty, no_local, Some(opts), |snapshot| {
+    let CommandRequest { spec, opts, dirty, project } = command;
+    with_fresh_snapshot(daemon, &dirty, &project, Some(opts), |snapshot| {
         run_command(snapshot, &spec, opts)
     })
     .unwrap_or_else(|rendered| rendered)
@@ -514,8 +508,8 @@ fn sync_error(message: &str) -> Rendered {
 /// worker, streaming its output and enforcing a timeout. Writes its own
 /// `$/output` frames and terminal `RunExit`.
 fn handle_run(conn: &mut Conn, request: &RunRequest) -> std::io::Result<()> {
-    let (bundle, local) = match prepare_run(conn.daemon, request) {
-        Prepared::Bundle(bundle, local) => (bundle, local),
+    let (bundle, notices) = match prepare_run(conn.daemon, request) {
+        Prepared::Bundle(bundle, notices) => (bundle, notices),
         Prepared::Failed(message) => {
             if !message.is_empty() {
                 conn.send(&ServerMessage::Output {
@@ -526,10 +520,10 @@ fn handle_run(conn: &mut Conn, request: &RunRequest) -> std::io::Result<()> {
             return conn.send(&ServerMessage::Result(Response::RunExit(COMPILE_ERROR_EXIT)));
         }
     };
-    if local {
+    if !notices.is_empty() {
         conn.send(&ServerMessage::Output {
             stream: OutputStream::Stderr,
-            chunk: fai_driver::LOCAL_CONTEXT_NOTICE.as_bytes().to_vec(),
+            chunk: notices.into_bytes(),
         })?;
     }
 
@@ -552,7 +546,7 @@ fn handle_run(conn: &mut Conn, request: &RunRequest) -> std::io::Result<()> {
 
 /// The result of preparing a run: a ready bundle, or rendered failure text.
 enum Prepared {
-    Bundle(WireBundle, bool),
+    Bundle(WireBundle, String),
     Failed(String),
 }
 
@@ -561,7 +555,7 @@ enum Prepared {
 /// concurrent edit is never blocked behind the supervised program.
 fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
     let prepared =
-        with_fresh_snapshot(daemon, &request.dirty, request.no_local, None, |snapshot| {
+        with_fresh_snapshot(daemon, &request.dirty, &request.project, None, |snapshot| {
             let entry = match snapshot.entry_file(Utf8Path::new(&request.path)) {
                 Ok(entry) => entry,
                 Err(error) => return Prepared::Failed(format!("error: {error}\n")),
@@ -579,7 +573,7 @@ fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
             };
             let result = fai_driver::build_run_bundle_with_deps(snapshot.db(), entry, &native);
             match result.bundle {
-                Some(bundle) => Prepared::Bundle(bundle, snapshot.has_local_overrides()),
+                Some(bundle) => Prepared::Bundle(bundle, package_notices(snapshot)),
                 None => {
                     let resolver = snapshot.resolver();
                     Prepared::Failed(fai_driver::render_diagnostics(&result.diagnostics, &resolver))
@@ -598,16 +592,16 @@ fn prepare_run(daemon: &Daemon, request: &RunRequest) -> Prepared {
 /// concurrent edit is never blocked; a crashing contract is a separate process,
 /// so the daemon always survives.
 fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
-    let (plan, local) = match prepare_test(conn.daemon, request) {
+    let (plan, notices) = match prepare_test(conn.daemon, request) {
         Ok(plan) => plan,
         Err(rendered) => {
             return conn.send(&ServerMessage::Result(Response::Test(rendered)));
         }
     };
-    if local {
+    if !notices.is_empty() {
         conn.send(&ServerMessage::Output {
             stream: OutputStream::Stderr,
-            chunk: fai_driver::LOCAL_CONTEXT_NOTICE.as_bytes().to_vec(),
+            chunk: notices.into_bytes(),
         })?;
     }
 
@@ -634,8 +628,8 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
 /// Builds the test plan on a warm off-lock snapshot (front end). The snapshot is
 /// dropped before the worker(s) run, so a concurrent edit is never blocked behind
 /// the (potentially long) test execution.
-fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<(TestPlan, bool), Rendered> {
-    with_fresh_snapshot(daemon, &request.dirty, request.no_local, Some(request.opts), |snapshot| {
+fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<(TestPlan, String), Rendered> {
+    with_fresh_snapshot(daemon, &request.dirty, &request.project, Some(request.opts), |snapshot| {
         let files = snapshot
             .select_files_checked(request.path.as_deref().map(Utf8Path::new))
             .map_err(|error| fai_driver::render_workspace_error(&error, request.opts))?;
@@ -647,9 +641,22 @@ fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<(TestPlan, boo
         };
         Ok((
             build_test_plan(snapshot.db(), &files, request.r#match.as_deref(), config),
-            snapshot.has_local_overrides(),
+            package_notices(snapshot),
         ))
     })?
+}
+
+fn package_notices(session: &Session) -> String {
+    let mut text = if session.has_local_overrides() {
+        fai_driver::LOCAL_CONTEXT_NOTICE.to_owned()
+    } else {
+        String::new()
+    };
+    for notice in session.package_notices() {
+        text.push_str(notice);
+        text.push('\n');
+    }
+    text
 }
 
 /// Renders the outcome using coordinates captured before worker execution, so a

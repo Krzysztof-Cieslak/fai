@@ -6,6 +6,9 @@ __pycache__/
 # Fai build outputs (native binaries / object files produced by the compiler)
 /out
 *.o
+.fai/
+fai.local.toml
+fai.local.lock
 
 # OS / editor cruft
 .DS_Store

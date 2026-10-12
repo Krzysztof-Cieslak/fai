@@ -150,6 +150,140 @@ mod package_projects {
         )
     }
 
+    fn git(root: &std::path::Path, args: &[&str]) -> String {
+        let result = Command::new("git").arg("-C").arg(root).args(args).output().unwrap();
+        assert!(result.status.success(), "{args:?}: {result:?}");
+        String::from_utf8(result.stdout).unwrap()
+    }
+
+    fn release(root: &std::path::Path, version: &str, value: i32) {
+        std::fs::write(
+            root.join("fai.toml"),
+            format!("manifest-version = 1\n[package]\nname = 'tools-lib'\nversion = '{version}'\n"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/Values.fai"),
+            format!("module Values\npublic value : Int\nlet value = {value}\n"),
+        )
+        .unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "release fixture"]);
+        git(root, &["tag", &format!("v{version}")]);
+    }
+
+    fn git_project() -> (Daemon, PathBuf, String) {
+        let project = Daemon::new(
+            "git-package",
+            &[
+                ("fai.toml", "manifest-version = 1\n[package]\nname = 'app'\nversion = '1.0.0'\n"),
+                (
+                    "src/Main.fai",
+                    "module Main\nimport tools_lib.Values\npublic main : Runtime -> Unit / { Console }\nlet main rt = rt.console.writeLine (Int.toString Values.value)\n",
+                ),
+            ],
+        );
+        let upstream = project.workspace.join("upstream");
+        std::fs::create_dir_all(&upstream).unwrap();
+        git(&upstream, &["init", "-q"]);
+        git(&upstream, &["config", "user.name", "Package Test"]);
+        git(&upstream, &["config", "user.email", "packages@example.invalid"]);
+        release(&upstream, "1.0.0", 42);
+        let url = lsp_types::Url::from_directory_path(&upstream).unwrap().to_string();
+        (project, upstream, url)
+    }
+
+    #[test]
+    fn git_add_derives_the_alias_and_caret_then_pins_ordinary_runs() {
+        let (project, upstream, url) = git_project();
+        let added = project.run(&["add", &url, "--message-format=json"], &[]);
+        assert!(added.status.success(), "{added:?}");
+        let manifest = std::fs::read_to_string(project.workspace.join("fai.toml")).unwrap();
+        assert!(manifest.contains("tools_lib"), "{manifest}");
+        assert!(manifest.contains("^1.0.0"), "{manifest}");
+        let lock = std::fs::read(project.workspace.join("fai.lock")).unwrap();
+        release(&upstream, "1.1.0", 43);
+        let pinned = project.run(&["run", "--frozen"], &[]);
+        assert!(pinned.status.success(), "{pinned:?}");
+        assert_eq!(pinned.stdout, b"42\n");
+        assert_eq!(std::fs::read(project.workspace.join("fai.lock")).unwrap(), lock);
+        let updated = project.run(&["update", "tools_lib", "--message-format=json"], &[]);
+        assert!(updated.status.success(), "{updated:?}");
+        let current = project.run(&["run", "--frozen"], &[]);
+        assert!(current.status.success(), "{current:?}");
+        assert_eq!(current.stdout, b"43\n");
+    }
+
+    #[test]
+    fn failed_add_keeps_the_authored_manifest_and_lock() {
+        let (project, _, url) = git_project();
+        assert!(project.run(&["add", &url], &[]).status.success());
+        let manifest = std::fs::read(project.workspace.join("fai.toml")).unwrap();
+        let lock = std::fs::read(project.workspace.join("fai.lock")).unwrap();
+        let rejected =
+            project.run(&["add", &url, "--as", "tools_lib", "--version", "^99.0.0"], &[]);
+        assert!(!rejected.status.success());
+        assert_eq!(std::fs::read(project.workspace.join("fai.toml")).unwrap(), manifest);
+        assert_eq!(std::fs::read(project.workspace.join("fai.lock")).unwrap(), lock);
+    }
+
+    #[test]
+    fn dependency_inspection_does_not_restore_or_refresh_sources() {
+        let (project, upstream, url) = git_project();
+        assert!(project.run(&["add", &url], &[]).status.success());
+        let lock = std::fs::read(project.workspace.join("fai.lock")).unwrap();
+        std::fs::remove_dir_all(upstream).unwrap();
+        std::fs::remove_dir_all(&project.cache_dir).unwrap();
+        let inspected = project.run(&["deps", "why", "tools_lib", "--message-format=json"], &[]);
+        assert!(inspected.status.success(), "{inspected:?}");
+        assert_eq!(std::fs::read(project.workspace.join("fai.lock")).unwrap(), lock);
+        let json: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+        assert!(!json["why"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn moved_release_tags_fail_without_changing_the_lock() {
+        let (project, upstream, url) = git_project();
+        assert!(project.run(&["add", &url], &[]).status.success());
+        let lock = std::fs::read(project.workspace.join("fai.lock")).unwrap();
+        std::fs::write(
+            upstream.join("src/Values.fai"),
+            "module Values\npublic value : Int\nlet value = 99\n",
+        )
+        .unwrap();
+        git(&upstream, &["add", "."]);
+        git(&upstream, &["commit", "-q", "-m", "altered fixture"]);
+        git(&upstream, &["tag", "-f", "v1.0.0"]);
+        let rejected = project.run(&["update", "--message-format=json"], &[]);
+        assert!(!rejected.status.success(), "{rejected:?}");
+        assert!(String::from_utf8_lossy(&rejected.stdout).contains("FAI0815"));
+        assert_eq!(std::fs::read(project.workspace.join("fai.lock")).unwrap(), lock);
+    }
+
+    #[test]
+    fn locked_missing_graph_fails_before_fetching_or_writing() {
+        let (project, _, url) = git_project();
+        std::fs::write(project.workspace.join("fai.toml"), format!("manifest-version = 1\n[package]\nname = 'app'\nversion = '1.0.0'\n[dependencies]\ntools_lib = {{git = '{url}', version = '*'}}\n")).unwrap();
+        let rejected = project.run(&["check", "--frozen", "--message-format=json"], &[]);
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stdout).contains("FAI0806"), "{rejected:?}");
+        assert!(!project.workspace.join("fai.lock").exists());
+        assert!(!project.cache_dir.join("packages/git").exists());
+    }
+
+    #[test]
+    fn removal_prunes_the_selected_graph_without_rewriting_imports() {
+        let (project, _, url) = git_project();
+        assert!(project.run(&["add", &url], &[]).status.success());
+        let source = std::fs::read(project.workspace.join("src/Main.fai")).unwrap();
+        let removed = project.run(&["remove", "tools_lib", "--message-format=json"], &[]);
+        assert!(removed.status.success(), "{removed:?}");
+        let lock = std::fs::read_to_string(project.workspace.join("fai.lock")).unwrap();
+        assert!(!lock.contains("tools_lib"));
+        assert_eq!(std::fs::read(project.workspace.join("src/Main.fai")).unwrap(), source);
+    }
+
     #[test]
     fn default_executable_agrees_between_daemon_and_direct_run() {
         let project = project();

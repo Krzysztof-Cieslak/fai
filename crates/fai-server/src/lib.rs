@@ -36,7 +36,7 @@ pub fn run_command(
     dirty: Vec<DirtyFile>,
     log: Option<PathBuf>,
 ) -> Result<Rendered, DaemonError> {
-    run_command_in_context(root, spec, opts, dirty, log, false)
+    run_command_in_context(root, spec, opts, dirty, log, fai_driver::ProjectOptions::default())
 }
 
 /// Runs a command in a shared or personal project context of the workspace daemon.
@@ -46,10 +46,10 @@ pub fn run_command_in_context(
     opts: RenderOpts,
     dirty: Vec<DirtyFile>,
     log: Option<PathBuf>,
-    no_local: bool,
+    project: fai_driver::ProjectOptions,
 ) -> Result<Rendered, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
-    client.command_in_context(spec, opts, dirty, no_local)
+    client.command_in_context(spec, opts, dirty, project)
 }
 
 /// Runs a program under daemon supervision (spawning the daemon if needed),
@@ -62,7 +62,7 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, DaemonError> {
-    run_in_context(root, path, args, log, out, err, false)
+    run_in_context(root, path, args, log, out, err, fai_driver::ProjectOptions::default())
 }
 
 /// Runs a program against the requested shared or personal project context.
@@ -73,10 +73,10 @@ pub fn run_in_context(
     log: Option<PathBuf>,
     out: &mut dyn Write,
     err: &mut dyn Write,
-    no_local: bool,
+    project: fai_driver::ProjectOptions,
 ) -> Result<i32, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
-    client.stream_run_in_context(path, args, out, err, no_local)
+    client.stream_run_in_context(path, args, out, err, project)
 }
 
 /// Runs `example`/`forall` contracts under daemon supervision (spawning the
@@ -95,7 +95,19 @@ pub fn test(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, DaemonError> {
-    test_in_context(root, path, r#match, seed, count, max_size, opts, log, out, err, false)
+    test_in_context(
+        root,
+        path,
+        r#match,
+        seed,
+        count,
+        max_size,
+        opts,
+        log,
+        out,
+        err,
+        fai_driver::ProjectOptions::default(),
+    )
 }
 
 /// Runs contracts against a selected shared or personal project context.
@@ -111,11 +123,11 @@ pub fn test_in_context(
     log: Option<PathBuf>,
     out: &mut dyn Write,
     err: &mut dyn Write,
-    no_local: bool,
+    project: fai_driver::ProjectOptions,
 ) -> Result<i32, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
     let request = TestRequest {
-        no_local,
+        project,
         path: path.map(|p| p.as_str().to_owned()),
         r#match: r#match.map(str::to_owned),
         seed,

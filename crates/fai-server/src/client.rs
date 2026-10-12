@@ -122,7 +122,7 @@ impl Client {
         opts: RenderOpts,
         dirty: Vec<DirtyFile>,
     ) -> Result<Rendered, DaemonError> {
-        self.command_in_context(spec, opts, dirty, false)
+        self.command_in_context(spec, opts, dirty, fai_driver::ProjectOptions::default())
     }
 
     /// Runs a command against a selected shared or personal context.
@@ -131,7 +131,7 @@ impl Client {
         spec: CommandSpec,
         opts: RenderOpts,
         dirty: Vec<DirtyFile>,
-        no_local: bool,
+        project: fai_driver::ProjectOptions,
     ) -> Result<Rendered, DaemonError> {
         let mutating =
             matches!(&spec, CommandSpec::Build { .. } | CommandSpec::Fmt { check: false, .. });
@@ -139,7 +139,7 @@ impl Client {
             spec,
             opts,
             dirty,
-            no_local,
+            project,
         }))? {
             Response::Command(rendered) => Ok(rendered),
             Response::Error(message) => Err(DaemonError::Protocol(message)),
@@ -157,7 +157,7 @@ impl Client {
         out: &mut dyn Write,
         err: &mut dyn Write,
     ) -> Result<i32, DaemonError> {
-        self.stream_run_in_context(path, args, out, err, false)
+        self.stream_run_in_context(path, args, out, err, fai_driver::ProjectOptions::default())
     }
 
     /// Runs a program in a selected project context.
@@ -167,9 +167,9 @@ impl Client {
         args: &[String],
         out: &mut dyn Write,
         err: &mut dyn Write,
-        no_local: bool,
+        project: fai_driver::ProjectOptions,
     ) -> Result<i32, DaemonError> {
-        self.stream_run_submitted(path, args, out, err, no_local).map_err(DaemonError::submitted)
+        self.stream_run_submitted(path, args, out, err, project).map_err(DaemonError::submitted)
     }
 
     fn stream_run_submitted(
@@ -178,10 +178,10 @@ impl Client {
         args: &[String],
         out: &mut dyn Write,
         err: &mut dyn Write,
-        no_local: bool,
+        project: fai_driver::ProjectOptions,
     ) -> Result<i32, DaemonError> {
         self.send(&Request::Run(RunRequest {
-            no_local,
+            project,
             path: path.to_owned(),
             args: args.to_vec(),
             dirty: Vec::new(),
