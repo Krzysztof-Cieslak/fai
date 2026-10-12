@@ -268,6 +268,9 @@ fn run_build(
     opts: RenderOpts,
 ) -> Rendered {
     let _ = release; // accepted; no effect yet
+    if path.as_str().is_empty() && session.is_package_project() {
+        return build_project(session, out, release, opts);
+    }
     let mut r = Rendered::default();
     let entry = match session.entry_file(path) {
         Ok(entry) => entry,
@@ -298,16 +301,28 @@ fn run_build(
     }
     let default_out;
     let out = if out.as_str().is_empty() {
-        default_out = camino::Utf8PathBuf::from(format!(
-            "{}{}",
-            session.executable_name(entry).unwrap_or("a.out"),
-            std::env::consts::EXE_SUFFIX
-        ));
+        default_out = if session.is_package_project() {
+            project_artifact(session, entry, release)
+        } else {
+            session.root().join(format!(
+                "{}{}",
+                path.file_stem().unwrap_or("a.out"),
+                std::env::consts::EXE_SUFFIX
+            ))
+        };
         default_out.as_path()
     } else {
         out
     };
     let artifact = if out.is_absolute() { out.to_owned() } else { session.root().join(out) };
+    if let Some(parent) = artifact.parent()
+        && let Err(source) = std::fs::create_dir_all(parent)
+    {
+        return render_workspace_error(
+            &crate::DriverError::Io { path: parent.to_owned(), source },
+            opts,
+        );
+    }
 
     // Native dependencies for user `foreign` functions are declared in `fai.toml`
     // at the workspace root (absent for the common, pure case).
@@ -334,6 +349,102 @@ fn run_build(
     }
     r.exit = if outcome.ok { EXIT_OK } else { EXIT_FAILURES };
     r
+}
+
+fn project_artifact(
+    session: &Session,
+    file: fai_db::SourceFile,
+    release: bool,
+) -> camino::Utf8PathBuf {
+    let owner = match file.origin(session.db()) {
+        fai_db::SourceOrigin::Package(id) => fai_db::package_environment(session.db(), id)
+            .map(|package| package.key(session.db()).clone())
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    let namespace = blake3::hash(owner.as_bytes()).to_hex()[..16].to_owned();
+    session
+        .root()
+        .join(".fai/build")
+        .join(crate::build_info().target)
+        .join(if release { "release" } else { "debug" })
+        .join(namespace)
+        .join(format!(
+            "{}{}",
+            session.executable_name(file).unwrap_or("program"),
+            std::env::consts::EXE_SUFFIX
+        ))
+}
+
+fn build_project(
+    session: &Session,
+    out: &camino::Utf8Path,
+    release: bool,
+    opts: RenderOpts,
+) -> Rendered {
+    let entries = session.executable_files();
+    if !out.as_str().is_empty() && entries.len() != 1 {
+        return render_workspace_error(
+            &crate::DriverError::InvalidSelection(
+                "--out requires exactly one selected executable".into(),
+            ),
+            opts,
+        );
+    }
+    let files: Vec<_> = session
+        .user_files()
+        .into_iter()
+        .filter(|file| !matches!(file.role(session.db()), fai_db::SourceRole::Test))
+        .collect();
+    let mut result = crate::build_library(session.db(), &files);
+    let mut artifacts = Vec::new();
+    if result.ok {
+        for entry in entries {
+            let target = if out.as_str().is_empty() {
+                project_artifact(session, entry, release)
+            } else if out.is_absolute() {
+                out.to_owned()
+            } else {
+                session.root().join(out)
+            };
+            if let Some(parent) = target.parent()
+                && let Err(source) = std::fs::create_dir_all(parent)
+            {
+                return render_workspace_error(
+                    &crate::DriverError::Io { path: parent.to_owned(), source },
+                    opts,
+                );
+            }
+            let native = match session.native_dependencies(entry) {
+                Ok(native) => native,
+                Err(error) => return render_workspace_error(&error, opts),
+            };
+            let built = build_native_with_deps(session.db(), entry, &target, &native);
+            result.ok &= built.ok;
+            result.diagnostics.extend(built.diagnostics);
+            artifacts.extend(built.artifact);
+        }
+    }
+    let stdout = match opts.format {
+        OutputFormat::Json => {
+            let wire = result.to_output(&session.resolver());
+            let output = serde_json::json!({"schemaVersion": wire.schema_version, "ok": result.ok, "diagnostics": wire.diagnostics,
+                "artifact": if artifacts.len() == 1 { artifacts.first() } else { None }, "artifacts": artifacts});
+            format!("{output}\n")
+        }
+        OutputFormat::Human => {
+            let mut text = result.render_human(&session.resolver(), opts.color);
+            for artifact in artifacts {
+                let _ = writeln!(text, "built {artifact}");
+            }
+            text
+        }
+    };
+    Rendered {
+        stdout,
+        stderr: String::new(),
+        exit: if result.ok { EXIT_OK } else { EXIT_FAILURES },
+    }
 }
 
 fn run_query_command(session: &Session, request: &QueryRequest, opts: RenderOpts) -> Rendered {

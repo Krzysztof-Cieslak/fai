@@ -141,10 +141,14 @@ selects shared configuration. The daemon retains separate warm databases for
 these contexts. Ordinary commands retain valid graph selections, conservatively
 repair stale unlocked graphs, and restore exact Git source bytes. A lock incompatible
 with the selected compiler fails instead of silently choosing older dependencies.
-Installed-compiler dispatch is described by the package specification.
+Exact root compiler pins are selected before daemon startup from the registered
+installed-compiler inventory. A matching invoked compiler is retained.
 
-Directory sessions without a versioned manifest retain recursive `.fai` discovery
-for compatibility, including native-only manifests described below.
+Without `-C`, commands discover the selected file's owning manifest or the
+nearest manifest above the current directory. A source file outside any project
+loads only that file and std; semantic commands require a file selection there.
+Explicit `-C` directory sessions and native-only manifests retain recursive
+discovery during migration.
 
 `check`, `fmt`, and `test` accept workspace-relative or absolute file/directory
 selections, including `./` and normalized `..` components inside the workspace.
@@ -294,6 +298,22 @@ JSON results include `status`, `commit`, `tree`, `remote`, `branch`, `packages`,
 `apiChanges`, `apiComplete`, `validatedHost`, `metadataTargets`, and `notices`,
 alongside the versioned success envelope.
 
+### Installed compilers
+
+```sh
+fai toolchain register /path/to/fai
+fai toolchain list --message-format=json
+```
+
+Registration probes `build-info` and records the release, host target, absolute
+executable path, and full build identity. One registration exists per release/host;
+re-registration explicitly replaces it. The inventory is under
+`FAI_TOOLCHAIN_DIR`, `$FAI_HOME/toolchains`, or `~/.fai/toolchains`.
+
+An exact `[toolchain] version` pin dispatches to a verified registered executable
+before opening the project or daemon. Missing or changed registrations report
+`FAI0809`. Toolchains are never downloaded automatically.
+
 ## 3. Conventions
 
 ### Symbol addressing
@@ -405,6 +425,11 @@ ok: 0 errors, 2 warnings
 
 ### `fai build [path] [--bin <name>] [--release] [--out <file>]`
 Ahead-of-time compile to a native executable (Cranelift → object cache → link).
+
+Without an entry selector, versioned projects validate and warm library artifacts
+and build every selected executable. Default outputs live under
+`.fai/build/<target>/<profile>/<package-instance>/`; `--out` requires one executable.
+Batch JSON adds an `artifacts` array, with `artifact` retained for a single output.
 
 Build and run validate the runtime-to-`main` application (`FAI0007` for an invalid
 shape): the selected runtime builder takes no arguments, its value matches

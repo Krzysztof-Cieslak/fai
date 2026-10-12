@@ -27,7 +27,7 @@ fn run() -> ExitCode {
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
 
-    let code = fai_cli::run(std::env::args_os(), &mut out, &mut err);
+    let code = fai_cli::run_process(std::env::args_os(), &mut out, &mut err);
 
     let _ = out.flush();
     let _ = err.flush();

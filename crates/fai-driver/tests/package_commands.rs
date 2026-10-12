@@ -208,3 +208,30 @@ fn vendor_snapshot_rejects_mutable_sources_outside_the_project() {
     );
     assert!(!fixture.root.join("app/fai.lock").exists());
 }
+
+#[test]
+fn compiler_probe_reads_the_workspace_pin_from_a_member() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "fai.toml",
+        "manifest-version = 1\n[workspace]\nmembers = ['app']\n[toolchain]\nversion = '9.9.9'\n",
+    );
+    fixture.package("app", "app", "1.0.0", "");
+    assert_eq!(
+        fai_driver::required_project_compiler(&fixture.root.join("app"))
+            .unwrap()
+            .unwrap()
+            .to_string(),
+        "9.9.9"
+    );
+}
+
+#[test]
+fn standalone_session_rescans_do_not_admit_new_neighbors() {
+    let fixture = Fixture::new();
+    fixture.write("Main.fai", "module Main\nlet value = 1\n");
+    let mut session = Session::open_standalone(&fixture.root.join("Main.fai")).unwrap();
+    fixture.write("Neighbor.fai", "module Neighbor\nlet value = true\n");
+    session.sync_from_disk().unwrap();
+    assert_eq!(session.user_files().len(), 1);
+}

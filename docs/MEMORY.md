@@ -5499,5 +5499,15 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   branch/tags push atomically. Resume retains the same prepared release identity.
   Development locks are retained without embedding future commit IDs.
 
+- **D169 Project entries and installed compiler selection.** Commands discover
+  owning manifests while standalone source selections load only that file and std.
+  Explicit directory roots retain compatibility behavior during migration. Package
+  builds warm library artifacts and emit all selected executables under
+  target/profile/package-specific paths. An exact compiler pin is resolved before
+  daemon startup through explicitly registered installed executables. Registration
+  captures release, host, path and complete build identity, and selection rechecks
+  that identity. Missing compilers fail rather than downloading or substituting a
+  different release.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

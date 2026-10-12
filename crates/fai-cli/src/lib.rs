@@ -65,8 +65,70 @@ where
     }
 }
 
+/// Binary entry with exact installed-toolchain dispatch before opening a daemon.
+/// Embedders may use [`run`] to keep execution in the current process.
+pub fn run_process<I, T>(args: I, out: &mut dyn Write, err: &mut dyn Write) -> i32
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    if let Ok(parsed) = Cli::try_parse_from(args.clone()) {
+        let skip = matches!(
+            parsed.command,
+            Command::BuildInfo
+                | Command::Init(_)
+                | Command::Toolchain { .. }
+                | Command::RunWorker(_)
+                | Command::TestWorker(_)
+                | Command::DaemonServe
+                | Command::Daemon { .. }
+        );
+        if !skip {
+            let format =
+                parsed.global.message_format.unwrap_or_else(|| default_format(&parsed.command));
+            let selected = (|| -> Result<Option<fai_driver::InstalledCompiler>, DriverError> {
+                let root = command_root(&parsed)?;
+                let Some(required) = fai_driver::required_project_compiler(&root)? else {
+                    return Ok(None);
+                };
+                if required.to_string() == env!("CARGO_PKG_VERSION") {
+                    return Ok(None);
+                }
+                if std::env::var_os("FAI_TOOLCHAIN_DISPATCHED").is_some() {
+                    return Err(fai_package::ProviderFailure {
+                        code: fai_package::COMPILER_MISMATCH,
+                        message:
+                            "selected executable did not activate the required compiler release"
+                                .into(),
+                    }
+                    .into());
+                }
+                fai_driver::select_compiler(&required).map(Some)
+            })();
+            match selected {
+                Ok(Some(compiler)) => {
+                    return match std::process::Command::new(&compiler.executable)
+                        .args(args.iter().skip(1))
+                        .env("FAI_TOOLCHAIN_DISPATCHED", compiler.version.to_string())
+                        .status()
+                    {
+                        Ok(status) => status.code().unwrap_or(EXIT_CRASH),
+                        Err(error) => {
+                            emit_error(&metadata_error(error.to_string()), format, false, out, err)
+                        }
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => return emit_error(&error, format, false, out, err),
+            }
+        }
+    }
+    run(args, out, err)
+}
+
 /// Runs a successfully parsed command.
-fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+fn dispatch(mut parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     init_tracing(parsed.global.verbose, parsed.global.quiet);
 
     let format = parsed.global.message_format.unwrap_or_else(|| default_format(&parsed.command));
@@ -75,8 +137,39 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
     // Subcommands that always run in this process, never through the daemon.
     match &parsed.command {
+        Command::Toolchain { sub } => {
+            let result = match sub {
+                cli::ToolchainCommand::List => fai_driver::installed_compilers(),
+                cli::ToolchainCommand::Register { executable } => {
+                    fai_driver::register_compiler(executable).map(|compiler| vec![compiler])
+                }
+            };
+            return match result {
+                Ok(compilers) => {
+                    if matches!(format, MessageFormat::Json) {
+                        let _ = writeln!(
+                            out,
+                            "{}",
+                            serde_json::json!({"schemaVersion": 1, "toolchains": compilers})
+                        );
+                    } else {
+                        for compiler in compilers {
+                            let _ = writeln!(
+                                out,
+                                "{} {} {}",
+                                compiler.version, compiler.target, compiler.executable
+                            );
+                        }
+                    }
+                    EXIT_OK
+                }
+                Err(error) => emit_error(&error, format, color, out, err),
+            };
+        }
         Command::Init(args) => {
-            let root = match workspace_root(parsed.global.project.clone()) {
+            let root = match workspace_root(Some(
+                parsed.global.project.clone().unwrap_or_else(|| Utf8PathBuf::from(".")),
+            )) {
                 Ok(root) => root,
                 Err(error) => return emit_error(&error, format, color, out, err),
             };
@@ -117,10 +210,35 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         _ => {}
     }
 
-    let mut root = match workspace_root(parsed.global.project.clone()) {
+    let mut root = match command_root(&parsed) {
         Ok(root) => root,
         Err(error) => return emit_error(&error, format, color, out, err),
     };
+    if parsed.global.project.is_none() {
+        let cwd = match current_directory() {
+            Ok(cwd) => cwd,
+            Err(error) => return emit_error(&error, format, color, out, err),
+        };
+        absolute_selections(&mut parsed.command, &cwd);
+    }
+    if parsed.global.project.is_none()
+        && !root.join("fai.toml").is_file()
+        && matches!(
+            parsed.command,
+            Command::Check(_) | Command::Test(_) | Command::Build(_) | Command::Run(_)
+        )
+        && selected_file(&parsed.command).is_none_or(|path| !path.is_file())
+    {
+        return emit_error(
+            &metadata_error(
+                "outside a project, select one .fai file or create a package with fai init".into(),
+            ),
+            format,
+            color,
+            out,
+            err,
+        );
+    }
     if let Some(package) = &parsed.global.package {
         root = match fai_driver::project_package_root_with_options(
             &root,
@@ -302,6 +420,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         Command::Lsp => fai_lsp::run_stdio_with_options(root, parsed.global.options()),
         Command::Daemon { sub } => run_daemon_command(&root, sub, log, out, err),
         Command::BuildInfo
+        | Command::Toolchain { .. }
         | Command::Publish(_)
         | Command::Init(_)
         | Command::Add(_)
@@ -410,8 +529,17 @@ fn route(
     err: &mut dyn Write,
 ) -> i32 {
     let opts = RenderOpts { format: to_output_format(format), color };
-
-    let rendered = if global.no_daemon {
+    let path = match &spec {
+        CommandSpec::Check { path, .. } | CommandSpec::Fmt { path, .. } => path.as_deref(),
+        CommandSpec::Build { path, .. } => Some(path.as_path()),
+        _ => None,
+    };
+    let rendered = if let Some(file) = standalone(global, root, path) {
+        match Session::open_standalone(file) {
+            Ok(session) => fai_driver::run_command(&session, &spec, opts),
+            Err(error) => return emit_error(&error, format, color, out, err),
+        }
+    } else if global.no_daemon {
         match run_in_process(root, &spec, opts, global.options()) {
             Ok(rendered) => rendered,
             Err(error) => return emit_error(&error, format, color, out, err),
@@ -485,8 +613,19 @@ fn run_test(
         trials: args.count.unwrap_or(defaults.trials),
         max_size: args.max_size.unwrap_or(defaults.max_size),
     };
-    if global.no_daemon {
-        return run_test_in_process(root, args, config, format, color, out, err, global.options());
+    let single = standalone(global, root, args.path.as_deref());
+    if global.no_daemon || single.is_some() {
+        return run_test_in_process(
+            root,
+            args,
+            config,
+            format,
+            color,
+            out,
+            err,
+            global.options(),
+            single,
+        );
     }
     let opts = RenderOpts { format: to_output_format(format), color };
     match fai_server::test_in_context(
@@ -509,7 +648,7 @@ fn run_test(
                 "warning [{}]: daemon unavailable ({daemon_error}); running in-process",
                 fai_driver::DAEMON_UNAVAILABLE
             );
-            run_test_in_process(root, args, config, format, color, out, err, global.options())
+            run_test_in_process(root, args, config, format, color, out, err, global.options(), None)
         }
     }
 }
@@ -527,8 +666,12 @@ fn run_test_in_process(
     out: &mut dyn Write,
     err: &mut dyn Write,
     project: fai_driver::ProjectOptions,
+    single: Option<&Utf8Path>,
 ) -> i32 {
-    let session = match Session::open_with_options(root.to_owned(), project) {
+    let session = match single.map_or_else(
+        || Session::open_with_options(root.to_owned(), project),
+        Session::open_standalone,
+    ) {
         Ok(session) => session,
         Err(error) => return emit_error(&error, format, color, out, err),
     };
@@ -605,17 +748,7 @@ fn build_spec(
         Some(name) => fai_driver::project_entry_path_with_options(root, Some(name), project)?,
         None => args.path.clone(),
     };
-    let stem = args
-        .bin
-        .clone()
-        .unwrap_or_else(|| Utf8Path::new(path.as_str()).file_stem().unwrap_or("a.out").to_owned());
-    let requested = args.out.clone().unwrap_or_else(|| {
-        if args.path.as_str().is_empty() && args.bin.is_none() {
-            Utf8PathBuf::new()
-        } else {
-            Utf8PathBuf::from(stem)
-        }
-    });
+    let requested = args.out.clone().unwrap_or_default();
     let out = if requested.is_absolute() || requested.as_str().is_empty() {
         requested
     } else {
@@ -754,8 +887,9 @@ fn run_program(
         }
         None => args.path.clone(),
     };
-    if global.no_daemon {
-        return run_in_process_worker(root, &path, &args.args, err, global.options());
+    let single = standalone(global, root, Some(&path)).is_some();
+    if global.no_daemon || single {
+        return run_in_process_worker(root, &path, &args.args, err, global.options(), single);
     }
     match fai_server::run_in_context(
         root,
@@ -774,7 +908,7 @@ fn run_program(
                 "warning [{}]: daemon unavailable ({daemon_error}); running in-process",
                 fai_driver::DAEMON_UNAVAILABLE
             );
-            run_in_process_worker(root, &path, &args.args, err, global.options())
+            run_in_process_worker(root, &path, &args.args, err, global.options(), false)
         }
     }
 }
@@ -787,8 +921,13 @@ fn run_in_process_worker(
     program_args: &[String],
     err: &mut dyn Write,
     project: fai_driver::ProjectOptions,
+    single: bool,
 ) -> i32 {
-    let session = match Session::open_with_options(root.to_owned(), project) {
+    let session = match if single {
+        Session::open_standalone(path)
+    } else {
+        Session::open_with_options(root.to_owned(), project)
+    } {
         Ok(session) => session,
         Err(error) => {
             let _ = writeln!(err, "error: {error}");
@@ -968,18 +1107,84 @@ fn to_output_format(format: MessageFormat) -> OutputFormat {
 /// Resolves the workspace root from `--project`, defaulting to the current dir,
 /// and makes it absolute (so the client and daemon agree on the endpoint).
 fn workspace_root(project: Option<Utf8PathBuf>) -> Result<Utf8PathBuf, DriverError> {
-    let cwd = || {
-        std::env::current_dir()
-            .map_err(|source| DriverError::Io { path: Utf8PathBuf::from("."), source })
-            .and_then(|p| {
-                Utf8PathBuf::from_path_buf(p)
-                    .map_err(|p| DriverError::NonUtf8Path(p.to_string_lossy().into_owned()))
-            })
-    };
     match project {
         Some(path) if path.is_absolute() => Ok(path),
-        Some(path) => Ok(cwd()?.join(path)),
-        None => cwd(),
+        Some(path) => Ok(current_directory()?.join(path)),
+        None => Ok(fai_driver::discover_project_root(&current_directory()?)),
+    }
+}
+
+fn current_directory() -> Result<Utf8PathBuf, DriverError> {
+    std::env::current_dir()
+        .map_err(|source| DriverError::Io { path: Utf8PathBuf::from("."), source })
+        .and_then(|path| {
+            Utf8PathBuf::from_path_buf(path)
+                .map_err(|path| DriverError::NonUtf8Path(path.to_string_lossy().into_owned()))
+        })
+}
+
+fn selected_file(command: &Command) -> Option<&Utf8Path> {
+    match command {
+        Command::Check(args) => args.path.as_deref(),
+        Command::Fmt(args) => args.path.as_deref(),
+        Command::Test(args) => args.path.as_deref(),
+        Command::Build(args) if !args.path.as_str().is_empty() => Some(&args.path),
+        Command::Run(args) if !args.path.as_str().is_empty() => Some(&args.path),
+        _ => None,
+    }
+}
+
+fn command_root(parsed: &Cli) -> Result<Utf8PathBuf, DriverError> {
+    if parsed.global.project.is_none()
+        && let Some(file) = selected_file(&parsed.command)
+    {
+        let file = current_directory()?.join(file);
+        if file.is_file()
+            && let Some(parent) = file.parent()
+        {
+            return Ok(fai_driver::discover_project_root(parent));
+        }
+    }
+    workspace_root(parsed.global.project.clone())
+}
+
+fn standalone<'a>(
+    global: &GlobalArgs,
+    root: &Utf8Path,
+    path: Option<&'a Utf8Path>,
+) -> Option<&'a Utf8Path> {
+    if global.project.is_none() && !root.join("fai.toml").is_file() {
+        path.filter(|path| path.is_file())
+    } else {
+        None
+    }
+}
+
+fn absolute_selections(command: &mut Command, cwd: &Utf8Path) {
+    let absolute = |path: &mut Utf8PathBuf| {
+        if !path.as_str().is_empty() && !path.is_absolute() {
+            *path = cwd.join(&*path);
+        }
+    };
+    match command {
+        Command::Check(args) => {
+            if let Some(path) = &mut args.path {
+                absolute(path);
+            }
+        }
+        Command::Fmt(args) => {
+            if let Some(path) = &mut args.path {
+                absolute(path);
+            }
+        }
+        Command::Test(args) => {
+            if let Some(path) = &mut args.path {
+                absolute(path);
+            }
+        }
+        Command::Build(args) => absolute(&mut args.path),
+        Command::Run(args) => absolute(&mut args.path),
+        _ => {}
     }
 }
 

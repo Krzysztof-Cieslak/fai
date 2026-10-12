@@ -62,7 +62,10 @@ pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::{PreparedProjectUpdate, Session};
 mod packages;
 mod publish;
+mod toolchains;
+pub use project::{discover_project_root, required_project_compiler};
 pub use publish::{ApiChange, PublishOptions, PublishOutput, PublishedPackage, publish};
+pub use toolchains::{InstalledCompiler, installed_compilers, register_compiler, select_compiler};
 mod project;
 pub use packages::{
     PackageChange, PackageCommand, PackageOutput, PackageSelection, init_package,
