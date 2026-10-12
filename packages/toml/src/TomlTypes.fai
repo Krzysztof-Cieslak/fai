@@ -127,10 +127,33 @@ let parseError bytes issue = {
   secondary = Option.map (location bytes) issue.previous
 }
 
-public value : Node -> Value
-let value node =
+type ValueFrame =
+  | ArrayValue (List Node) (Array Value)
+  | TableValue String (List (String * Node)) (List (String * Value))
+
+let visit node frames =
   match body node with
-  | Scalar value -> value
-  | Items nodes -> Array (Array.map value nodes)
-  | Tables nodes -> Array (Array.map value nodes)
-  | Mapping _ nodes -> Table (Dict.map (fun key node -> value node) nodes)
+  | Scalar value -> finish value frames
+  | Items nodes -> visitArray (Array.toList nodes) [||] frames
+  | Tables nodes -> visitArray (Array.toList nodes) [||] frames
+  | Mapping _ nodes -> visitTable (Dict.toList nodes) [] frames
+
+let visitArray nodes output frames =
+  match nodes with
+  | [] -> finish (Array output) frames
+  | node :: rest -> visit node (ArrayValue rest output :: frames)
+
+let visitTable nodes output frames =
+  match nodes with
+  | [] -> finish (Table (Dict.fromList (List.reverse output))) frames
+  | (name, node) :: rest -> visit node (TableValue name rest output :: frames)
+
+let finish value frames =
+  match frames with
+  | [] -> value
+  | ArrayValue nodes output :: rest -> visitArray nodes (Array.push value output) rest
+  | TableValue name nodes output :: rest -> visitTable nodes ((name, value) :: output) rest
+
+/// Extract values with an explicit traversal stack and canonical table ordering.
+public value : Node -> Value
+let value node = visit node []

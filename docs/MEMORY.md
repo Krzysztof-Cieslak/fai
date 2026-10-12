@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- TOML documents preserve source spans and table-definition state independently
+  from their values. Explicit traversal frames bound native stack use; normalized
+  output sorts keys and uses TOML 1.1 inline containers. The conformance runner is
+  itself Fai and verifies both parsed values and normalized-output round trips.
+
 - TOML is a pure source library. Temporal tokens retain precision and spelling
   separately from checked conversions into standard date/time values. Integer
   overflow fails; decimal Float conversion uses the checked JSON number machinery.

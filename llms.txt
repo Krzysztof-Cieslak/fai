@@ -1957,6 +1957,11 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 64-bit integers, TOML 1.1 escapes and precision-preserving temporal values.
 It depends on `json` for checked decimal-to-Float conversion. Run its contracts
 with `fai test -C packages toml`.
+`Toml.parse`/`parseBytes` return a located Document; `value` extracts a tree with
+constructors in `TomlTypes`, and `find` accepts Key/Index path segments. `toString`
+renders deterministic normalized TOML; configurable limits bound parsing/output.
+`TomlDecode` supplies strict field, optional-field, collection and applicative
+decoders. The library supports TOML 1.1 tables, arrays and arrays of tables.
 
 `packages/regex` supplies pure `Regex` (String) and `RegexBytes` (Bytes) APIs.
 `compile`/`compileWith` create reusable patterns; `compileWhole` anchors parsed
