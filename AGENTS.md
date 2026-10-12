@@ -961,8 +961,9 @@ Float encoding and numeric overflow return errors. Include package sources under
 the application's workspace root; package modules are not embedded in std.
 Source packages own ordinary Fai contracts: run `fai test -C packages json` or
 `fai test -C packages web` directly, retaining the warm daemon. A `ci.json` in each
-package declares dependency-aware CI selection; it does not introduce a separate
-test framework. Compiler-only JIT/AOT/differential fixtures live under
+package declares dependency-aware CI selection and optional native Fai integration
+entrypoints; it does not introduce a separate assertion framework. Compiler-only
+JIT/AOT/differential fixtures live under
 `scripts/tests/`, and library edits require no Rust compiler/test rebuild.
 `JsonDecode` adds pure composable typed decoders, with field/index error paths,
 checked numeric conversion, explicit missing-versus-null handling, alternatives
@@ -1820,7 +1821,16 @@ locally when changing their implementation or invariants.
 
 Those four check names have dependency-aware lanes. Package-only diffs restore
 an exact cached compiler and run native `fai fmt`/`check`/`test` for changed
-packages and transitive dependents, without Rust commands on a cache hit.
+packages and transitive dependents, plus their declared Fai integration programs,
+without Rust commands on a cache hit. **Declare ordinary Fai integrations in the
+owning package's `ci.json`** (`integrations`: entrypoint, arguments, environment,
+output expectations; optional commit-pinned `fixtures`). The generic
+`scripts/package_integrations.py` runs JIT/AOT on the existing compiler. Adding
+a package integration must not require a package-specific GitHub action or a
+shared-workflow edit. Metadata-only changes stay in the package lane; shared
+runner/classifier/workflow changes retain full checks. See `docs/DEVELOPMENT.md`
+for the schema and local command. Protected check names remain the same across
+lanes; the job summary identifies which Rust steps were selected or skipped.
 Presentation-only diffs under `scripts/performance_report/` run Python syntax and
 the two renderer fixtures, with no compiler build. Mixed package/presentation
 diffs run both relevant lanes. Compiler/runtime/std/infrastructure or unknown

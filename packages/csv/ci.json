@@ -1,5 +1,22 @@
 {
   "schemaVersion": 1,
   "name": "csv",
-  "dependencies": ["json"]
+  "dependencies": ["json"],
+  "integrations": [
+    {
+      "name": "runtime",
+      "entry": "examples/RuntimeChecks.fai",
+      "stdoutLines": ["CSV runtime checks passed"]
+    },
+    {
+      "name": "streams",
+      "entry": "examples/StreamChecks.fai",
+      "stdoutLines": ["CSV stream checks passed"]
+    },
+    {
+      "name": "stress",
+      "entry": "examples/StressChecks.fai",
+      "stdoutLines": ["CSV stress checks passed"]
+    }
+  ]
 }

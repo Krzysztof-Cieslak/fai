@@ -39,6 +39,14 @@ class ClassificationTests(unittest.TestCase):
     def test_workflow_changes_run_full_checks(self):
         self.assertTrue(ci.classify([".github/workflows/ci.yml"], catalog(), catalog())["compiler"])
 
+    def test_package_integration_metadata_stays_in_the_package_lane(self):
+        result = ci.classify(["packages/json/ci.json", "packages/json/examples/Runtime.fai"], catalog(), catalog())
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, ["json", "web"]))
+
+    def test_package_integration_runner_changes_run_full_checks(self):
+        self.assertTrue(ci.classify(["scripts/package_integrations.py"], catalog(), catalog())["compiler"])
+
     def test_unknown_paths_run_full_checks(self):
         self.assertTrue(ci.classify(["new-build-input.txt"], catalog(), catalog())["compiler"])
 
@@ -138,3 +146,29 @@ class ClassificationTests(unittest.TestCase):
             result = ci.scope(root, immediate)
             self.assertEqual((result["mode"], result["packages"]), ("packages", ["web"]))
             self.assertTrue(ci.scope(root, base)["compiler"])
+
+    def test_committed_integration_manifest_edit_uses_package_lane(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL).decode().strip()
+
+            git("init", "-b", "main")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "Test")
+            directory = root / "packages/example"
+            directory.mkdir(parents=True)
+            manifest = {"schemaVersion": 1, "name": "example", "dependencies": []}
+            (directory / packages.MANIFEST).write_text(json.dumps(manifest))
+            git("add", ".")
+            git("commit", "-m", "Add package")
+            base = git("rev-parse", "HEAD")
+            (directory / "Run.fai").write_text("module Run\n")
+            manifest["integrations"] = [{"name": "runtime", "entry": "Run.fai", "stdoutLines": ["passed"]}]
+            (directory / packages.MANIFEST).write_text(json.dumps(manifest))
+            git("add", ".")
+            git("commit", "-m", "Add integration entrypoint")
+            result = ci.scope(root, base)
+            self.assertEqual((result["mode"], result["compiler"], result["packages"], result["reasons"]),
+                             ("packages", False, ["example"], ["package: example"]))

@@ -1,5 +1,20 @@
 {
   "schemaVersion": 1,
   "name": "toml",
-  "dependencies": ["json"]
+  "dependencies": ["json"],
+  "fixtures": [
+    {
+      "name": "toml-test",
+      "repository": "https://github.com/toml-lang/toml-test.git",
+      "revision": "ff49d109861c1ad25af53f687f2aef19ab650600"
+    }
+  ],
+  "integrations": [
+    {
+      "name": "conformance",
+      "entry": "examples/Conformance.fai",
+      "args": ["${fixture:toml-test}/tests"],
+      "stdoutLines": ["cases: 712", "failures: 0"]
+    }
+  ]
 }

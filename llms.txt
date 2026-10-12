@@ -1963,6 +1963,12 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+Package CI entrypoints live in each package's `ci.json`. Declare ordinary Fai
+integration programs there instead of editing GitHub workflows; the generic
+`scripts/package_integrations.py` runner uses an existing compiler for JIT/AOT.
+See `docs/DEVELOPMENT.md` for arguments, environment, output checks and pinned
+data fixtures. Package-only metadata/source edits keep cached-compiler checks.
+
 `packages/csv` provides a pure incremental CSV parser with text and byte modes,
 strict width by default, doubled-quote escaping and configurable limits. Feed
 steps stop at one record, preserving unconsumed input and byte source positions.

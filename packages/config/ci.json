@@ -1,5 +1,17 @@
 {
   "schemaVersion": 1,
   "name": "config",
-  "dependencies": ["toml", "dotenv", "cli"]
+  "dependencies": ["toml", "dotenv", "cli"],
+  "integrations": [
+    {
+      "name": "runtime",
+      "entry": "examples/RuntimeChecks.fai",
+      "args": ["--port", "8100"],
+      "env": {
+        "FAI_CONFIG_PORT": "7100",
+        "FAI_CONFIG_HOST": "localhost"
+      },
+      "stdoutLines": ["Configuration runtime checks passed"]
+    }
+  ]
 }
