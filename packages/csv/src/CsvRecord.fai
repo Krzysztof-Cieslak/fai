@@ -137,14 +137,17 @@ let optionsFor options mode =
   match mode with
   | Supplied headers ->
     let width = Array.length headers.names
-    match options.width with
-    | CsvTypes.Flexible -> Ok options
-    | CsvTypes.Exact requested ->
-      if requested = width then
-        Ok options
-      else
-        Err (CsvTypes.error CsvTypes.InvalidOptions "supplied headers disagree with exact CSV width")
-    | CsvTypes.Strict -> Ok { options with width = CsvTypes.Exact width }
+    if width > options.limits.maxFields then
+      Err (CsvTypes.error CsvTypes.FieldCountLimit "supplied CSV headers exceed the field count limit")
+    else
+      match options.width with
+      | CsvTypes.Flexible -> Ok options
+      | CsvTypes.Exact requested ->
+        if requested = width then
+          Ok options
+        else
+          Err (CsvTypes.error CsvTypes.InvalidOptions "supplied headers disagree with exact CSV width")
+      | CsvTypes.Strict -> Ok { options with width = CsvTypes.Exact width }
   | _ -> Ok options
 
 public table : ('a -> Bool) -> HeaderMode 'a -> Array (CsvTypes.Record 'a) -> Result (Table 'a) CsvTypes.Error

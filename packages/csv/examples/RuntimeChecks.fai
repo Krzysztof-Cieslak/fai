@@ -1,0 +1,117 @@
+module CsvRuntimeChecks
+
+let path text = Result.withDefault Path.empty (Path.fromString text)
+
+let source = "\u{feff}name,age,active\r\n\"é\r\n🙂\",42,true\r\nBob,7,false\r\n"
+
+visit : Console -> Int -> CsvStream.Row -> Result (Int * CsvTypes.Decision) (List CsvTypes.Error) / { Console }
+let visit console total row =
+  match CsvDecode.decode CsvPeople.decoder row.headers row.record with
+  | Err errors -> Err errors
+  | Ok person ->
+    let logged = console.writeLine ("age:" ++ Int.toString person.age)
+    Ok (total + person.age, CsvTypes.Continue)
+
+readGenerated : Clock -> Int -> Result (Option (Csv.Record * Int)) String / { Clock }
+let readGenerated clock index =
+  let tick = clock.now ()
+  if index >= 2 then
+    Ok None
+  else
+    Result.map (fun record ->
+      Some (record, index + 1)) (Result.mapError CsvTypes.errorToString (Csv.record [|
+      if index = 0 then "é" else "🙂",
+      "a,b"
+    |]))
+
+scopedChecks : Runtime -> Path -> Result Unit String / { Clock, Concurrency, Console, FileSystem }
+let scopedChecks env base =
+  let input = Path.join base (path "input.csv")
+  let wrote = env.fs.writeBytes input (Bytes.fromString source)
+  let folded = CsvIO.foldFile env Csv.options Csv.FirstRecord 1 input 0 (visit env.console)
+  let foldedOk =
+    match folded with
+    | Ok scoped ->
+      scoped.closeError = None && scoped.result.state = 49 && scoped.result.completed = 2 && scoped.result.outcome = Ok CsvTypes.Exhausted
+    | _ -> false
+  let escaped = CsvIO.withFile env Csv.options Csv.FirstRecord 7 input (fun reader -> reader)
+  let expired =
+    match escaped with
+    | Err _ -> false
+    | Ok scoped ->
+      match CsvStream.next scoped.result with
+      | Err (CsvTypes.SourceError error) -> error.kind = FileSystem.Closed
+      | _ -> false
+  let badPath = Path.join base (path "bad.csv")
+  let badWrite = env.fs.writeBytes badPath (Bytes.fromList [97, 10, 255])
+  let early =
+    CsvIO.foldFile env Csv.options Csv.NoHeader 64 badPath 0 (fun count row ->
+      Ok (count + 1, CsvTypes.Stop))
+  let stopped =
+    match early with
+    | Ok scoped ->
+      scoped.closeError = None && scoped.result.state = 1 && scoped.result.outcome = Ok CsvTypes.Stopped
+    | _ -> false
+  let missing =
+    CsvIO.withFile env Csv.options Csv.NoHeader 0 (Path.join base (path "missing.csv")) (fun _ ->
+      ())
+  let preflight =
+    match missing with
+    | Err (CsvIO.InvalidCsv _) -> true
+    | _ -> false
+  let output = Path.join base (path "output.csv")
+  let generated =
+    CsvIO.writeFile env CsvEncode.options FileSystem.CreateNew output (readGenerated env.clock) 0
+  let written =
+    match generated with
+    | Ok scoped ->
+      scoped.closeError = None && scoped.result.recordsWritten = 2 && scoped.result.outcome = Ok ()
+    | _ -> false
+  let contents = env.fs.readBytes output 1024
+  let preserved =
+    CsvIO.writeFile env { CsvEncode.options with
+      maxBufferedBytes = -1
+    } FileSystem.Truncate output (readGenerated env.clock) 0
+  let afterInvalid = env.fs.readBytes output 1024
+  if Result.isOk wrote && foldedOk && expired && Result.isOk badWrite && stopped && preflight && written && Result.isErr preserved && afterInvalid = contents && contents = Ok (Bytes.fromString "é,\"a,b\"\r\n🙂,\"a,b\"\r\n") then
+    Ok ()
+  else
+    Err "CSV scoped text checks failed"
+
+binaryChecks : Runtime -> Path -> Result Unit String / { Concurrency, FileSystem }
+let binaryChecks env base =
+  let file = Path.join base (path "binary.csv")
+  match CsvBytes.record [| Bytes.fromList [255, 0], Bytes.fromString "\r\n\"" |] with
+  | Err error -> Err (CsvTypes.errorToString error)
+  | Ok record ->
+    let written =
+      CsvIO.writeBytesFile env CsvEncode.options FileSystem.CreateNew file Stream.uncons (Stream.singleton record)
+    let read =
+      CsvIO.foldBytesFile env CsvBytes.options CsvBytes.NoHeader 1 file true (fun valid row ->
+        Ok (valid && CsvBytes.fields row.record = CsvBytes.fields record, CsvTypes.Continue))
+    let good =
+      match (written, read) with
+      | (Ok a, Ok b) ->
+        a.closeError = None && a.result.outcome = Ok () && b.closeError = None && b.result.state && b.result.completed = 1 && b.result.outcome = Ok CsvTypes.Exhausted
+      | _ -> false
+    if good then Ok () else Err "CSV scoped binary checks failed"
+
+checks : Runtime -> Temp.Directory -> Result Unit String / { Clock, Concurrency, Console, FileSystem }
+let checks env directory =
+  let text = scopedChecks env directory.path
+  let bytes = binaryChecks env directory.path
+  match (text, bytes) with
+  | (Err e, _) -> Err e
+  | (_, Err e) -> Err e
+  | _ -> Ok ()
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, FileSystem }
+let main env =
+  match env.fs.temporaryDirectory () with
+  | Err error -> env.console.writeLine (FileSystem.errorToString error)
+  | Ok temporary ->
+    let result = Temp.withDirectory env temporary (checks env)
+    env.console.writeLine (if result = Ok () then
+      "CSV runtime checks passed"
+    else
+      "CSV runtime checks FAILED")

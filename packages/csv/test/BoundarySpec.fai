@@ -1,0 +1,113 @@
+module CsvBoundarySpec
+
+let values result = Result.map (Array.map Csv.fields) result
+example: values (Csv.parseWith { Csv.options with
+  dialect = { delimiter = ';', endings = CsvTypes.AnyEnding, quote = '\'' }
+} "a;'b;c';'d''e'") = Ok [| [| "a", "b;c", "d'e" |] |]
+example: values (Csv.parseWith { Csv.options with
+  dialect = { CsvTypes.dialect with delimiter = '\t' }
+} "a\tb") = Ok [| [| "a", "b" |] |]
+example: Csv.parserWith { Csv.options with
+  dialect = { CsvTypes.dialect with delimiter = 'é' }
+} |> Result.isErr
+example: Csv.parserWith { Csv.options with
+  dialect = { CsvTypes.dialect with quote = ',' }
+} |> Result.isErr
+example: Csv.parserWith { Csv.options with width = CsvTypes.Exact 0 } |> Result.isErr
+example: Csv.parserWith { Csv.options with
+  limits = { CsvTypes.limits with maxInputBytes = Some (-1) }
+} |> Result.isErr
+example: values (Csv.parse "\u{feff}") = Ok [||]
+example: values (Csv.parse "\"\u{feff}\"") = Ok [| [| "\u{feff}" |] |]
+example: values (Csv.parse "a\rb\nc\r\nd") = Ok [| [| "a" |], [| "b" |], [| "c" |], [| "d" |] |]
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxInputBytes = Some 1 }
+} "a" |> Result.isOk
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxInputBytes = Some 1 }
+} "a\n" |> Result.isErr
+
+let bomLimit =
+  match Csv.parseBytesWith { Csv.options with
+    limits = { CsvTypes.limits with maxInputBytes = Some 2 }
+  } (Bytes.fromList [239, 187, 191]) with
+  | Err error ->
+    error.position = Some {
+      byteColumn = 3,
+      byteOffset = 2,
+      line = 1
+    } && error.kind = CsvTypes.InputLimit
+  | _ -> false
+example: bomLimit
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxFieldBytes = 0, maxRecordBytes = 0 }
+} "\n" |> Result.isOk
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxFields = 0 }
+} "" |> Result.isOk
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxFields = 0 }
+} "\n" |> Result.isErr
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxRecords = Some 0 }
+} "" |> Result.isOk
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxRecords = Some 0 }
+} "\n" |> Result.isErr
+example: Csv.parseWith { Csv.options with
+  limits = { CsvTypes.limits with maxCollectedRecords = 0 }
+} "" |> Result.isOk
+
+let allBytes =
+  let bytes = Bytes.fromList (Array.toList (Array.range 0 256))
+  match CsvBytes.record [| bytes |] with
+  | Err _ -> false
+  | Ok record ->
+    match CsvBytesEncode.renderRecord record with
+    | Err _ -> false
+    | Ok output ->
+      Result.map (Array.map CsvBytes.fields) (CsvBytes.parse output) = Ok [| [| bytes |] |]
+example: allBytes
+
+let finished =
+  match Csv.parser () with
+  | Err _ -> false
+  | Ok parser ->
+    let ended = Csv.finish parser
+    match (Csv.feed ended.parser (Bytes.fromString "x")).status with
+    | Csv.Failed error -> error.kind = CsvTypes.InvalidState
+    | _ -> false
+example: finished
+
+let missingSpan =
+  match Csv.parse "a" with
+  | Ok records ->
+    match CsvDecode.decode (CsvDecode.index 2 CsvDecode.int) None (Array.unsafeGet 0 records) with
+    | Err [error] -> error.kind = CsvTypes.MissingColumn && error.position = Some CsvTypes.start
+    | _ -> false
+  | _ -> false
+example: missingSpan
+
+let suppliedLimit =
+  match Csv.record [| "a", "b" |] with
+  | Ok record ->
+    match Csv.headers record with
+    | Ok headers ->
+      Csv.parseTableWith { Csv.options with
+        limits = { CsvTypes.limits with maxFields = 1 }
+      } (Csv.Supplied headers) "" |> Result.isErr
+    | _ -> false
+  | _ -> false
+example: suppliedLimit
+example: (match Csv.parser () with
+| Ok parser ->
+  (match (Csv.feedFrom parser (Bytes.fromString "a") (-1)).status with
+  | Csv.Failed error -> error.kind = CsvTypes.InvalidOptions
+  | _ -> false)
+| _ -> false)
+example: (match Csv.parser () with
+| Ok parser ->
+  (match (Csv.feedFrom parser (Bytes.fromString "a") 2).status with
+  | Csv.Failed error -> error.kind = CsvTypes.InvalidOptions
+  | _ -> false)
+| _ -> false)

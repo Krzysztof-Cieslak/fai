@@ -25,8 +25,9 @@ strips one initial UTF-8 BOM by default; byte mode preserves it by default.
 Feed produces at most one record and reports the first unconsumed chunk offset.
 Pure parser values are reusable snapshots. EOF is explicit through `finish`.
 Chunk boundaries, including split UTF-8, BOM, CRLF and doubled quotes, do not
-change results. Field assembly uses a growable byte-word buffer and one final
-materialization rather than repeatedly concatenating prefixes.
+change results. Field assembly uses reversed byte and field lists with one final
+materialization, keeping each incremental append constant-time even with parser
+snapshots sharing earlier input.
 
 Run contracts with `fai test -C packages csv`.
 
@@ -90,3 +91,90 @@ one complete record, and `finish` completes an empty BOM-enabled document.
 Per-record limits include quoting/delimiters but exclude the terminator and BOM;
 the optional total-output limit includes both. Whole-document encoding has a
 separate 32 MiB default buffer limit. It converts one input record at a time.
+
+## Streaming
+
+`CsvStream.reader options headerMode chunks` accepts `Stream Bytes 'e` and
+returns a checked text reader. `byteReader` is the raw-byte counterpart.
+`fromPull`/`bytesFromPull` accept an explicit state and a typed pull function,
+retaining its original error type. Empty chunks are allowed; only source EOF
+finishes parsing. `Csv.strictOptions` and `CsvBytes.strictOptions` require CRLF
+record endings outside quoted fields.
+
+`next`/`nextBytes` return `(optionalRow, nextReader)`, including the final reader
+at EOF so header-only files still expose their headers. Each row contains its
+record, current headers and ending source position. Advance each continuation
+once when its source performs I/O; pure parser snapshots remain reusable.
+
+```fai
+let countRows reader =
+  CsvStream.fold CsvStream.next reader 0 (fun count row ->
+    Ok (count + 1, CsvTypes.Continue))
+```
+
+The explicit step function lets the source and callback arrows forward their
+effects together. A fold retains application state, parsed data-row count,
+completed callback count, last committed position and an outcome. `Stop` is a
+successful early return. A callback failure leaves its previous state committed;
+source, syntax and callback failures stay distinct. No subsequent input is
+parsed or pulled after Stop, though the current chunk may contain unread bytes.
+Header records are excluded from fold callback counts.
+
+`collect`/`collectBytes` return a table and enforce collection limits for records
+consumed during that call, including an input header. Ordinary streaming folds
+have no implicit total-input or total-record cap. To quarantine schema failures,
+decode each well-formed row in the callback and choose how to advance. Flexible
+width mode supports the same approach for ragged records. Syntax/UTF-8 failures
+remain terminal; malformed quoted input cannot be reliably resynchronized.
+
+`CsvStream.write options read state sink` and `writeBytes` take explicit source
+and sink functions with typed errors. `writeEncoded` converts application values;
+`writeEncodedWithHeader` emits the encoder's header first. Confirmed record/byte
+counts are retained on failure; `uncertainRecord` identifies a record whose sink
+write failed and may have partially completed. Counts include emitted headers
+and BOM bytes. They describe completed writes, not durability.
+
+## Files and limits
+
+`CsvIO.reader`/`byteReader` and `sink` borrow existing file handles. `withFile`/
+`withBytesFile`, `foldFile`/`foldBytesFile`, and `writeFile`/`writeBytesFile` own
+scoped handles. They validate options before opening files, close under masked
+cancellation, and retain a `closeError` alongside the callback/fold/write result.
+After scope exit, retained aliases cannot perform further file reads. File
+writers take an explicit `FileSystem.WriteMode`. Existing atomic-writer scopes
+can use `CsvIO.writeWriter` when replacement needs atomic commit semantics.
+
+| Limit | Default |
+|---|---:|
+| Decoded field bytes | 1 MiB |
+| Raw/encoded record bytes, excluding terminator | 8 MiB |
+| Fields per record | 4,096 |
+| Decoder/typed-encoder errors per row | 64 |
+| Collected source records | 100,000 |
+| Collected field-content bytes | 32 MiB |
+| Whole-document encoded buffer | 32 MiB |
+| File read chunk | 64 KiB |
+| Total input bytes / source records / output bytes | Unlimited unless configured |
+
+All budgets are configurable and failures are explicit. Streaming working
+storage depends on the current record, header and input chunk rather than total
+file size. A caller retaining old parser snapshots or result rows retains those
+values normally. Parsing and field assembly are linear in input size.
+
+## Verification
+
+Native Fai contracts cover byte/text round trips, every two-chunk split of
+generated inputs, generated multi-chunk partitions, locations, headers, quotas,
+typed failures and writer progress. The executable fixtures exercise 20,000-row
+streams, multi-chunk fields, actual files, expired handles, early stop, typed
+headers, and mixed source/callback effects through JIT and AOT:
+
+```sh
+fai test -C packages csv
+fai run -C packages csv/examples/RuntimeChecks.fai
+fai run -C packages csv/examples/StreamChecks.fai
+fai run -C packages csv/examples/StressChecks.fai
+```
+
+The package and its test logic are Fai. CI invokes these same programs on Linux,
+macOS and Windows; no compiler or standard-library extension is needed.

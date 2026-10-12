@@ -1,0 +1,24 @@
+name: CSV integration
+description: Run native Fai CSV streaming, file and bounded-input fixtures through JIT and AOT
+runs:
+  using: composite
+  steps:
+    - name: Native CSV execution
+      shell: bash
+      run: |
+        set -euo pipefail
+        fai run --no-daemon -C packages csv/examples/RuntimeChecks.fai | tee "$RUNNER_TEMP/csv-jit.log"
+        grep -Fx 'CSV runtime checks passed' "$RUNNER_TEMP/csv-jit.log"
+        fai build -C packages csv/examples/RuntimeChecks.fai --out "$RUNNER_TEMP/csv-runtime.exe"
+        "$RUNNER_TEMP/csv-runtime.exe" | tee "$RUNNER_TEMP/csv-aot.log"
+        grep -Fx 'CSV runtime checks passed' "$RUNNER_TEMP/csv-aot.log"
+        fai run --no-daemon -C packages csv/examples/StreamChecks.fai | tee "$RUNNER_TEMP/csv-stream-jit.log"
+        grep -Fx 'CSV stream checks passed' "$RUNNER_TEMP/csv-stream-jit.log"
+        fai build -C packages csv/examples/StreamChecks.fai --out "$RUNNER_TEMP/csv-stream.exe"
+        "$RUNNER_TEMP/csv-stream.exe" | tee "$RUNNER_TEMP/csv-stream-aot.log"
+        grep -Fx 'CSV stream checks passed' "$RUNNER_TEMP/csv-stream-aot.log"
+        fai run --no-daemon -C packages csv/examples/StressChecks.fai | tee "$RUNNER_TEMP/csv-stress-jit.log"
+        grep -Fx 'CSV stress checks passed' "$RUNNER_TEMP/csv-stress-jit.log"
+        fai build -C packages csv/examples/StressChecks.fai --out "$RUNNER_TEMP/csv-stress.exe"
+        "$RUNNER_TEMP/csv-stress.exe" | tee "$RUNNER_TEMP/csv-stress-aot.log"
+        grep -Fx 'CSV stress checks passed' "$RUNNER_TEMP/csv-stress-aot.log"

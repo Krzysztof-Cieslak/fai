@@ -51,6 +51,15 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- CSV field and record accumulation use reversed lists plus one materialization.
+  This keeps append work linear across immutable parser states, including when
+  earlier states retain shared prefixes.
+
+- CSV streaming uses typed pull readers and explicit step functions, preserving
+  source/callback errors and committed progress. Scoped file operations retain
+  native and close failures without losing completed work. Native Fai fixtures
+  exercise the same source package through JIT and AOT on each platform.
+
 - CSV output uses an immutable record-at-a-time writer. It validates complete
   encoded lengths before allocation/output, preserves byte values and text BOM
   content, and distinguishes per-record, streaming-total and buffered-output

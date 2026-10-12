@@ -603,6 +603,11 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+CSV parsing/encoding is pure. `CsvStream.fold CsvStream.next reader state step`
+forwards source and callback effects and retains committed state on failure.
+`CsvIO` uses FileSystem plus Concurrency for scoped cleanup; it preserves native
+file errors and reports close errors alongside the completed operation result.
+
 The optional configuration packages parse TOML/dotenv, merge sources and decode
 application records purely. `ConfigSource.load` uses only existing FileSystem/Env
 capabilities, an explicit absolute base and explicit environment-name bindings.
@@ -1974,6 +1979,12 @@ are accepted by default; exactColumns requires complete consumption.
 and output limits. `CsvEncode.schema` combines named projected columns; encode
 returns a record and header returns its ordered names. A complete record is
 validated before output, and leading literal text BOMs are protected by quoting.
+`CsvStream.reader`/`byteReader` adapt byte streams; fromPull variants retain typed
+source errors. next returns an optional row and the updated reader, including at
+EOF. Rows carry headers and source positions. Folds stop explicitly and retain
+progress; write/writeBytes and writeEncodedWithHeader retain confirmed output
+counts and failed-write uncertainty. `CsvIO` supplies borrowed-handle and scoped
+file adapters. See `packages/csv/README.md` and its native Fai examples.
 
 `packages/config` provides sourced layers (`Config.fromValue`, `toml`,
 `ConfigSource.snapshot`) and later-wins `Config.merge`. Tables merge recursively;

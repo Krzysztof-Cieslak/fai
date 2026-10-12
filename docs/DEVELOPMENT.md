@@ -15,6 +15,11 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+CSV contracts run with `fai test -C packages csv`. Its Fai `RuntimeChecks`,
+`StreamChecks` and `StressChecks` examples exercise scoped files, mixed effects,
+early stop, writer progress and bounded streaming through JIT and AOT. The CSV
+action invokes those programs directly on each platform, using the cached compiler.
+
 Configuration development uses native Fai contracts in `packages/toml`,
 `packages/dotenv`, and `packages/config`, with the same cached compiler. The Fai
 `config/examples/RuntimeChecks.fai` fixture exercises scoped temporary files,

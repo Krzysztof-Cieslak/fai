@@ -106,6 +106,27 @@ public type Error = {
   span : Option Span
 }
 
+public type Decision =
+  | Continue
+  | Stop
+
+public type Termination =
+  | Exhausted
+  | Stopped
+
+public type ReadError 'source =
+  | CsvError Error
+  | SourceError 'source
+
+public type FoldError 'source 'callback =
+  | ReadFailure (ReadError 'source)
+  | CallbackFailure 'callback
+
+public type WriteError 'source 'sink =
+  | EncodingFailure (List Error)
+  | InputFailure 'source
+  | SinkFailure 'sink
+
 public error : ErrorKind -> String -> Error
 let error kind message = {
   actual = None,
@@ -124,7 +145,10 @@ public at : Record 'a -> Option Int -> Error -> Error
 let at record index error =
   let span =
     match index with
-    | Some index -> Option.andThen (fun field -> field.span) (Array.get index record.fields)
+    | Some index ->
+      match Array.get index record.fields with
+      | Some field -> field.span
+      | None -> Option.map (fun source -> source.span) record.source
     | None -> Option.map (fun source -> source.span) record.source
   { error with
     fieldIndex = index,

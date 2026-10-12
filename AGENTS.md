@@ -1181,6 +1181,13 @@ CSV writers validate and encode a complete record before exposing it to a sink.
 Quoting, record endings, BOMs and total/buffered output limits are explicit.
 Typed encoders validate named column schemas and preserve conversion errors;
 text output protects a leading literal BOM from default-reader stripping.
+CSV streaming keeps typed source errors and committed fold/write progress.
+Explicit pull steps forward source and callback effects; file adapters preserve
+native errors and close under cancellation-masked cleanup, retaining close errors
+alongside results. Native Fai JIT/AOT fixtures cover files, expired aliases,
+mixed effects, chunk boundaries and long streams without whole-file retention.
+Incremental CSV fields accumulate in reversed lists before one materialization,
+so parser snapshots do not cause repeated copying of a growing field buffer.
 
 The optional `packages/toml` source library supplies pure TOML scalar and string
 parsing. Integer conversion checks signed 64-bit bounds; temporal values retain

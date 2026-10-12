@@ -1,0 +1,243 @@
+module CsvStreamCore
+
+/// A typed, effect-carrying byte source. Force each continuation once for I/O.
+public opaque type Source 'error 'e =
+  | Source (Unit -> Result (Option (Bytes * Source 'error 'e)) 'error / 'e)
+
+public source : ('state -> Result (Option (Bytes * 'state)) 'error / 'e) -> 'state -> Source 'error 'e
+let source pull state = Source (fun _ -> sourceStep pull state)
+
+let sourceStep pull state =
+  match pull state with
+  | Err error -> Err error
+  | Ok None -> Ok None
+  | Ok (Some (bytes, rest)) -> Ok (Some (bytes, source pull rest))
+
+let pull source =
+  match source with
+  | Source read -> read ()
+
+public type ReadError 'source = CsvTypes.ReadError 'source
+
+public type Item 'record 'headers = {
+  headers : Option 'headers,
+  position : CsvTypes.Position,
+  record : 'record
+}
+
+public opaque type Reader 'field 'source 'e = {
+  chunk : Bytes,
+  content : Int,
+  convert : CsvTypes.Record Bytes -> Result (CsvTypes.Record 'field) CsvTypes.Error,
+  empty : 'field -> Bool,
+  eof : Bool,
+  headers : Option (CsvRecord.Headers 'field),
+  needHeader : Bool,
+  offset : Int,
+  options : CsvTypes.Options,
+  parser : CsvCore.Parser,
+  seen : Int,
+  source : Source 'source 'e
+}
+
+public reader : Bool -> (CsvTypes.Record Bytes -> Result (CsvTypes.Record 'field) CsvTypes.Error) -> ('field -> Bool) -> CsvTypes.Options -> CsvRecord.HeaderMode 'field -> Source 'source 'e -> Result (Reader 'field 'source 'e) CsvTypes.Error
+let reader text convert empty options mode source =
+  match CsvRecord.optionsFor options mode with
+  | Err error -> Err error
+  | Ok options ->
+    match CsvCore.parser text options with
+    | Err error -> Err error
+    | Ok parser -> Ok {
+      chunk = Bytes.empty,
+      content = 0,
+      convert = convert,
+      empty = empty,
+      eof = false,
+      headers = (match mode with
+      | CsvRecord.Supplied headers -> Some headers
+      | _ -> None),
+      needHeader = (match mode with
+      | CsvRecord.FirstRecord -> true
+      | _ -> false),
+      offset = 0,
+      options = options,
+      parser = parser,
+      seen = 0,
+      source = source
+    }
+
+public headers : Reader 'field 'source 'e -> Option (CsvRecord.Headers 'field)
+let headers reader = reader.headers
+
+public counts : Reader 'field 'source 'e -> Int * Int
+let counts reader = (reader.seen, reader.content)
+
+public options : Reader 'field 'source 'e -> CsvTypes.Options
+let options reader = reader.options
+
+public next : Reader 'field 'source 'e -> Result (Option (Item (CsvTypes.Record 'field) (CsvRecord.Headers 'field)) * Reader 'field 'source 'e) (ReadError 'source) / 'e
+let next reader =
+  let fed =
+    if reader.eof then
+      CsvCore.finish reader.parser
+    else
+      CsvCore.feed reader.parser reader.chunk reader.offset
+  let reader = { reader with
+    offset = if reader.eof then reader.offset else fed.next,
+    parser = fed.parser
+  }
+  match fed.status with
+  | CsvCore.Failed error -> Err (CsvTypes.CsvError error)
+  | CsvCore.End ->
+    if reader.needHeader then
+      Err (CsvTypes.CsvError (CsvTypes.error CsvTypes.MissingHeader "CSV input has no header record"))
+    else
+      Ok (None, reader)
+  | CsvCore.NeedInput ->
+    match pull reader.source with
+    | Err error -> Err (CsvTypes.SourceError error)
+    | Ok None -> next { reader with chunk = Bytes.empty, eof = true, offset = 0 }
+    | Ok (Some (chunk, source)) -> next { reader with chunk = chunk, offset = 0, source = source }
+  | CsvCore.RecordReady raw ->
+    match CsvRecord.charge { CsvTypes.limits with
+      maxCollectedBytes = 9223372036854775807
+    } reader.content raw with
+    | Err _ ->
+      Err (CsvTypes.CsvError (CsvTypes.error CsvTypes.CounterOverflow "CSV content counter overflow"))
+    | Ok content ->
+      let reader = { reader with content = content, seen = reader.seen + 1 }
+      match reader.convert raw with
+      | Err error -> Err (CsvTypes.CsvError error)
+      | Ok record ->
+        if reader.needHeader then
+          match CsvRecord.headers identity reader.empty record with
+          | Err error -> Err (CsvTypes.CsvError error)
+          | Ok headers -> next { reader with headers = Some headers, needHeader = false }
+        else
+          Ok (Some {
+            headers = reader.headers,
+            position = (Option.withDefault {
+              index = 0,
+              span = { finish = CsvTypes.start, start = CsvTypes.start }
+            } raw.source).span.finish,
+            record = record
+          }, reader)
+
+public type Decision = CsvTypes.Decision
+
+public type Termination = CsvTypes.Termination
+
+public type FoldError 'source 'callback = CsvTypes.FoldError 'source 'callback
+
+public type FoldResult 'state 'source 'callback = {
+  completed : Int,
+  outcome : Result Termination (FoldError 'source 'callback),
+  parsed : Int,
+  position : Option CsvTypes.Position,
+  state : 'state
+}
+
+public initial : 'state -> FoldResult 'state 'source 'callback
+let initial state = {
+  completed = 0,
+  outcome = Ok CsvTypes.Exhausted,
+  parsed = 0,
+  position = None,
+  state = state
+}
+
+/// Separate step and cursor arguments allow read and callback arrow effects to union.
+public fold : ('cursor -> Result (Option (Item 'record 'headers) * 'cursor) (ReadError 'source) / 'e) -> 'cursor -> 'state -> ('state -> Item 'record 'headers -> Result ('state * Decision) 'callback / 'e) -> FoldResult 'state 'source 'callback / 'e
+let fold read cursor state step = foldLoop read cursor step (initial state)
+
+foldLoop : ('cursor -> Result (Option (Item 'record 'headers) * 'cursor) (ReadError 'source) / 'e) -> 'cursor -> ('state -> Item 'record 'headers -> Result ('state * Decision) 'callback / 'e) -> FoldResult 'state 'source 'callback -> FoldResult 'state 'source 'callback / 'e
+let foldLoop read cursor step progress =
+  match read cursor with
+  | Err error -> { progress with outcome = Err (CsvTypes.ReadFailure error) }
+  | Ok (None, _) -> progress
+  | Ok (Some item, rest) ->
+    if progress.parsed = 9223372036854775807 then
+      { progress with
+        outcome = Err (CsvTypes.ReadFailure (CsvTypes.CsvError (CsvTypes.error CsvTypes.CounterOverflow "CSV fold counter overflow")))
+      }
+    else
+      let progress = { progress with parsed = progress.parsed + 1 }
+      match step progress.state item with
+      | Err error -> { progress with outcome = Err (CsvTypes.CallbackFailure error) }
+      | Ok (state, decision) ->
+        let progress = { progress with
+          completed = progress.completed + 1,
+          position = Some item.position,
+          state = state
+        }
+        if decision = CsvTypes.Stop then
+          { progress with outcome = Ok CsvTypes.Stopped }
+        else
+          foldLoop read rest step progress
+
+public collect : Reader 'field 'source 'e -> Result (Array (CsvTypes.Record 'field) * Reader 'field 'source 'e) (ReadError 'source) / 'e
+let collect reader = collectLoop reader reader.seen reader.content [||]
+
+let collectLoop reader seen content output =
+  match next reader with
+  | Err error -> Err error
+  | Ok (item, reader) ->
+    if reader.seen - seen > reader.options.limits.maxCollectedRecords || reader.content - content > reader.options.limits.maxCollectedBytes then
+      Err (CsvTypes.CsvError (CsvTypes.error CsvTypes.CollectionLimit "CSV collection limit exceeded"))
+    else
+      match item with
+      | None -> Ok (output, reader)
+      | Some item -> collectLoop reader seen content (Array.push item.record output)
+
+public type WriteError 'source 'sink = CsvTypes.WriteError 'source 'sink
+
+public type WriteResult 'source 'sink = {
+  bytesWritten : Int,
+  outcome : Result Unit (WriteError 'source 'sink),
+  recordsWritten : Int,
+  uncertainRecord : Option Int
+}
+
+let written state outcome uncertain = {
+  bytesWritten = CsvWrite.byteCount state,
+  outcome = outcome,
+  recordsWritten = CsvWrite.count state,
+  uncertainRecord = uncertain
+}
+
+public write : Bool -> CsvWrite.Options -> ('state -> Result (Option ('record * 'state)) 'source / 'e) -> 'state -> ('record -> Result (CsvTypes.Record Bytes) (List CsvTypes.Error)) -> (Bytes -> Result Unit 'sink / 'e) -> WriteResult 'source 'sink / 'e
+let write text options read input convert sink =
+  match CsvWrite.state text options with
+  | Err error -> {
+    bytesWritten = 0,
+    outcome = Err (CsvTypes.EncodingFailure [error]),
+    recordsWritten = 0,
+    uncertainRecord = None
+  }
+  | Ok state -> writeLoop state read input convert sink
+
+writeLoop : CsvWrite.State -> ('state -> Result (Option ('record * 'state)) 'source / 'e) -> 'state -> ('record -> Result (CsvTypes.Record Bytes) (List CsvTypes.Error)) -> (Bytes -> Result Unit 'sink / 'e) -> WriteResult 'source 'sink / 'e
+let writeLoop state read input convert sink =
+  match read input with
+  | Err error -> written state (Err (CsvTypes.InputFailure error)) None
+  | Ok None ->
+    match CsvWrite.finish state with
+    | Err error -> written state (Err (CsvTypes.EncodingFailure [error])) None
+    | Ok (bytes, finished) ->
+      if Bytes.isEmpty bytes then
+        written finished (Ok ()) None
+      else
+        match sink bytes with
+        | Err error -> written state (Err (CsvTypes.SinkFailure error)) None
+        | Ok _ -> written finished (Ok ()) None
+  | Ok (Some (record, rest)) ->
+    match convert record with
+    | Err errors -> written state (Err (CsvTypes.EncodingFailure errors)) None
+    | Ok record ->
+      match CsvWrite.push state record with
+      | Err error -> written state (Err (CsvTypes.EncodingFailure [error])) None
+      | Ok (bytes, updated) ->
+        match sink bytes with
+        | Err error ->
+          written state (Err (CsvTypes.SinkFailure error)) (Some (CsvWrite.count state))
+        | Ok _ -> writeLoop updated read rest convert sink
