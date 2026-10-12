@@ -1937,6 +1937,11 @@ rendering. Later fields override earlier context; final keys are sorted. Record
 limits cover encoded UTF-8 bytes, field count, value depth and node count. Its
 source dependency is `packages/json`; native contracts run with
 `fai test -C packages logging`.
+`Log.create` validates a sink and options; `withTarget`, `withFields` and
+`withClock` derive loggers. `info`/`debug`/`warn`/`error` return receipts;
+`debugLazy`/`writeLazy` skip entry construction for filtered records.
+`LogSink.combine` retains partial fan-out outcomes. `LogBestEffort.fromChecked`
+adds Unit-returning calls with a supplied error handler.
 
 `packages/llm` supplies pure `Llm.request` builders, ordered `LlmTypes` content and
 provider-tagged continuation items. `LlmSchema` combines a wire schema and typed

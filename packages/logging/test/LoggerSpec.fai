@@ -1,0 +1,51 @@
+module LogLoggerSpec
+
+let checked = Log.create Log.defaults (LogSink.discard "test")
+example: (match checked with
+| Err _ -> false
+| Ok logger ->
+  Log.debugLazy logger (fun _ -> Log.entry (Int.toString (1 / 0)) []) = Ok LogTypes.Filtered)
+example: (match checked with
+| Err _ -> false
+| Ok logger ->
+  Log.info logger "hello" [] = Ok (LogTypes.Emitted [
+    { delivery = LogTypes.Completed, destination = "test" }
+  ]))
+example: (match checked with
+| Err _ -> false
+| Ok logger ->
+  Log.info logger "bad float" [
+    LogField.float "x" (Float.fromBits 0x7ff0000000000000)
+  ] |> Result.isErr)
+example: Log.create Log.defaults (LogSink.combine (LogSink.discard "same") (LogSink.discard "same")) |> Result.isErr
+
+let fail = {
+  emit = fun record -> Err (LogTypes.error LogTypes.Write "failed" "failure"),
+  flush = fun _ -> Err (LogTypes.error LogTypes.Flush "failed" "failure"),
+  names = ["failed"]
+}
+
+let combined = Log.create Log.defaults (LogSink.combine fail (LogSink.discard "ok"))
+example: (match combined with
+| Err _ -> false
+| Ok logger ->
+  (match Log.info logger "test" [] with
+  | Ok _ -> false
+  | Err error ->
+    error.outcomes = [
+      { delivery = LogTypes.Completed, destination = "ok" }
+    ] && List.length error.failures = 1))
+example: (match combined with
+| Err _ -> false
+| Ok logger ->
+  LogBestEffort.info (LogBestEffort.fromChecked logger (fun _ -> ())) "handled" [] = ())
+
+let prepared =
+  Log.prepare Log.defaults "test" [
+    LogField.int "x" 1
+  ] LogTypes.Info (Log.entry "event" [LogField.int "x" 2])
+example: (prepared |> Result.map (Option.map (fun record ->
+  record.fields))) = Ok (Some (Json.Object [| ("x", Json.Number (JsonNumber.fromInt 2)) |]))
+example: Log.prepare Log.defaults "test" [] LogTypes.Debug (Log.entry "hidden" [
+  LogField.float "x" (Float.fromBits 0x7ff0000000000000)
+]) = Ok None

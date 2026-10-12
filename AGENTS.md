@@ -1169,6 +1169,10 @@ typed fields, target-prefix filtering and pure human/JSON Lines formatting.
 Field layers use later-value precedence with sorted final keys. Validation bounds
 the encoded record before JSON rendering, preserving exact integers and rejecting
 non-finite Float encoding and duplicate nested JSON keys.
+Checked loggers carry their sink and timestamp effects. Immutable child context
+and lazy entry builders preserve filtering before construction or clock reads.
+Fan-out retains per-destination successes and failures; an explicit best-effort
+facade routes observable failures to a caller-supplied handler.
 
 `Path` is a lossless opaque native path value: raw filename bytes on Unix and
 little-endian UTF-16 units on Windows. Its pure lexical operations never consult

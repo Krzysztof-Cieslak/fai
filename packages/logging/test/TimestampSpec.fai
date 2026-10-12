@@ -1,0 +1,13 @@
+module LogTimestampSpec
+
+let checked = Log.create Log.defaults (LogSink.discard "test")
+
+let badTime unit = Some (Instant.fromUnixTimeSeconds (1 / 0))
+example: (match checked with
+| Err _ -> false
+| Ok logger ->
+  Log.info (logger |> Log.withTimestamp badTime |> Log.withTimestamp (fun _ ->
+    None)) "no timestamp" [] |> Result.isOk)
+example: (match checked with
+| Err _ -> false
+| Ok logger -> Log.debug (Log.withTimestamp badTime logger) "disabled" [] = Ok LogTypes.Filtered)
