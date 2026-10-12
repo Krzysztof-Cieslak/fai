@@ -76,3 +76,87 @@ let discard name = {
   flush = fun _ -> Ok (),
   names = [name]
 }
+
+public type FlushPolicy =
+  | EachRecord
+  | OnFlush
+
+public type FileOptions = { flush : FlushPolicy, mode : FileSystem.WriteMode }
+
+public fileOptions : FileOptions
+let fileOptions = { flush = EachRecord, mode = FileSystem.Append }
+
+/// Outputs receive one unterminated line and add exactly one newline.
+public validateLine : String -> Result Unit LogTypes.Error
+let validateLine line =
+  if String.contains line "\n" || String.contains line "\r" then
+    Err (LogTypes.error LogTypes.Validation "" "a log line contains a raw newline")
+  else
+    Ok ()
+
+consoleWrite : Console -> Bool -> String -> Result LogTypes.Delivery LogTypes.Error / { Console }
+let consoleWrite console stderr line =
+  match validateLine line with
+  | Err error -> Err error
+  | Ok _ ->
+    let written = if stderr then console.writeError line else console.writeLine line
+    Ok LogTypes.Completed
+
+/// Console exposes no OS write error or explicit flush result.
+public stdout : Console -> Output { Console }
+let stdout console = { flush = fun _ -> Ok (), writeLine = consoleWrite console false }
+
+public stderr : Console -> Output { Console }
+let stderr console = { flush = fun _ -> Ok (), writeLine = consoleWrite console true }
+
+writerWrite : FileSystem -> Writer -> FlushPolicy -> String -> Result LogTypes.Delivery LogTypes.Error / { FileSystem }
+let writerWrite fs writer policy line =
+  match validateLine line with
+  | Err error -> Err error
+  | Ok _ ->
+    match fs.writeChunk writer (Bytes.fromString (line ++ "\n")) with
+    | Err error -> Err (LogTypes.nativeError LogTypes.Write "" error)
+    | Ok _ ->
+      let flushed = if policy = EachRecord then fs.flushWriter writer else Ok ()
+      Result.map (fun _ ->
+        LogTypes.Completed) (Result.mapError (LogTypes.nativeError LogTypes.Flush "") flushed)
+
+/// Borrow a writer. The caller owns close; one native write keeps records intact.
+public writer : FileSystem -> Writer -> FlushPolicy -> Output { FileSystem }
+let writer fs handle policy = {
+  flush = fun _ -> Result.mapError (LogTypes.nativeError LogTypes.Flush "") (fs.flushWriter handle),
+  writeLine = writerWrite fs handle policy
+}
+
+/// Scope a file output. Retained output/logger aliases expire on return.
+public withFile : { concurrency : Concurrency, fs : FileSystem | _ } -> FileOptions -> Path -> (Output { FileSystem } -> Result 'a 'error / 'e) -> Result 'a (LogTypes.ScopeError 'error) / { Concurrency, FileSystem | 'e }
+let withFile env options path work =
+  match env.fs.openWriter path options.mode with
+  | Err error -> Err { body = None, cleanup = Some (LogTypes.nativeError LogTypes.Open "" error) }
+  | Ok handle ->
+    let result = work (writer env.fs handle options.flush)
+    let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeWriter handle)
+    LogTypes.scopeResult result (Result.mapError (LogTypes.nativeError LogTypes.Close "") closed)
+
+locked : Concurrency -> Channel Unit -> (Unit -> Result 'a LogTypes.Error / 'e) -> Result 'a LogTypes.Error / { Concurrency | 'e }
+let locked concurrency gate work =
+  match concurrency.recv gate with
+  | None -> Err (LogTypes.error LogTypes.Admission "" "logging operation cancelled")
+  | Some _ ->
+    let result = work ()
+    let released = Wire.cleanup concurrency (fun _ -> concurrency.send gate ())
+    result
+
+serialWrite : Concurrency -> Channel Unit -> Output 'e -> String -> Result LogTypes.Delivery LogTypes.Error / { Concurrency | 'e }
+let serialWrite concurrency gate output line =
+  locked concurrency gate (fun _ -> output.writeLine line)
+
+serialFlush : Concurrency -> Channel Unit -> Output 'e -> Unit -> Result Unit LogTypes.Error / { Concurrency | 'e }
+let serialFlush concurrency gate output unit = locked concurrency gate (fun _ -> output.flush ())
+
+/// Share this wrapper to serialize a custom output's complete operations.
+public serialized : Concurrency -> Output 'e -> Output { Concurrency | 'e } / { Concurrency }
+let serialized concurrency output =
+  let gate = concurrency.channel 1
+  let seeded = Wire.cleanup concurrency (fun _ -> concurrency.send gate ())
+  { flush = serialFlush concurrency gate output, writeLine = serialWrite concurrency gate output }

@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Logging outputs own line framing. File outputs borrow a writer or scope one
+  explicitly and preserve callback/cleanup failures. One native write carries a
+  complete record. Console completion reflects its existing unacknowledged write
+  contract; application logging does not invent an OS delivery guarantee.
+
 - Loggers are explicit effect-carrying values. Filtering precedes lazy entry
   construction and timestamp reads; a record and its timestamp are shared across
   destinations. Checked delivery remains available beneath a Unit-returning

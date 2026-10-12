@@ -1942,6 +1942,9 @@ source dependency is `packages/json`; native contracts run with
 `debugLazy`/`writeLazy` skip entry construction for filtered records.
 `LogSink.combine` retains partial fan-out outcomes. `LogBestEffort.fromChecked`
 adds Unit-returning calls with a supplied error handler.
+`LogSink.withFile` scopes append/truncate/exclusive file outputs with EachRecord or
+OnFlush policy. `writer` borrows an existing Writer; `stdout`/`stderr` use Console.
+`serialized` adds a shared concurrency gate for custom outputs.
 
 `packages/llm` supplies pure `Llm.request` builders, ordered `LlmTypes` content and
 provider-tagged continuation items. `LlmSchema` combines a wire schema and typed

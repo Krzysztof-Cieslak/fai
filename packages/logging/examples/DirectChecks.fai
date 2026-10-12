@@ -1,0 +1,60 @@
+module LogDirectChecks
+
+writeOne : Log.Logger { FileSystem } -> Int -> Result Log.Receipt Log.Error / { FileSystem }
+let writeOne logger index = Log.info logger "concurrent" [LogField.int "index" index]
+
+writeMany : Runtime -> LogSink.Output { FileSystem } -> Result (Log.Logger { FileSystem }) Log.Error / { Concurrency, FileSystem }
+let writeMany env output =
+  match Log.create Log.defaults (LogSink.formatted "file" Log.limits LogFormat.JsonLines output) with
+  | Err error -> Err error
+  | Ok logger ->
+    let logger =
+      logger |> Log.withTarget "test" |> Log.withFields [LogField.string "context" "kept"]
+    let results = Async.mapConcurrent env.concurrency (writeOne logger) (List.range 0 100)
+    if List.all Result.isOk results then
+      Ok logger
+    else
+      Err (LogTypes.error LogTypes.Write "file" "concurrent write failed")
+
+lineValid : String -> Bool
+let lineValid line =
+  match JsonDecode.fromString (JsonDecode.field "fields" (JsonDecode.field "context" JsonDecode.string)) line with
+  | Ok value -> value = "kept"
+  | Err _ -> false
+
+check : Runtime -> Temp.Directory -> Result Bool String / { Concurrency, FileSystem }
+let check env directory =
+  let path = Path.join directory.path (Result.withDefault Path.empty (Path.fromString "log.jsonl"))
+  let result = LogSink.withFile env LogSink.fileOptions path (writeMany env)
+  let text = env.fs.readFile path
+  let closed =
+    match result with
+    | Err _ -> false
+    | Ok logger ->
+      (match Log.info logger "late" [] with
+      | Err error ->
+        List.any (fun failure ->
+          match failure.native with
+          | Some native -> native.kind = FileSystem.Closed
+          | None -> false) error.failures
+      | _ -> false)
+  let good =
+    match text with
+    | Err _ -> false
+    | Ok text -> contentsValid text
+  Ok (closed && good)
+
+let contentsValid text =
+  let lines = List.filter (fun line -> line <> "") (String.split "\n" text)
+  List.length lines = 100 && List.all lineValid lines
+
+public main : Runtime -> Unit / { Concurrency, Console, FileSystem }
+let main env =
+  match env.fs.temporaryDirectory () with
+  | Err error -> env.console.writeLine (FileSystem.errorToString error)
+  | Ok parent ->
+    let result = Temp.withDirectory env parent (check env)
+    env.console.writeLine (if result = Ok true then
+      "direct logging checks passed"
+    else
+      "direct logging checks FAILED")

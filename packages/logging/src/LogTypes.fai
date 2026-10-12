@@ -13,6 +13,7 @@ public type Stage =
   | Validation
   | Formatting
   | Admission
+  | Open
   | Write
   | Flush
   | Close

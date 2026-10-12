@@ -45,6 +45,8 @@ example: LogBudget.check { limits with
 example: LogBudget.check { limits with
   maxValueNodes = 1
 } (Json.Array [| Json.Null |]) |> Result.isErr
-example: (LogFormat.render limits LogFormat.JsonLines record |> Result.map (String.contains "\n")) = Ok false
-example: (LogFormat.render limits (LogFormat.Human false) record |> Result.map (String.contains "\n")) = Ok false
+example: (LogFormat.render limits LogFormat.JsonLines record |> Result.map (fun line ->
+  String.contains line "\n")) = Ok false
+example: (LogFormat.render limits (LogFormat.Human false) record |> Result.map (fun line ->
+  String.contains line "\n")) = Ok false
 forall text: LogBudget.check limits (Json.String text) = Ok (Bytes.length (Bytes.fromString (Json.toString (Json.String text))))
