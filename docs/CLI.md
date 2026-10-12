@@ -150,6 +150,11 @@ internal ABI; rebuild generated objects when updating the compiler. This replace
 the ambiguous `fai_<module>_<member>` encoding. Explicit symbol strings in
 `foreign` declarations are passed through as written.
 
+Compiler inputs with package ownership include their stable package and target
+scope in generated symbol identity. Identically named modules in separate package
+instances or executable scopes therefore remain distinct in objects and worker
+bundles.
+
 Foreign functions can be passed to higher-order helpers or partially applied;
 their expanded declared signatures determine marshalling on each call path.
 String arguments stay alive until any returned string has been copied, so a

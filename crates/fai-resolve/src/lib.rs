@@ -35,8 +35,8 @@ pub use module::{
     DefInfo, DuplicateExport, Export, ExportKind, ModuleDefs, ModuleInterface, ModuleName,
     PRELUDE_MODULE, PreludeExports, duplicate_module_files, emit_duplicate_module_errors,
     emit_duplicate_prelude_export_errors, merge_auto_imports, module_defs, module_file,
-    module_interface, module_internal_interface, module_name, prelude_exports, prelude_module_file,
-    prelude_source, std_files,
+    module_file_from, module_interface, module_internal_interface, module_name, prelude_exports,
+    prelude_module_file, prelude_source, std_files, std_module_file,
 };
 pub use scc::{ModuleSccs, Scc, def_deps, module_sccs, recursive_defs};
 
@@ -135,16 +135,17 @@ pub const CODES: &[CodeInfo] = &[
         code: DUPLICATE_MODULE,
         title: "duplicate module name",
         default_severity: Severity::Error,
-        explanation: "Two files declare the same top-level module name; module names must be \
-                      unique across the workspace. The duplicated name is excluded from \
-                      cross-module lookup until resolved.",
+        explanation: "Two visible files declare the same top-level module name. Names must be \
+                      unique within the observing package and target scope, including reserved \
+                      standard modules. The duplicated name is excluded from that scope's lookup.",
     },
     CodeInfo {
         code: UNRESOLVED_MODULE,
         title: "unresolved module",
         default_severity: Severity::Error,
         explanation: "A qualified path's leading segment names no module — neither a nested \
-                      module in scope nor a workspace file module. Check the module name.",
+                      module in scope nor an automatically visible file module. Check the \
+                      module name and its package or target ownership.",
     },
     CodeInfo {
         code: BINDING_VISIBILITY_MARKER,

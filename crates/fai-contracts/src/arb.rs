@@ -15,7 +15,9 @@ use fai_core::ir::{
     CExpr, CoreFn, ExprKind as K, FieldIndex, Lit, LoweredDef, Prim, scalar_field_mask,
 };
 use fai_db::{Db, SourceFile};
-use fai_resolve::{AdtRef, DefId, LocalId, ModuleName, module_defs, module_file, type_decls};
+use fai_resolve::{
+    AdtRef, DefId, LocalId, ModuleName, module_defs, std_module_file as module_file, type_decls,
+};
 use fai_span::SourceId;
 use fai_syntax::Symbol;
 use fai_types::{Con, RecordRow, RowEnd, Scheme, Ty, TyVarId, constructor_scheme, def_type};

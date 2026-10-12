@@ -212,13 +212,13 @@ A name has more than one type signature in the same scope. Keep one.
 
 **Severity:** error
 
-Two files declare the same top-level module name; module names must be unique across the workspace. The duplicated name is excluded from cross-module lookup until resolved.
+Two visible files declare the same top-level module name. Names must be unique within the observing package and target scope, including reserved standard modules. The duplicated name is excluded from that scope's lookup.
 
 ### FAI2008 — unresolved module
 
 **Severity:** error
 
-A qualified path's leading segment names no module — neither a nested module in scope nor a workspace file module. Check the module name.
+A qualified path's leading segment names no module — neither a nested module in scope nor an automatically visible file module. Check the module name and its package or target ownership.
 
 ### FAI2009 — visibility marker on a binding with a signature
 

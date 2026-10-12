@@ -102,6 +102,9 @@ fn qualify_actions(
 
     let mut modules: Vec<String> = Vec::new();
     for candidate in db.all_source_files() {
+        if !fai_db::automatically_visible(db, file, candidate) {
+            continue;
+        }
         if candidate.source(db) == file.source(db) {
             continue; // the name is unbound *here*, so this file is no candidate
         }

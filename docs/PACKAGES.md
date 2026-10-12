@@ -12,7 +12,9 @@ locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and to
 > **Implementation status:** `fai-package` provides the pure metadata foundation:
 > canonical source identities, version requirements, located manifest validation,
 > comment-preserving version edits, platform activation, and target source plans.
-> The package-aware compiler loader and the dependency, lockfile, import, vendor,
+> The compiler also carries package environments and target-local source ownership,
+> with scoped module lookup, internal visibility, and package-qualified native symbols.
+> The package-aware project loader and the dependency, lockfile, import, vendor,
 > and publishing commands below describe the intended interface. The current CLI
 > still uses the native-only manifest and directory-based source loader.
 

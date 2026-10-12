@@ -37,7 +37,7 @@
 use std::sync::Arc;
 
 use fai_db::{Db, SourceFile};
-use fai_resolve::{DefId, LocalId, ModuleName, module_file};
+use fai_resolve::{DefId, LocalId, ModuleName, std_module_file as module_file};
 use fai_syntax::Symbol;
 use fai_types::{Con, Ty};
 use rustc_hash::FxHashMap;

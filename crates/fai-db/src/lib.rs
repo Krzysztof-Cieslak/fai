@@ -17,11 +17,24 @@
 //! * [`FaiDatabase`] — the concrete database, with a source-file registry and a
 //!   query-execution event log used for testing/diagnostics.
 //! * [`SourceFile`] — the authoritative source-text input.
+//! * [`PackageEnvironment`] / [`SourceRole`] — package bindings and target-local
+//!   source ownership, independent of paths and display names.
 //! * [`InternedSymbol`] — a demonstration of salsa interning for derived keys.
 //! * [`Diag`] — the diagnostics accumulator deeper phases emit into.
 //! * [`DbSpanResolver`] — a [`fai_span::SpanResolver`] backed by the database.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
+
+mod package;
+use package::PackageRegistry;
+pub use package::{
+    PackageEnvironment, PackageId, SourceRole, automatically_visible,
+    automatically_visible_sources, dependency_package, package_environment, package_environments,
+    package_library_sources,
+};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_diagnostics::Diagnostic;
@@ -109,6 +122,9 @@ pub struct SourceFile {
     pub text: String,
     /// Loader-controlled origin, independent of the display or filesystem path.
     pub origin: SourceOrigin,
+    /// Target-local role; production modules cannot acquire test-only visibility.
+    #[returns(ref)]
+    pub role: SourceRole,
 }
 
 /// The source's semantic origin. Only the embedded-library loader assigns the
@@ -119,6 +135,8 @@ pub enum SourceOrigin {
     User,
     /// A source embedded in the compiler's standard library.
     StandardLibrary,
+    /// A package instantiation supplied by the project loader.
+    Package(PackageId),
 }
 
 impl SourceFile {
@@ -210,6 +228,8 @@ pub struct FaiDatabase {
     files: Arc<Vec<SourceFile>>,
     ids_by_path: Arc<FxHashMap<Utf8PathBuf, SourceId>>,
     std_ids_by_path: Arc<FxHashMap<Utf8PathBuf, SourceId>>,
+    scoped_ids: Arc<FxHashMap<(SourceOrigin, SourceRole, Utf8PathBuf), SourceId>>,
+    package_ids: Arc<FxHashMap<String, PackageId>>,
     events: Arc<Mutex<Option<Vec<String>>>>,
 }
 
@@ -258,9 +278,12 @@ impl FaiDatabase {
             files: Arc::default(),
             ids_by_path: Arc::default(),
             std_ids_by_path: Arc::default(),
+            scoped_ids: Arc::default(),
+            package_ids: Arc::default(),
             events,
         };
         let _ = SourceRegistry::builder(Vec::new()).durability(Durability::HIGH).new(&db);
+        let _ = PackageRegistry::builder(Vec::new()).durability(Durability::HIGH).new(&db);
         let _ = CompilerControls::builder(AllocationControl::Enabled)
             .durability(Durability::HIGH)
             .new(&db);
@@ -292,34 +315,125 @@ impl FaiDatabase {
         text: String,
         origin: SourceOrigin,
     ) -> SourceId {
-        let registry = match origin {
-            SourceOrigin::User => &self.ids_by_path,
-            SourceOrigin::StandardLibrary => &self.std_ids_by_path,
-        };
+        self.add_source_scoped(path, text, origin, SourceRole::Library)
+    }
+
+    /// Registers a source with explicit package and target ownership.
+    pub fn add_source_scoped(
+        &mut self,
+        path: Utf8PathBuf,
+        text: String,
+        origin: SourceOrigin,
+        role: SourceRole,
+    ) -> SourceId {
         let durability = match origin {
-            SourceOrigin::User => Durability::LOW,
+            SourceOrigin::User | SourceOrigin::Package(_) => Durability::LOW,
             SourceOrigin::StandardLibrary => Durability::HIGH,
         };
-        if let Some(&id) = registry.get(&path) {
+        // Historical entries retain their identity after deactivation.
+        let existing = self.historical_scoped_id(&path, origin, &role);
+        if let Some(id) = existing {
             let file = self.files[id.index()];
             file.set_text(self).with_durability(durability).to(text);
             self.activate_source(id, file);
             return id;
         }
         let id = SourceId::new(u32::try_from(self.files.len()).expect("too many source files"));
-        let file = SourceFile::builder(id, path.as_str().to_owned(), text, origin)
+        let file = SourceFile::builder(id, path.as_str().to_owned(), text, origin, role.clone())
             .durability(durability)
             .new(&*self);
         // Copy-on-write: only clones the registry while a snapshot still holds it.
         Arc::make_mut(&mut self.files).push(file);
-        match origin {
-            SourceOrigin::User => Arc::make_mut(&mut self.ids_by_path).insert(path, id),
-            SourceOrigin::StandardLibrary => {
+        match (origin, &role) {
+            (SourceOrigin::User, SourceRole::Library) => {
+                Arc::make_mut(&mut self.ids_by_path).insert(path, id)
+            }
+            (SourceOrigin::StandardLibrary, SourceRole::Library) => {
                 Arc::make_mut(&mut self.std_ids_by_path).insert(path, id)
             }
+            _ => Arc::make_mut(&mut self.scoped_ids).insert((origin, role, path), id),
         };
         self.activate_source(id, file);
         id
+    }
+
+    fn historical_scoped_id(
+        &self,
+        path: &Utf8Path,
+        origin: SourceOrigin,
+        role: &SourceRole,
+    ) -> Option<SourceId> {
+        match (origin, role) {
+            (SourceOrigin::User, SourceRole::Library) => self.ids_by_path.get(path).copied(),
+            (SourceOrigin::StandardLibrary, SourceRole::Library) => {
+                self.std_ids_by_path.get(path).copied()
+            }
+            _ => self.scoped_ids.get(&(origin, role.clone(), path.to_owned())).copied(),
+        }
+    }
+
+    /// Looks up an active file in a particular ownership and source scope.
+    #[must_use]
+    pub fn id_for_scoped_path(
+        &self,
+        path: &Utf8Path,
+        origin: SourceOrigin,
+        role: &SourceRole,
+    ) -> Option<SourceId> {
+        self.historical_scoped_id(path, origin, role).filter(|&id| self.source_file(id).is_some())
+    }
+
+    /// Interns a stable package instantiation key without changing existing ids.
+    pub fn register_package(&mut self, key: String) -> PackageId {
+        if let Some(&id) = self.package_ids.get(&key) {
+            return id;
+        }
+        let registry = PackageRegistry::get(self);
+        let mut entries = registry.entries(self).clone();
+        let id = PackageId(u32::try_from(entries.len()).expect("too many package environments"));
+        let package =
+            PackageEnvironment::builder(id, key.clone(), BTreeMap::new(), BTreeMap::new())
+                .durability(Durability::HIGH)
+                .new(&*self);
+        entries.push(package);
+        registry.set_entries(self).with_durability(Durability::HIGH).to(entries);
+        Arc::make_mut(&mut self.package_ids).insert(key, id);
+        id
+    }
+
+    /// Updates dependency aliases; returns whether a registered environment changed.
+    pub fn set_package_dependencies(
+        &mut self,
+        id: PackageId,
+        normal: BTreeMap<String, PackageId>,
+        development: BTreeMap<String, PackageId>,
+    ) -> bool {
+        let Some(package) = package_environment(self, id) else {
+            return false;
+        };
+        let mut changed = false;
+        if package.dependencies(self) != &normal {
+            package.set_dependencies(self).with_durability(Durability::HIGH).to(normal);
+            changed = true;
+        }
+        if package.development(self) != &development {
+            package.set_development(self).with_durability(Durability::HIGH).to(development);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Copies package environments into an empty scratch database, preserving ids.
+    pub fn copy_package_environments(&mut self, from: &dyn Db) {
+        for package in package_environments(from) {
+            let id = self.register_package(package.key(from).clone());
+            assert_eq!(id, package.id(from), "scratch package ids must be preserved");
+            self.set_package_dependencies(
+                id,
+                package.dependencies(from).clone(),
+                package.development(from).clone(),
+            );
+        }
     }
 
     fn activate_source(&mut self, id: SourceId, file: SourceFile) {

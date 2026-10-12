@@ -14,7 +14,7 @@ use fai_db::{Db, SourceFile, emit};
 use fai_diagnostics::Diagnostic;
 use fai_resolve::{
     AdtRef, INTERNAL_REFERENCE, InterfaceInfo, InterfaceRef, ModuleName, TypeDeclInfo,
-    interface_decls, module_defs, module_file, prelude_exports, qualify, type_decls,
+    interface_decls, module_defs, prelude_exports, qualify, type_decls,
 };
 use fai_span::{SourceId, Span, TextRange};
 use fai_syntax::Symbol;
@@ -564,7 +564,7 @@ impl Lowerer<'_> {
     /// inner segments name nested modules within it).
     fn cross_file_member(&self, name: Symbol) -> Option<(SourceFile, Symbol)> {
         let segments: Vec<Symbol> = name.as_str().split('.').map(Symbol::intern).collect();
-        let target = module_file(self.db, ModuleName(segments[0]))?;
+        let target = fai_resolve::module_file_from(self.db, self.file, ModuleName(segments[0]))?;
         let target_defs = module_defs(self.db, target);
         let mut inner: Vec<Symbol> = Vec::new();
         let mut consumed = 1;

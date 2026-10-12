@@ -24,7 +24,7 @@ pub(crate) fn projected_default(
     if launch.adapter.is_some() || launch.concurrent {
         return None;
     }
-    let prelude = fai_resolve::module_file(db, fai_resolve::ModuleName(Symbol::intern("Prelude")))?;
+    let prelude = fai_resolve::prelude_module_file(db)?;
     if launch.runtime != DefId::new(prelude.source(db), Symbol::intern("defaultRuntime")) {
         return None;
     }

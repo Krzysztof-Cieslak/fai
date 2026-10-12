@@ -109,9 +109,31 @@ pub fn symbol_base(db: &dyn Db, def: DefId) -> String {
 
 /// A definition's module display label (or a fallback), used for mangling.
 pub(crate) fn module_label(db: &dyn Db, def: DefId) -> String {
-    db.source_file(def.file)
-        .and_then(|f| module_name(db, f))
-        .map_or_else(|| "M".to_owned(), |ModuleName(s)| s.as_str().to_owned())
+    let Some(file) = db.source_file(def.file) else {
+        return "M".to_owned();
+    };
+    let label =
+        module_name(db, file).map_or_else(|| "M".to_owned(), |ModuleName(s)| s.as_str().to_owned());
+    let package = match file.origin(db) {
+        fai_db::SourceOrigin::Package(id) => fai_db::package_environment(db, id).map_or_else(
+            || format!("unregistered:{}", id.index()),
+            |package| package.key(db).clone(),
+        ),
+        _ if matches!(file.role(db), fai_db::SourceRole::Library) => return label,
+        fai_db::SourceOrigin::User => "legacy".to_owned(),
+        fai_db::SourceOrigin::StandardLibrary => "std".to_owned(),
+    };
+    let role = match file.role(db) {
+        fai_db::SourceRole::Library => "library".to_owned(),
+        fai_db::SourceRole::Test => "test".to_owned(),
+        fai_db::SourceRole::Executable(name) => format!("executable:{name}"),
+    };
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"fai.package-symbol.v1\0");
+    hash.update(&(package.len() as u64).to_le_bytes());
+    hash.update(package.as_bytes());
+    hash.update(role.as_bytes());
+    format!("package:{}:{label}", hash.finalize().to_hex())
 }
 
 /// Builds the backend symbol base from a module label and a binding name. Pure,
@@ -145,6 +167,45 @@ fn sanitize_ident(s: &str) -> String {
 #[cfg(test)]
 mod symbol_tests {
     use super::*;
+
+    fn package_symbol(key: &str, role: fai_db::SourceRole, extra_registration: bool) -> String {
+        let mut db = fai_db::FaiDatabase::new();
+        if extra_registration {
+            db.register_package("unrelated".into());
+        }
+        let package = db.register_package(key.into());
+        let id = db.add_source_scoped(
+            "Same.fai".into(),
+            "module Same\nlet value = 1\n".into(),
+            fai_db::SourceOrigin::Package(package),
+            role,
+        );
+        symbol_base(&db, DefId::new(id, Symbol::intern("value")))
+    }
+
+    #[test]
+    fn different_packages_have_different_native_symbols() {
+        assert_ne!(
+            package_symbol("left", fai_db::SourceRole::Library, false),
+            package_symbol("right", fai_db::SourceRole::Library, false)
+        );
+    }
+
+    #[test]
+    fn package_symbol_identity_does_not_depend_on_registration_order() {
+        assert_eq!(
+            package_symbol("same", fai_db::SourceRole::Library, false),
+            package_symbol("same", fai_db::SourceRole::Library, true)
+        );
+    }
+
+    #[test]
+    fn executable_scope_is_part_of_native_symbol_identity() {
+        assert_ne!(
+            package_symbol("same", fai_db::SourceRole::Executable("one".into()), false),
+            package_symbol("same", fai_db::SourceRole::Executable("two".into()), false)
+        );
+    }
 
     #[test]
     fn operator_escape_does_not_collide_with_an_identifier() {

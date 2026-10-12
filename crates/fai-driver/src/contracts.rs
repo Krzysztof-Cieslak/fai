@@ -957,7 +957,9 @@ fn contract_meta(
         source: ContractSource {
             file: file.path(db).replace(std::path::MAIN_SEPARATOR, "/"),
             origin: match file.origin(db) {
-                fai_db::SourceOrigin::User => ContractSourceOrigin::User,
+                fai_db::SourceOrigin::User | fai_db::SourceOrigin::Package(_) => {
+                    ContractSourceOrigin::User
+                }
                 fai_db::SourceOrigin::StandardLibrary => ContractSourceOrigin::StandardLibrary,
             },
         },

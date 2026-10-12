@@ -5406,5 +5406,18 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   and CLI retain their existing native-manifest behavior until package-aware
   compilation is integrated.
 
+- **D161 Package and target source ownership.** The query database registers
+  stable package instantiation keys, separate normal/development dependency
+  environments, and library/executable/test source roles. Source identity includes
+  ownership and role, so one path in two package instances cannot overwrite an
+  input. Automatic module lookup sees std, same-package library modules, and the
+  current target's private sources; test inputs never become production imports.
+  Duplicate-module checks use the observing scope, and `internal` access compares
+  complete source ownership rather than only the std/user distinction. Incremental
+  visibility projections stop unrelated package membership changes. Native and
+  worker-bundle module identities include the stable package key and source role,
+  independent of registration order. Legacy directory sessions retain the shared
+  user origin until their loader is migrated to manifest-owned packages.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

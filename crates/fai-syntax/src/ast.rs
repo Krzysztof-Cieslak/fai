@@ -125,8 +125,8 @@ impl Module {
 /// Visibility of a top-level binding.
 ///
 /// Three tiers, ordered `Public > Internal > Private`. `Internal` is visible
-/// across files within the same *origin* (today the standard library vs. user
-/// code; a package boundary later) but hidden from other origins — so a
+/// across files within the same loader-defined package or legacy/standard-library
+/// origin, but hidden from other origins — so a
 /// standard-library module can share a binding with its siblings without
 /// exposing it to user programs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
