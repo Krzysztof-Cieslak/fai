@@ -105,6 +105,27 @@ fn source_bytes_are_read_from_the_selected_commit() {
 }
 
 #[test]
+fn materialized_directories_use_the_canonical_native_path() {
+    let repository = Repository::new();
+    let source =
+        repository.store(false).materialize(&repository.package, &repository.head(), None).unwrap();
+    assert_eq!(source.directory, source.directory.canonicalize_utf8().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_directory_aliases_do_not_change_returned_source_locations() {
+    let repository = Repository::new();
+    std::fs::create_dir(&repository.cache).unwrap();
+    let alias = repository.cache.with_extension("alias");
+    std::os::unix::fs::symlink(&repository.cache, &alias).unwrap();
+    let source = GitStore::new(alias, false)
+        .materialize(&repository.package, &repository.head(), None)
+        .unwrap();
+    assert!(source.directory.starts_with(repository.cache.canonicalize_utf8().unwrap()));
+}
+
+#[test]
 fn frozen_materialization_works_after_the_remote_disappears() {
     let repository = Repository::new();
     let revision = repository.head();
