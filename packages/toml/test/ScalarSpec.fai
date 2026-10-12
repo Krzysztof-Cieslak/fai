@@ -1,0 +1,28 @@
+module TomlScalarSpec
+
+example: TomlScalar.integer "9223372036854775807" = Ok 9223372036854775807
+example: TomlScalar.integer "-9223372036854775808" = Ok (-9223372036854775807 - 1)
+example: TomlScalar.integer "9223372036854775808" |> Result.isErr
+example: TomlScalar.integer "-9223372036854775809" |> Result.isErr
+example: TomlScalar.integer "0x7fff_ffff_ffff_ffff" = Ok 9223372036854775807
+example: TomlScalar.integer "0x8000000000000000" |> Result.isErr
+example: TomlScalar.integer "0b_1" |> Result.isErr
+example: TomlScalar.integer "01" |> Result.isErr
+example: TomlScalar.integer "0_1" |> Result.isErr
+example: TomlScalar.integer "-0x1" |> Result.isErr
+example: TomlScalar.integer "0o755" = Ok 493
+example: TomlScalar.integer "+1_000" = Ok 1000
+example: TomlScalar.floating "1.0_2e+3" = Ok 1020.0
+example: TomlScalar.floating "1_.0" |> Result.isErr
+example: TomlScalar.floating "01.0" |> Result.isErr
+example: TomlScalar.floating "1e9999" |> Result.isErr
+example: (TomlScalar.floating "-0.0" |> Result.map Float.toBits) = Ok (-9223372036854775807 - 1)
+example: (TomlScalar.floating "-inf" |> Result.map Float.toBits) = Ok 0xfff0000000000000
+example: TomlTemporal.parse "2024-02-29T12:30Z" |> Result.isOk
+example: TomlTemporal.parse "2023-02-29" |> Result.isErr
+example: TomlTemporal.parse "24:00:00" |> Result.isErr
+example: TomlTemporal.parse "12:30:00.123456789123" |> Result.isOk
+example: (match TomlTemporal.parse "12:30:00.123456789123" with
+| Ok value -> TomlTemporal.toTime value |> Result.isErr
+| _ -> false)
+forall value: TomlScalar.integer (Int.toString value) = Ok value

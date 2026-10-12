@@ -1,0 +1,116 @@
+module TomlScalar
+
+let digit byte =
+  if byte >= 48 && byte <= 57 then
+    byte - 48
+  else if byte >= 65 && byte <= 70 then
+    byte - 55
+  else if byte >= 97 && byte <= 102 then byte - 87 else -1
+
+let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+digits : Bytes -> Int -> Int -> Int -> Int -> Result Int String
+let digits bytes index radix limit value =
+  if index >= Bytes.length bytes then
+    Ok value
+  else
+    let byte = at bytes index
+    if byte = 95 then
+      if index = 0 || digit (at bytes (index - 1)) < 0 || digit (at bytes (index - 1)) >= radix || digit (at bytes (index + 1)) < 0 || digit (at bytes (index + 1)) >= radix then
+        Err "misplaced integer underscore"
+      else
+        digits bytes (index + 1) radix limit value
+    else
+      let n = digit byte
+      if n < 0 || n >= radix then
+        Err "invalid integer digit"
+      else if value < (limit + n) / radix then
+        Err "integer exceeds signed 64-bit range"
+      else
+        digits bytes (index + 1) radix limit (value * radix - n)
+
+/// Strict TOML integer grammar, with checked signed 64-bit conversion.
+public integer : String -> Result Int String
+let integer text =
+  let bytes = Bytes.fromString text
+  let negative = at bytes 0 = 45
+  let signed = negative || at bytes 0 = 43
+  let start = if signed then 1 else 0
+  let radix =
+    if not signed && at bytes 0 = 48 then
+      (match at bytes 1 with
+      | 120 -> 16
+      | 111 -> 8
+      | 98 -> 2
+      | _ -> 10)
+    else
+      10
+  let start = if radix <> 10 then 2 else start
+  if start >= Bytes.length bytes || digit (at bytes start) < 0 || digit (at bytes start) >= radix then
+    Err "expected integer digits"
+  else if radix = 10 && at bytes start = 48 && Bytes.length bytes > start + 1 then
+    Err "leading zero in integer"
+  else
+    Result.map (fun value ->
+      if negative then
+        value
+      else
+        0 - value) (digits bytes start radix (if negative then
+      -9223372036854775807 - 1
+    else
+      -9223372036854775807) 0)
+
+let decimal byte = byte >= 48 && byte <= 57
+
+let underscores bytes index =
+  if index >= Bytes.length bytes then
+    true
+  else
+    if at bytes index = 95 && (not (decimal (at bytes (index - 1))) || not (decimal (at bytes (index + 1)))) then
+      false
+    else
+      underscores bytes (index + 1)
+
+public floating : String -> Result Float String
+let floating text =
+  match text with
+  | "inf" -> Ok (Float.fromBits 0x7ff0000000000000)
+  | "+inf" -> Ok (Float.fromBits 0x7ff0000000000000)
+  | "-inf" -> Ok (Float.fromBits 0xfff0000000000000)
+  | "nan" -> Ok (Float.fromBits 0x7ff8000000000000)
+  | "+nan" -> Ok (Float.fromBits 0x7ff8000000000000)
+  | "-nan" -> Ok (Float.fromBits 0xfff8000000000000)
+  | _ ->
+    if not (underscores (Bytes.fromString text) 0) then
+      Err "misplaced float underscore"
+    else
+      let normalized =
+        String.join "" (String.split "_" (if String.take 1 text = "+" then
+          String.drop 1 text
+        else
+          text))
+      match JsonNumber.fromString normalized with
+      | Err _ -> Err "invalid float syntax"
+      | Ok value -> JsonNumber.toFloat value
+
+public parse : String -> Result TomlTypes.Value String
+let parse text =
+  if text = "true" then
+    Ok (TomlTypes.Boolean true)
+  else if text = "false" then
+    Ok (TomlTypes.Boolean false)
+  else if String.contains text ":" || (String.substring 4 1 text = "-" && String.substring 7 1 text = "-") then
+    Result.map TomlTypes.Temporal (TomlTemporal.parse text)
+  else if List.member (String.take 2 text) ["0x", "0o", "0b"] then
+    Result.map TomlTypes.Integer (integer text)
+  else if String.contains text "." || String.contains text "e" || String.contains text "E" || List.member text [
+    "inf",
+    "+inf",
+    "-inf",
+    "nan",
+    "+nan",
+    "-nan"
+  ] then
+    Result.map TomlTypes.Float (floating text)
+  else
+    Result.map TomlTypes.Integer (integer text)
