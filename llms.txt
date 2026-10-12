@@ -1970,6 +1970,10 @@ selects NoHeader, FirstRecord or Supplied headers; names match exactly and
 map2/map3/andMap. Decoding accumulates located errors; optional/default columns
 handle absence, while emptyAsNone/nullToken and trim are explicit. Extra columns
 are accepted by default; exactColumns requires complete consumption.
+`CsvEncode`/`CsvBytesEncode` render records with explicit quoting, ending, BOM
+and output limits. `CsvEncode.schema` combines named projected columns; encode
+returns a record and header returns its ordered names. A complete record is
+validated before output, and leading literal text BOMs are protected by quoting.
 
 `packages/config` provides sourced layers (`Config.fromValue`, `toml`,
 `ConfigSource.snapshot`) and later-wins `Config.merge`. Tables merge recursively;
