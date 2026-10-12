@@ -1,0 +1,168 @@
+module CsvTypes
+
+/// Byte offsets are zero-based; physical lines and byte columns are one-based.
+public type Position = { byteColumn : Int, byteOffset : Int, line : Int }
+
+public type Span = { finish : Position, start : Position }
+
+public start : Position
+let start = { byteColumn = 1, byteOffset = 0, line = 1 }
+
+public type Source = { index : Int, span : Span }
+
+public type Field 'a = { quoted : Bool, span : Option Span, value : 'a }
+
+public type Record 'a = { fields : Array (Field 'a), source : Option Source }
+
+public type Endings =
+  | AnyEnding
+  | CrLfOnly
+
+public type LineEnding =
+  | CrLf
+  | Lf
+  | Cr
+
+public type Bom =
+  | PreserveBom
+  | StripUtf8Bom
+
+public type Width =
+  | Strict
+  | Flexible
+  | Exact Int
+
+public type Dialect = { delimiter : Char, endings : Endings, quote : Char }
+
+public dialect : Dialect
+let dialect = { delimiter = ',', endings = AnyEnding, quote = '"' }
+
+public type Limits = {
+  maxCollectedBytes : Int,
+  maxCollectedRecords : Int,
+  maxErrors : Int,
+  maxFieldBytes : Int,
+  maxFields : Int,
+  maxInputBytes : Option Int,
+  maxRecordBytes : Int,
+  maxRecords : Option Int
+}
+
+public limits : Limits
+let limits = {
+  maxCollectedBytes = 33554432,
+  maxCollectedRecords = 100000,
+  maxErrors = 64,
+  maxFieldBytes = 1048576,
+  maxFields = 4096,
+  maxInputBytes = None,
+  maxRecordBytes = 8388608,
+  maxRecords = None
+}
+
+public type Options = { bom : Bom, dialect : Dialect, limits : Limits, width : Width }
+
+public options : Options
+let options = { bom = StripUtf8Bom, dialect = dialect, limits = limits, width = Strict }
+
+public byteOptions : Options
+let byteOptions = { options with bom = PreserveBom }
+
+public type ErrorKind =
+  | InvalidOptions
+  | InvalidState
+  | UnexpectedQuote
+  | UnexpectedAfterQuote
+  | UnclosedQuote
+  | InvalidEnding
+  | InvalidUtf8
+  | FieldLimit
+  | RecordLimit
+  | FieldCountLimit
+  | InputLimit
+  | RecordCountLimit
+  | CollectionLimit
+  | ColumnCount
+  | MissingHeader
+  | EmptyHeader
+  | DuplicateHeader
+  | UnknownColumn
+  | MissingColumn
+  | InvalidValue
+  | CounterOverflow
+  | EmptyRecord
+  | OutputLimit
+
+public type Error = {
+  actual : Option Int,
+  expected : Option Int,
+  fieldIndex : Option Int,
+  kind : ErrorKind,
+  message : String,
+  position : Option Position,
+  recordIndex : Option Int,
+  related : Option Span,
+  span : Option Span
+}
+
+public error : ErrorKind -> String -> Error
+let error kind message = {
+  actual = None,
+  expected = None,
+  fieldIndex = None,
+  kind = kind,
+  message = message,
+  position = None,
+  recordIndex = None,
+  related = None,
+  span = None
+}
+
+public at : Record 'a -> Option Int -> Error -> Error
+let at record index error =
+  let span =
+    match index with
+    | Some index -> Option.andThen (fun field -> field.span) (Array.get index record.fields)
+    | None -> Option.map (fun source -> source.span) record.source
+  { error with
+    fieldIndex = index,
+    position = Option.map (fun span -> span.start) span,
+    recordIndex = Option.map (fun source -> source.index) record.source,
+    span = span
+  }
+
+let validSymbol char =
+  let code = Char.toCode char
+  code = 9 || (code >= 32 && code <= 126)
+
+let nonnegative optional =
+  match optional with
+  | None -> true
+  | Some value -> value >= 0
+
+public validateLimits : Limits -> Result Unit Error
+let validateLimits limits =
+  if limits.maxFieldBytes < 0 || limits.maxRecordBytes < 0 || limits.maxFields < 0 || limits.maxCollectedRecords < 0 || limits.maxCollectedBytes < 0 || limits.maxErrors < 1 || not (nonnegative limits.maxInputBytes) || not (nonnegative limits.maxRecords) then
+    Err (error InvalidOptions "CSV limits must be nonnegative; maxErrors must be positive")
+  else
+    Ok ()
+
+public validate : Options -> Result Unit Error
+let validate options =
+  match validateLimits options.limits with
+  | Err error -> Err error
+  | Ok _ ->
+    if not (validSymbol options.dialect.delimiter) || not (validSymbol options.dialect.quote) || options.dialect.delimiter = options.dialect.quote then
+      Err (error InvalidOptions "CSV delimiter and quote must be distinct ASCII symbols")
+    else
+      match options.width with
+      | Exact width ->
+        if width < 1 then Err (error InvalidOptions "exact CSV width must be positive") else Ok ()
+      | _ -> Ok ()
+
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.position with
+  | None -> ""
+  | Some position ->
+    " at line " ++ Int.toString position.line ++ ", byte column " ++ Int.toString position.byteColumn)

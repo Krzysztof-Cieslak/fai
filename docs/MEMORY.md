@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- CSV uses one pure byte-oriented parser with separate text validation. Parser
+  snapshots are immutable, feed stops at one record, and source spans retain
+  original syntax. Width is strict by default; whitespace and embedded line
+  endings are preserved. EOF and resource limits are explicit.
+
 - Configuration integration remains in Fai: a scoped temporary-directory fixture
   verifies files, environment and CLI precedence under JIT/AOT. CI supplies only
   the inputs and commands. The TOML corpus is pinned and checked for full coverage;
