@@ -25,7 +25,9 @@ locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and to
 > source-selector unification, and compiler/target filtering against supplied catalogs.
 > Locked/offline/frozen commands verify exact sources and preserve valid selections.
 > Vendoring supplies verified, cache-independent source snapshots with explicit
-> bypass and refresh behavior. Publication and installed-toolchain dispatch remain
+> bypass and refresh behavior. Publication validates isolated candidate graphs and
+> journals version/commit/tag state before atomic pushes, with advisory API reports
+> and exact resume. Installed-toolchain dispatch and ecosystem migration remain
 > in development.
 > Native-only and unversioned directory sessions retain compatibility discovery.
 

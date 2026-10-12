@@ -2335,10 +2335,18 @@ See `packages/web/README.md`.
 
 The current CLI uses the native-dependency `fai.toml` section described below.
 The package/project design and implementation status are in `docs/PACKAGES.md`;
-its publishing and toolchain-dispatch integration is being developed. `fai vendor`
+its toolchain-dispatch and ecosystem migration is being developed. `fai vendor`
 snapshots exact locked Git sources for frozen builds without a cache or network.
 Configured snapshots fail on missing/altered entries; `--no-vendor` is an explicit
 bypass, and `fai vendor` refreshes tool-owned source trees.
+
+`fai publish patch|minor|major|<exact-version>` validates clean committed source
+before preparing versions, a release commit, and canonical Git tags. Batch intent
+uses `package=intent` entries. Consumer validation excludes developer overrides
+and locks, and runs separately from the package's development graph. `--plan`
+validates without changing source files or refs; API diffs are advisory.
+Branch/tags push atomically, and `publish --resume` retries the prepared release
+without another bump. Authored dependency ranges remain unchanged.
 
 `fai build-info` prints JSON describing the compiler's source digest, complete
 tool build identity, backend identity, target, profile and bundled native

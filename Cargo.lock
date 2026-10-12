@@ -815,6 +815,7 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "wait-timeout",
@@ -942,6 +943,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml",
+ "url",
  "wait-timeout",
  "windows-sys 0.61.2",
 ]

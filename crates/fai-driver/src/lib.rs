@@ -39,10 +39,11 @@ use fai_span::{ByteOffset, SourceId, Span, SpanResolver, TextRange};
 use serde::Serialize;
 
 pub use backend::{
-    BuildOutcome, BuildOutput, CompiledProgram, RunBundleResult, RunOutcome, build_native,
-    build_native_with_deps, build_run_bundle, build_run_bundle_with_deps, bundle_from_slice,
-    compile_pool, jit_compile, jit_run_bundle, jit_run_bundle_with_args, jit_run_program,
-    object_code, reachable_defs, set_bce_shadow, set_object_cache_capacity, test_bundle_from_slice,
+    BuildOutcome, BuildOutput, CompiledProgram, RunBundleResult, RunOutcome, build_library,
+    build_native, build_native_with_deps, build_run_bundle, build_run_bundle_with_deps,
+    bundle_from_slice, compile_pool, jit_compile, jit_run_bundle, jit_run_bundle_with_args,
+    jit_run_program, object_code, reachable_defs, set_bce_shadow, set_object_cache_capacity,
+    test_bundle_from_slice,
 };
 pub use cache::{cache_stats, reset_stats, set_cache_dir};
 pub use command::{
@@ -60,6 +61,8 @@ pub use manifest::{MANIFEST_NAME, NativeDeps, read_native_manifest};
 pub use query::{QueryRequest, QueryResult, run_query};
 pub use session::{PreparedProjectUpdate, Session};
 mod packages;
+mod publish;
+pub use publish::{ApiChange, PublishOptions, PublishOutput, PublishedPackage, publish};
 mod project;
 pub use packages::{
     PackageChange, PackageCommand, PackageOutput, PackageSelection, init_package,

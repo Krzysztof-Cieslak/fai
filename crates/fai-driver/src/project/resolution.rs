@@ -29,7 +29,7 @@ impl State {
         options: &ProjectOptions,
     ) -> Result<Self, DriverError> {
         let root = &loader.configuration_root;
-        if root.join(".fai/transaction.json").exists() {
+        if !loader.mode.release_validation && root.join(".fai/transaction.json").exists() {
             MetadataTransaction::recover(root)?;
             return Err(error(
                 fai_package::INPUTS_CHANGED,
@@ -47,6 +47,7 @@ impl State {
             ));
         }
         let on_disk = match &original {
+            _ if loader.mode.release_validation => LockFile::new(context),
             Some(text) => LockFile::parse(text)?,
             None => LockFile::new(context),
         };
@@ -72,13 +73,22 @@ impl State {
             ));
         }
         let lock = loader.mode.seed_lock.clone().unwrap_or_else(|| on_disk.clone());
-        let cache =
-            crate::cache::cache_dir().unwrap_or_else(|| std::env::temp_dir().join("fai-cache"));
+        let cache = loader
+            .mode
+            .cache_dir
+            .clone()
+            .map(Utf8PathBuf::into_std_path_buf)
+            .or_else(crate::cache::cache_dir)
+            .unwrap_or_else(|| std::env::temp_dir().join("fai-cache"));
         let cache = Utf8PathBuf::from_path_buf(cache)
             .map_err(|path| DriverError::NonUtf8Path(path.to_string_lossy().into_owned()))?;
+        let mut store = GitStore::new(cache.join("packages"), options.offline);
+        for (logical, actual) in &loader.mode.transports {
+            store = store.with_transport(logical.clone(), actual.clone());
+        }
         Ok(Self {
             options: options.clone(),
-            store: GitStore::new(cache.join("packages"), options.offline),
+            store,
             lock,
             original,
             shared,
@@ -533,6 +543,19 @@ impl<'a, 'files> Provider<'a, 'files> {
                     self.dependency(&rule.rule.with, &rule.directory, origin, false)?,
                 );
             }
+        }
+        if let Some(identity) = self.loader.mode.root_alias.clone() {
+            overrides.insert(
+                PackageKey::Git(identity),
+                PackageRequirement {
+                    package: PackageKey::Path(self.path_key(&self.root)),
+                    selector: PackageSelector::Path(None),
+                    origin: RequirementOrigin {
+                        manifest: self.root.join("fai.toml").to_string(),
+                        field: "package.version".into(),
+                    },
+                },
+            );
         }
         Ok(overrides)
     }

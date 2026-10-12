@@ -40,6 +40,14 @@ pub const INPUTS_CHANGED: DiagnosticCode = DiagnosticCode::new("FAI0825");
 pub const UNSUPPORTED_SOURCE_LAYOUT: DiagnosticCode = DiagnosticCode::new("FAI0827");
 /// A required vendored source has no matching verified entry.
 pub const VENDOR_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("FAI0820");
+/// Publication inputs, version intent, or portability are invalid.
+pub const INVALID_PUBLICATION: DiagnosticCode = DiagnosticCode::new("FAI0821");
+/// Candidate consumer or development validation failed.
+pub const PUBLISH_VALIDATION: DiagnosticCode = DiagnosticCode::new("FAI0822");
+/// Publication could not atomically push its prepared refs.
+pub const PUBLISH_CONFLICT: DiagnosticCode = DiagnosticCode::new("FAI0823");
+/// A prepared release must be resumed or explicitly replanned.
+pub const PUBLISH_PENDING: DiagnosticCode = DiagnosticCode::new("FAI0824");
 /// More than one replacement can apply to the same package and root.
 pub const OVERLAPPING_OVERRIDES: DiagnosticCode = DiagnosticCode::new("FAI0816");
 /// More than one dependency declaration can bind the same active alias.
@@ -49,6 +57,30 @@ pub const INVALID_TARGET: DiagnosticCode = DiagnosticCode::new("FAI0819");
 
 /// Package metadata diagnostics, shared by the parser and source planner.
 pub const CODES: &[CodeInfo] = &[
+    CodeInfo {
+        code: INVALID_PUBLICATION,
+        title: "invalid publication inputs",
+        default_severity: Severity::Error,
+        explanation: "Publishing requires clean committed source, explicit version intent, portable dependency declarations, and an unambiguous Git destination. Correct the selected package metadata or publication arguments before retrying.",
+    },
+    CodeInfo {
+        code: PUBLISH_VALIDATION,
+        title: "release candidate validation failed",
+        default_severity: Severity::Error,
+        explanation: "The candidate release did not pass its independent normal-consumer and development-root validation. Fix the underlying source, type, contract, or dependency errors before publishing.",
+    },
+    CodeInfo {
+        code: PUBLISH_CONFLICT,
+        title: "atomic publication failed",
+        default_severity: Severity::Error,
+        explanation: "The prepared branch and tags could not be atomically published, or a release tag already identifies another commit. Never force-move release tags. Resolve destination rules or access and resume the prepared release.",
+    },
+    CodeInfo {
+        code: PUBLISH_PENDING,
+        title: "prepared publication needs recovery",
+        default_severity: Severity::Error,
+        explanation: "A publication receipt records a prepared commit and tag set. Use publish --resume to complete that exact release. Changed source or refs require explicit replanning rather than another implicit version bump.",
+    },
     CodeInfo {
         code: VENDOR_UNAVAILABLE,
         title: "vendored source unavailable",

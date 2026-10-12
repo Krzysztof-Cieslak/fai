@@ -174,6 +174,30 @@ A package has duplicate executable names, invalid source-root ownership, a missi
 
 A required source has no matching verified vendor entry or its bytes changed. Refresh the vendor snapshot, or explicitly use --no-vendor to restore through the normal source provider. Configured vendoring never silently falls through to the network.
 
+### FAI0821 — invalid publication inputs
+
+**Severity:** error
+
+Publishing requires clean committed source, explicit version intent, portable dependency declarations, and an unambiguous Git destination. Correct the selected package metadata or publication arguments before retrying.
+
+### FAI0822 — release candidate validation failed
+
+**Severity:** error
+
+The candidate release did not pass its independent normal-consumer and development-root validation. Fix the underlying source, type, contract, or dependency errors before publishing.
+
+### FAI0823 — atomic publication failed
+
+**Severity:** error
+
+The prepared branch and tags could not be atomically published, or a release tag already identifies another commit. Never force-move release tags. Resolve destination rules or access and resume the prepared release.
+
+### FAI0824 — prepared publication needs recovery
+
+**Severity:** error
+
+A publication receipt records a prepared commit and tag set. Use publish --resume to complete that exact release. Changed source or refs require explicit replanning rather than another implicit version bump.
+
 ### FAI0825 — package inputs changed during preparation
 
 **Severity:** error

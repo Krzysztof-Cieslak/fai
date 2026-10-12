@@ -716,6 +716,39 @@ pub fn build_native(db: &dyn Db, file: SourceFile, out: &Utf8Path) -> BuildOutco
     build_native_with_deps(db, file, out, &crate::manifest::NativeDeps::default())
 }
 
+/// Validates exported library code and warms source-package backend artifacts.
+pub fn build_library(db: &dyn Db, files: &[SourceFile]) -> crate::CommandResult {
+    let mut result = crate::check(db, files);
+    if !result.ok {
+        return result;
+    }
+    let roots: Vec<_> = files
+        .iter()
+        .flat_map(|&file| {
+            module_defs(db, file)
+                .defs
+                .iter()
+                .filter(|definition| definition.visibility.is_exported())
+                .map(|definition| DefId::new(file.source(db), definition.name))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let reachable = reachable_from_roots(db, &roots, &FxHashSet::default());
+    result.diagnostics.extend(precompile_diagnostics(db, &reachable));
+    result.ok = !result
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == fai_diagnostics::Severity::Error);
+    if result.ok {
+        for definition in reachable {
+            if let Some(file) = db.source_file(definition.file) {
+                let _ = object_code(db, file, definition.name, true);
+            }
+        }
+    }
+    result
+}
+
 /// Compiles the closure reachable from `file`'s `main` to a native executable at
 /// `out`, linking the project's declared native dependencies (`fai.toml`) so a
 /// user `foreign` function's symbol resolves.

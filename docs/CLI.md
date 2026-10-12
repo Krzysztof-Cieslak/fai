@@ -255,6 +255,45 @@ network fallback. `--no-vendor` explicitly bypasses the snapshot, and running
 `vendor` again repairs tool-owned source trees. Mutable paths outside the active
 project cannot be captured as a self-contained vendor snapshot.
 
+### Publishing
+
+```sh
+fai publish patch --plan
+fai publish patch
+fai publish json=minor web=patch
+fai publish --resume
+```
+
+Version intent is required: `patch`, `minor`, `major`, or an exact full version.
+Prerelease transitions use exact versions. A batch names selected packages and
+publishes their canonical path-scoped tags in one atomic push. `--remote` and
+`--branch` resolve an otherwise ambiguous destination.
+
+Publishing starts from clean committed code. It prepares version-only edits in
+a candidate Git tree, then independently validates each package as a normal
+consumer dependency and as a development root. Candidate repository refs let
+batch members use planned compatible releases while retaining every authored
+dependency range. Local overrides, vendoring, and existing developer locks do
+not determine consumer validity. Host code and contracts run locally; other
+declared targets receive metadata validation only.
+
+The API report compares public declarations and reports additions, removals,
+and changes. It is advisory and does not choose or veto a version bump. A
+comparison involving unexpanded re-exports or an unavailable baseline is marked
+partial. `--plan` performs the same candidate validation without changing source
+files, branches, or tags; Git object and build caches may be populated.
+
+Publication journals its exact candidate tree, commit, version edits, and tags
+before changing the checkout. Git refs and the index use checked replacements;
+the branch and tags are pushed with `--atomic`. Failed pushes retain the prepared
+identity for `--resume`; release tags are never force-moved. Existing development
+locks remain development records and are not rewritten with self-referential
+future commit IDs. Prepare affected locks after the release.
+
+JSON results include `status`, `commit`, `tree`, `remote`, `branch`, `packages`,
+`apiChanges`, `apiComplete`, `validatedHost`, `metadataTargets`, and `notices`,
+alongside the versioned success envelope.
+
 ## 3. Conventions
 
 ### Symbol addressing

@@ -118,6 +118,8 @@ impl std::fmt::Display for ColorChoice {
 /// Top-level subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Validate and publish explicitly versioned package releases through Git.
+    Publish(PublishArgs),
     /// Create an application or library package.
     Init(InitArgs),
     /// Add a Git or local dependency and repair the active lock.
@@ -176,6 +178,25 @@ pub enum Command {
         #[command(subcommand)]
         sub: DaemonCommand,
     },
+}
+
+/// Explicit release version intent and resumable publication options.
+#[derive(Debug, Args)]
+pub struct PublishArgs {
+    /// Bump/exact version, or package=intent entries for a selected batch.
+    pub intents: Vec<String>,
+    /// Validate and report without changing working-tree files or refs.
+    #[arg(long, conflicts_with = "resume")]
+    pub plan: bool,
+    /// Resume the prepared release without another version bump.
+    #[arg(long, conflicts_with = "intents")]
+    pub resume: bool,
+    /// Configured Git remote name.
+    #[arg(long)]
+    pub remote: Option<String>,
+    /// Destination branch.
+    #[arg(long)]
+    pub branch: Option<String>,
 }
 
 /// Arguments for package initialization.

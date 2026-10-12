@@ -42,6 +42,7 @@ toml.workspace = true
 libloading.workspace = true
 tempfile.workspace = true
 glob.workspace = true
+url.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

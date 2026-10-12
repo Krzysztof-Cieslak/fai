@@ -24,6 +24,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 indoc.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
