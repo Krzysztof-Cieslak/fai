@@ -1,0 +1,25 @@
+module CsvPeople
+
+public type Person = { active : Bool, age : Int, name : String }
+
+public decoder : CsvDecode.Decoder Person
+let decoder =
+  CsvDecode.map3 (fun name age active -> {
+    active = active,
+    age = age,
+    name = name
+  }) (CsvDecode.field "name" CsvDecode.string) (CsvDecode.field "age" (CsvDecode.refineValue (fun age ->
+    if age >= 0 then
+      Ok age
+    else
+      Err "age must be nonnegative") CsvDecode.int)) (CsvDecode.field "active" CsvDecode.bool)
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  match Csv.parseTable "name,age,active\r\nAlice,42,true\r\n" with
+  | Err error -> env.console.writeLine (CsvTypes.errorToString error)
+  | Ok table ->
+    match CsvDecode.decode decoder table.headers (Array.unsafeGet 0 table.records) with
+    | Err errors ->
+      env.console.writeLine (String.join "; " (List.map CsvTypes.errorToString errors))
+    | Ok person -> env.console.writeLine (person.name ++ " is " ++ Int.toString person.age)

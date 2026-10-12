@@ -1,0 +1,94 @@
+module CsvBytesDecode
+
+public type Value 'a = CsvDecodeCore.Value Bytes 'a
+
+public type Decoder 'a = CsvDecodeCore.Decoder Bytes 'a
+
+public custom : (Bytes -> Result 'a String) -> Value 'a
+let custom read = CsvDecodeCore.custom read
+
+public parseValue : Value 'a -> Bytes -> Result 'a String
+let parseValue value bytes = CsvDecodeCore.parseValue value bytes
+
+public bytes : Value Bytes
+let bytes = custom (fun bytes -> Ok bytes)
+
+public utf8 : CsvDecode.Value 'a -> Value 'a
+let utf8 value =
+  custom (fun bytes ->
+    match Bytes.toString bytes with
+    | None -> Err "CSV field is not UTF-8"
+    | Some text -> CsvDecode.parseValue value text)
+
+public string : Value String
+let string = utf8 CsvDecode.string
+
+public int : Value Int
+let int = utf8 CsvDecode.int
+
+public float : Value Float
+let float = utf8 CsvDecode.float
+
+public bool : Value Bool
+let bool = utf8 CsvDecode.bool
+
+public emptyAsNone : Value 'a -> Value (Option 'a)
+let emptyAsNone value = CsvDecodeCore.optionalValue Bytes.isEmpty value
+
+public nullToken : Bytes -> Value 'a -> Value (Option 'a)
+let nullToken token value = CsvDecodeCore.optionalValue (fun bytes -> bytes = token) value
+
+public mapValue : ('a -> 'b) -> Value 'a -> Value 'b
+let mapValue transform value = CsvDecodeCore.mapValue transform value
+
+public refineValue : ('a -> Result 'b String) -> Value 'a -> Value 'b
+let refineValue transform value = CsvDecodeCore.refineValue transform value
+
+public decodeWith : Int -> Decoder 'a -> Option CsvBytes.Headers -> CsvBytes.Record -> Result 'a (List CsvTypes.Error)
+let decodeWith maxErrors decoder headers record =
+  CsvDecodeCore.decode maxErrors identity decoder (Option.map CsvBytes.unwrapHeaders headers) (CsvBytes.inspect record)
+
+public decode : Decoder 'a -> Option CsvBytes.Headers -> CsvBytes.Record -> Result 'a (List CsvTypes.Error)
+let decode decoder headers record = decodeWith CsvTypes.limits.maxErrors decoder headers record
+
+public index : Int -> Value 'a -> Decoder 'a
+let index index value = CsvDecodeCore.index index value
+
+public optionalIndex : Int -> Value 'a -> Decoder (Option 'a)
+let optionalIndex index value = CsvDecodeCore.optionalIndex index value
+
+public field : Bytes -> Value 'a -> Decoder 'a
+let field name value = CsvDecodeCore.field name value
+
+public optionalField : Bytes -> Value 'a -> Decoder (Option 'a)
+let optionalField name value = CsvDecodeCore.optionalField name value
+
+public withDefault : 'a -> Decoder 'a -> Decoder 'a
+let withDefault fallback decoder = CsvDecodeCore.withDefault fallback decoder
+
+public succeed : 'a -> Decoder 'a
+let succeed value = CsvDecodeCore.succeed value
+
+public map : ('a -> 'b) -> Decoder 'a -> Decoder 'b
+let map transform decoder = CsvDecodeCore.map transform decoder
+
+public map2 : ('a -> 'b -> 'c) -> Decoder 'a -> Decoder 'b -> Decoder 'c
+let map2 apply a b = CsvDecodeCore.map2 apply a b
+
+public map3 : ('a -> 'b -> 'c -> 'd) -> Decoder 'a -> Decoder 'b -> Decoder 'c -> Decoder 'd
+let map3 apply a b c = CsvDecodeCore.map3 apply a b c
+
+public andMap : Decoder 'a -> Decoder ('a -> 'b) -> Decoder 'b
+let andMap argument function = CsvDecodeCore.andMap argument function
+
+public andThen : ('a -> Decoder 'b) -> Decoder 'a -> Decoder 'b
+let andThen next decoder = CsvDecodeCore.andThen next decoder
+
+public refine : ('a -> Result 'b String) -> Decoder 'a -> Decoder 'b
+let refine check decoder = CsvDecodeCore.refine check decoder
+
+public oneOf : List (Decoder 'a) -> Decoder 'a
+let oneOf decoders = CsvDecodeCore.oneOf decoders
+
+public exactColumns : Decoder 'a -> Decoder 'a
+let exactColumns decoder = CsvDecodeCore.exactColumns decoder

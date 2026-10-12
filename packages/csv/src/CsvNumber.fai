@@ -1,0 +1,45 @@
+module CsvNumber
+
+let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+let decimal bytes index limit value =
+  if index >= Bytes.length bytes then
+    Ok value
+  else
+    let digit = at bytes index - 48
+    if digit < 0 || digit > 9 then
+      Err "expected decimal integer"
+    else if value < (limit + digit) / 10 then
+      Err "integer exceeds signed 64-bit range"
+    else
+      decimal bytes (index + 1) limit (value * 10 - digit)
+
+public int : String -> Result Int String
+let int text =
+  let bytes = Bytes.fromString text
+  let negative = at bytes 0 = 45
+  let start = if negative || at bytes 0 = 43 then 1 else 0
+  if start >= Bytes.length bytes then
+    Err "expected decimal integer"
+  else
+    Result.map (fun value ->
+      if negative then
+        value
+      else
+        0 - value) (decimal bytes start (if negative then
+      -9223372036854775807 - 1
+    else
+      -9223372036854775807) 0)
+
+public float : String -> Result Float String
+let float text =
+  match JsonNumber.fromString (if String.take 1 text = "+" then String.drop 1 text else text) with
+  | Err _ -> Err "expected decimal float"
+  | Ok number -> JsonNumber.toFloat number
+
+public bool : String -> Result Bool String
+let bool text =
+  match text with
+  | "true" -> Ok true
+  | "false" -> Ok false
+  | _ -> Err "expected true or false"
