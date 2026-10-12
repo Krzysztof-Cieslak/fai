@@ -1,0 +1,147 @@
+module Csv
+
+public opaque type Record = CsvTypes.Record String
+
+public opaque type Headers = CsvRecord.Headers String
+
+public type HeaderMode =
+  | NoHeader
+  | FirstRecord
+  | Supplied Headers
+
+public type Table = { headers : Option Headers, records : Array Record }
+
+public options : CsvTypes.Options
+let options = CsvTypes.options
+
+let textRecords records index output =
+  if index >= Array.length records then
+    Ok output
+  else
+    match CsvRecord.text (Array.unsafeGet index records) with
+    | Err error -> Err error
+    | Ok record -> textRecords records (index + 1) (Array.push record output)
+
+public parseBytesWith : CsvTypes.Options -> Bytes -> Result (Array Record) CsvTypes.Error
+let parseBytesWith options bytes =
+  match CsvRecord.parse true options bytes with
+  | Err error -> Err error
+  | Ok records -> textRecords records 0 [||]
+
+public parseBytes : Bytes -> Result (Array Record) CsvTypes.Error
+let parseBytes bytes = parseBytesWith options bytes
+
+public parseWith : CsvTypes.Options -> String -> Result (Array Record) CsvTypes.Error
+let parseWith options text = parseBytesWith options (Bytes.fromString text)
+
+public parse : String -> Result (Array Record) CsvTypes.Error
+let parse text = parseWith options text
+
+public recordWith : CsvTypes.Limits -> Array String -> Result Record CsvTypes.Error
+let recordWith limits values =
+  CsvRecord.make limits (fun text -> Bytes.length (Bytes.fromString text)) values
+
+public record : Array String -> Result Record CsvTypes.Error
+let record values = recordWith CsvTypes.limits values
+
+public fields : Record -> Array String
+let fields record = CsvRecord.values record
+
+public field : Int -> Record -> Result String CsvTypes.Error
+let field index record =
+  match Array.get index record.fields with
+  | Some field -> Ok field.value
+  | None ->
+    Err (CsvTypes.at record (Some index) (CsvTypes.error CsvTypes.MissingColumn "CSV field index is out of bounds"))
+
+public inspect : Record -> CsvTypes.Record String
+let inspect record = record
+
+internal wrap : CsvTypes.Record String -> Record
+let wrap record = record
+
+public fromBytes : CsvBytes.Record -> Result Record CsvTypes.Error
+let fromBytes record = CsvRecord.text (CsvBytes.inspect record)
+
+public headersWith : (String -> String) -> Record -> Result Headers CsvTypes.Error
+let headersWith normalize record = CsvRecord.headers normalize (fun text -> text = "") record
+
+public headers : Record -> Result Headers CsvTypes.Error
+let headers record = headersWith identity record
+
+public headerNames : Headers -> Array String
+let headerNames headers = headers.names
+
+public column : String -> Headers -> Result Int CsvTypes.Error
+let column name headers = CsvRecord.lookup name headers
+
+public named : String -> Headers -> Record -> Result String CsvTypes.Error
+let named name headers record =
+  match column name headers with
+  | Err error -> Err error
+  | Ok index -> field index record
+
+internal headerMode : HeaderMode -> CsvRecord.HeaderMode String
+let headerMode mode =
+  match mode with
+  | NoHeader -> CsvRecord.NoHeader
+  | FirstRecord -> CsvRecord.FirstRecord
+  | Supplied headers -> CsvRecord.Supplied headers
+
+internal wrapHeaders : CsvRecord.Headers String -> Headers
+let wrapHeaders headers = headers
+
+public parseTableBytesWith : CsvTypes.Options -> HeaderMode -> Bytes -> Result Table CsvTypes.Error
+let parseTableBytesWith options mode bytes =
+  match CsvRecord.optionsFor options (headerMode mode) with
+  | Err error -> Err error
+  | Ok options ->
+    match parseBytesWith options bytes with
+    | Err error -> Err error
+    | Ok records -> CsvRecord.table (fun text -> text = "") (headerMode mode) records
+
+public parseTableWith : CsvTypes.Options -> HeaderMode -> String -> Result Table CsvTypes.Error
+let parseTableWith options mode text = parseTableBytesWith options mode (Bytes.fromString text)
+
+public parseTable : String -> Result Table CsvTypes.Error
+let parseTable text = parseTableWith options FirstRecord text
+
+public opaque type Parser = CsvCore.Parser
+
+public type Status =
+  | NeedInput
+  | RecordReady Record
+  | End
+  | Failed CsvTypes.Error
+
+public type Feed = { next : Int, parser : Parser, status : Status }
+
+public parserWith : CsvTypes.Options -> Result Parser CsvTypes.Error
+let parserWith options = CsvCore.parser true options
+
+public parser : Unit -> Result Parser CsvTypes.Error
+let parser unit = parserWith options
+
+let converted fed =
+  let status =
+    match fed.status with
+    | CsvCore.NeedInput -> NeedInput
+    | CsvCore.End -> End
+    | CsvCore.Failed error -> Failed error
+    | CsvCore.RecordReady record ->
+      (match CsvRecord.text record with
+      | Ok record -> RecordReady record
+      | Err error -> Failed error)
+  { next = fed.next, parser = fed.parser, status = status }
+
+public feedFrom : Parser -> Bytes -> Int -> Feed
+let feedFrom parser bytes offset = converted (CsvCore.feed parser bytes offset)
+
+public feed : Parser -> Bytes -> Feed
+let feed parser bytes = feedFrom parser bytes 0
+
+public finish : Parser -> Feed
+let finish parser = converted (CsvCore.finish parser)
+
+public headerRecord : Headers -> Record
+let headerRecord headers = headers.original
