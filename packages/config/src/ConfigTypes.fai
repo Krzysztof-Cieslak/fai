@@ -1,0 +1,122 @@
+module ConfigTypes
+
+public type SourceKind =
+  | Defaults
+  | TomlFile
+  | DotenvFile
+  | Environment
+  | CommandLine
+  | Supplied
+  | Composite
+
+public type Origin = {
+  argvIndex : Option Int,
+  base : Option Path,
+  file : Option Path,
+  kind : SourceKind,
+  label : String,
+  location : Option TomlTypes.Location,
+  name : Option String
+}
+
+public origin : SourceKind -> String -> Origin
+let origin kind label = {
+  argvIndex = None,
+  base = None,
+  file = None,
+  kind = kind,
+  label = label,
+  location = None,
+  name = None
+}
+
+public type ErrorKind =
+  | InvalidOptions
+  | LimitExceeded
+  | InvalidBinding
+  | DuplicateBinding
+  | InvalidSource
+  | FileFailure
+  | ParseFailure
+  | Missing
+  | WrongType
+  | InvalidValue
+  | UnknownField
+
+public type Error = {
+  dotenvError : Option Dotenv.Error,
+  fileError : Option FileSystem.Error,
+  kind : ErrorKind,
+  message : String,
+  origin : Option Origin,
+  path : List TomlTypes.Segment,
+  tomlError : Option Toml.ParseError
+}
+
+public error : ErrorKind -> String -> Error
+let error kind message = {
+  dotenvError = None,
+  fileError = None,
+  kind = kind,
+  message = message,
+  origin = None,
+  path = [],
+  tomlError = None
+}
+
+public type Limits = {
+  maxBindings : Int,
+  maxDepth : Int,
+  maxErrors : Int,
+  maxInputBytes : Int,
+  maxLayers : Int,
+  maxNodes : Int
+}
+
+public limits : Limits
+let limits = {
+  maxBindings = 1024,
+  maxDepth = 128,
+  maxErrors = 64,
+  maxInputBytes = 4194304,
+  maxLayers = 64,
+  maxNodes = 100000
+}
+
+public validateLimits : Limits -> Result Unit Error
+let validateLimits limits =
+  if limits.maxInputBytes < 0 || limits.maxNodes < 1 || limits.maxDepth < 0 || limits.maxLayers < 0 || limits.maxBindings < 0 || limits.maxErrors < 1 then
+    Err (error InvalidOptions "invalid configuration limits")
+  else
+    Ok ()
+
+public type Binding = { name : String, path : List String }
+
+public type StoredOrigin = { origin : Origin, source : Option Bytes, span : Option TomlTypes.Span }
+
+public stored : Origin -> StoredOrigin
+let stored origin = { origin = origin, source = None, span = None }
+
+public explain : StoredOrigin -> Origin
+let explain stored =
+  match (stored.source, stored.span) with
+  | (Some source, Some span) -> { stored.origin with
+    location = Some (TomlTypes.location source span)
+  }
+  | _ -> stored.origin
+
+public describe : Error -> String
+let describe error =
+  let path =
+    String.join "." (List.map (fun segment ->
+      match segment with
+      | TomlTypes.Key name -> name
+      | TomlTypes.Index index -> "[" ++ Int.toString index ++ "]") error.path)
+  let source =
+    match error.origin with
+    | None -> ""
+    | Some origin ->
+      " (" ++ origin.label ++ (match origin.name with
+      | Some name -> ":" ++ name
+      | _ -> "") ++ ")"
+  (if path = "" then "" else path ++ ": ") ++ error.message ++ source

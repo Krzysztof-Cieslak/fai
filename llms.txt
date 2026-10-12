@@ -1953,6 +1953,13 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/config` provides sourced layers (`Config.fromValue`, `toml`,
+`ConfigSource.snapshot`) and later-wins `Config.merge`. Tables merge recursively;
+arrays/scalars replace. Explicit environment bindings use literal path segments.
+`ConfigSource.load` takes FileSystem/Env capabilities, limits, an absolute base,
+and an ordered source plan. Optional files skip only NotFound. `Config.origin`
+reports the winning source; parsing/merging remains pure.
+
 `packages/dotenv` provides literal `Dotenv.parse`/`parseBytes` with configurable
 byte/entry limits. `entries` retains name/value locations; `values` extracts a
 dictionary. `${...}` is literal, unknown escapes and duplicate names fail, and

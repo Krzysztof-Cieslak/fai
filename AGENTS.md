@@ -1175,6 +1175,10 @@ The Fai conformance executable checks the pinned upstream TOML 1.1 corpus.
 The independent `packages/dotenv` parser retains ordered names, literal values
 and source locations. Quoted multiline values normalize CRLF, unknown escapes
 and duplicate names fail, and interpolation/environment mutation never occurs.
+The optional `packages/config` library overlays explicitly ordered sourced trees:
+tables merge, arrays/scalars replace, and missing environment names do not override.
+Bindings use literal path segments; textual values retain their origin until
+decoding. File loading requires an explicit base and skips only optional NotFound.
 
 `RegexEngine` supplies typed pure native regex primitives. Compiled programs use
 description-based equality, ordering and hashing, independent of their bounded

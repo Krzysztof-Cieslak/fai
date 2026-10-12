@@ -1,0 +1,163 @@
+module ConfigTree
+
+public type Node =
+  | Node ConfigTypes.StoredOrigin Body
+
+public type Body =
+  | Scalar Toml.Value
+  | Text String
+  | Array (Array Node)
+  | Table (Dict String Node)
+
+public body : Node -> Body
+let body node =
+  match node with
+  | Node _ body -> body
+
+public storedOrigin : Node -> ConfigTypes.StoredOrigin
+let storedOrigin node =
+  match node with
+  | Node origin _ -> origin
+
+public origin : Node -> ConfigTypes.Origin
+let origin node = ConfigTypes.explain (storedOrigin node)
+
+public empty : ConfigTypes.Origin -> Node
+let empty origin = Node (ConfigTypes.stored origin) (Table Dict.empty)
+
+type Input =
+  | Plain Toml.Value
+  | Located TomlTypes.Node
+
+type Frame =
+  | InArray ConfigTypes.StoredOrigin (List Input) (Array Node) Int
+  | InTable ConfigTypes.StoredOrigin String (List (String * Input)) (List (String * Node)) Int
+
+let limit = ConfigTypes.error ConfigTypes.LimitExceeded "configuration tree limit exceeded"
+
+let plainPair pair =
+  let (key, value) = pair
+  (key, Plain value)
+
+let locatedPair pair =
+  let (key, value) = pair
+  (key, Located value)
+
+let visit limits stored input depth count frames =
+  if depth > limits.maxDepth || count >= limits.maxNodes then
+    Err limit
+  else
+    match input with
+    | Plain (TomlTypes.Array values) ->
+      visitArray limits stored (List.map Plain (Array.toList values)) [||] depth (count + 1) frames
+    | Plain (TomlTypes.Table values) ->
+      visitTable limits stored (List.map plainPair (Dict.toList values)) [] depth (count + 1) frames
+    | Plain value -> finish limits (Node stored (Scalar value)) (count + 1) frames
+    | Located node ->
+      let here = { stored with span = Some (TomlTypes.span node) }
+      match TomlTypes.body node with
+      | TomlTypes.Scalar value -> finish limits (Node here (Scalar value)) (count + 1) frames
+      | TomlTypes.Items values ->
+        visitArray limits here (List.map Located (Array.toList values)) [||] depth (count + 1) frames
+      | TomlTypes.Tables values ->
+        visitArray limits here (List.map Located (Array.toList values)) [||] depth (count + 1) frames
+      | TomlTypes.Mapping _ values ->
+        visitTable limits here (List.map locatedPair (Dict.toList values)) [] depth (count + 1) frames
+
+let visitArray limits stored values output depth count frames =
+  match values with
+  | [] -> finish limits (Node stored (Array output)) count frames
+  | input :: rest ->
+    visit limits stored input (depth + 1) count (InArray stored rest output depth :: frames)
+
+let visitTable limits stored values output depth count frames =
+  match values with
+  | [] -> finish limits (Node stored (Table (Dict.fromList (List.reverse output)))) count frames
+  | (name, input) :: rest ->
+    visit limits stored input (depth + 1) count (InTable stored name rest output depth :: frames)
+
+let finish limits node count frames =
+  match frames with
+  | [] -> Ok node
+  | InArray stored rest output depth :: frames ->
+    visitArray limits stored rest (Array.push node output) depth count frames
+  | InTable stored name rest output depth :: frames ->
+    visitTable limits stored rest ((name, node) :: output) depth count frames
+
+public fromValue : ConfigTypes.Limits -> ConfigTypes.Origin -> Toml.Value -> Result Node ConfigTypes.Error
+let fromValue limits origin value = visit limits (ConfigTypes.stored origin) (Plain value) 0 0 []
+
+public fromDocument : ConfigTypes.Limits -> ConfigTypes.Origin -> Bytes -> Toml.Document -> Result Node ConfigTypes.Error
+let fromDocument limits origin source document = visit limits {
+  origin = origin,
+  source = Some source,
+  span = None
+} (Located (Toml.root document)) 0 0 []
+
+public find : List TomlTypes.Segment -> Node -> Option Node
+let find path node =
+  match path with
+  | [] -> Some node
+  | part :: rest ->
+    let child =
+      match (part, body node) with
+      | (TomlTypes.Key name, Table fields) -> Dict.get name fields
+      | (TomlTypes.Index index, Array values) -> Array.get index values
+      | _ -> None
+    Option.andThen (find rest) child
+
+let validateLoop limits work count =
+  match work with
+  | [] -> Ok ()
+  | (node, depth) :: rest ->
+    if count >= limits.maxNodes || depth > limits.maxDepth then
+      Err limit
+    else
+      let children =
+        match body node with
+        | Table fields -> Dict.values fields
+        | Array values -> Array.toList values
+        | _ -> []
+      validateLoop limits (List.foldl (fun work node ->
+        (node, depth + 1) :: work) rest children) (count + 1)
+
+public validate : ConfigTypes.Limits -> Node -> Result Unit ConfigTypes.Error
+let validate limits node = validateLoop limits [(node, 0)] 0
+
+type MergeFrame =
+  | MergeFrame ConfigTypes.StoredOrigin (Dict String Node) String (List (String * Node))
+
+let mergeNode left right frames =
+  match (body left, body right) with
+  | (Table earlier, Table later) ->
+    let origin =
+      if Dict.isEmpty earlier then
+        storedOrigin right
+      else if Dict.isEmpty later then
+        storedOrigin left
+      else
+        ConfigTypes.stored (ConfigTypes.origin ConfigTypes.Composite "merged table")
+    mergeFields origin earlier (Dict.toList later) frames
+  | _ -> mergeFinish right frames
+
+let mergeFields origin fields remaining frames =
+  match remaining with
+  | [] -> mergeFinish (Node origin (Table fields)) frames
+  | (name, node) :: rest ->
+    match Dict.get name fields with
+    | None -> mergeFields origin (Dict.insert name node fields) rest frames
+    | Some earlier -> mergeNode earlier node (MergeFrame origin fields name rest :: frames)
+
+let mergeFinish node frames =
+  match frames with
+  | [] -> node
+  | MergeFrame origin fields name rest :: frames ->
+    mergeFields origin (Dict.insert name node fields) rest frames
+
+public merge : Node -> Node -> Node
+let merge left right = mergeNode left right []
+
+public nest : ConfigTypes.Origin -> List String -> Node -> Node
+let nest origin path leaf =
+  List.foldl (fun node name ->
+    Node (ConfigTypes.stored origin) (Table (Dict.singleton name node))) leaf (List.reverse path)

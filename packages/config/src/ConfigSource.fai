@@ -1,0 +1,128 @@
+module ConfigSource
+
+public type Requirement =
+  | Required
+  | Optional
+
+public type Source =
+  | Prepared Config.Layer
+  | Toml Requirement Path
+  | Dotenv Requirement Path (List Config.Binding)
+  | Environment (List Config.Binding)
+
+public snapshot : Config.Limits -> Config.Origin -> List Config.Binding -> List (String * String) -> Result Config.Layer Config.Error
+let snapshot limits origin bindings entries =
+  let values = Dict.fromList entries
+  if Dict.size values <> List.length entries then
+    Err (ConfigTypes.error ConfigTypes.InvalidSource "duplicate names in environment snapshot")
+  else
+    Config.bindings limits origin bindings (Dict.map (fun _ text -> (text, None)) values)
+
+readNames : Env -> List Config.Binding -> Dict String (String * Option TomlTypes.Location) -> Set String -> Result (Dict String (String * Option TomlTypes.Location)) Config.Error / { Env }
+let readNames env bindings values seen =
+  match bindings with
+  | [] -> Ok values
+  | binding :: rest ->
+    if Set.member binding.name seen then
+      readNames env rest values seen
+    else
+      let value = env.get binding.name
+      let next =
+        match value with
+        | None -> values
+        | Some text -> Dict.insert binding.name (text, None) values
+      readNames env rest next (Set.insert binding.name seen)
+
+public environment : Env -> Config.Limits -> List Config.Binding -> Result Config.Layer Config.Error / { Env }
+let environment env limits bindings =
+  match Config.validateBindings limits bindings with
+  | Err error -> Err error
+  | Ok _ ->
+    match readNames env bindings Dict.empty Set.empty with
+    | Err error -> Err error
+    | Ok values ->
+      Config.bindings limits (ConfigTypes.origin ConfigTypes.Environment "environment") bindings values
+
+let fileOrigin kind path = { (ConfigTypes.origin kind (Path.display path)) with
+  base = Path.parent path,
+  file = Some path
+}
+
+let fileFailure origin native = { (ConfigTypes.error ConfigTypes.FileFailure native.message) with
+  fileError = Some native,
+  origin = Some origin
+}
+
+file : FileSystem -> Config.Limits -> Path -> Requirement -> Path -> Option (List Config.Binding) -> Result (Option Config.Layer) Config.Error / { FileSystem }
+let file fs limits base requirement requested bindings =
+  match Path.resolve base requested with
+  | Err _ ->
+    Err (ConfigTypes.error ConfigTypes.InvalidSource "configuration path cannot be resolved against base")
+  | Ok path ->
+    let origin =
+      fileOrigin (if Option.isSome bindings then
+        ConfigTypes.DotenvFile
+      else
+        ConfigTypes.TomlFile) path
+    match fs.readBytes path limits.maxInputBytes with
+    | Err error ->
+      if requirement = Optional && error.kind = FileSystem.NotFound then
+        Ok None
+      else
+        Err (fileFailure origin error)
+    | Ok bytes ->
+      Result.map Some (match bindings with
+      | None -> Config.toml limits origin bytes
+      | Some bindings -> Config.dotenv limits origin bindings bytes)
+
+let validateSources limits base sources =
+  match sources with
+  | [] -> Ok ()
+  | source :: rest ->
+    let result =
+      match source with
+      | Prepared layer -> Config.validateLayer limits layer
+      | Environment bindings -> Config.validateBindings limits bindings
+      | Toml _ path ->
+        Result.mapError (fun _ ->
+          ConfigTypes.error ConfigTypes.InvalidSource "invalid source path") (Result.map (fun _ ->
+          ()) (Path.resolve base path))
+      | Dotenv _ path bindings ->
+        match Path.resolve base path with
+        | Err _ -> Err (ConfigTypes.error ConfigTypes.InvalidSource "invalid source path")
+        | Ok _ -> Config.validateBindings limits bindings
+    match result with
+    | Err error -> Err error
+    | Ok _ -> validateSources limits base rest
+
+loadLoop : { env : Env, fs : FileSystem | _ } -> Config.Limits -> Path -> List Source -> List Config.Layer -> Result Config.Config Config.Error / { Env, FileSystem }
+let loadLoop capabilities limits base sources output =
+  match sources with
+  | [] -> Config.mergeWith limits (List.reverse output)
+  | source :: rest ->
+    let result =
+      match source with
+      | Prepared layer -> Ok (Some layer)
+      | Toml requirement path -> file capabilities.fs limits base requirement path None
+      | Dotenv requirement path bindings ->
+        file capabilities.fs limits base requirement path (Some bindings)
+      | Environment bindings -> Result.map Some (environment capabilities.env limits bindings)
+    match result with
+    | Err error -> Err error
+    | Ok None -> loadLoop capabilities limits base rest output
+    | Ok (Some layer) -> loadLoop capabilities limits base rest (layer :: output)
+
+/// Validate the complete source plan before reading any file or environment name.
+public load : { env : Env, fs : FileSystem | _ } -> Config.Limits -> Path -> List Source -> Result Config.Config Config.Error / { Env, FileSystem }
+let load capabilities limits base sources =
+  match ConfigTypes.validateLimits limits with
+  | Err error -> Err error
+  | Ok _ ->
+    if not (Path.isAbsolute base) then
+      Err (ConfigTypes.error ConfigTypes.InvalidSource "configuration base must be absolute")
+    else if List.length sources > limits.maxLayers then
+      Err (ConfigTypes.error ConfigTypes.LimitExceeded "configuration layer count exceeded")
+    else
+      match validateSources limits base sources with
+      | Err error -> Err error
+      | Ok _ -> loadLoop capabilities limits base sources []
