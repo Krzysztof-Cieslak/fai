@@ -77,6 +77,18 @@ fn plan_validates_candidate_without_changing_worktree_or_refs() {
     assert!(git(&fixture.root, &["status", "--porcelain"]).is_empty());
 }
 
+#[cfg(windows)]
+#[test]
+fn canonical_windows_paths_can_prepare_release_candidates() {
+    let mut fixture = Fixture::new();
+    fixture.root = fixture.root.canonicalize().unwrap();
+    let result = fixture.run(&["publish", "patch", "--plan", "--message-format=json"]);
+    assert!(result.status.success(), "{result:?}");
+    let output: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(output["status"], "planned");
+    assert_eq!(output["packages"][0]["version"], "1.0.1");
+}
+
 #[test]
 fn publish_prepares_versions_and_atomically_pushes_branch_and_tags() {
     let fixture = Fixture::new();
@@ -226,6 +238,25 @@ fn publication_does_not_embed_a_future_commit_in_development_locks() {
         git(&fixture.root, &["show", "HEAD:fai.lock"]).as_bytes(),
         before.strip_suffix(b"\n").unwrap()
     );
+}
+
+#[test]
+fn publication_uses_committed_manifest_bytes_with_crlf_checkout_conversion() {
+    let fixture = Fixture::new();
+    git(&fixture.root, &["config", "core.autocrlf", "true"]);
+    std::fs::remove_file(fixture.root.join("fai.toml")).unwrap();
+    git(&fixture.root, &["checkout-index", "--force", "--", "fai.toml"]);
+    git(&fixture.root, &["add", "--renormalize", "fai.toml"]);
+    let manifest = std::fs::read_to_string(fixture.root.join("fai.toml")).unwrap();
+    assert!(manifest.contains("\r\n"));
+    let status = git(&fixture.root, &["status", "--porcelain"]);
+    assert!(status.is_empty(), "{status}");
+    let result = fixture.run(&["publish", "patch", "--message-format=json"]);
+    assert!(result.status.success(), "{result:?}");
+    let committed = git(&fixture.root, &["show", "HEAD:fai.toml"]);
+    assert!(!committed.contains('\r'));
+    assert!(committed.contains("1.0.1"));
+    assert!(git(&fixture.root, &["status", "--porcelain"]).is_empty());
 }
 
 #[test]

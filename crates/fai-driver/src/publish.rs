@@ -337,17 +337,11 @@ pub fn publish(
     }
 
     let candidate_repo = scratch.join("candidate.git");
+    // `-C` already selects the repository. A relative source keeps Windows
+    // canonical path prefixes out of Git's clone source parser.
     git(
         &repository,
-        &[
-            "clone",
-            "--bare",
-            "--shared",
-            "--no-hardlinks",
-            "--",
-            repository.as_str(),
-            candidate_repo.as_str(),
-        ],
+        &["clone", "--bare", "--shared", "--no-hardlinks", "--", ".", candidate_repo.as_str()],
         None,
         None,
     )?;
