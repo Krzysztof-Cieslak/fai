@@ -1,0 +1,54 @@
+module EncodingBase64Spec
+
+let vector plain encoded =
+  Base64.encode (Bytes.fromString plain) = encoded && Base64.decode encoded = Ok (Bytes.fromString plain)
+example: vector "" ""
+example: vector "f" "Zg=="
+example: vector "fo" "Zm8="
+example: vector "foo" "Zm9v"
+example: vector "foob" "Zm9vYg=="
+example: vector "fooba" "Zm9vYmE="
+example: vector "foobar" "Zm9vYmFy"
+example: Base64.encode (Bytes.fromList [251, 255]) = "+/8="
+example: Base64.decode "+/8=" = Ok (Bytes.fromList [251, 255])
+example: Base64.decode "AA==" = Ok (Bytes.fromList [0])
+example: Base64.decode "aa==" |> Result.isErr
+example: Base64.decodeBytes (Bytes.fromString "Zm9v") = Ok (Bytes.fromString "foo")
+example: Base64.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString "f") = "Zg"
+example: Base64.decodeWith { padding = Encoding.ForbidPadding } "Zg" = Ok (Bytes.fromString "f")
+example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zg" = Ok (Bytes.fromString "f")
+example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zg==" = Ok (Bytes.fromString "f")
+example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zm8" = Ok (Bytes.fromString "fo")
+example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zm8=" = Ok (Bytes.fromString "fo")
+example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zg=" |> Result.isErr
+example: Base64.decodeWith { padding = Encoding.ForbidPadding } "Zg==" |> Result.isErr
+example: Base64.decodeWith { padding = Encoding.ForbidPadding } "Zh" |> Result.isErr
+example: Base64.decodeWith { padding = Encoding.ForbidPadding } "Zm9" |> Result.isErr
+
+let urlVector plain encoded =
+  Base64Url.encode (Bytes.fromString plain) = encoded && Base64Url.decode encoded = Ok (Bytes.fromString plain)
+example: urlVector "" ""
+example: urlVector "f" "Zg"
+example: urlVector "fo" "Zm8"
+example: urlVector "foo" "Zm9v"
+example: urlVector "foob" "Zm9vYg"
+example: urlVector "fooba" "Zm9vYmE"
+example: urlVector "foobar" "Zm9vYmFy"
+example: Base64Url.encode (Bytes.fromList [251, 255]) = "-_8"
+example: Base64Url.decode "-_8" = Ok (Bytes.fromList [251, 255])
+example: Base64Url.decode "+/8" |> Result.isErr
+example: Base64.decode "-_8=" |> Result.isErr
+example: Base64Url.decode "Zg==" |> Result.isErr
+example: Base64Url.encodeWith { padding = Encoding.Padded } (Bytes.fromList [251, 255]) = "-_8="
+example: Base64Url.decodeWith {
+  padding = Encoding.RequirePadding
+} "-_8=" = Ok (Bytes.fromList [251, 255])
+example: Base64Url.decodeWith {
+  padding = Encoding.AllowPadding
+} "-_8=" = Ok (Bytes.fromList [251, 255])
+example: Base64Url.decodeWith {
+  padding = Encoding.AllowPadding
+} "-_8" = Ok (Bytes.fromList [251, 255])
+example: Base64Url.decodeBytesWith {
+  padding = Encoding.RequirePadding
+} (Bytes.fromString "Zg==") = Ok (Bytes.fromString "f")

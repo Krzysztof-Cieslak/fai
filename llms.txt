@@ -635,6 +635,12 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+The optional encoding package is entirely pure: `Base64.encode bytes`,
+`Base64.decode text`, and the Hex/Base64Url/Base32/Base32Hex peers need no
+capabilities. Incremental encoder/decoder states are immutable snapshots; the
+caller supplies chunks and explicitly finalizes, keeping source/sink effects
+in the surrounding application.
+
 The optional UUID package generates v4 values from `Crypto.Entropy`, and v7 values
 from a record containing `Clock` and `Crypto.Entropy`. `v7At` accepts explicit Unix
 milliseconds and needs only entropy. Clock rollback is preserved; generation has
@@ -2000,6 +2006,33 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/encoding` supplies `Hex`, `Base64`, `Base64Url`, `Base32`, and
+`Base32Hex`. Declare an `encoding` dependency in `fai.toml` and import the modules
+you use, such as `import encoding.Base64` and `import encoding.Encoding`.
+Each exports `encode : Bytes -> String`,
+`decode : String -> Result Bytes Encoding.Error`, and `decodeBytes` for ASCII byte
+input, plus `encodeWith`/`decodeWith`/`decodeBytesWith`, default `encodeOptions` /
+`decodeOptions`, and checked `encodedLength`/`encodedLengthWith` helpers.
+Standard Base64 and both uppercase Base32 variants require padding when needed;
+Base64Url uses its distinct -_ alphabet and defaults to forbidden padding.
+Hex emits lowercase and accepts mixed-case complete pairs. Whitespace, invalid
+alphabets, partial/extra padding and nonzero unused trailing bits fail.
+Base64 encoding options use `{ padding = Encoding.Padded }` / `Unpadded`;
+decoding uses `RequirePadding`, `AllowPadding` or `ForbidPadding`. Base32 decoding
+also takes `caseInsensitive : Bool` (default false). Hex encoding selects
+`letterCase = Encoding.Lowercase` / `Uppercase`; decoding selects `None` for either
+case or `Some` of the desired case. `Encoding.Error` retains `kind`, `message` and
+an optional zero-based byte `offset`; `errorToString` renders it.
+`Base64.encoder Base64.encodeOptions` and each peer create `Encoding.Encoder`;
+`Encoding.feedEncoder` returns `{ encoder, output }`, while `finishEncoder`
+returns the final String suffix. The decoder equivalents create `Encoding.Decoder`;
+`feedDecoder` returns `{ decoder, output, error, consumed }` and `finishDecoder`
+returns a final `Result Bytes Error`. Feed output contains complete validated
+groups, including on failure; errors are sticky in the returned state. Offsets
+are absolute across chunks and finalization observes, rather than consumes, a
+snapshot. Only successful finalization validates the whole input. Test with
+`fai test -C packages --package encoding`; see `packages/encoding/README.md` for examples.
+
 `packages/uuid` supplies opaque `Uuid.Uuid` values: `parse`/`toString`, explicit
 compact and URN codecs, and exact 16-byte network-order conversion. All bit
 patterns round-trip; `variant`, `version`, `isV4` and `isV7` inspect their layout.
@@ -2176,7 +2209,8 @@ SQL values also include `Boolean`, `Decimal` (`SqlDecimal.parse`), `Uuid`
 `Sql.TimeOfDay`/`EndOfDay` represent SQL time. Use the corresponding explicit
 `SqlDecode` value decoders. SQLite stores rich scalar values as integers or text.
 
-The optional `postgres` source package depends on `sql` and `json`. Its Fai
+The optional `postgres` source package depends on `sql`, `json`, `uuid`, and
+`encoding`. Its Fai
 protocol modules implement PostgreSQL v3 framing, verified TLS, SCRAM-SHA-256
 and channel binding, and checked common scalar conversions. Pure contracts run
 directly with `fai test -C packages postgres`.

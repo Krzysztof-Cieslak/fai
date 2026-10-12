@@ -1,7 +1,8 @@
 # PostgreSQL
 
-An explicit-capability PostgreSQL v3 client written in Fai. Include this directory
-and its `sql`, `json` and `uuid` dependencies under your application's workspace root.
+An explicit-capability PostgreSQL v3 client written in Fai. Declare `postgres` in
+your application's `fai.toml` and import `postgres.Postgres`. Its manifest declares
+the `sql`, `json`, `uuid` and `encoding` dependencies.
 
 The protocol modules (`PgWire`, `PgAuth`, `PgTypes`, `PgConfig`, `PgConnect`)
 provide bounded framing, checked scalar codecs, verified TLS, SCRAM-SHA-256 and

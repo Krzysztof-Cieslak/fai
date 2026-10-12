@@ -1,0 +1,55 @@
+module Base64
+
+/// Select whether the final group carries '=' padding.
+public type EncodeOptions = { padding : Encoding.OutputPadding }
+
+/// Explicit padding acceptance; alphabet and unused bits are always validated.
+public type DecodeOptions = { padding : Encoding.Padding }
+
+/// Standard padded output.
+public encodeOptions : EncodeOptions
+let encodeOptions = { padding = Encoding.Padded }
+
+/// Require complete padding whenever the final group needs it.
+public decodeOptions : DecodeOptions
+let decodeOptions = { padding = Encoding.RequirePadding }
+
+/// Start a standard-alphabet encoder with explicit padding policy.
+public encoder : EncodeOptions -> Encoding.Encoder
+let encoder options = Encoding.newEncoder EncodingCore.base64 options.padding
+
+/// Start a strict standard-alphabet decoder. Whitespace is significant.
+public decoder : DecodeOptions -> Encoding.Decoder
+let decoder options = Encoding.newDecoder EncodingCore.base64 false options.padding
+
+/// Encode bytes with an explicit padding choice.
+public encodeWith : EncodeOptions -> Bytes -> String
+let encodeWith options input = Encoding.encode (encoder options) input
+
+/// RFC 4648 Base64 with the standard +/ alphabet and required padding.
+public encode : Bytes -> String
+let encode input = encodeWith encodeOptions input
+
+/// Decode ASCII bytes with explicit padding acceptance and byte-located errors.
+public decodeBytesWith : DecodeOptions -> Bytes -> Result Bytes Encoding.Error
+let decodeBytesWith options input = Encoding.decode (decoder options) input
+
+/// Decode text with explicit padding acceptance; offsets count UTF-8 bytes.
+public decodeWith : DecodeOptions -> String -> Result Bytes Encoding.Error
+let decodeWith options input = decodeBytesWith options (Bytes.fromString input)
+
+/// Decode strictly padded standard Base64 from an ASCII byte buffer.
+public decodeBytes : Bytes -> Result Bytes Encoding.Error
+let decodeBytes input = decodeBytesWith decodeOptions input
+
+/// Decode strictly padded standard Base64 text, rejecting nonzero unused bits.
+public decode : String -> Result Bytes Encoding.Error
+let decode input = decodeWith decodeOptions input
+
+/// Exact output length without allocating output, rejecting negative counts/overflow.
+public encodedLengthWith : EncodeOptions -> Int -> Result Int Encoding.Error
+let encodedLengthWith options count = Encoding.lengthFor EncodingCore.base64 options.padding count
+
+/// Exact padded output length for a nonnegative input byte count.
+public encodedLength : Int -> Result Int Encoding.Error
+let encodedLength count = encodedLengthWith encodeOptions count

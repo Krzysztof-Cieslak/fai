@@ -1,0 +1,149 @@
+module EncodingCore
+
+// Fixed RFC alphabets and bounded group arithmetic shared by the public codecs.
+internal type Kind =
+  | Hex
+  | Base64
+  | Base64Url
+  | Base32
+  | Base32Hex
+
+internal type Format = {
+  alphabet : String,
+  bits : Int,
+  bytes : Int,
+  digits : Int,
+  kind : Kind,
+  lower : Bool
+}
+
+internal hexLower : Format
+let hexLower = {
+  alphabet = "0123456789abcdef",
+  bits = 4,
+  bytes = 1,
+  digits = 2,
+  kind = Hex,
+  lower = true
+}
+
+internal hexUpper : Format
+let hexUpper = { hexLower with alphabet = "0123456789ABCDEF", lower = false }
+
+internal base64 : Format
+let base64 = {
+  alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+  bits = 6,
+  bytes = 3,
+  digits = 4,
+  kind = Base64,
+  lower = false
+}
+
+internal base64Url : Format
+let base64Url = { base64 with
+  alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
+  kind = Base64Url
+}
+
+internal base32 : Format
+let base32 = {
+  alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+  bits = 5,
+  bytes = 5,
+  digits = 8,
+  kind = Base32,
+  lower = false
+}
+
+internal base32Hex : Format
+let base32Hex = { base32 with alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUV", kind = Base32Hex }
+
+internal digit : Format -> Bool -> Int -> Int
+let digit format foldCase byte =
+  match format.kind with
+  | Hex ->
+    if byte >= 48 && byte <= 57 then
+      byte - 48
+    else if byte >= 65 && byte <= 70 && (foldCase || not format.lower) then
+      byte - 55
+    else if byte >= 97 && byte <= 102 && (foldCase || format.lower) then byte - 87 else -1
+  | Base64 -> digit64 43 47 byte
+  | Base64Url -> digit64 45 95 byte
+  | Base32 ->
+    let byte = upper foldCase byte
+    if byte >= 65 && byte <= 90 then
+      byte - 65
+    else if byte >= 50 && byte <= 55 then byte - 24 else -1
+  | Base32Hex ->
+    let byte = upper foldCase byte
+    if byte >= 48 && byte <= 57 then
+      byte - 48
+    else if byte >= 65 && byte <= 86 then byte - 55 else -1
+
+let upper foldCase byte = if foldCase && byte >= 97 && byte <= 122 then byte - 32 else byte
+
+let digit64 plus slash byte =
+  if byte >= 65 && byte <= 90 then
+    byte - 65
+  else if byte >= 97 && byte <= 122 then
+    byte - 71
+  else if byte >= 48 && byte <= 57 then
+    byte + 4
+  else if byte = plus then 62 else if byte = slash then 63 else -1
+
+let renderFrom format word remaining output =
+  if remaining = 0 then
+    output
+  else
+    let digit =
+      Int.and (Int.shiftRightLogical word ((remaining - 1) * format.bits)) ((Int.shiftLeft 1 format.bits) - 1)
+    renderFrom format word (remaining - 1) (output ++ String.substring digit 1 format.alphabet)
+
+let pad count output = if count = 0 then output else pad (count - 1) (output ++ "=")
+
+internal render : Format -> Bool -> Int -> Int -> String
+let render format padded count word =
+  if count = 0 then
+    ""
+  else
+    let digits = (count * 8 + format.bits - 1) / format.bits
+    let word = Int.shiftLeft word (digits * format.bits - count * 8)
+    let output = renderFrom format word digits ""
+    if padded then pad (format.digits - digits) output else output
+
+internal validTail : Format -> Int -> Bool
+let validTail format count =
+  count > 0 && count < format.digits && (count * format.bits) % 8 < format.bits
+
+internal canonical : Format -> Int -> Int -> Bool
+let canonical format count word =
+  Int.and word ((Int.shiftLeft 1 ((count * format.bits) % 8)) - 1) = 0
+
+let pushFrom word bits output =
+  if bits < 8 then
+    output
+  else
+    let byte = Int.and 255 (Int.shiftRightLogical word (bits - 8))
+    pushFrom word (bits - 8) (byte :: output)
+
+/// Prepend a group's bytes in reverse order to an already reversed output.
+internal push : Format -> Int -> Int -> List Int -> List Int
+let push format count word output = pushFrom word (count * format.bits) output
+
+/// Exact encoded length, rejecting negative counts and signed Int overflow.
+internal encodedLength : Format -> Bool -> Int -> Option Int
+let encodedLength format padded count =
+  if count < 0 then
+    None
+  else
+    let groups = count / format.bytes
+    let tail = count % format.bytes
+    let extra =
+      if tail = 0 then
+        0
+      else if padded then format.digits else (tail * 8 + format.bits - 1) / format.bits
+    if groups > (9223372036854775807 - extra) / format.digits then
+      None
+    else
+      Some (groups * format.digits + extra)

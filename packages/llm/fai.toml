@@ -7,6 +7,7 @@ fai-version = "^0.1.0"
 test-dir = "."
 
 [dependencies]
+encoding = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/encoding", version = "^0.1.0" }
 http_client = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/http-client", version = "^0.1.0" }
 json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
 sse = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sse", version = "^0.1.0" }

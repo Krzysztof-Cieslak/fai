@@ -1,0 +1,26 @@
+module LlmImageEncodingSpec
+
+import json.Json
+
+let imageRequest =
+  Llm.request "model" |> Llm.user [LlmMessage.imageBytes "image/png" (Bytes.fromList [251, 255])]
+
+let message content = LlmJson.array [
+  LlmJson.object [("role", Json.String "user"), ("content", LlmJson.array content)]
+]
+example: Result.map (LlmJson.get "input") (LlmOpenAI.encode Llm.limits imageRequest) = Ok (Some (message [
+  LlmJson.object [
+    ("type", Json.String "input_image"),
+    ("image_url", Json.String "data:image/png;base64,+/8=")
+  ]
+]))
+example: Result.map (LlmJson.get "messages") (LlmAnthropic.encode Llm.limits imageRequest) = Ok (Some (message [
+  LlmJson.object [
+    ("type", Json.String "image"),
+    ("source", LlmJson.object [
+      ("type", Json.String "base64"),
+      ("media_type", Json.String "image/png"),
+      ("data", Json.String "+/8=")
+    ])
+  ]
+]))

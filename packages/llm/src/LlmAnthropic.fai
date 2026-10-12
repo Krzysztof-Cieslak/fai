@@ -1,5 +1,6 @@
 module LlmAnthropic
 
+import encoding.Base64
 import json.Json
 import json.JsonEncode
 
@@ -31,7 +32,7 @@ let content part =
     ("source", obj [
       ("type", str "base64"),
       ("media_type", str media),
-      ("data", str (Http.base64Encode bytes))
+      ("data", str (Base64.encode bytes))
     ])
   ]
 

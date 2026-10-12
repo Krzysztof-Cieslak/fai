@@ -1,0 +1,11 @@
+module EncodingExample
+
+public main : { console : Console | _ } -> Unit / { Console }
+let main env =
+  let input = Bytes.fromString "Hello, Fai!"
+  let shown = env.console.writeLine (Base64.encode input)
+  let shown = env.console.writeLine (Base64Url.encode input)
+  let shown = env.console.writeLine (Hex.encode input)
+  match Base64.decode "SGVsbG8sIEZhaSE=" with
+  | Err error -> env.console.writeLine (Encoding.errorToString error)
+  | Ok bytes -> env.console.writeLine (Option.withDefault "binary data" (Bytes.toString bytes))

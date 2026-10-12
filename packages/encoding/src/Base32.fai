@@ -1,0 +1,56 @@
+module Base32
+
+/// Select whether the final group carries '=' padding.
+public type EncodeOptions = { padding : Encoding.OutputPadding }
+
+/// Explicit ASCII case folding and padding acceptance.
+public type DecodeOptions = { caseInsensitive : Bool, padding : Encoding.Padding }
+
+/// Uppercase output with complete padding.
+public encodeOptions : EncodeOptions
+let encodeOptions = { padding = Encoding.Padded }
+
+/// Uppercase input with complete padding and zero unused trailing bits.
+public decodeOptions : DecodeOptions
+let decodeOptions = { caseInsensitive = false, padding = Encoding.RequirePadding }
+
+/// Start an incremental standard Base32 encoder.
+public encoder : EncodeOptions -> Encoding.Encoder
+let encoder options = Encoding.newEncoder EncodingCore.base32 options.padding
+
+/// Case folding accepts ASCII lowercase letters without mapping 0/1 to letters.
+public decoder : DecodeOptions -> Encoding.Decoder
+let decoder options =
+  Encoding.newDecoder EncodingCore.base32 options.caseInsensitive options.padding
+
+/// Encode uppercase standard Base32 with explicit padding.
+public encodeWith : EncodeOptions -> Bytes -> String
+let encodeWith options input = Encoding.encode (encoder options) input
+
+/// Uppercase RFC 4648 Base32 with required padding.
+public encode : Bytes -> String
+let encode input = encodeWith encodeOptions input
+
+/// Decode ASCII bytes with explicit padding and case policies.
+public decodeBytesWith : DecodeOptions -> Bytes -> Result Bytes Encoding.Error
+let decodeBytesWith options input = Encoding.decode (decoder options) input
+
+/// Decode text with explicit padding and case policies.
+public decodeWith : DecodeOptions -> String -> Result Bytes Encoding.Error
+let decodeWith options input = decodeBytesWith options (Bytes.fromString input)
+
+/// Decode uppercase, padded standard Base32 from ASCII bytes.
+public decodeBytes : Bytes -> Result Bytes Encoding.Error
+let decodeBytes input = decodeBytesWith decodeOptions input
+
+/// Decode uppercase, padded standard Base32; offsets count UTF-8 bytes.
+public decode : String -> Result Bytes Encoding.Error
+let decode input = decodeWith decodeOptions input
+
+/// Exact output length, rejecting negative input counts and Int overflow.
+public encodedLengthWith : EncodeOptions -> Int -> Result Int Encoding.Error
+let encodedLengthWith options count = Encoding.lengthFor EncodingCore.base32 options.padding count
+
+/// Exact padded output length for a nonnegative input byte count.
+public encodedLength : Int -> Result Int Encoding.Error
+let encodedLength count = encodedLengthWith encodeOptions count
