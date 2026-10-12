@@ -20,6 +20,8 @@ locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and to
 > overrides, host source scopes, and native requirements for CLI, daemon, and LSP.
 > Workspace/member and executable selection use those manifests. Git restoration,
 > dependency commands, locks, vendoring, and publication remain in development.
+> A provider-independent graph resolver implements conservative and eager policies,
+> source-selector unification, and compiler/target filtering against supplied catalogs.
 > Native-only and unversioned directory sessions retain compatibility discovery.
 
 This document consolidates the agreed product decisions and proposes the concrete

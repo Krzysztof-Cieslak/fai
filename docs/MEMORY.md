@@ -5444,5 +5444,17 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   implicit test selections. Legacy directory/native-only sessions remain available
   during migration.
 
+- **D164 Deterministic package graph selection.** Each request resolves one root's
+  normal/development union for a compiler and target. Normal edges alone determine
+  package cycles; consumed packages do not contribute their development edges.
+  The provider-independent solver distinguishes fatal retrieval failures from
+  unsatisfiable constraints. Conservative resolution first tries all relevant
+  pins, then retains feasible pins in canonical key order before preferring newer
+  candidates. Targeted updates maximize requested keys before retaining other
+  pins. Full updates prefer root normal dependencies, root development dependencies,
+  then transitive keys, with canonical ordering independent of provider responses.
+  Tagged-release requirements remain distinct from untagged commit versions;
+  explicit source replacements preserve original version constraints.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.
