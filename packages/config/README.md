@@ -30,3 +30,30 @@ variable may map to several distinct paths; each mapped value counts toward the
 bound-text budget. Pure merge validates each layer and each intermediate result.
 
 Run native contracts with `fai test -C packages config`.
+
+## Typed decoding
+
+Compose `ConfigDecode.field`, scalar/collection readers and `map2`/`map3`/`andMap`
+into application records, then call `ConfigDecode.decode`. Independent fields
+accumulate errors in declaration order up to `maxErrors`. Objects reject unknown
+fields by default, including nested records. `allowUnknown` relaxes just the
+wrapped boundary; dictionary readers deliberately consume arbitrary keys.
+
+Native TOML scalars retain their kind: a TOML string `"42"` is not an integer.
+Environment and textual CLI values are parsed by the selected scalar reader.
+Integers use checked decimal syntax (optional sign, leading zeros permitted;
+no whitespace, underscores or radix prefixes). Booleans use exact `true`/`false`.
+Float readers accept decimal text, with non-finite values only through `floatAll`.
+`fromText` explicitly opts into a custom string parser, including structured text.
+
+`optionalField`, `optional` and `withDefault` act only on absence: invalid present
+values remain errors. `refine`, `range`, `choice` and `andThen` support field and
+whole-record validation. `oneOf` tries complete alternatives and retains bounded
+failure details. Errors include the configuration path and winning origin without
+embedding raw values in generated error messages.
+
+`path` performs checked native-path conversion. `pathRelativeTo base` resolves
+against an explicit absolute base; `pathFromSource fallback` prefers the winning
+file's directory and uses the explicit fallback for environment/CLI/defaults.
+Neither operation reads the working directory. Date/time readers preserve TOML
+kind and reject precision/offset values unrepresentable by the standard types.

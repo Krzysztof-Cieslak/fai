@@ -1179,6 +1179,10 @@ The optional `packages/config` library overlays explicitly ordered sourced trees
 tables merge, arrays/scalars replace, and missing environment names do not override.
 Bindings use literal path segments; textual values retain their origin until
 decoding. File loading requires an explicit base and skips only optional NotFound.
+`ConfigDecode` distinguishes native TOML scalars from textual overrides, accumulates
+bounded independent errors, and rejects unknown object fields by default. Optional
+values/defaults apply only to absence. Path resolution uses an explicit base or
+the winning file's directory, and errors retain the winning origin.
 
 `RegexEngine` supplies typed pure native regex primitives. Compiled programs use
 description-based equality, ordering and hashing, independent of their bounded
