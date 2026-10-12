@@ -358,6 +358,17 @@ impl Session {
         project: crate::project::PreparedProject,
         dirty: &[DirtyFile],
     ) -> Result<bool, DriverError> {
+        for path in &project.absent_metadata {
+            if crate::project::metadata_exists(path)? {
+                return Err(fai_package::ProviderFailure {
+                    code: fai_package::INPUTS_CHANGED,
+                    message: format!(
+                        "metadata {path} appeared before compiler snapshot publication"
+                    ),
+                }
+                .into());
+            }
+        }
         for (path, expected) in &project.observed {
             let bytes = std::fs::read(path)
                 .map_err(|source| DriverError::Io { path: path.clone(), source })?;
@@ -499,7 +510,12 @@ impl Session {
             default_entry,
             read_only,
             notices: project.notices,
-            metadata: project.observed.into_iter().map(|(path, _)| path).collect(),
+            metadata: project
+                .observed
+                .into_iter()
+                .map(|(path, _)| path)
+                .chain(project.absent_metadata)
+                .collect(),
         }));
         Ok(changed)
     }

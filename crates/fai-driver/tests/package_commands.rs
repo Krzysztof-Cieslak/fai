@@ -235,3 +235,57 @@ fn standalone_session_rescans_do_not_admit_new_neighbors() {
     session.sync_from_disk().unwrap();
     assert_eq!(session.user_files().len(), 1);
 }
+
+#[test]
+fn unrelated_override_changes_do_not_stale_the_selected_graph() {
+    let fixture = Fixture::new();
+    fixture.package("unused", "unused", "1.0.0", "");
+    fixture.package("replacement", "unused", "1.0.0", "");
+    let overrides = "[[overrides]]\nreplace = {git = 'https://example.com/unused'}\nwith = {path = '../unused'}\n";
+    fixture.package("app", "app", "1.0.0", overrides);
+    fixture.resolve("app", false);
+    let before = std::fs::read(fixture.root.join("app/fai.lock")).unwrap();
+    fixture.package("app", "app", "1.0.0", &overrides.replace("../unused", "../replacement"));
+    let session = Session::open_with_options(
+        fixture.root.join("app"),
+        ProjectOptions { locked: true, offline: true, ..Default::default() },
+    );
+    assert!(session.is_ok(), "{}", session.err().unwrap());
+    assert_eq!(std::fs::read(fixture.root.join("app/fai.lock")).unwrap(), before);
+}
+
+#[test]
+fn an_unused_override_does_not_require_its_checkout() {
+    let fixture = Fixture::new();
+    fixture.package("app", "app", "1.0.0", "[[overrides]]\nreplace = {git = 'https://example.com/unused'}\nwith = {path = '../absent'}\n");
+    let session = Session::open(fixture.root.join("app"));
+    assert!(session.is_ok(), "{}", session.err().unwrap());
+}
+
+#[test]
+fn a_new_personal_manifest_invalidates_an_older_prepared_context() {
+    let fixture = Fixture::new();
+    fixture.package("app", "app", "1.0.0", "");
+    let prepared =
+        Session::prepare_update(fixture.root.join("app"), &[], ProjectOptions::default()).unwrap();
+    fixture.write("app/fai.local.toml", "manifest-version = 1\n");
+    let result = Session::open_prepared(prepared);
+    let Err(fai_driver::DriverError::Project(error)) = result else {
+        panic!("expected superseded context");
+    };
+    assert_eq!(error.diagnostics[0].code, "FAI0825");
+}
+
+#[test]
+fn shared_context_does_not_depend_on_absent_personal_metadata() {
+    let fixture = Fixture::new();
+    fixture.package("app", "app", "1.0.0", "");
+    let prepared = Session::prepare_update(
+        fixture.root.join("app"),
+        &[],
+        ProjectOptions { no_local: true, ..Default::default() },
+    )
+    .unwrap();
+    fixture.write("app/fai.local.toml", "malformed personal configuration");
+    assert!(Session::open_prepared(prepared).is_ok());
+}

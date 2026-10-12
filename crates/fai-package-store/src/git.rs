@@ -1,7 +1,7 @@
 //! Immutable package trees obtained from the installed Git command.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, VecDeque},
     io::{Read, Write},
     process::{Command, Stdio},
 };
@@ -526,38 +526,44 @@ fn validate_links(files: &[(TreeEntry, Vec<u8>)]) -> Result<(), ProviderFailure>
         .filter(|(entry, _)| entry.symlink)
         .map(|(entry, bytes)| (entry.path.as_str(), bytes.as_slice()))
         .collect();
-    for (path, bytes) in &links {
+    let target_parts = |bytes| -> Result<VecDeque<String>, ProviderFailure> {
         let target = std::str::from_utf8(bytes).map_err(io_error)?;
-        if target.starts_with('/') || target.contains(['\\', ':']) {
+        if target.is_empty() || target.starts_with('/') || target.contains(['\\', ':', '\0']) {
             return Err(layout("absolute or nonportable package symlink"));
         }
+        Ok(target.split('/').map(str::to_owned).collect())
+    };
+    for (path, bytes) in &links {
         let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
-        let mut next = PackagePath::parse(format!("{parent}/{target}").trim_start_matches('/'))
-            .map_err(|_| layout("package symlink escapes its source root"))?;
-        let mut visited = BTreeSet::from([(*path).to_owned()]);
-        loop {
-            let prefix = next
-                .as_str()
-                .split('/')
-                .scan(String::new(), |prefix, part| {
-                    if !prefix.is_empty() {
-                        prefix.push('/');
+        let mut resolved: Vec<_> =
+            parent.split('/').filter(|part| !part.is_empty()).map(str::to_owned).collect();
+        let mut pending = target_parts(bytes)?;
+        let mut expansions = 0;
+        while let Some(part) = pending.pop_front() {
+            match part.as_str() {
+                "" | "." => continue,
+                ".." => {
+                    if resolved.pop().is_none() {
+                        return Err(layout("package symlink escapes its source root"));
                     }
-                    prefix.push_str(part);
-                    Some(prefix.clone())
-                })
-                .find(|prefix| links.contains_key(prefix.as_str()));
-            let Some(prefix) = prefix else {
-                break;
-            };
-            if !visited.insert(prefix.clone()) {
-                return Err(layout("package symlinks form a cycle"));
+                    continue;
+                }
+                _ => resolved.push(part),
             }
-            let target = std::str::from_utf8(links[prefix.as_str()]).map_err(io_error)?;
-            let parent = prefix.rsplit_once('/').map_or("", |(parent, _)| parent);
-            let suffix = next.as_str().strip_prefix(&prefix).unwrap_or_default();
-            next = PackagePath::parse(format!("{parent}/{target}{suffix}").trim_start_matches('/'))
-                .map_err(|_| layout("package symlink escapes its source root"))?;
+            if let Some(bytes) = links.get(resolved.join("/").as_str()) {
+                expansions += 1;
+                if expansions > 128 {
+                    return Err(layout(
+                        "package symlinks form a cycle or exceed the expansion limit",
+                    ));
+                }
+                resolved.pop();
+                // Resolve links before processing subsequent parent components,
+                // matching filesystem traversal rather than lexical normalization.
+                let mut target = target_parts(bytes)?;
+                target.append(&mut pending);
+                pending = target;
+            }
         }
     }
     Ok(())

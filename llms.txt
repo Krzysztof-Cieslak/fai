@@ -302,7 +302,8 @@ dependencies. Ordinary commands retain valid pins in `fai.lock` or
 access, and `--frozen` combines both. `fai add` defaults to a caret range from its
 conservatively selected release. `fai update dependency` prioritizes that dependency
 while preserving other pins where feasible. `fai deps why dependency` inspects
-recorded edges without network activity. The remaining package-system integration
+recorded edges without network activity. Resolve/fetch retains a valid graph,
+and unused overrides do not invalidate unrelated frozen roots. The package-system
 status is recorded in `docs/PACKAGES.md`.
 
 ---

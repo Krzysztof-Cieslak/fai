@@ -216,6 +216,41 @@ mod package_projects {
     }
 
     #[test]
+    fn resolve_retains_valid_cached_selections_without_refreshing_the_remote() {
+        let (project, upstream, url) = git_project();
+        let added = project.run(&["add", &url], &[]);
+        assert!(added.status.success(), "{added:?}");
+        let before = std::fs::read(project.workspace.join("fai.lock")).unwrap();
+        std::fs::remove_dir_all(upstream).unwrap();
+        let resolved = project.run(&["resolve", "--message-format=json"], &[]);
+        assert!(resolved.status.success(), "{resolved:?}");
+        assert_eq!(std::fs::read(project.workspace.join("fai.lock")).unwrap(), before);
+    }
+
+    #[test]
+    fn changing_a_branchs_repository_discards_its_old_commit_binding() {
+        let (project, upstream, url) = git_project();
+        let branch = git(&upstream, &["symbolic-ref", "--short", "HEAD"]);
+        let branch = branch.trim();
+        let added = project.run(&["add", &url, "--branch", branch], &[]);
+        assert!(added.status.success(), "{added:?}");
+        let fork = project.workspace.join("fork");
+        std::fs::create_dir(&fork).unwrap();
+        git(&fork, &["init", "-q", "-b", branch]);
+        git(&fork, &["config", "user.name", "Package Test"]);
+        git(&fork, &["config", "user.email", "packages@example.invalid"]);
+        release(&fork, "1.0.0", 99);
+        let fork_url = lsp_types::Url::from_directory_path(&fork).unwrap();
+        let path = project.workspace.join("fai.toml");
+        let mut manifest = std::fs::read_to_string(&path).unwrap();
+        manifest.push_str(&format!("\n[[overrides]]\nreplace = {{git = '{url}'}}\nwith = {{git = '{fork_url}', branch = '{branch}'}}\n"));
+        std::fs::write(path, manifest).unwrap();
+        let resolved = project.run(&["run", "--no-daemon"], &[]);
+        assert!(resolved.status.success(), "{resolved:?}");
+        assert_eq!(resolved.stdout, b"99\n");
+    }
+
+    #[test]
     fn failed_add_keeps_the_authored_manifest_and_lock() {
         let (project, _, url) = git_project();
         assert!(project.run(&["add", &url], &[]).status.success());
