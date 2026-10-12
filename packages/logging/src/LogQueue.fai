@@ -1,0 +1,399 @@
+module LogQueue
+
+public type Options = {
+  drainTimeoutMs : Option Int,
+  maxBytes : Int,
+  maxRecordBytes : Int,
+  maxRecords : Int
+}
+
+public defaults : Options
+let defaults = {
+  drainTimeoutMs = None,
+  maxBytes = 8388608,
+  maxRecordBytes = 262144,
+  maxRecords = 1024
+}
+
+public type Summary = {
+  abandoned : Int,
+  accepted : Int,
+  blockedAdmissions : Int,
+  completed : Int,
+  failed : Int,
+  failure : Option Log.Error,
+  flushFailures : Int,
+  peakBytes : Int,
+  peakRecords : Int
+}
+
+public type Completed 'a = { summary : Summary, value : 'a }
+
+public type Error 'error = { body : Option 'error, summary : Summary }
+
+let emptySummary = {
+  abandoned = 0,
+  accepted = 0,
+  blockedAdmissions = 0,
+  completed = 0,
+  failed = 0,
+  failure = None,
+  flushFailures = 0,
+  peakBytes = 0,
+  peakRecords = 0
+}
+
+public validate : Options -> Result Unit Log.Error
+let validate options =
+  if options.maxRecords <= 0 || options.maxBytes <= 0 || options.maxRecordBytes <= 0 || options.maxRecordBytes > options.maxBytes || (match options.drainTimeoutMs with
+  | None -> false
+  | Some ms -> ms <= 0) then
+    Err (LogTypes.error LogTypes.Configuration "queue" "invalid queue limits or drain deadline")
+  else
+    Ok ()
+
+type Phase =
+  | Accepting
+  | Draining
+  | Aborting
+  | Closed
+
+type State = {
+  bytes : Int,
+  changed : Channel Unit,
+  phase : Phase,
+  sequence : Int,
+  slots : Int,
+  summary : Summary
+}
+
+type Job =
+  | Line Int String Int
+  | Barrier (Channel (Result Unit Log.Error))
+
+type Client = {
+  concurrency : Concurrency,
+  gate : Channel State,
+  jobs : Channel Job,
+  options : Options
+}
+
+type Admission =
+  | Admitted Int
+  | Wait (Channel Unit)
+  | Rejected Log.Error
+
+let closedError = LogTypes.error LogTypes.Admission "queue" "logging queue is closed"
+
+let cancelledError =
+  LogTypes.error LogTypes.Admission "queue" "logging admission cancelled before acceptance"
+
+alive : Concurrency -> Bool / { Concurrency }
+let alive concurrency =
+  let probe = concurrency.channel 1
+  let sent = concurrency.send probe ()
+  let value = concurrency.recv probe
+  let closed = concurrency.close probe
+  value <> None
+
+notify : Client -> State -> Unit / { Concurrency }
+let notify client state =
+  let next = client.concurrency.channel 1
+  let woke = client.concurrency.close state.changed
+  client.concurrency.send client.gate { state with changed = next }
+
+firstFailure : Log.Error -> Summary -> Summary
+let firstFailure error summary = { summary with
+  failure = match summary.failure with
+  | None -> Some error
+  | Some _ -> summary.failure
+}
+
+/// A masked, bounded critical section. A slot is reserved while the gate is held;
+/// jobs cannot close concurrently and the reserved send cannot block. Returning
+/// Admitted acknowledges both transfer and accounting, not just Channel.send.
+admission : Client -> String -> Int -> Option (Channel (Result Unit Log.Error)) -> Unit -> Admission / { Concurrency }
+let admission client line bytes barrier unit =
+  match client.concurrency.recv client.gate with
+  | None -> Rejected closedError
+  | Some state ->
+    if state.phase <> Accepting then
+      let restored = client.concurrency.send client.gate state
+      Rejected (Option.withDefault closedError state.summary.failure)
+    else if state.sequence = 9223372036854775807 then
+      let restored = client.concurrency.send client.gate state
+      Rejected (LogTypes.error LogTypes.Admission "queue" "queue sequence limit exceeded")
+    else if state.slots >= client.options.maxRecords || bytes > client.options.maxBytes - state.bytes then
+      let state = { state with
+        summary = { state.summary with
+          blockedAdmissions = if state.summary.blockedAdmissions = 9223372036854775807 then
+            state.summary.blockedAdmissions
+          else
+            state.summary.blockedAdmissions + 1
+        }
+      }
+      let restored = client.concurrency.send client.gate state
+      Wait state.changed
+    else
+      let sequence = state.sequence + 1
+      let slots = state.slots + 1
+      let total = state.bytes + bytes
+      let summary = { state.summary with
+        accepted = state.summary.accepted + (match barrier with
+        | None -> 1
+        | Some _ -> 0),
+        peakBytes = if total > state.summary.peakBytes then total else state.summary.peakBytes,
+        peakRecords = if slots > state.summary.peakRecords then slots else state.summary.peakRecords
+      }
+      let job =
+        match barrier with
+        | None -> Line sequence line bytes
+        | Some reply -> Barrier reply
+      let sent = client.concurrency.send client.jobs job
+      let restored = client.concurrency.send client.gate { state with
+        bytes = total,
+        sequence = sequence,
+        slots = slots,
+        summary = summary
+      }
+      Admitted sequence
+
+admit : Client -> String -> Int -> Option (Channel (Result Unit Log.Error)) -> Result Int Log.Error / { Concurrency }
+let admit client line bytes barrier =
+  if not (alive client.concurrency) then
+    Err cancelledError
+  else
+    match Wire.cleanup client.concurrency (admission client line bytes barrier) with
+    | Admitted sequence -> Ok sequence
+    | Rejected error -> Err error
+    | Wait changed ->
+      let woke = client.concurrency.recv changed
+      admit client line bytes barrier
+
+submit : Client -> String -> Result LogTypes.Delivery Log.Error / { Concurrency }
+let submit client line =
+  match LogSink.validateLine line with
+  | Err error -> Err error
+  | Ok _ ->
+    match LogBudget.textBytes (client.options.maxRecordBytes - 1) line with
+    | Err error -> Err error
+    | Ok bytes -> Result.map LogTypes.Accepted (admit client line (bytes + 1) None)
+
+flush : Client -> Unit -> Result Unit Log.Error / { Concurrency }
+let flush client unit =
+  let reply = client.concurrency.channel 1
+  match admit client "" 0 (Some reply) with
+  | Err error -> Err error
+  | Ok _ ->
+    match client.concurrency.recv reply with
+    | Some result -> result
+    | None ->
+      Err (LogTypes.uncertain (LogTypes.error LogTypes.Flush "queue" "cancelled while waiting for an accepted flush barrier"))
+
+readState : Client -> Unit -> Option State / { Concurrency }
+let readState client unit =
+  let state = client.concurrency.recv client.gate
+  let restored =
+    match state with
+    | None -> ()
+    | Some state -> client.concurrency.send client.gate state
+  state
+
+complete : Client -> Int -> Bool -> Bool -> Result Unit Log.Error -> Unit / { Concurrency }
+let complete client bytes line abandoned result =
+  match client.concurrency.recv client.gate with
+  | None -> ()
+  | Some state ->
+    let summary =
+      if abandoned then
+        { state.summary with abandoned = state.summary.abandoned + (if line then 1 else 0) }
+      else
+        (match result with
+        | Ok _ -> { state.summary with
+          completed = state.summary.completed + (if line then 1 else 0)
+        }
+        | Err error -> firstFailure error { state.summary with
+          failed = state.summary.failed + (if line then 1 else 0),
+          flushFailures = state.summary.flushFailures + (if line then 0 else 1)
+        })
+    let failed = not abandoned && Result.isErr result
+    let stopped = if failed then client.concurrency.close client.jobs else ()
+    notify client { state with
+      bytes = state.bytes - bytes,
+      phase = if failed then Aborting else state.phase,
+      slots = state.slots - 1,
+      summary = summary
+    }
+
+finishWorker : Client -> Result Unit Log.Error -> Unit / { Concurrency }
+let finishWorker client result =
+  match client.concurrency.recv client.gate with
+  | None -> ()
+  | Some state ->
+    let summary =
+      match result with
+      | Ok _ -> state.summary
+      | Err error -> firstFailure error { state.summary with
+        flushFailures = state.summary.flushFailures + 1
+      }
+    notify client { state with phase = Closed, summary = summary }
+
+workerLoop : Client -> LogSink.Output 'e -> Unit -> Unit / { Concurrency | 'e }
+let workerLoop client output unit =
+  match client.concurrency.recv client.jobs with
+  | None ->
+    let result = output.flush ()
+    finishWorker client result
+  | Some job ->
+    let snapshot = readState client ()
+    let failure =
+      match snapshot with
+      | Some state ->
+        if state.phase = Aborting then
+          Some (Option.withDefault closedError state.summary.failure)
+        else
+          None
+      | None -> Some closedError
+    let result =
+      match failure with
+      | Some error -> Err error
+      | None ->
+        match job with
+        | Line _ line _ -> Result.map (fun _ -> ()) (output.writeLine line)
+        | Barrier _ -> output.flush ()
+    let completed =
+      match job with
+      | Line _ _ bytes -> complete client bytes true (failure <> None) result
+      | Barrier reply ->
+        let accounted = complete client 0 false (failure <> None) result
+        client.concurrency.send reply result
+    workerLoop client output ()
+
+worker : Client -> LogSink.Output 'e -> Unit -> Unit / { Concurrency | 'e }
+let worker client output unit = Wire.cleanup client.concurrency (workerLoop client output)
+
+stop : Client -> Option Log.Error -> Unit / { Concurrency }
+let stop client failure =
+  match client.concurrency.recv client.gate with
+  | None -> ()
+  | Some state ->
+    let summary =
+      match failure with
+      | None -> state.summary
+      | Some error -> firstFailure error state.summary
+    let phase =
+      if state.phase = Closed || state.phase = Aborting then
+        state.phase
+      else
+        (match failure with
+        | None -> Draining
+        | Some _ -> Aborting)
+    let stopped = client.concurrency.close client.jobs
+    notify client { state with
+      phase = phase,
+      summary = if state.phase = Closed then state.summary else summary
+    }
+
+timer : Clock -> Client -> Int -> Unit -> Unit / { Clock, Concurrency }
+let timer clock client ms unit =
+  let slept = clock.sleep ms
+  Wire.cleanup client.concurrency (fun _ ->
+    stop client (Some (LogTypes.uncertain (LogTypes.error LogTypes.Close "queue" "queue drain deadline exceeded"))))
+
+closeScope : Clock -> Client -> Nursery -> Task Unit -> Bool -> Unit -> Summary / { Clock, Concurrency }
+let closeScope clock client nursery task cancelled unit =
+  let stopped =
+    stop client (if cancelled then
+      Some (LogTypes.uncertain (LogTypes.error LogTypes.Close "queue" "queue scope cancelled"))
+    else
+      None)
+  let deadline =
+    match client.options.drainTimeoutMs with
+    | None -> None
+    | Some ms -> Some (client.concurrency.spawn nursery (timer clock client ms))
+  let joined = client.concurrency.await task
+  let cancelled =
+    match deadline with
+    | None -> ()
+    | Some task -> client.concurrency.cancel task
+  let joinedTimer =
+    match deadline with
+    | None -> ()
+    | Some task -> client.concurrency.await task
+  match readState client () with
+  | None -> firstFailure closedError emptySummary
+  | Some state -> state.summary
+
+public type Snapshot = {
+  accepting : Bool,
+  pendingBytes : Int,
+  pendingRecords : Int,
+  summary : Summary
+}
+
+public type Queue = {
+  output : LogSink.Output { Concurrency },
+  snapshot : Unit -> Snapshot / { Concurrency }
+}
+
+snapshot : Client -> Unit -> Snapshot / { Concurrency }
+let snapshot client unit =
+  match Wire.cleanup client.concurrency (readState client) with
+  | None -> {
+    accepting = false,
+    pendingBytes = 0,
+    pendingRecords = 0,
+    summary = firstFailure closedError emptySummary
+  }
+  | Some state -> {
+    accepting = state.phase = Accepting,
+    pendingBytes = state.bytes,
+    pendingRecords = state.slots,
+    summary = state.summary
+  }
+
+inScope : Clock -> Client -> LogSink.Output 'e -> (Queue -> Result 'a 'error / 'e) -> Nursery -> Result (Completed 'a) (Error 'error) / { Clock, Concurrency | 'e }
+let inScope clock client output work nursery =
+  let task = client.concurrency.spawn nursery (worker client output)
+  let body = work {
+    output = { flush = flush client, writeLine = submit client },
+    snapshot = snapshot client
+  }
+  let cancelled = not (alive client.concurrency)
+  let summary = Wire.cleanup client.concurrency (closeScope clock client nursery task cancelled)
+  match body with
+  | Err error -> Err { body = Some error, summary = summary }
+  | Ok value ->
+    if summary.failure <> None then
+      Err { body = None, summary = summary }
+    else
+      Ok { summary = summary, value = value }
+
+/// Scope a bounded line queue. Accepted receipts acknowledge transfer; flush is a
+/// FIFO barrier. Output effects belong to this owner; submission uses Concurrency.
+/// Cancellation/deadline abandons pending records, joins in-flight work and retains
+/// summary counts. A blocked OS write may outlive the requested drain deadline.
+public withQueue : { clock : Clock, concurrency : Concurrency | _ } -> Options -> LogSink.Output 'e -> (Queue -> Result 'a 'error / 'e) -> Result (Completed 'a) (Error 'error) / { Clock, Concurrency | 'e }
+let withQueue env options output work =
+  match validate options with
+  | Err error -> Err { body = None, summary = firstFailure error emptySummary }
+  | Ok _ ->
+    let gate = env.concurrency.channel 1
+    let jobs = env.concurrency.channel options.maxRecords
+    let changed = env.concurrency.channel 1
+    let state = {
+      bytes = 0,
+      changed = changed,
+      phase = Accepting,
+      sequence = 0,
+      slots = 0,
+      summary = emptySummary
+    }
+    let seeded = Wire.cleanup env.concurrency (fun _ -> env.concurrency.send gate state)
+    let client = { concurrency = env.concurrency, gate = gate, jobs = jobs, options = options }
+    env.concurrency.scope (inScope env.clock client output work)
+
+/// The output-only form of withQueue; admission and shutdown have the same rules.
+public withOutput : { clock : Clock, concurrency : Concurrency | _ } -> Options -> LogSink.Output 'e -> (LogSink.Output { Concurrency } -> Result 'a 'error / 'e) -> Result (Completed 'a) (Error 'error) / { Clock, Concurrency | 'e }
+let withOutput env options output work =
+  withQueue env options output (fun queue -> work queue.output)
