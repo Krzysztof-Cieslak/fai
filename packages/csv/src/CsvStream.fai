@@ -1,0 +1,126 @@
+module CsvStream
+
+public type Reader 'source 'e = CsvStreamCore.Reader String 'source 'e
+
+public type ByteReader 'source 'e = CsvStreamCore.Reader Bytes 'source 'e
+
+public type ReadError 'source = CsvStreamCore.ReadError 'source
+
+public type Row = CsvStreamCore.Item Csv.Record Csv.Headers
+
+public type ByteRow = CsvStreamCore.Item CsvBytes.Record CsvBytes.Headers
+
+public type Decision = CsvStreamCore.Decision
+
+public type FoldResult 'state 'source 'callback = CsvStreamCore.FoldResult 'state 'source 'callback
+
+public type WriteResult 'source 'sink = CsvStreamCore.WriteResult 'source 'sink
+
+public fromPull : CsvTypes.Options -> Csv.HeaderMode -> ('state -> Result (Option (Bytes * 'state)) 'source / 'e) -> 'state -> Result (Reader 'source 'e) CsvTypes.Error
+let fromPull options mode pull state =
+  CsvStreamCore.reader true CsvRecord.text (fun text ->
+    text = "") options (Csv.headerMode mode) (CsvStreamCore.source pull state)
+
+public bytesFromPull : CsvTypes.Options -> CsvBytes.HeaderMode -> ('state -> Result (Option (Bytes * 'state)) 'source / 'e) -> 'state -> Result (ByteReader 'source 'e) CsvTypes.Error
+let bytesFromPull options mode pull state =
+  CsvStreamCore.reader false (fun record ->
+    Ok record) Bytes.isEmpty options (CsvBytes.headerMode mode) (CsvStreamCore.source pull state)
+
+public reader : CsvTypes.Options -> Csv.HeaderMode -> Stream Bytes 'e -> Result (Reader String 'e) CsvTypes.Error
+let reader options mode stream = fromPull options mode Stream.uncons stream
+
+public byteReader : CsvTypes.Options -> CsvBytes.HeaderMode -> Stream Bytes 'e -> Result (ByteReader String 'e) CsvTypes.Error
+let byteReader options mode stream = bytesFromPull options mode Stream.uncons stream
+
+let row item = {
+  headers = Option.map Csv.wrapHeaders item.headers,
+  position = item.position,
+  record = Csv.wrap item.record
+}
+
+let byteRow item = {
+  headers = Option.map CsvBytes.wrapHeaders item.headers,
+  position = item.position,
+  record = CsvBytes.wrap item.record
+}
+
+public next : Reader 'source 'e -> Result (Option Row * Reader 'source 'e) (ReadError 'source) / 'e
+let next reader = Result.map textStep (CsvStreamCore.next reader)
+
+let textStep pair =
+  let (item, reader) = pair
+  (Option.map row item, reader)
+
+public nextBytes : ByteReader 'source 'e -> Result (Option ByteRow * ByteReader 'source 'e) (ReadError 'source) / 'e
+let nextBytes reader = Result.map binaryStep (CsvStreamCore.next reader)
+
+let binaryStep pair =
+  let (item, reader) = pair
+  (Option.map byteRow item, reader)
+
+public headers : Reader 'source 'e -> Option Csv.Headers
+let headers reader = Option.map Csv.wrapHeaders (CsvStreamCore.headers reader)
+
+public byteHeaders : ByteReader 'source 'e -> Option CsvBytes.Headers
+let byteHeaders reader = Option.map CsvBytes.wrapHeaders (CsvStreamCore.headers reader)
+
+public fold : ('cursor -> Result (Option (CsvStreamCore.Item 'record 'headers) * 'cursor) (ReadError 'source) / 'e) -> 'cursor -> 'state -> ('state -> CsvStreamCore.Item 'record 'headers -> Result ('state * Decision) 'callback / 'e) -> FoldResult 'state 'source 'callback / 'e
+let fold read cursor initial step = CsvStreamCore.fold read cursor initial step
+
+public collect : Reader 'source 'e -> Result Csv.Table (ReadError 'source) / 'e
+let collect reader =
+  match CsvStreamCore.collect reader with
+  | Err error -> Err error
+  | Ok (records, reader) -> Ok { headers = headers reader, records = Array.map Csv.wrap records }
+
+public collectBytes : ByteReader 'source 'e -> Result CsvBytes.Table (ReadError 'source) / 'e
+let collectBytes reader =
+  match CsvStreamCore.collect reader with
+  | Err error -> Err error
+  | Ok (records, reader) -> Ok {
+    headers = byteHeaders reader,
+    records = Array.map CsvBytes.wrap records
+  }
+
+public write : CsvWrite.Options -> ('state -> Result (Option (Csv.Record * 'state)) 'source / 'e) -> 'state -> (Bytes -> Result Unit 'sink / 'e) -> WriteResult 'source 'sink / 'e
+let write options read input sink =
+  CsvStreamCore.write true options read input (fun record ->
+    Ok (CsvRecord.map Bytes.fromString (Csv.inspect record))) sink
+
+public writeBytes : CsvWrite.Options -> ('state -> Result (Option (CsvBytes.Record * 'state)) 'source / 'e) -> 'state -> (Bytes -> Result Unit 'sink / 'e) -> WriteResult 'source 'sink / 'e
+let writeBytes options read input sink =
+  CsvStreamCore.write false options read input (fun record -> Ok (CsvBytes.inspect record)) sink
+
+public writeEncoded : CsvWrite.Options -> CsvEncode.Encoder 'a -> ('state -> Result (Option ('a * 'state)) 'source / 'e) -> 'state -> (Bytes -> Result Unit 'sink / 'e) -> WriteResult 'source 'sink / 'e
+let writeEncoded options encoder read input sink =
+  CsvStreamCore.write true options read input (fun value ->
+    Result.map (fun record ->
+      CsvRecord.map Bytes.fromString (Csv.inspect record)) (CsvEncode.encodeWith options.limits encoder value)) sink
+
+type EncodeState 'state =
+  | HeaderPending 'state
+  | ValuesPending 'state
+
+type EncodeItem 'a =
+  | HeaderRecord Csv.Record
+  | DataValue 'a
+
+let readEncoded encoder read input =
+  match input with
+  | HeaderPending state -> Ok (Some (HeaderRecord (CsvEncode.header encoder), ValuesPending state))
+  | ValuesPending state ->
+    match read state with
+    | Err error -> Err error
+    | Ok None -> Ok None
+    | Ok (Some (value, rest)) -> Ok (Some (DataValue value, ValuesPending rest))
+
+let encodeItem limits encoder item =
+  let encoded =
+    match item with
+    | HeaderRecord record -> Ok record
+    | DataValue value -> CsvEncode.encodeWith limits encoder value
+  Result.map (fun record -> CsvRecord.map Bytes.fromString (Csv.inspect record)) encoded
+
+public writeEncodedWithHeader : CsvWrite.Options -> CsvEncode.Encoder 'a -> ('state -> Result (Option ('a * 'state)) 'source / 'e) -> 'state -> (Bytes -> Result Unit 'sink / 'e) -> WriteResult 'source 'sink / 'e
+let writeEncodedWithHeader options encoder read input sink =
+  CsvStreamCore.write true options (readEncoded encoder read) (HeaderPending input) (encodeItem options.limits encoder) sink

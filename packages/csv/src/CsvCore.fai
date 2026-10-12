@@ -13,9 +13,11 @@ public opaque type Parser = {
   ended : Bool,
   expected : Int,
   failed : Option CsvTypes.Error,
-  field : Array Int,
+  field : List Int,
+  fieldBytes : Int,
+  fieldCount : Int,
   fieldStart : CsvTypes.Position,
-  fields : Array (CsvTypes.Field Bytes),
+  fields : List (CsvTypes.Field Bytes),
   index : Int,
   inputBytes : Int,
   mode : Mode,
@@ -55,9 +57,11 @@ let parser text options =
     | CsvTypes.Exact value -> value
     | _ -> -1),
     failed = None,
-    field = [||],
+    field = [],
+    fieldBytes = 0,
+    fieldCount = 0,
     fieldStart = CsvTypes.start,
-    fields = [||],
+    fields = [],
     index = 0,
     inputBytes = 0,
     mode = StartField,
@@ -79,7 +83,7 @@ let parser text options =
 
 problem : Parser -> CsvTypes.ErrorKind -> String -> CsvTypes.Error
 let problem parser kind message = { (CsvTypes.error kind message) with
-  fieldIndex = Some (Array.length parser.fields),
+  fieldIndex = Some parser.fieldCount,
   position = Some parser.position,
   recordIndex = Some parser.index,
   span = Some { finish = parser.position, start = parser.fieldStart }
@@ -142,31 +146,37 @@ let validateByte parser byte =
 
 payload : Parser -> Int -> Result Parser CsvTypes.Error
 let payload parser byte =
-  if Array.length parser.field >= parser.options.limits.maxFieldBytes then
+  if parser.fieldBytes >= parser.options.limits.maxFieldBytes then
     Err (problem parser CsvTypes.FieldLimit "CSV decoded field byte limit exceeded")
   else
-    Ok { parser with active = true, field = Array.push byte parser.field }
+    Ok { parser with
+      active = true,
+      field = byte :: parser.field,
+      fieldBytes = parser.fieldBytes + 1
+    }
 
 fieldEnd : Parser -> Result Parser CsvTypes.Error
 let fieldEnd parser =
-  if Array.length parser.fields >= parser.options.limits.maxFields then
+  if parser.fieldCount >= parser.options.limits.maxFields then
     Err (problem parser CsvTypes.FieldCountLimit "CSV field count limit exceeded")
   else
     let field = {
       quoted = parser.quoted,
       span = Some { finish = parser.position, start = parser.fieldStart },
-      value = Bytes.fromList (Array.toList parser.field)
+      value = Bytes.fromList (List.reverse parser.field)
     }
     Ok { parser with
-      field = [||],
-      fields = Array.push field parser.fields,
+      field = [],
+      fieldBytes = 0,
+      fieldCount = parser.fieldCount + 1,
+      fields = field :: parser.fields,
       mode = StartField,
       quoted = false
     }
 
 emit : Parser -> CsvTypes.Position -> Int -> Feed
 let emit parser finish next =
-  let actual = Array.length parser.fields
+  let actual = parser.fieldCount
   let strict = parser.options.width <> CsvTypes.Flexible
   if limited parser.options.limits.maxRecords parser.index then
     failed parser next (problem parser CsvTypes.RecordCountLimit "CSV record count limit exceeded")
@@ -183,15 +193,17 @@ let emit parser finish next =
     failed parser next error
   else
     let record = {
-      fields = parser.fields,
+      fields = Array.fromList (List.reverse parser.fields),
       source = Some { index = parser.index, span = { finish = finish, start = parser.recordStart } }
     }
     result { parser with
       active = false,
       expected = if parser.expected < 0 then actual else parser.expected,
-      field = [||],
+      field = [],
+      fieldBytes = 0,
+      fieldCount = 0,
       fieldStart = parser.position,
-      fields = [||],
+      fields = [],
       index = parser.index + 1,
       mode = StartField,
       quoted = false,
@@ -293,8 +305,16 @@ let feedLoop parser bytes next =
   else if next >= Bytes.length bytes then
     result { parser with replay = [||], replayIndex = 0 } next NeedInput
   else if limited parser.options.limits.maxInputBytes parser.inputBytes || parser.inputBytes = 9223372036854775807 then
-    failed parser next { (problem parser CsvTypes.InputLimit "CSV input byte limit exceeded") with
-      position = Some { parser.position with byteOffset = parser.inputBytes }
+    let position = { parser.position with
+      byteColumn = parser.position.byteColumn + (parser.inputBytes - parser.position.byteOffset),
+      byteOffset = parser.inputBytes
+    }
+    failed parser next { (problem parser (if parser.inputBytes = 9223372036854775807 then
+      CsvTypes.CounterOverflow
+    else
+      CsvTypes.InputLimit) "CSV input byte limit exceeded") with
+      position = Some position,
+      span = Some { finish = position, start = parser.fieldStart }
     }
   else
     let byte = Bytes.unsafeGet next bytes

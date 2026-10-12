@@ -1,0 +1,39 @@
+module CsvStreamChecks
+
+readClock : Clock -> Int -> Result (Option (Bytes * Int)) String / { Clock }
+let readClock clock index =
+  let tick = clock.now ()
+  if index = 0 then Ok (Some (Bytes.fromList [97, 10, 255], 1)) else Err "unexpected source pull"
+
+visit : Console -> Int -> CsvStream.Row -> Result (Int * CsvTypes.Decision) String / { Console }
+let visit console count row =
+  let logged =
+    console.writeLine ("row:" ++ Option.withDefault "" (Result.toOption (Csv.field 0 row.record)))
+  Ok (count + 1, CsvTypes.Stop)
+
+writeInput : Clock -> Int -> Result (Option (Csv.Record * Int)) String / { Clock }
+let writeInput clock index =
+  let tick = clock.now ()
+  if index > 0 then
+    Ok None
+  else
+    Result.map (fun record ->
+      Some (record, 1)) (Result.mapError CsvTypes.errorToString (Csv.record [| "x" |]))
+
+writeConsole : Console -> Bytes -> Result Unit String / { Console }
+let writeConsole console bytes =
+  let logged =
+    console.writeLine ("write:" ++ String.trim (Option.withDefault "" (Bytes.toString bytes)))
+  Ok ()
+
+public main : Runtime -> Unit / { Clock, Console }
+let main env =
+  match CsvStream.fromPull Csv.options Csv.NoHeader (readClock env.clock) 0 with
+  | Err error -> env.console.writeLine (CsvTypes.errorToString error)
+  | Ok reader ->
+    let folded = CsvStream.fold CsvStream.next reader 0 (visit env.console)
+    let written =
+      CsvStream.write CsvEncode.options (writeInput env.clock) 0 (writeConsole env.console)
+    let good =
+      folded.state = 1 && folded.outcome = Ok CsvTypes.Stopped && written.recordsWritten = 1 && written.bytesWritten = 3 && written.outcome = Ok ()
+    env.console.writeLine (if good then "CSV stream checks passed" else "CSV stream checks FAILED")

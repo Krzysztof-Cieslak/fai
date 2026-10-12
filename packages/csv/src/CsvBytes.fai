@@ -14,6 +14,9 @@ public type Table = { headers : Option Headers, records : Array Record }
 public options : CsvTypes.Options
 let options = CsvTypes.byteOptions
 
+public strictOptions : CsvTypes.Options
+let strictOptions = { options with dialect = { options.dialect with endings = CsvTypes.CrLfOnly } }
+
 public parseWith : CsvTypes.Options -> Bytes -> Result (Array Record) CsvTypes.Error
 let parseWith options bytes = CsvRecord.parse false options bytes
 

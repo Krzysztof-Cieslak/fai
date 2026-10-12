@@ -14,6 +14,9 @@ public type Table = { headers : Option Headers, records : Array Record }
 public options : CsvTypes.Options
 let options = CsvTypes.options
 
+public strictOptions : CsvTypes.Options
+let strictOptions = { options with dialect = { options.dialect with endings = CsvTypes.CrLfOnly } }
+
 let textRecords records index output =
   if index >= Array.length records then
     Ok output

@@ -92,3 +92,17 @@ example: invalid [97, 44, 237, 160, 128] 2
 example: invalid [97, 44, 240, 159, 153] 2
 forall source: allSplits true CsvTypes.options (Bytes.fromString source)
 forall values: allSplits false CsvTypes.byteOptions (Bytes.fromList values)
+
+let partition bytes sizes offset pieces =
+  match sizes with
+  | [] -> List.reverse (Bytes.slice offset (Bytes.length bytes) bytes :: pieces)
+  | size :: rest ->
+    let count = Int.floorMod size (Bytes.length bytes - offset + 1)
+    partition bytes rest (offset + count) (Bytes.slice offset (offset + count) bytes :: pieces)
+
+let partitioned values sizes =
+  let bytes = Bytes.fromList values
+  parse false CsvTypes.byteOptions (partition bytes sizes 0 []) = parse false CsvTypes.byteOptions [
+    bytes
+  ]
+forall values sizes: partitioned values sizes

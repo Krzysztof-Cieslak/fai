@@ -1,0 +1,124 @@
+module CsvStreamSpec
+
+let collect options mode chunks =
+  match CsvStream.reader options mode (Stream.fromList (List.map Bytes.fromString chunks)) with
+  | Err error -> Err (CsvTypes.CsvError error)
+  | Ok reader -> CsvStream.collect reader
+example: (match collect Csv.options Csv.FirstRecord ["a,b\r", "\n"] with
+| Ok table ->
+  Option.map Csv.headerNames table.headers = Some [| "a", "b" |] && Array.isEmpty table.records
+| _ -> false)
+example: (match collect Csv.options Csv.NoHeader [] with
+| Ok table -> table.headers = None && Array.isEmpty table.records
+| _ -> false)
+example: collect Csv.options Csv.FirstRecord [] |> Result.isErr
+example: collect Csv.options Csv.FirstRecord ["a,a\n"] |> Result.isErr
+example: (match collect Csv.options Csv.FirstRecord ["a,b\n", "é,\"a\"", "\"b\"\n"] with
+| Ok table -> Array.map Csv.fields table.records = [| [| "é", "a\"b" |] |]
+| _ -> false)
+example: collect { Csv.options with
+  limits = { CsvTypes.limits with maxCollectedRecords = 1 }
+} Csv.FirstRecord ["a\nx\n"] |> Result.isErr
+
+let stopping =
+  match CsvStream.reader Csv.options Csv.NoHeader (Stream.cons (Bytes.fromList [
+    97,
+    10,
+    255
+  ]) (Stream.failed "must not read")) with
+  | Err _ -> false
+  | Ok reader ->
+    let result =
+      CsvStream.fold CsvStream.next reader 0 (fun count row -> Ok (count + 1, CsvTypes.Stop))
+    result.outcome = Ok CsvTypes.Stopped && result.state = 1 && result.completed = 1 && result.parsed = 1
+example: stopping
+
+let callbackFailure =
+  match CsvStream.reader Csv.options Csv.NoHeader (Stream.fromList [
+    Bytes.fromString "a\nb\nc\n"
+  ]) with
+  | Err _ -> false
+  | Ok reader ->
+    let result =
+      CsvStream.fold CsvStream.next reader "" (fun state row ->
+        if Csv.fields row.record = [| "b" |] then
+          Err "reject"
+        else
+          Ok (state ++ "a", CsvTypes.Continue))
+    result.outcome = Err (CsvTypes.CallbackFailure "reject") && result.state = "a" && result.completed = 1 && result.parsed = 2 && result.position = Some {
+      byteColumn = 2,
+      byteOffset = 1,
+      line = 1
+    }
+example: callbackFailure
+
+let sourceFailure =
+  let read index = if index = 0 then Ok (Some (Bytes.fromString "a\n", 1)) else Err 17
+  match CsvStream.fromPull Csv.options Csv.NoHeader read 0 with
+  | Err _ -> false
+  | Ok reader ->
+    let result =
+      CsvStream.fold CsvStream.next reader 0 (fun count row -> Ok (count + 1, CsvTypes.Continue))
+    result.state = 1 && result.outcome = Err (CsvTypes.ReadFailure (CsvTypes.SourceError 17))
+example: sourceFailure
+
+let writeFailure =
+  match (Csv.record [| "a" |], Csv.record [| "b" |]) with
+  | (Ok a, Ok b) ->
+    let result =
+      CsvStream.write CsvEncode.options Stream.uncons (Stream.fromList [
+        a,
+        b
+      ]) (fun bytes -> if bytes = Bytes.fromString "b\r\n" then Err "sink rejected" else Ok ())
+    result.recordsWritten = 1 && result.bytesWritten = 3 && result.uncertainRecord = Some 1 && result.outcome = Err (CsvTypes.SinkFailure "sink rejected")
+  | _ -> false
+example: writeFailure
+
+let noInvalidOutput =
+  match Csv.record [| "a" |] with
+  | Err _ -> false
+  | Ok record ->
+    let result =
+      CsvStream.write { CsvEncode.options with
+        limits = { CsvTypes.limits with maxRecordBytes = 0 }
+      } Stream.uncons (Stream.singleton record) (fun _ -> if 1 / 0 = 1 then Ok () else Err "called")
+    result.recordsWritten = 0 && result.bytesWritten = 0 && Result.isErr result.outcome
+example: noInvalidOutput
+
+let invalidBeforeRead =
+  let read state = if 1 / 0 = 1 then Ok None else Err "called"
+  let result =
+    CsvStream.write { CsvEncode.options with maxBufferedBytes = -1 } read () (fun _ -> Ok ())
+  result.recordsWritten = 0 && Result.isErr result.outcome
+example: invalidBeforeRead
+
+let typedHeader =
+  match CsvEncode.schema [| CsvEncode.column "number" CsvEncode.int identity |] with
+  | Err _ -> false
+  | Ok encoder ->
+    let result =
+      CsvStream.writeEncodedWithHeader CsvEncode.options encoder Stream.uncons (Stream.fromList [
+        1,
+        2
+      ]) (fun bytes ->
+        if List.member bytes [
+          Bytes.fromString "number\r\n",
+          Bytes.fromString "1\r\n",
+          Bytes.fromString "2\r\n"
+        ] then
+          Ok ()
+        else
+          Err "wrong output")
+    result.outcome = Ok () && result.recordsWritten = 3 && result.bytesWritten = 14
+example: typedHeader
+
+let foldWithoutCollection =
+  match CsvStream.reader { Csv.options with
+    limits = { CsvTypes.limits with maxCollectedBytes = 0, maxCollectedRecords = 0 }
+  } Csv.NoHeader (Stream.singleton (Bytes.fromString "a\n")) with
+  | Err _ -> false
+  | Ok reader ->
+    let result =
+      CsvStream.fold CsvStream.next reader 0 (fun count row -> Ok (count + 1, CsvTypes.Continue))
+    result.state = 1 && result.outcome = Ok CsvTypes.Exhausted
+example: foldWithoutCollection

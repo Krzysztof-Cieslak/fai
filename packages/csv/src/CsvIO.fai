@@ -1,0 +1,193 @@
+module CsvIO
+
+public type OpenError =
+  | InvalidCsv CsvTypes.Error
+  | OpenFile FileSystem.Error
+  | SetupAndClose CsvTypes.Error FileSystem.Error
+
+/// Cleanup failure is retained alongside the callback's committed result.
+public type Scoped 'a = { closeError : Option FileSystem.Error, result : 'a }
+
+public chunkSize : Int
+let chunkSize = 65536
+
+let validateRead options mode chunk =
+  if chunk <= 0 then
+    Err (CsvTypes.error CsvTypes.InvalidOptions "CSV read chunk size must be positive")
+  else
+    match CsvRecord.optionsFor options mode with
+    | Err error -> Err error
+    | Ok options -> CsvTypes.validate options
+
+readChunk : FileSystem -> Int -> Reader -> Result (Option (Bytes * Reader)) FileSystem.Error / { FileSystem }
+let readChunk fs size reader =
+  match fs.readChunk reader size with
+  | Err error -> Err error
+  | Ok bytes -> if Bytes.isEmpty bytes then Ok None else Ok (Some (bytes, reader))
+
+public reader : FileSystem -> CsvTypes.Options -> Csv.HeaderMode -> Int -> Reader -> Result (CsvStream.Reader FileSystem.Error { FileSystem }) CsvTypes.Error
+let reader fs options mode chunk handle =
+  match validateRead options (Csv.headerMode mode) chunk with
+  | Err error -> Err error
+  | Ok _ -> CsvStream.fromPull options mode (readChunk fs chunk) handle
+
+public byteReader : FileSystem -> CsvTypes.Options -> CsvBytes.HeaderMode -> Int -> Reader -> Result (CsvStream.ByteReader FileSystem.Error { FileSystem }) CsvTypes.Error
+let byteReader fs options mode chunk handle =
+  match validateRead options (CsvBytes.headerMode mode) chunk with
+  | Err error -> Err error
+  | Ok _ -> CsvStream.bytesFromPull options mode (readChunk fs chunk) handle
+
+let cleanupError result =
+  match result with
+  | Ok _ -> None
+  | Err error -> Some error
+
+public withFile : { concurrency : Concurrency, fs : FileSystem | _ } -> CsvTypes.Options -> Csv.HeaderMode -> Int -> Path -> (CsvStream.Reader FileSystem.Error { FileSystem } -> 'a / 'e) -> Result (Scoped 'a) OpenError / { Concurrency, FileSystem | 'e }
+let withFile env options mode chunk path work =
+  match validateRead options (Csv.headerMode mode) chunk with
+  | Err error -> Err (InvalidCsv error)
+  | Ok _ ->
+    match env.fs.openRead path with
+    | Err error -> Err (OpenFile error)
+    | Ok handle ->
+      match reader env.fs options mode chunk handle with
+      | Err error ->
+        let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeReader handle)
+        Err (match closed with
+        | Ok _ -> InvalidCsv error
+        | Err cleanup -> SetupAndClose error cleanup)
+      | Ok reader ->
+        let result = work reader
+        let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeReader handle)
+        Ok { closeError = cleanupError closed, result = result }
+
+public withBytesFile : { concurrency : Concurrency, fs : FileSystem | _ } -> CsvTypes.Options -> CsvBytes.HeaderMode -> Int -> Path -> (CsvStream.ByteReader FileSystem.Error { FileSystem } -> 'a / 'e) -> Result (Scoped 'a) OpenError / { Concurrency, FileSystem | 'e }
+let withBytesFile env options mode chunk path work =
+  match validateRead options (CsvBytes.headerMode mode) chunk with
+  | Err error -> Err (InvalidCsv error)
+  | Ok _ ->
+    match env.fs.openRead path with
+    | Err error -> Err (OpenFile error)
+    | Ok handle ->
+      match byteReader env.fs options mode chunk handle with
+      | Err error ->
+        let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeReader handle)
+        Err (match closed with
+        | Ok _ -> InvalidCsv error
+        | Err cleanup -> SetupAndClose error cleanup)
+      | Ok reader ->
+        let result = work reader
+        let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeReader handle)
+        Ok { closeError = cleanupError closed, result = result }
+
+public foldFile : { concurrency : Concurrency, fs : FileSystem | _ } -> CsvTypes.Options -> Csv.HeaderMode -> Int -> Path -> 'state -> ('state -> CsvStream.Row -> Result ('state * CsvTypes.Decision) 'callback / 'e) -> Result (Scoped (CsvStream.FoldResult 'state FileSystem.Error 'callback)) OpenError / { Concurrency, FileSystem | 'e }
+let foldFile env options mode chunk path initial step =
+  withFile env options mode chunk path (fun reader ->
+    foldFileLoop CsvStream.next reader step (CsvStreamCore.initial initial))
+
+public foldBytesFile : { concurrency : Concurrency, fs : FileSystem | _ } -> CsvTypes.Options -> CsvBytes.HeaderMode -> Int -> Path -> 'state -> ('state -> CsvStream.ByteRow -> Result ('state * CsvTypes.Decision) 'callback / 'e) -> Result (Scoped (CsvStream.FoldResult 'state FileSystem.Error 'callback)) OpenError / { Concurrency, FileSystem | 'e }
+let foldBytesFile env options mode chunk path initial step =
+  withBytesFile env options mode chunk path (fun reader ->
+    foldFileLoop CsvStream.nextBytes reader step (CsvStreamCore.initial initial))
+
+foldFileLoop : ('cursor -> Result (Option (CsvStreamCore.Item 'record 'headers) * 'cursor) (CsvTypes.ReadError FileSystem.Error) / { FileSystem }) -> 'cursor -> ('state -> CsvStreamCore.Item 'record 'headers -> Result ('state * CsvTypes.Decision) 'callback / 'e) -> CsvStream.FoldResult 'state FileSystem.Error 'callback -> CsvStream.FoldResult 'state FileSystem.Error 'callback / { FileSystem | 'e }
+let foldFileLoop read cursor step progress =
+  match read cursor with
+  | Err error -> { progress with outcome = Err (CsvTypes.ReadFailure error) }
+  | Ok (None, _) -> progress
+  | Ok (Some item, rest) ->
+    if progress.parsed = 9223372036854775807 then
+      { progress with
+        outcome = Err (CsvTypes.ReadFailure (CsvTypes.CsvError (CsvTypes.error CsvTypes.CounterOverflow "CSV fold counter overflow")))
+      }
+    else
+      let progress = { progress with parsed = progress.parsed + 1 }
+      match step progress.state item with
+      | Err error -> { progress with outcome = Err (CsvTypes.CallbackFailure error) }
+      | Ok (state, decision) ->
+        let progress = { progress with
+          completed = progress.completed + 1,
+          position = Some item.position,
+          state = state
+        }
+        if decision = CsvTypes.Stop then
+          { progress with outcome = Ok CsvTypes.Stopped }
+        else
+          foldFileLoop read rest step progress
+
+public sink : FileSystem -> Writer -> Bytes -> Result Unit FileSystem.Error / { FileSystem }
+let sink fs writer bytes = fs.writeChunk writer bytes
+
+public writeWriter : FileSystem -> CsvWrite.Options -> Writer -> ('state -> Result (Option (Csv.Record * 'state)) 'source / 'e) -> 'state -> CsvStream.WriteResult 'source FileSystem.Error / { FileSystem | 'e }
+let writeWriter fs options writer read input =
+  writeFileStream true options read input (fun record ->
+    CsvRecord.map Bytes.fromString (Csv.inspect record)) (sink fs writer)
+
+public writeBytesWriter : FileSystem -> CsvWrite.Options -> Writer -> ('state -> Result (Option (CsvBytes.Record * 'state)) 'source / 'e) -> 'state -> CsvStream.WriteResult 'source FileSystem.Error / { FileSystem | 'e }
+let writeBytesWriter fs options writer read input =
+  writeFileStream false options read input CsvBytes.inspect (sink fs writer)
+
+let writeProgress state outcome uncertain = {
+  bytesWritten = CsvWrite.byteCount state,
+  outcome = outcome,
+  recordsWritten = CsvWrite.count state,
+  uncertainRecord = uncertain
+}
+
+writeFileStream : Bool -> CsvWrite.Options -> ('state -> Result (Option ('record * 'state)) 'source / 'e) -> 'state -> ('record -> CsvTypes.Record Bytes) -> (Bytes -> Result Unit FileSystem.Error / { FileSystem }) -> CsvStream.WriteResult 'source FileSystem.Error / { FileSystem | 'e }
+let writeFileStream text options read input convert sink =
+  match CsvWrite.state text options with
+  | Err error -> {
+    bytesWritten = 0,
+    outcome = Err (CsvTypes.EncodingFailure [error]),
+    recordsWritten = 0,
+    uncertainRecord = None
+  }
+  | Ok state -> writeFileLoop state read input convert sink
+
+writeFileLoop : CsvWrite.State -> ('state -> Result (Option ('record * 'state)) 'source / 'e) -> 'state -> ('record -> CsvTypes.Record Bytes) -> (Bytes -> Result Unit FileSystem.Error / { FileSystem }) -> CsvStream.WriteResult 'source FileSystem.Error / { FileSystem | 'e }
+let writeFileLoop state read input convert sink =
+  match read input with
+  | Err error -> writeProgress state (Err (CsvTypes.InputFailure error)) None
+  | Ok None ->
+    match CsvWrite.finish state with
+    | Err error -> writeProgress state (Err (CsvTypes.EncodingFailure [error])) None
+    | Ok (bytes, finished) ->
+      if Bytes.isEmpty bytes then
+        writeProgress finished (Ok ()) None
+      else
+        match sink bytes with
+        | Err error -> writeProgress state (Err (CsvTypes.SinkFailure error)) None
+        | Ok _ -> writeProgress finished (Ok ()) None
+  | Ok (Some (record, rest)) ->
+    match CsvWrite.push state (convert record) with
+    | Err error -> writeProgress state (Err (CsvTypes.EncodingFailure [error])) None
+    | Ok (bytes, updated) ->
+      match sink bytes with
+      | Err error ->
+        writeProgress state (Err (CsvTypes.SinkFailure error)) (Some (CsvWrite.count state))
+      | Ok _ -> writeFileLoop updated read rest convert sink
+
+public writeFile : { concurrency : Concurrency, fs : FileSystem | _ } -> CsvWrite.Options -> FileSystem.WriteMode -> Path -> ('state -> Result (Option (Csv.Record * 'state)) 'source / 'e) -> 'state -> Result (Scoped (CsvStream.WriteResult 'source FileSystem.Error)) OpenError / { Concurrency, FileSystem | 'e }
+let writeFile env options mode path read input =
+  match CsvWrite.state true options with
+  | Err error -> Err (InvalidCsv error)
+  | Ok _ ->
+    match env.fs.openWriter path mode with
+    | Err error -> Err (OpenFile error)
+    | Ok handle ->
+      let result = writeWriter env.fs options handle read input
+      let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeWriter handle)
+      Ok { closeError = cleanupError closed, result = result }
+
+public writeBytesFile : { concurrency : Concurrency, fs : FileSystem | _ } -> CsvWrite.Options -> FileSystem.WriteMode -> Path -> ('state -> Result (Option (CsvBytes.Record * 'state)) 'source / 'e) -> 'state -> Result (Scoped (CsvStream.WriteResult 'source FileSystem.Error)) OpenError / { Concurrency, FileSystem | 'e }
+let writeBytesFile env options mode path read input =
+  match CsvWrite.state false options with
+  | Err error -> Err (InvalidCsv error)
+  | Ok _ ->
+    match env.fs.openWriter path mode with
+    | Err error -> Err (OpenFile error)
+    | Ok handle ->
+      let result = writeBytesWriter env.fs options handle read input
+      let closed = Wire.cleanup env.concurrency (fun _ -> env.fs.closeWriter handle)
+      Ok { closeError = cleanupError closed, result = result }

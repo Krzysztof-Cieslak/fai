@@ -1,0 +1,35 @@
+module CsvStressChecks
+
+let read count =
+  if count >= 20000 then Ok None else Ok (Some (Bytes.fromString "42,x\r\n", count + 1))
+
+let scan =
+  match CsvStream.fromPull Csv.options Csv.NoHeader read 0 with
+  | Err _ -> false
+  | Ok reader ->
+    let result =
+      CsvStream.fold CsvStream.next reader 0 (fun count row -> Ok (count + 1, CsvTypes.Continue))
+    result.completed = 20000 && result.state = 20000 && result.outcome = Ok CsvTypes.Exhausted
+
+let longField =
+  let text = String.joinArray "" (Array.repeat 524288 "é")
+  let bytes = Bytes.fromString ("\"" ++ text ++ "\"\r\n")
+  let source index =
+    if index >= Bytes.length bytes then
+      Ok None
+    else
+      Ok (Some (Bytes.slice index (index + 7) bytes, index + 7))
+  match CsvStream.fromPull Csv.options Csv.NoHeader source 0 with
+  | Err _ -> false
+  | Ok reader ->
+    match CsvStream.collect reader with
+    | Ok table ->
+      Array.length table.records = 1 && Csv.fields (Array.unsafeGet 0 table.records) = [| text |]
+    | _ -> false
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  env.console.writeLine (if scan && longField then
+    "CSV stress checks passed"
+  else
+    "CSV stress checks FAILED")
