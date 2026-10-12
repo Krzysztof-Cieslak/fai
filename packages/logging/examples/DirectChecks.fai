@@ -46,7 +46,9 @@ let check env directory =
 
 let contentsValid text =
   let lines = List.filter (fun line -> line <> "") (String.split "\n" text)
-  List.length lines = 100 && List.all lineValid lines
+  let indexes =
+    List.map (JsonDecode.fromString (JsonDecode.field "fields" (JsonDecode.field "index" JsonDecode.int))) lines
+  List.length lines = 100 && List.all lineValid lines && List.all Result.isOk indexes && Set.size (Set.fromList indexes) = 100
 
 public main : Runtime -> Unit / { Concurrency, Console, FileSystem }
 let main env =

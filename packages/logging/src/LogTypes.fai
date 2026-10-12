@@ -22,6 +22,15 @@ public type Delivery =
   | Completed
   | Accepted Int
 
+public type ErrorKind =
+  | InvalidConfiguration
+  | InvalidRecord
+  | LimitExceeded
+  | OutputFailure
+  | Closed
+  | Cancelled
+  | DeadlineExceeded
+
 public type Outcome = { delivery : Delivery, destination : String }
 
 public type Receipt =
@@ -31,6 +40,7 @@ public type Receipt =
 public type Failure = {
   destination : String,
   encoding : Option JsonEncode.Error,
+  kind : ErrorKind,
   message : String,
   native : Option FileSystem.Error,
   stage : Stage,
@@ -45,6 +55,9 @@ let error stage destination message = {
     {
       destination = destination,
       encoding = None,
+      kind = if stage = Configuration then
+        InvalidConfiguration
+      else if stage = Validation || stage = Formatting then InvalidRecord else OutputFailure,
       message = message,
       native = None,
       stage = stage,
@@ -60,10 +73,13 @@ let nativeError stage destination native = {
     {
       destination = destination,
       encoding = None,
+      kind = if native.kind = FileSystem.Closed then
+        Closed
+      else if native.kind = FileSystem.Cancelled then Cancelled else OutputFailure,
       message = FileSystem.errorToString native,
       native = Some native,
       stage = stage,
-      uncertain = stage = Write
+      uncertain = stage = Write || stage = Flush || stage = Close
     }
   ],
   outcomes = []
@@ -74,20 +90,34 @@ let uncertain error = { error with
   failures = List.map (fun failure -> { failure with uncertain = true }) error.failures
 }
 
+public asKind : ErrorKind -> Error -> Error
+let asKind kind error = { error with
+  failures = List.map (fun failure -> { failure with kind = kind }) error.failures
+}
+
 public errorToString : Error -> String
 let errorToString error =
   String.join "; " (List.map (fun failure ->
     failure.destination ++ ": " ++ failure.message) error.failures)
 
 public type Limits = {
+  maxDestinations : Int,
   maxFields : Int,
   maxRecordBytes : Int,
+  maxTargetOverrides : Int,
   maxValueDepth : Int,
   maxValueNodes : Int
 }
 
 public limits : Limits
-let limits = { maxFields = 128, maxRecordBytes = 262144, maxValueDepth = 32, maxValueNodes = 4096 }
+let limits = {
+  maxDestinations = 64,
+  maxFields = 128,
+  maxRecordBytes = 262144,
+  maxTargetOverrides = 128,
+  maxValueDepth = 32,
+  maxValueNodes = 4096
+}
 
 public type Field = { name : String, value : Result Json.Value JsonEncode.Error }
 

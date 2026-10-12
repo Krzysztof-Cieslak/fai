@@ -1,0 +1,21 @@
+module LogExample
+
+/// A logger is a dependency. Its complete effect is visible at the call boundary.
+serve : Log.Logger { Clock, Console } -> Result Log.Receipt Log.Error / { Clock, Console }
+let serve logger =
+  let request =
+    logger |> Log.withTarget "http.server" |> Log.withFields [
+      LogField.string "request_id" "request-1"
+    ]
+  Log.info request "request completed" [LogField.int "status" 200]
+
+public main : Runtime -> Unit / { Clock, Console }
+let main env =
+  let sink = LogSink.formatted "stderr" Log.limits LogFormat.JsonLines (LogSink.stderr env.console)
+  match Log.create Log.defaults sink with
+  | Err error -> env.console.writeError (Log.errorToString error)
+  | Ok root ->
+    let result = serve (Log.withClock env.clock root)
+    match result with
+    | Ok _ -> ()
+    | Err error -> env.console.writeError (Log.errorToString error)

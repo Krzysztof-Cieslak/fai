@@ -1,0 +1,99 @@
+module LogCapture
+
+public type Options = { limits : Log.Limits, maxBytes : Int, maxRecords : Int }
+
+public defaults : Options
+let defaults = { limits = Log.limits, maxBytes = 1048576, maxRecords = 256 }
+
+type State = { bytes : Int, count : Int, open : Bool, records : List Log.Record }
+
+public type Capture = {
+  sink : LogSink.Sink { Concurrency },
+  snapshot : Unit -> Result (List Log.Record) Log.Error / { Concurrency }
+}
+
+public type Completed 'a = { records : List Log.Record, value : 'a }
+
+public type Error 'error = {
+  body : Option 'error,
+  failure : Option Log.Error,
+  records : List Log.Record
+}
+
+let closed =
+  LogTypes.asKind LogTypes.Closed (LogTypes.error LogTypes.Admission "capture" "log capture is closed")
+
+store : Concurrency -> Channel State -> Options -> Int -> Log.Record -> Unit -> Result (List LogTypes.Outcome) Log.Error / { Concurrency }
+let store concurrency gate options size record unit =
+  match concurrency.recv gate with
+  | None -> Err closed
+  | Some state ->
+    if not state.open then
+      let restored = concurrency.send gate state
+      Err closed
+    else if state.count >= options.maxRecords || size >= options.maxBytes - state.bytes then
+      let restored = concurrency.send gate state
+      Err (LogTypes.asKind LogTypes.LimitExceeded (LogTypes.error LogTypes.Admission "capture" "capture limit exceeded"))
+    else
+      let saved = concurrency.send gate {
+        bytes = state.bytes + size + 1,
+        count = state.count + 1,
+        open = true,
+        records = record :: state.records
+      }
+      Ok [{ delivery = LogTypes.Completed, destination = "capture" }]
+
+emit : Concurrency -> Channel State -> Options -> Log.Record -> Result (List LogTypes.Outcome) Log.Error / { Concurrency }
+let emit concurrency gate options record =
+  match LogFormat.validate options.limits record with
+  | Err error -> Err error
+  | Ok size -> Wire.cleanup concurrency (store concurrency gate options size record)
+
+read : Concurrency -> Channel State -> Bool -> Unit -> Result (List Log.Record) Log.Error / { Concurrency }
+let read concurrency gate close unit =
+  match concurrency.recv gate with
+  | None -> Err closed
+  | Some state ->
+    let restored =
+      concurrency.send gate (if close then
+        { bytes = 0, count = 0, open = false, records = [] }
+      else
+        state)
+    if state.open then Ok (List.reverse state.records) else Err closed
+
+snapshot : Concurrency -> Channel State -> Unit -> Result (List Log.Record) Log.Error / { Concurrency }
+let snapshot concurrency gate unit = Wire.cleanup concurrency (read concurrency gate false)
+
+/// Bounded capture is an effectful sink; pure record preparation needs no capture.
+/// Scope exit returns the records and empties the state held by retained aliases.
+public withRecords : Concurrency -> Options -> (Capture -> Result 'a 'error / 'e) -> Result (Completed 'a) (Error 'error) / { Concurrency | 'e }
+let withRecords concurrency options work =
+  let validation =
+    if options.maxBytes < 0 || options.maxRecords < 0 then
+      Err (LogTypes.error LogTypes.Configuration "capture" "negative capture limit")
+    else
+      LogBudget.validate options.limits
+  match validation with
+  | Err error -> Err { body = None, failure = Some error, records = [] }
+  | Ok _ ->
+    let gate = concurrency.channel 1
+    let seeded =
+      Wire.cleanup concurrency (fun _ -> concurrency.send gate {
+        bytes = 0,
+        count = 0,
+        open = true,
+        records = []
+      })
+    let captured = snapshot concurrency gate
+    let sink = {
+      emit = emit concurrency gate options,
+      flush = fun _ -> Result.map (fun _ -> ()) (captured ()),
+      names = ["capture"]
+    }
+    let result = work { sink = sink, snapshot = captured }
+    let records = Wire.cleanup concurrency (read concurrency gate true)
+    match (result, records) with
+    | (Ok value, Ok records) -> Ok { records = records, value = value }
+    | (Err body, Ok records) -> Err { body = Some body, failure = None, records = records }
+    | (Ok _, Err failure) -> Err { body = None, failure = Some failure, records = [] }
+    | (Err body, Err failure) -> Err { body = Some body, failure = Some failure, records = [] }

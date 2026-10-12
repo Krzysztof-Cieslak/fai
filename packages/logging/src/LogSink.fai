@@ -30,10 +30,13 @@ let formatted name limits format output = {
 }
 
 public validate : Sink 'e -> Result Unit LogTypes.Error
-let validate sink =
-  if sink.names = [] || List.length sink.names > 64 || List.any (fun name ->
+let validate sink = validateWith LogTypes.limits.maxDestinations sink
+
+public validateWith : Int -> Sink 'e -> Result Unit LogTypes.Error
+let validateWith limit sink =
+  if limit <= 0 || sink.names = [] || List.length sink.names > limit || List.any (fun name ->
     name = "") sink.names || Set.size (Set.fromList sink.names) <> List.length sink.names then
-    Err (LogTypes.error LogTypes.Configuration "" "destinations must have distinct nonempty names (at most 64)")
+    Err (LogTypes.error LogTypes.Configuration "" "destinations must have distinct nonempty names within the configured limit")
   else
     Ok ()
 
@@ -141,7 +144,8 @@ let withFile env options path work =
 locked : Concurrency -> Channel Unit -> (Unit -> Result 'a LogTypes.Error / 'e) -> Result 'a LogTypes.Error / { Concurrency | 'e }
 let locked concurrency gate work =
   match concurrency.recv gate with
-  | None -> Err (LogTypes.error LogTypes.Admission "" "logging operation cancelled")
+  | None ->
+    Err (LogTypes.asKind LogTypes.Cancelled (LogTypes.error LogTypes.Admission "" "logging operation cancelled"))
   | Some _ ->
     let result = work ()
     let released = Wire.cleanup concurrency (fun _ -> concurrency.send gate ())

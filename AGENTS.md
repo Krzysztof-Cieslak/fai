@@ -1182,6 +1182,10 @@ gate, bounds outstanding slots/UTF-8 bytes including in-flight output, and uses
 FIFO flush barriers. Closed or failed admission wakes blocked callers. Scoped
 drain, cancellation and optional deadlines retain completion/failure/abandonment
 counts and join the worker; retained endpoints cannot emit after shutdown.
+`LogCapture` provides bounded structured-record snapshots under Concurrency and
+clears retained aliases on close. Logging failures have machine-readable kinds
+and preserve per-sink receipts. Native contracts and JIT/AOT fixtures cover both
+queue budgets, admission cancellation, close races, file integrity and effects.
 
 `Path` is a lossless opaque native path value: raw filename bytes on Unix and
 little-endian UTF-16 units on Windows. Its pure lexical operations never consult

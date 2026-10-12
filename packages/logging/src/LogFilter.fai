@@ -16,7 +16,7 @@ let validate options =
   match LogBudget.validate options.limits with
   | Err error -> Err error
   | Ok _ ->
-    if List.length options.overrides > 128 || List.any (fun rule ->
+    if List.length options.overrides > options.limits.maxTargetOverrides || List.any (fun rule ->
       rule.target = "") options.overrides || Set.size (Set.fromList (List.map (fun rule ->
       rule.target) options.overrides)) <> List.length options.overrides then
       Err (LogTypes.error LogTypes.Configuration "" "invalid or duplicate target overrides")

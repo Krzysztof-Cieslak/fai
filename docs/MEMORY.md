@@ -51,6 +51,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Logging capture is a bounded effectful collector, while preparation and
+  formatting stay pure. Failure kinds and per-sink receipts distinguish filtering,
+  completed calls, acknowledged queue admission and uncertain output. Queue
+  snapshots expose bounded accounting so backpressure and lifecycle tests use
+  state handshakes rather than scheduling guesses.
+
 - Queued logging uses acknowledged admission with a shared lifetime/credit gate,
   not the success-less Channel.send return. Accepted bytes include in-flight
   records; flush barriers share bounded slots. Shutdown retains counts and the
