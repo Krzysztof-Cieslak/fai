@@ -57,3 +57,31 @@ against an explicit absolute base; `pathFromSource fallback` prefers the winning
 file's directory and uses the explicit fallback for environment/CLI/defaults.
 Neither operation reads the working directory. Date/time readers preserve TOML
 kind and reject precision/offset values unrepresentable by the standard types.
+
+## Application example
+
+`examples/Settings.fai` defines a reusable application schema, defaults, explicit
+environment bindings and a presence-aware Args parser. `examples/Application.fai`
+loads optional `app.toml` and `.env` files, then environment and CLI overrides.
+It obtains the working directory once through FileSystem and supplies that base
+explicitly. An absent `--port` does not overwrite values from files/environment.
+
+```sh
+fai run -C packages config/examples/Application.fai -- --port 8100
+```
+
+The Fai runtime fixture uses a scoped temporary directory and real files,
+environment lookups and argv. Its assertions cover source precedence, optional
+files, byte limits, parser/native errors, preflight validation and provenance:
+
+```sh
+FAI_CONFIG_PORT=7100 FAI_CONFIG_HOST=localhost \
+  fai run -C packages config/examples/RuntimeChecks.fai -- --port 8100
+fai build -C packages config/examples/RuntimeChecks.fai --out config-check
+FAI_CONFIG_PORT=7100 FAI_CONFIG_HOST=localhost ./config-check --port 8100
+```
+
+The expected output is `Configuration runtime checks passed`. CI invokes these
+same Fai programs on Linux, macOS and Windows, alongside the pinned TOML corpus.
+All assertions and test logic are Fai; the action only supplies inputs and runs
+the commands. No compiler or standard-library extension is needed.

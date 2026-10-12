@@ -26,3 +26,14 @@ example: (match TomlTemporal.parse "12:30:00.123456789123" with
 | Ok value -> TomlTemporal.toTime value |> Result.isErr
 | _ -> false)
 forall value: TomlScalar.integer (Int.toString value) = Ok value
+example: (match Toml.parse "n=9223372036854775808" with
+| Err error ->
+  error.kind = TomlTypes.InvalidNumber && error.primary.startByte = 2 && error.primary.endByte = 21
+| _ -> false)
+example: (match Toml.parse "n=2023-02-29" with
+| Err error -> error.kind = TomlTypes.InvalidTemporal
+| _ -> false)
+example: (match Toml.parseBytes (Bytes.fromList [97, 61, 39, 255, 39]) with
+| Err error ->
+  error.kind = TomlTypes.InvalidUtf8 && error.primary.startByte = 3 && error.primary.endByte = 4
+| _ -> false)

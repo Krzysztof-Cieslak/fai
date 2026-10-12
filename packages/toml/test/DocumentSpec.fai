@@ -34,3 +34,18 @@ example: (match Toml.parse "a=1\na=2" with
 example: Toml.parseWith { Toml.options with maxNodes = 2 } "a=1" |> Result.isOk
 example: Toml.parseWith { Toml.options with maxNodes = 1 } "a=1" |> Result.isErr
 example: Toml.parseWith { Toml.options with maxDepth = 2 } "a=[[[1]]]" |> Result.isErr
+example: (match Toml.parse "a=[" with
+| Err error -> error.primary.startByte = 3 && error.primary.endByte = 3
+| _ -> false)
+
+let deep count =
+  "value=" ++ String.joinArray "" (Array.repeat count "[") ++ "0" ++ String.joinArray "" (Array.repeat count "]")
+example: Toml.parse (deep 129) |> Result.isErr
+example: Toml.parseWith { Toml.options with maxDepth = 600 } (deep 500) |> Result.isOk
+
+let total source =
+  match Toml.parse source with
+  | Ok document -> Toml.toString (Toml.value document) |> Result.isOk
+  | Err error ->
+    error.primary.startByte >= 0 && error.primary.endByte >= error.primary.startByte && error.primary.endByte <= Bytes.length (Bytes.fromString source)
+forall source: total source

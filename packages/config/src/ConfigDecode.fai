@@ -196,8 +196,7 @@ let checkedDecimal text =
   if start >= Bytes.length raw || not (decimalDigits raw start) then
     Err "expected decimal integer"
   else
-    let digits = String.drop start text
-    let canonical = skipZeros digits 0
+    let canonical = String.drop (skipZeros raw start) text
     TomlScalar.integer ((if Bytes.get 0 raw = Some 45 then "-" else "") ++ canonical)
 
 let decimalDigits bytes index =
@@ -206,11 +205,11 @@ let decimalDigits bytes index =
   else
     (Bytes.unsafeGet index bytes >= 48 && Bytes.unsafeGet index bytes <= 57 && decimalDigits bytes (index + 1))
 
-let skipZeros text index =
-  if index < String.length text - 1 && String.substring index 1 text = "0" then
-    skipZeros text (index + 1)
+let skipZeros bytes index =
+  if index < Bytes.length bytes - 1 && Bytes.unsafeGet index bytes = 48 then
+    skipZeros bytes (index + 1)
   else
-    String.drop index text
+    index
 
 public int : Decoder Int
 let int =

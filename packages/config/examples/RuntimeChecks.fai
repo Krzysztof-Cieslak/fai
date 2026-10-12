@@ -1,0 +1,141 @@
+module ConfigRuntimeChecks
+
+let path text = Result.withDefault Path.empty (Path.fromString text)
+
+let isKind kind result =
+  match result with
+  | Err error -> error.kind = kind
+  | _ -> false
+
+let intDecoder = ConfigDecode.field "server" (ConfigDecode.field "port" ConfigDecode.int)
+
+let baseSources defaults = [
+  ConfigSource.Prepared defaults,
+  ConfigSource.Toml ConfigSource.Required (path "cfg/settings.toml"),
+  ConfigSource.Dotenv ConfigSource.Required (path ".env") ConfigExampleSettings.bindings
+]
+
+loadCheck : Runtime -> Path -> Config.Layer -> List ConfigSource.Source -> Int -> ConfigTypes.SourceKind -> Result Unit String / { Env, FileSystem }
+let loadCheck env base defaults tail expected sourceKind =
+  match ConfigSource.load env Config.limits base (List.append (baseSources defaults) tail) with
+  | Err error -> Err (Config.errorToString error)
+  | Ok config ->
+    match ConfigDecode.decode (ConfigExampleSettings.decoder base) config with
+    | Err errors -> Err (String.join "; " (List.map Config.errorToString errors))
+    | Ok settings ->
+      let origin = Config.origin config [TomlTypes.Key "server", TomlTypes.Key "port"]
+      if settings.port = expected && settings.host = "localhost" && not settings.debug && settings.data = Path.join base (path "cfg/files") && Option.map (fun origin ->
+        origin.kind) origin = Some sourceKind then
+        Ok ()
+      else
+        Err "layering, provenance or source-relative path mismatch"
+
+errorChecks : Runtime -> Path -> Config.Layer -> Result Unit String / { Env, FileSystem }
+let errorChecks env base defaults =
+  let optional = ConfigSource.load env Config.limits base [
+    ConfigSource.Prepared defaults,
+    ConfigSource.Toml ConfigSource.Optional (path "missing.toml")
+  ]
+  let missing = ConfigSource.load env Config.limits base [
+    ConfigSource.Toml ConfigSource.Required (path "missing.toml")
+  ]
+  let directory = ConfigSource.load env Config.limits base [
+    ConfigSource.Toml ConfigSource.Optional (path "cfg")
+  ]
+  let invalidPlan = ConfigSource.load env Config.limits base [
+    ConfigSource.Toml ConfigSource.Required (path "missing.toml"),
+    ConfigSource.Environment [{ name = "BAD", path = [] }]
+  ]
+  let small = ConfigSource.load env { Config.limits with
+    maxInputBytes = 1
+  } base [ConfigSource.Toml ConfigSource.Required (path "cfg/settings.toml")]
+  let write = env.fs.writeBytes (Path.join base (path "bad.toml")) (Bytes.fromString "key=[")
+  let syntax = ConfigSource.load env Config.limits base [
+    ConfigSource.Toml ConfigSource.Optional (path "bad.toml")
+  ]
+  let writeUtf8 = env.fs.writeBytes (Path.join base (path "bad-utf8.toml")) (Bytes.fromList [255])
+  let utf8 = ConfigSource.load env Config.limits base [
+    ConfigSource.Toml ConfigSource.Optional (path "bad-utf8.toml")
+  ]
+  if Result.isOk optional && isKind ConfigTypes.FileFailure missing && isKind ConfigTypes.FileFailure directory && isKind ConfigTypes.InvalidBinding invalidPlan && Result.isErr small && Result.isOk write && isKind ConfigTypes.ParseFailure syntax && Result.isOk writeUtf8 && isKind ConfigTypes.ParseFailure utf8 then
+    Ok ()
+  else
+    Err "loading error behavior mismatch"
+
+precedenceChecks : Runtime -> Path -> Config.Layer -> Result Unit String / { Env, FileSystem }
+let precedenceChecks env base defaults =
+  let changed =
+    env.fs.writeBytes (Path.join base (path "cfg/settings.toml")) (Bytes.fromString "data='files'\n[server]\nport='invalid lower priority value'")
+  let overridden =
+    loadCheck env base defaults [
+      ConfigSource.Environment ConfigExampleSettings.bindings
+    ] 7100 ConfigTypes.Environment
+  let bad = ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "bad snapshot") [
+    { name = "BAD_PORT", path = ["server", "port"] }
+  ] [("BAD_PORT", "secret-invalid")]
+  let invalid =
+    match bad with
+    | Err _ -> false
+    | Ok layer ->
+      match ConfigSource.load env Config.limits base (List.append (baseSources defaults) [
+        ConfigSource.Prepared layer
+      ]) with
+      | Err _ -> false
+      | Ok config ->
+        match ConfigDecode.decode (ConfigExampleSettings.decoder base) config with
+        | Err [error] ->
+          error.path = [
+            TomlTypes.Key "server",
+            TomlTypes.Key "port"
+          ] && Option.andThen (fun origin ->
+            origin.name) error.origin = Some "BAD_PORT" && not (String.contains (Config.errorToString error) "secret-invalid")
+        | _ -> false
+  if Result.isOk changed && Result.isOk overridden && invalid then
+    Ok ()
+  else
+    Err "winning-value decoding mismatch"
+
+checks : Runtime -> List ConfigSource.Source -> Temp.Directory -> Result Unit String / { Env, FileSystem }
+let checks env cli directory =
+  let base = directory.path
+  let made = env.fs.createDirectory (Path.join base (path "cfg"))
+  let wrote =
+    env.fs.writeBytes (Path.join base (path "cfg/settings.toml")) (Bytes.fromString "data='files'\n[server]\nport=6000")
+  let dot =
+    env.fs.writeBytes (Path.join base (path ".env")) (Bytes.fromString "FAI_CONFIG_PORT=6100\n")
+  match ConfigExampleSettings.defaults with
+  | Err error -> Err (Config.errorToString error)
+  | Ok defaults ->
+    let fromDotenv = loadCheck env base defaults [] 6100 ConfigTypes.DotenvFile
+    let fromEnv =
+      loadCheck env base defaults [
+        ConfigSource.Environment ConfigExampleSettings.bindings
+      ] 7100 ConfigTypes.Environment
+    let fromCli =
+      loadCheck env base defaults (List.append [
+        ConfigSource.Environment ConfigExampleSettings.bindings
+      ] cli) 8100 ConfigTypes.CommandLine
+    let absentCli = ConfigExampleSettings.cli [] = Ok []
+    let errors = errorChecks env base defaults
+    let precedence = precedenceChecks env base defaults
+    if Result.isOk made && Result.isOk wrote && Result.isOk dot && absentCli then
+      match (fromDotenv, fromEnv, fromCli, errors, precedence) with
+      | (Ok _, Ok _, Ok _, Ok _, Ok _) -> Ok ()
+      | (Err e, _, _, _, _) -> Err e
+      | (_, Err e, _, _, _) -> Err e
+      | (_, _, Err e, _, _) -> Err e
+      | (_, _, _, Err e, _) -> Err e
+      | (_, _, _, _, Err e) -> Err e
+    else
+      Err "fixture setup or absent CLI handling failed"
+
+public main : Runtime -> Unit / { Concurrency, Console, Env, FileSystem }
+let main env =
+  match (env.fs.temporaryDirectory (), ConfigExampleSettings.cli (env.env.args ())) with
+  | (Ok temporary, Ok cli) ->
+    let result = Temp.withDirectory env temporary (checks env cli)
+    if Result.isOk result then
+      env.console.writeLine "Configuration runtime checks passed"
+    else
+      env.console.writeLine "Configuration runtime checks FAILED"
+  | _ -> env.console.writeLine "Configuration fixture arguments or temporary directory failed"

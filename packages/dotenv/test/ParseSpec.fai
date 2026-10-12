@@ -34,3 +34,28 @@ example: (match Dotenv.parse "A=é\nA=2" with
 let sanitized text =
   String.join "" (String.split "'" (String.join "" (String.split "\r" (String.join "" (String.split "\u{0}" text)))))
 forall text: value "A" ("A='" ++ sanitized text ++ "'") = Ok (Some (sanitized text))
+
+let successiveLocations =
+  match Dotenv.parse "# hé\r\nA='é\r\n🙂'\r\nB=2" with
+  | Ok document ->
+    let entry = Array.unsafeGet 1 (Dotenv.entries document)
+    entry.nameLocation = {
+      column = 1,
+      endByte = 22,
+      endColumn = 2,
+      endLine = 4,
+      line = 4,
+      startByte = 21
+    }
+  | Err _ -> false
+example: successiveLocations
+example: (match Dotenv.parse "A=\"\\" with
+| Err error -> error.primary.endByte = 4
+| _ -> false)
+
+let locatedErrors source =
+  match Dotenv.parse source with
+  | Ok _ -> true
+  | Err error ->
+    error.primary.startByte >= 0 && error.primary.endByte >= error.primary.startByte && error.primary.endByte <= Bytes.length (Bytes.fromString source)
+forall source: locatedErrors source
