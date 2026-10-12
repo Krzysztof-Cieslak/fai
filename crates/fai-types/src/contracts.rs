@@ -90,7 +90,7 @@ fn check_contract_body(
 
     let mut cx = InferCtx::new();
     let def_schemes = |db: &dyn Db, def: DefId| crate::query::reference_scheme(db, file, def);
-    let builtins = |name: Symbol| std_lib::builtin_scheme(name);
+    let builtins = |name: Symbol| std_lib::contextual_builtin_scheme(db, name);
     let scc_types: FxHashMap<DefId, SolveTy> = FxHashMap::default();
     let mut env = contract_env(db, &scc_types, &def_schemes, &builtins);
 

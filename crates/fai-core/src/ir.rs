@@ -777,6 +777,24 @@ pub enum Prim {
     PathOperation,
     /// Split native path units into lexical component buffers.
     PathComponents,
+    /// Compile a checked native regex description.
+    RegexCompile,
+    /// Find text spans, optionally including capture groups.
+    RegexFindText,
+    /// Find binary spans, optionally including capture groups.
+    RegexFindBytes,
+    /// Test text existence without capturing.
+    RegexTestText,
+    /// Test binary existence without capturing.
+    RegexTestBytes,
+    /// Inspect the immutable capture schema.
+    RegexNames,
+    /// Map a scalar position to its UTF-8 byte offset.
+    RegexByteIndex,
+    /// Extract a checked UTF-8 byte range.
+    RegexSlice,
+    /// Escape regex pattern metacharacters.
+    RegexEscape,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -946,6 +964,15 @@ impl Prim {
             Prim::TextWidth => "fai_text_width",
             Prim::PathOperation => "fai_path_operation",
             Prim::PathComponents => "fai_path_components",
+            Prim::RegexCompile => "fai_regex_compile",
+            Prim::RegexFindText => "fai_regex_find_text",
+            Prim::RegexFindBytes => "fai_regex_find_bytes",
+            Prim::RegexTestText => "fai_regex_test_text",
+            Prim::RegexTestBytes => "fai_regex_test_bytes",
+            Prim::RegexNames => "fai_regex_names",
+            Prim::RegexByteIndex => "fai_regex_byte_index",
+            Prim::RegexSlice => "fai_regex_slice",
+            Prim::RegexEscape => "fai_regex_escape",
             Prim::BytesSlice => "fai_bytes_slice",
             Prim::BytesFromList => "fai_bytes_from_list",
             Prim::BytesToList => "fai_bytes_to_list",
@@ -991,6 +1018,8 @@ impl Prim {
             | Prim::CryptoSha256
             | Prim::TextGraphemes
             | Prim::PathComponents
+            | Prim::RegexNames
+            | Prim::RegexEscape
             | Prim::CryptoScramPassword => 1,
             Prim::RecordUpdate
             | Prim::ArraySet
@@ -998,6 +1027,11 @@ impl Prim {
             | Prim::StringSubstring
             | Prim::BytesSlice
             | Prim::PathOperation
+            | Prim::RegexFindText
+            | Prim::RegexFindBytes
+            | Prim::RegexTestText
+            | Prim::RegexTestBytes
+            | Prim::RegexSlice
             | Prim::CryptoPbkdf2Sha256 => 3,
             _ => 2,
         }
@@ -1061,6 +1095,15 @@ impl Prim {
             "textWidth" => Prim::TextWidth,
             "pathOperation" => Prim::PathOperation,
             "pathComponents" => Prim::PathComponents,
+            "regexCompile" => Prim::RegexCompile,
+            "regexFindText" => Prim::RegexFindText,
+            "regexFindBytes" => Prim::RegexFindBytes,
+            "regexTestText" => Prim::RegexTestText,
+            "regexTestBytes" => Prim::RegexTestBytes,
+            "regexNames" => Prim::RegexNames,
+            "regexByteIndex" => Prim::RegexByteIndex,
+            "regexSlice" => Prim::RegexSlice,
+            "regexEscape" => Prim::RegexEscape,
             "bytesSlice" => Prim::BytesSlice,
             "bytesFromList" => Prim::BytesFromList,
             "bytesToList" => Prim::BytesToList,

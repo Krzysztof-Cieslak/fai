@@ -218,6 +218,15 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::TextWidth
         | Prim::PathOperation
         | Prim::PathComponents
+        | Prim::RegexCompile
+        | Prim::RegexFindText
+        | Prim::RegexFindBytes
+        | Prim::RegexTestText
+        | Prim::RegexTestBytes
+        | Prim::RegexNames
+        | Prim::RegexByteIndex
+        | Prim::RegexSlice
+        | Prim::RegexEscape
         | Prim::BytesSlice
         | Prim::BytesFromList
         | Prim::BytesToList

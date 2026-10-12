@@ -82,6 +82,15 @@ pub const INTRINSICS: &[&str] = &[
     "textWidth",
     "pathOperation",
     "pathComponents",
+    "regexCompile",
+    "regexFindText",
+    "regexFindBytes",
+    "regexTestText",
+    "regexTestBytes",
+    "regexNames",
+    "regexByteIndex",
+    "regexSlice",
+    "regexEscape",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

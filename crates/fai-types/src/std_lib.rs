@@ -182,6 +182,54 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
     })
 }
 
+/// Resolve typed native intrinsics whose values are opaque standard-library ADTs.
+/// Ordinary builtins avoid module lookup entirely, preserving their dependencies.
+pub(crate) fn contextual_builtin_scheme(db: &dyn fai_db::Db, name: Symbol) -> Option<Scheme> {
+    use fai_resolve::{AdtRef, ModuleName, module_file};
+    use std::sync::Arc;
+    let key = name.as_str();
+    if !matches!(
+        key,
+        "regexCompile"
+            | "regexFindText"
+            | "regexFindBytes"
+            | "regexTestText"
+            | "regexTestBytes"
+            | "regexNames"
+            | "regexByteIndex"
+            | "regexSlice"
+            | "regexEscape"
+    ) {
+        return builtin_scheme(name);
+    }
+    let engine = module_file(db, ModuleName(Symbol::intern("RegexEngine")))?;
+    let prelude = module_file(db, ModuleName(Symbol::intern("Prelude")))?;
+    let named = |file: fai_db::SourceFile, name: &str| {
+        Ty::Adt(AdtRef::new(file.source(db), Symbol::intern(name)))
+    };
+    let apply = |head, arg| Ty::App(Arc::new(head), Arc::new(arg));
+    let result = |value| apply(apply(named(prelude, "Result"), value), named(engine, "Error"));
+    let program = named(engine, "Program");
+    let text = Ty::Con(Con::String);
+    let bytes = Ty::Con(Con::Bytes);
+    let request = Ty::array(Ty::int());
+    let spans = Ty::array(Ty::Tuple(vec![Ty::int(); 4]));
+    Some(Scheme::mono(match key {
+        "regexCompile" => Ty::arrows([text, request], result(program)),
+        "regexFindText" => Ty::arrows([program, text, request], result(spans)),
+        "regexFindBytes" => Ty::arrows([program, bytes, request], result(spans)),
+        "regexTestText" => Ty::arrows([program, text, request], result(Ty::bool())),
+        "regexTestBytes" => Ty::arrows([program, bytes, request], result(Ty::bool())),
+        "regexNames" => {
+            Ty::arrow(program, result(Ty::array(apply(named(prelude, "Option"), text))))
+        }
+        "regexByteIndex" => Ty::arrows([text, Ty::int()], result(Ty::Tuple(vec![Ty::int(); 2]))),
+        "regexSlice" => Ty::arrows([text.clone(), Ty::int(), Ty::int()], result(text)),
+        "regexEscape" => Ty::arrow(text.clone(), text),
+        _ => unreachable!("filtered regex intrinsic"),
+    }))
+}
+
 /// Builds a scheme quantified over a single type variable `'a` (an array element,
 /// or the operand of `compare`), given a function from that variable to the
 /// intrinsic's type. The variable is the canonical first quantified variable,

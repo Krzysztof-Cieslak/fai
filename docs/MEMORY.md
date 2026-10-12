@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Compiled regular expressions are pure native values identified by their pattern
+  and fully specified options, never by a native address or search-cache state.
+  The typed RegexEngine bridge separates text and binary calls; whole-input mode
+  anchors the parsed expression. Private scratch leases have bounded retention.
+
 - Logging capture is a bounded effectful collector, while preparation and
   formatting stay pure. Failure kinds and per-sink receipts distinguish filtering,
   completed calls, acknowledged queue admission and uncertain output. Queue

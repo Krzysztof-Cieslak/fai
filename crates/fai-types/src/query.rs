@@ -81,7 +81,7 @@ pub fn infer_scc_query(db: &dyn Db, file: SourceFile, scc_index: usize) -> Arc<S
     let resolved = resolve(db, file);
 
     let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
-    let builtins = |name: Symbol| std_lib::builtin_scheme(name);
+    let builtins = |name: Symbol| std_lib::contextual_builtin_scheme(db, name);
 
     let inference = infer_scc(db, file, &scc.members, &resolved, &def_schemes, &builtins);
     Arc::new(SccTypes {
@@ -286,7 +286,7 @@ pub fn def_local_types(
     name: Symbol,
 ) -> Vec<(String, crate::ty::Ty)> {
     let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
-    let builtins = |n: Symbol| std_lib::builtin_scheme(n);
+    let builtins = |n: Symbol| std_lib::contextual_builtin_scheme(db, n);
     crate::infer::infer_local_types(db, file, name, &def_schemes, &builtins)
         .into_iter()
         .map(|(sym, ty)| (sym.as_str().to_owned(), ty))
@@ -303,7 +303,7 @@ pub fn def_effect(db: &dyn Db, file: SourceFile, name: Symbol) -> crate::ty::Eff
         return value_forcing_effect(db, file, name);
     }
     let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
-    let builtins = |n: Symbol| std_lib::builtin_scheme(n);
+    let builtins = |n: Symbol| std_lib::contextual_builtin_scheme(db, n);
     crate::infer::infer_def_effect(db, file, name, &def_schemes, &builtins)
 }
 
@@ -339,7 +339,7 @@ impl BodyTypes {
 #[salsa::tracked]
 pub fn body_types(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<BodyTypes> {
     let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
-    let builtins = |n: Symbol| std_lib::builtin_scheme(n);
+    let builtins = |n: Symbol| std_lib::contextual_builtin_scheme(db, n);
     let (exprs, pats) = crate::infer::infer_body_types(db, file, name, &def_schemes, &builtins);
     Arc::new(BodyTypes {
         types: exprs.into_iter().collect(),
@@ -363,7 +363,7 @@ pub fn contract_body_types(db: &dyn Db, file: SourceFile, ordinal: usize) -> Arc
         _ => return Arc::new(BodyTypes::default()),
     };
     let def_schemes = |db: &dyn Db, def: DefId| reference_scheme(db, file, def);
-    let builtins = |n: Symbol| std_lib::builtin_scheme(n);
+    let builtins = |n: Symbol| std_lib::contextual_builtin_scheme(db, n);
     let (exprs, pats) =
         crate::infer::infer_contract_body_types(db, file, &binders, body, &def_schemes, &builtins);
     Arc::new(BodyTypes {

@@ -1,0 +1,69 @@
+module RegexEngine
+
+/// A pure native program. Its immutable description defines equality and hashing;
+/// its bounded scratch pool is released with the last owner.
+public opaque type Program =
+  | ProgramCell Int
+
+/// Native error code, message, and optional pattern byte span (-1 means absent).
+public type Error =
+  | EngineError Int String Int Int
+
+/// Native spans: start/end bytes and start/end scalar offsets relative to the
+/// requested base. An unmatched capture uses four -1 values. No match is empty.
+public type Span = Int * Int * Int * Int
+
+/// Wire options: flags, pattern bytes, program bytes, cache bytes, syntax depth,
+/// explicit capture limit, retained caches. The runtime checks all fields.
+public compile : String -> Array Int -> Result Program Error
+let compile pattern options = Prim.regexCompile pattern options
+example: compile "[" [| 2, 65536, 10485760, 2097152, 128, 256, 1 |] |> Result.isErr
+
+/// Request: start byte, capture flag, scalar-offset base byte, input byte limit.
+public findText : Program -> String -> Array Int -> Result (Array Span) Error
+let findText program text request = Prim.regexFindText program text request
+example: checkText findText (Ok [| (1, 2, 1, 2) |])
+
+public findBytes : Program -> Bytes -> Array Int -> Result (Array Span) Error
+let findBytes program bytes request = Prim.regexFindBytes program bytes request
+example: checkBytes findBytes (Ok [| (1, 2, 1, 2) |])
+
+public isMatchText : Program -> String -> Array Int -> Result Bool Error
+let isMatchText program text request = Prim.regexTestText program text request
+example: checkText isMatchText (Ok true)
+
+public isMatchBytes : Program -> Bytes -> Array Int -> Result Bool Error
+let isMatchBytes program bytes request = Prim.regexTestBytes program bytes request
+example: checkBytes isMatchBytes (Ok true)
+
+public names : Program -> Result (Array (Option String)) Error
+let names program = Prim.regexNames program
+example: checkNames names
+
+let checkText search expected =
+  match compile "a" [| 2, 65536, 10485760, 2097152, 128, 256, 1 |] with
+  | Err _ -> false
+  | Ok program -> search program "ba" [| 0, 0, 0, 100 |] = expected
+
+let checkBytes search expected =
+  match compile "a" [| 1, 65536, 10485760, 2097152, 128, 256, 1 |] with
+  | Err _ -> false
+  | Ok program -> search program (Bytes.fromString "ba") [| 0, 0, 0, 100 |] = expected
+
+let checkNames inspect =
+  match compile "(?<x>a)" [| 2, 65536, 10485760, 2097152, 128, 256, 1 |] with
+  | Err _ -> false
+  | Ok program -> inspect program = Ok [| None, Some "x" |]
+
+/// A checked scalar-to-byte conversion paired with the full input's byte length.
+public byteIndex : String -> Int -> Result (Int * Int) Error
+let byteIndex text index = Prim.regexByteIndex text index
+example: byteIndex "Aé🙂B" 2 = Ok (3, 8)
+
+public slice : String -> Int -> Int -> Result String Error
+let slice text start finish = Prim.regexSlice text start finish
+example: slice "Aé🙂B" 3 7 = Ok "🙂"
+
+public escape : String -> String
+let escape text = Prim.regexEscape text
+example: escape "." = "\\."
