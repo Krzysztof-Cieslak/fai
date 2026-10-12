@@ -1,0 +1,378 @@
+module CsvCore
+
+type Mode =
+  | StartField
+  | BareField
+  | QuotedField
+  | AfterQuote
+  | AwaitLf CsvTypes.Position
+
+public opaque type Parser = {
+  active : Bool,
+  bomDone : Bool,
+  ended : Bool,
+  expected : Int,
+  failed : Option CsvTypes.Error,
+  field : Array Int,
+  fieldStart : CsvTypes.Position,
+  fields : Array (CsvTypes.Field Bytes),
+  index : Int,
+  inputBytes : Int,
+  mode : Mode,
+  options : CsvTypes.Options,
+  position : CsvTypes.Position,
+  prefix : Array Int,
+  previousCr : Bool,
+  quoted : Bool,
+  recordStart : CsvTypes.Position,
+  replay : Array Int,
+  replayIndex : Int,
+  skipLf : Bool,
+  text : Bool,
+  utfHigh : Int,
+  utfLow : Int,
+  utfRemaining : Int,
+  utfStart : CsvTypes.Position
+}
+
+public type Status =
+  | NeedInput
+  | RecordReady (CsvTypes.Record Bytes)
+  | End
+  | Failed CsvTypes.Error
+
+public type Feed = { next : Int, parser : Parser, status : Status }
+
+public parser : Bool -> CsvTypes.Options -> Result Parser CsvTypes.Error
+let parser text options =
+  match CsvTypes.validate options with
+  | Err error -> Err error
+  | Ok _ -> Ok {
+    active = false,
+    bomDone = options.bom = CsvTypes.PreserveBom,
+    ended = false,
+    expected = (match options.width with
+    | CsvTypes.Exact value -> value
+    | _ -> -1),
+    failed = None,
+    field = [||],
+    fieldStart = CsvTypes.start,
+    fields = [||],
+    index = 0,
+    inputBytes = 0,
+    mode = StartField,
+    options = options,
+    position = CsvTypes.start,
+    prefix = [||],
+    previousCr = false,
+    quoted = false,
+    recordStart = CsvTypes.start,
+    replay = [||],
+    replayIndex = 0,
+    skipLf = false,
+    text = text,
+    utfHigh = 191,
+    utfLow = 128,
+    utfRemaining = 0,
+    utfStart = CsvTypes.start
+  }
+
+problem : Parser -> CsvTypes.ErrorKind -> String -> CsvTypes.Error
+let problem parser kind message = { (CsvTypes.error kind message) with
+  fieldIndex = Some (Array.length parser.fields),
+  position = Some parser.position,
+  recordIndex = Some parser.index,
+  span = Some { finish = parser.position, start = parser.fieldStart }
+}
+
+let failed parser next error = {
+  next = next,
+  parser = { parser with failed = Some error },
+  status = Failed error
+}
+
+let result parser next status = { next = next, parser = parser, status = status }
+
+let limited limit value =
+  match limit with
+  | None -> false
+  | Some limit -> value >= limit
+
+advance : Parser -> Int -> Result Parser CsvTypes.Error
+let advance parser byte =
+  let position = parser.position
+  if position.byteOffset = 9223372036854775807 || position.line = 9223372036854775807 || position.byteColumn = 9223372036854775807 then
+    Err (problem parser CsvTypes.CounterOverflow "CSV position overflow")
+  else
+    let newline = byte = 13 || (byte = 10 && not parser.previousCr)
+    let position = {
+      byteColumn = if byte = 13 || byte = 10 then 1 else position.byteColumn + 1,
+      byteOffset = position.byteOffset + 1,
+      line = position.line + (if newline then 1 else 0)
+    }
+    Ok { parser with position = position, previousCr = byte = 13 }
+
+validateByte : Parser -> Int -> Result Parser CsvTypes.Error
+let validateByte parser byte =
+  if not parser.text then
+    Ok parser
+  else if parser.utfRemaining > 0 then
+    if byte < parser.utfLow || byte > parser.utfHigh then
+      Err { (problem parser CsvTypes.InvalidUtf8 "invalid UTF-8 sequence") with
+        position = Some parser.utfStart
+      }
+    else
+      Ok { parser with utfHigh = 191, utfLow = 128, utfRemaining = parser.utfRemaining - 1 }
+  else if byte <= 127 then
+    Ok parser
+  else
+    let remaining =
+      if byte >= 194 && byte <= 223 then
+        1
+      else if byte >= 224 && byte <= 239 then 2 else if byte >= 240 && byte <= 244 then 3 else 0
+    if remaining = 0 then
+      Err (problem parser CsvTypes.InvalidUtf8 "invalid UTF-8 leading byte")
+    else
+      Ok { parser with
+        utfHigh = if byte = 237 then 159 else if byte = 244 then 143 else 191,
+        utfLow = if byte = 224 then 160 else if byte = 240 then 144 else 128,
+        utfRemaining = remaining,
+        utfStart = parser.position
+      }
+
+payload : Parser -> Int -> Result Parser CsvTypes.Error
+let payload parser byte =
+  if Array.length parser.field >= parser.options.limits.maxFieldBytes then
+    Err (problem parser CsvTypes.FieldLimit "CSV decoded field byte limit exceeded")
+  else
+    Ok { parser with active = true, field = Array.push byte parser.field }
+
+fieldEnd : Parser -> Result Parser CsvTypes.Error
+let fieldEnd parser =
+  if Array.length parser.fields >= parser.options.limits.maxFields then
+    Err (problem parser CsvTypes.FieldCountLimit "CSV field count limit exceeded")
+  else
+    let field = {
+      quoted = parser.quoted,
+      span = Some { finish = parser.position, start = parser.fieldStart },
+      value = Bytes.fromList (Array.toList parser.field)
+    }
+    Ok { parser with
+      field = [||],
+      fields = Array.push field parser.fields,
+      mode = StartField,
+      quoted = false
+    }
+
+emit : Parser -> CsvTypes.Position -> Int -> Feed
+let emit parser finish next =
+  let actual = Array.length parser.fields
+  let strict = parser.options.width <> CsvTypes.Flexible
+  if limited parser.options.limits.maxRecords parser.index then
+    failed parser next (problem parser CsvTypes.RecordCountLimit "CSV record count limit exceeded")
+  else if parser.index = 9223372036854775807 then
+    failed parser next (problem parser CsvTypes.CounterOverflow "CSV record index overflow")
+  else if strict && parser.expected >= 0 && actual <> parser.expected then
+    let error = { (problem parser CsvTypes.ColumnCount "CSV record has an unexpected field count") with
+      actual = Some actual,
+      expected = Some parser.expected,
+      fieldIndex = None,
+      position = Some parser.recordStart,
+      span = Some { finish = finish, start = parser.recordStart }
+    }
+    failed parser next error
+  else
+    let record = {
+      fields = parser.fields,
+      source = Some { index = parser.index, span = { finish = finish, start = parser.recordStart } }
+    }
+    result { parser with
+      active = false,
+      expected = if parser.expected < 0 then actual else parser.expected,
+      field = [||],
+      fieldStart = parser.position,
+      fields = [||],
+      index = parser.index + 1,
+      mode = StartField,
+      quoted = false,
+      recordStart = parser.position
+    } next (RecordReady record)
+
+/// Consume one grammar byte after UTF-8 validation. NeedInput also means continue.
+grammar : Parser -> Int -> Int -> Feed
+let grammar parser byte next =
+  match parser.mode with
+  | AwaitLf finish ->
+    if byte <> 10 then
+      failed parser next (problem parser CsvTypes.InvalidEnding "expected LF after CR")
+    else
+      match advance parser byte with
+      | Err error -> failed parser next error
+      | Ok parser -> emit parser finish next
+  | _ ->
+    if parser.skipLf && byte = 10 then
+      match advance parser byte with
+      | Err error -> failed parser next error
+      | Ok parser ->
+        result { parser with
+          fieldStart = parser.position,
+          recordStart = parser.position,
+          skipLf = false
+        } next NeedInput
+    else
+      let parser = { parser with skipLf = false }
+      if parser.mode <> QuotedField && (byte = 10 || byte = 13) then
+        if parser.options.dialect.endings = CsvTypes.CrLfOnly && byte = 10 then
+          failed parser next (problem parser CsvTypes.InvalidEnding "expected CRLF record ending")
+        else
+          match fieldEnd parser with
+          | Err error -> failed parser next error
+          | Ok ended ->
+            match advance ended byte with
+            | Err error -> failed parser next error
+            | Ok advanced ->
+              if parser.options.dialect.endings = CsvTypes.CrLfOnly then
+                result { advanced with mode = AwaitLf parser.position } next NeedInput
+              else
+                emit { advanced with skipLf = byte = 13 } parser.position next
+      else if parser.position.byteOffset - parser.recordStart.byteOffset >= parser.options.limits.maxRecordBytes then
+        failed parser next (problem parser CsvTypes.RecordLimit "CSV raw record byte limit exceeded")
+      else
+        let delimiter = Char.toCode parser.options.dialect.delimiter
+        let quote = Char.toCode parser.options.dialect.quote
+        if byte = delimiter && parser.mode <> QuotedField then
+          match fieldEnd parser with
+          | Err error -> failed parser next error
+          | Ok ended ->
+            match advance ended byte with
+            | Err error -> failed parser next error
+            | Ok advanced ->
+              result { advanced with active = true, fieldStart = advanced.position } next NeedInput
+        else
+          let changed =
+            match parser.mode with
+            | StartField ->
+              if byte = quote then
+                Ok { parser with active = true, mode = QuotedField, quoted = true }
+              else
+                Result.map (fun parser -> { parser with mode = BareField }) (payload parser byte)
+            | BareField ->
+              if byte = quote then
+                Err (problem parser CsvTypes.UnexpectedQuote "quote inside an unquoted CSV field")
+              else
+                payload parser byte
+            | QuotedField ->
+              if byte = quote then Ok { parser with mode = AfterQuote } else payload parser byte
+            | AfterQuote ->
+              if byte = quote then
+                Result.map (fun parser -> { parser with mode = QuotedField }) (payload parser byte)
+              else
+                Err (problem parser CsvTypes.UnexpectedAfterQuote "unexpected byte after closing CSV quote")
+            | AwaitLf _ -> Err (problem parser CsvTypes.InvalidState "invalid CSV parser state")
+          match changed with
+          | Err error -> failed parser next error
+          | Ok changed ->
+            match advance changed byte with
+            | Err error -> failed parser next error
+            | Ok advanced -> result advanced next NeedInput
+
+process : Parser -> Int -> Int -> Feed
+let process parser byte next =
+  match validateByte parser byte with
+  | Err error -> failed parser next error
+  | Ok parser -> grammar parser byte next
+
+feedLoop : Parser -> Bytes -> Int -> Feed
+let feedLoop parser bytes next =
+  if parser.replayIndex < Array.length parser.replay then
+    let byte = Array.unsafeGet parser.replayIndex parser.replay
+    let fed = process { parser with replayIndex = parser.replayIndex + 1 } byte next
+    match fed.status with
+    | NeedInput -> feedLoop fed.parser bytes next
+    | _ -> fed
+  else if next >= Bytes.length bytes then
+    result { parser with replay = [||], replayIndex = 0 } next NeedInput
+  else if limited parser.options.limits.maxInputBytes parser.inputBytes || parser.inputBytes = 9223372036854775807 then
+    failed parser next { (problem parser CsvTypes.InputLimit "CSV input byte limit exceeded") with
+      position = Some { parser.position with byteOffset = parser.inputBytes }
+    }
+  else
+    let byte = Bytes.unsafeGet next bytes
+    let parser = { parser with inputBytes = parser.inputBytes + 1, replay = [||], replayIndex = 0 }
+    if not parser.bomDone then
+      let prefix = Array.push byte parser.prefix
+      let count = Array.length prefix
+      let expected = if count = 1 then 239 else if count = 2 then 187 else 191
+      if byte <> expected then
+        feedLoop { parser with bomDone = true, prefix = [||], replay = prefix } bytes (next + 1)
+      else if count < 3 then
+        feedLoop { parser with prefix = prefix } bytes (next + 1)
+      else
+        let position = { byteColumn = 4, byteOffset = 3, line = 1 }
+        feedLoop { parser with
+          bomDone = true,
+          fieldStart = position,
+          position = position,
+          prefix = [||],
+          recordStart = position
+        } bytes (next + 1)
+    else
+      let fed = process parser byte (next + 1)
+      match fed.status with
+      | NeedInput -> feedLoop fed.parser bytes (next + 1)
+      | _ -> fed
+
+/// Start at a byte offset in the supplied chunk; next is the first unconsumed offset.
+public feed : Parser -> Bytes -> Int -> Feed
+let feed parser bytes start =
+  match parser.failed with
+  | Some error -> failed parser start error
+  | None ->
+    if start < 0 || start > Bytes.length bytes then
+      failed parser start (problem parser CsvTypes.InvalidOptions "invalid CSV chunk offset")
+    else if parser.ended then
+      if start = Bytes.length bytes then
+        result parser start End
+      else
+        failed parser start (problem parser CsvTypes.InvalidState "CSV input supplied after EOF")
+    else
+      feedLoop parser bytes start
+
+public finish : Parser -> Feed
+let finish parser =
+  match parser.failed with
+  | Some error -> failed parser 0 error
+  | None ->
+    if parser.ended then
+      result parser 0 End
+    else if not parser.bomDone then
+      let fed =
+        feedLoop { parser with
+          bomDone = true,
+          prefix = [||],
+          replay = parser.prefix,
+          replayIndex = 0
+        } Bytes.empty 0
+      match fed.status with
+      | NeedInput -> finish fed.parser
+      | _ -> fed
+    else if parser.utfRemaining <> 0 then
+      failed parser 0 { (problem parser CsvTypes.InvalidUtf8 "incomplete UTF-8 sequence at EOF") with
+        position = Some parser.utfStart
+      }
+    else
+      match parser.mode with
+      | QuotedField ->
+        failed parser 0 (problem parser CsvTypes.UnclosedQuote "unclosed quoted CSV field at EOF")
+      | AwaitLf _ ->
+        failed parser 0 (problem parser CsvTypes.InvalidEnding "expected LF after CR at EOF")
+      | _ ->
+        if not parser.active then
+          result { parser with ended = true } 0 End
+        else
+          match fieldEnd parser with
+          | Err error -> failed parser 0 error
+          | Ok parser -> emit { parser with ended = true } parser.position 0
+
+public position : Parser -> CsvTypes.Position
+let position parser = parser.position

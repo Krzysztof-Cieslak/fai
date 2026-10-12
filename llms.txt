@@ -1958,6 +1958,11 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/csv` provides a pure incremental CSV parser with text and byte modes,
+strict width by default, doubled-quote escaping and configurable limits. Feed
+steps stop at one record, preserving unconsumed input and byte source positions.
+Text UTF-8/BOM and CRLF handling are independent of chunk boundaries.
+
 `packages/config` provides sourced layers (`Config.fromValue`, `toml`,
 `ConfigSource.snapshot`) and later-wins `Config.merge`. Tables merge recursively;
 arrays/scalars replace. Explicit environment bindings use literal path segments.

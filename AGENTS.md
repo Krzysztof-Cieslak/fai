@@ -1164,6 +1164,12 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/csv` source package uses a pure incremental byte parser
+for text and arbitrary-byte records. It retains byte-addressed source spans,
+validates text UTF-8 across chunks, and emits at most one record per feed step.
+Strict width, doubled quotes and preserved field whitespace are the defaults;
+record/field/input limits and BOM/newline policies are explicit.
+
 The optional `packages/toml` source library supplies pure TOML scalar and string
 parsing. Integer conversion checks signed 64-bit bounds; temporal values retain
 their spelling and fractional precision before checked standard-type conversion.

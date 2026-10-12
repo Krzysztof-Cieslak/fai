@@ -1,0 +1,62 @@
+module CsvParserSpec
+
+let collect parser bytes next output =
+  let fed =
+    if next = Bytes.length bytes then CsvCore.finish parser else CsvCore.feed parser bytes next
+  match fed.status with
+  | CsvCore.Failed error -> Err error
+  | CsvCore.End -> Ok output
+  | CsvCore.NeedInput -> collect fed.parser bytes fed.next output
+  | CsvCore.RecordReady record ->
+    collect fed.parser bytes (if next = Bytes.length bytes then
+      next
+    else
+      fed.next) (Array.push record output)
+
+let parse options bytes =
+  match CsvCore.parser false options with
+  | Err error -> Err error
+  | Ok parser -> collect parser bytes 0 [||]
+
+let values records =
+  Array.map (fun record -> Array.map (fun field -> field.value) record.fields) records
+
+let text source = Result.map values (parse CsvTypes.byteOptions (Bytes.fromString source))
+
+let b text = Bytes.fromString text
+example: text "" = Ok [||]
+example: text "\n" = Ok [| [| Bytes.empty |] |]
+example: text "a,b\r\n" = Ok [| [| b "a", b "b" |] |]
+example: text "a," = Ok [| [| b "a", Bytes.empty |] |]
+example: text "\"\"" = Ok [| [| Bytes.empty |] |]
+example: text "\"a,b\",\"a\"\"b\"" = Ok [| [| b "a,b", b "a\"b" |] |]
+example: text "\"a\r\nb\",x" = Ok [| [| b "a\r\nb", b "x" |] |]
+example: text " a , b " = Ok [| [| b " a ", b " b " |] |]
+example: text "a,b\n\n" |> Result.isErr
+example: text "a\"b" |> Result.isErr
+example: text "\"a\" " |> Result.isErr
+example: text "\"unterminated" |> Result.isErr
+example: parse { CsvTypes.byteOptions with
+  dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly }
+} (b "a\r") |> Result.isErr
+example: parse { CsvTypes.byteOptions with
+  dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly }
+} (b "a\n") |> Result.isErr
+example: parse { CsvTypes.byteOptions with
+  limits = { CsvTypes.limits with maxFieldBytes = 1 }
+} (b "\"aa\"") |> Result.isErr
+example: parse { CsvTypes.byteOptions with
+  limits = { CsvTypes.limits with maxRecordBytes = 3 }
+} (b "\"a\"") |> Result.isOk
+example: parse { CsvTypes.byteOptions with
+  limits = { CsvTypes.limits with maxFields = 1 }
+} (b "a,") |> Result.isErr
+example: parse { CsvTypes.byteOptions with
+  limits = { CsvTypes.limits with maxRecords = Some 1 }
+} (b "a\r\n") |> Result.isOk
+example: parse { CsvTypes.byteOptions with
+  limits = { CsvTypes.limits with maxRecords = Some 1 }
+} (b "a\r\nb") |> Result.isErr
+example: parse { CsvTypes.byteOptions with
+  width = CsvTypes.Flexible
+} (Bytes.fromList [0, 255, 10, 44]) |> Result.isOk

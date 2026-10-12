@@ -1,0 +1,94 @@
+module CsvChunkSpec
+
+let finish parser records =
+  let fed = CsvCore.finish parser
+  match fed.status with
+  | CsvCore.Failed error -> Err error
+  | CsvCore.End -> Ok records
+  | CsvCore.RecordReady record -> finish fed.parser (Array.push record records)
+  | CsvCore.NeedInput -> finish fed.parser records
+
+let run parser chunks current offset records =
+  let fed = CsvCore.feed parser current offset
+  match fed.status with
+  | CsvCore.Failed error -> Err error
+  | CsvCore.End -> Ok records
+  | CsvCore.RecordReady record -> run fed.parser chunks current fed.next (Array.push record records)
+  | CsvCore.NeedInput ->
+    match chunks with
+    | [] -> finish fed.parser records
+    | chunk :: rest -> run fed.parser rest chunk 0 records
+
+let parse text options chunks =
+  match CsvCore.parser text options with
+  | Err error -> Err error
+  | Ok parser -> run parser chunks Bytes.empty 0 [||]
+
+let splits text options bytes index expected =
+  if index > Bytes.length bytes then
+    true
+  else
+    parse text options [
+      Bytes.slice 0 index bytes,
+      Bytes.slice index (Bytes.length bytes) bytes
+    ] = expected && splits text options bytes (index + 1) expected
+
+let allSplits text options bytes = splits text options bytes 0 (parse text options [bytes])
+
+let oneByteChunks bytes = List.map (fun byte -> Bytes.fromList [byte]) (Bytes.toList bytes)
+
+let bytes = Bytes.fromString "\u{feff}name,note\r\né,\"🙂\r\na\"\"b\"\r\n"
+example: allSplits true CsvTypes.options bytes
+example: parse true CsvTypes.options (oneByteChunks bytes) = parse true CsvTypes.options [bytes]
+example: allSplits true CsvTypes.options (Bytes.fromString "a\r\nb,c\r\n")
+example: allSplits true CsvTypes.options (Bytes.fromString "\"a\"\"b\"")
+example: allSplits true CsvTypes.options (Bytes.fromList [239, 187])
+example: allSplits false { CsvTypes.byteOptions with
+  bom = CsvTypes.StripUtf8Bom
+} (Bytes.fromList [239, 10])
+example: allSplits true { CsvTypes.options with
+  dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly }
+} bytes
+
+let early =
+  match CsvCore.parser true CsvTypes.options with
+  | Err _ -> false
+  | Ok parser ->
+    let fed = CsvCore.feed parser (Bytes.fromList [97, 10, 255]) 0
+    fed.next = 2 && (match fed.status with
+    | CsvCore.RecordReady _ -> true
+    | _ -> false)
+example: early
+
+let alias =
+  match CsvCore.parser true CsvTypes.options with
+  | Err _ -> false
+  | Ok parser -> CsvCore.feed parser bytes 0 = CsvCore.feed parser bytes 0
+example: alias
+
+let position =
+  match parse true CsvTypes.options [Bytes.fromString "a\r\n\"é\n🙂\"\n"] with
+  | Ok records ->
+    let record = Array.unsafeGet 1 records
+    record.source = Some {
+      index = 1,
+      span = {
+        finish = { byteColumn = 6, byteOffset = 12, line = 3 },
+        start = { byteColumn = 1, byteOffset = 3, line = 2 }
+      }
+    } && (Array.unsafeGet 0 record.fields).quoted
+  | _ -> false
+example: position
+
+let invalid bytes position =
+  match parse true CsvTypes.options [Bytes.fromList bytes] with
+  | Err error ->
+    error.kind = CsvTypes.InvalidUtf8 && Option.map (fun position ->
+      position.byteOffset) error.position = Some position
+  | _ -> false
+example: invalid [97, 44, 255] 2
+example: invalid [97, 44, 240, 128, 128, 128] 2
+example: invalid [97, 44, 237, 160, 128] 2
+example: invalid [97, 44, 240, 159, 153] 2
+forall source: allSplits true CsvTypes.options (Bytes.fromString source)
+forall values: allSplits false CsvTypes.byteOptions (Bytes.fromList values)
