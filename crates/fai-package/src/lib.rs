@@ -7,20 +7,28 @@
 mod diagnostic;
 mod identity;
 mod layout;
+mod lock;
 mod manifest;
 mod model;
 mod platform;
 mod resolver;
 mod version;
 
+pub use diagnostic::{AUTHENTICATION_REQUIRED, UNSUPPORTED_SOURCE_LAYOUT};
+
 pub use diagnostic::{
-    CODES, COMPILER_MISMATCH, INVALID_MANIFEST, INVALID_PLATFORM, INVALID_SOURCE, INVALID_TARGET,
-    PACKAGE_CYCLE, RESOLUTION_CONFLICT, SOURCE_UNAVAILABLE,
+    CODES, COMPILER_MISMATCH, INPUTS_CHANGED, INVALID_LOCK, INVALID_MANIFEST, INVALID_PLATFORM,
+    INVALID_SOURCE, INVALID_TARGET, OFFLINE_UNAVAILABLE, PACKAGE_CYCLE, RELEASE_MOVED,
+    RESOLUTION_CONFLICT, SOURCE_INTEGRITY, SOURCE_UNAVAILABLE, STALE_LOCK, UNSUPPORTED_LOCK,
 };
 pub use identity::{
     DependencyAlias, GitBranch, GitPackage, GitRepository, GitRevision, PackageName, PackagePath,
 };
 pub use layout::{ExecutableSources, SourcePlan};
+pub use lock::{
+    BaselinePackage, Digest, LockContext, LockError, LockFile, LockLocator, LockSource,
+    LockedBranch, LockedEdge, LockedEdgeKind, LockedGraph, LockedPackage,
+};
 pub use manifest::{FieldLocation, MANIFEST_NAME, ManifestDocument, ManifestKind};
 pub use model::{
     ActiveConfiguration, BinaryTarget, Dependency, GitSelector, Manifest, NativeRequirements,

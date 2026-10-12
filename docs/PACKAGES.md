@@ -22,6 +22,8 @@ locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and to
 > dependency commands, locks, vendoring, and publication remain in development.
 > A provider-independent graph resolver implements conservative and eager policies,
 > source-selector unification, and compiler/target filtering against supplied catalogs.
+> Generated lock models and system-Git snapshot/transaction primitives are available
+> for the command integration, including offline integrity and moved-release checks.
 > Native-only and unversioned directory sessions retain compatibility discovery.
 
 This document consolidates the agreed product decisions and proposes the concrete

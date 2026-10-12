@@ -62,6 +62,13 @@ impl Serialize for TargetPlatform {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for TargetPlatform {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A conjunction of exact target properties; omitted properties match any value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct PlatformPredicate {

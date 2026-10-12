@@ -996,6 +996,7 @@ dependencies = [
 name = "fai-package"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "fai-diagnostics",
  "fai-span",
  "indoc",
@@ -1005,7 +1006,22 @@ dependencies = [
  "serde_json",
  "target-lexicon",
  "thiserror 2.0.18",
+ "toml",
  "toml_edit",
+ "url",
+]
+
+[[package]]
+name = "fai-package-store"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "camino",
+ "fai-diagnostics",
+ "fai-package",
+ "serde",
+ "serde_json",
+ "tempfile",
  "url",
 ]
 

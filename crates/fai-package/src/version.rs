@@ -49,6 +49,13 @@ impl Serialize for PackageVersion {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for PackageVersion {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A union of comparator intersections. Bare versions are exact, never caret ranges.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VersionRequirement {
@@ -147,5 +154,12 @@ impl fmt::Display for VersionRequirement {
 impl Serialize for VersionRequirement {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for VersionRequirement {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&text).map_err(serde::de::Error::custom)
     }
 }

@@ -1,0 +1,23 @@
+[package]
+name = "fai-package-store"
+description = "Git package snapshots and recoverable metadata transactions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+fai-package.workspace = true
+fai-diagnostics.workspace = true
+camino.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+url.workspace = true
+
+[lints]
+workspace = true

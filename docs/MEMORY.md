@@ -5456,5 +5456,16 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   Tagged-release requirements remain distinct from untagged commit versions;
   explicit source replacements preserve original version constraints.
 
+- **D165 Exact package storage and generated graph records.** Lock records keep
+  source descriptors separate from graph-local alias edges, with checked identity,
+  reachability, branch binding, and cycle invariants. Canonical graph hashes exclude
+  informational compiler versions and normalize record order. System Git supplies
+  raw commit blobs and operation-local ref snapshots; package trees include paths,
+  bytes, link destinations, and executable modes in their checksums. Cache entries
+  are staged and atomically published under per-key locks. Offline reads cannot
+  trigger Git partial-clone fetching, and accepted release mappings are immutable.
+  Metadata writes use an exact before/after journal; recovery stops rather than
+  overwriting an independent user edit.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

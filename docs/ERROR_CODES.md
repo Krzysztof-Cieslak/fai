@@ -90,6 +90,24 @@ A selected package does not satisfy its dependency version requirements. Local p
 
 Normal package dependencies form a cycle. Move shared definitions into another package or remove an edge. A root's development dependencies are checked separately from its normal dependency node.
 
+### FAI0806 — selected locked graph is stale
+
+**Severity:** error
+
+The selected root/platform graph is missing or its manifest, replacement, or shared-baseline inputs changed. Prepare that graph without --locked before using it in locked or frozen mode. Unselected stale graphs do not require updates.
+
+### FAI0807 — unsupported lock format
+
+**Severity:** error
+
+The lockfile format or resolver policy version is not supported by this compiler. Use a compatible compiler or explicitly regenerate the lock; do not silently reinterpret another version.
+
+### FAI0808 — invalid locked graph
+
+**Severity:** error
+
+A lockfile is malformed or contains inconsistent identities, references, dependency aliases, reachability, or cycles. Restore a valid lock or explicitly regenerate it. A plausible fingerprint does not replace structural validation.
+
 ### FAI0809 — incompatible project compiler
 
 **Severity:** error
@@ -108,6 +126,30 @@ A target triple or platform predicate is invalid, or the package does not suppor
 
 A declared package source is unavailable to the source provider. Local project loading supports path dependencies and explicit path replacements for Git sources. A Git source needs a materialized provider or a compatible local replacement.
 
+### FAI0812 — Git authentication required
+
+**Severity:** error
+
+Git credentials are unavailable or repository access was rejected. Configure the installed Git credential helper or SSH access, then retry. Credentials are not stored in package manifests, lockfiles, or diagnostic URLs.
+
+### FAI0813 — source unavailable offline
+
+**Severity:** error
+
+Required source bytes or version metadata are absent from the local cache or vendor tree. Prepare them online before using --offline or --frozen. A valid locked selection is never downgraded to make an offline build succeed.
+
+### FAI0814 — package source integrity mismatch
+
+**Severity:** error
+
+Package bytes do not match the expected immutable checksum or source identity. Restore the exact source; modified cache or vendor content cannot replace a locked package.
+
+### FAI0815 — package release tag moved
+
+**Severity:** error
+
+A previously accepted package version now points at a different commit. Release mappings are immutable once observed. Publish a new version rather than replacing a release tag.
+
 ### FAI0816 — overlapping package overrides
 
 **Severity:** error
@@ -125,6 +167,18 @@ A dependency alias has multiple declarations that can be active on one target, i
 **Severity:** error
 
 A package has duplicate executable names, invalid source-root ownership, a missing entry file, an invalid default executable, or an entry outside its package boundary. Executable and test sources are separate from the shared library surface.
+
+### FAI0825 — package inputs changed during preparation
+
+**Severity:** error
+
+A manifest or lock changed while a metadata operation was preparing its result. The newer inputs are retained. Retry from the current state; a pending journal resumes only when its recorded before/after contents still match.
+
+### FAI0827 — unsupported package source layout
+
+**Severity:** error
+
+The package tree contains external-content dependencies or nonportable entries such as Git submodules, LFS pointers, or escaping/cyclic links. Package source must be fully available inside its selected tree.
 
 ## FAI1xxx — Lexing & parsing
 

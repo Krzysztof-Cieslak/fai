@@ -14,12 +14,30 @@ pub const INVALID_REQUIREMENT: DiagnosticCode = DiagnosticCode::new("FAI0803");
 pub const RESOLUTION_CONFLICT: DiagnosticCode = DiagnosticCode::new("FAI0804");
 /// Normal package dependencies form a cycle.
 pub const PACKAGE_CYCLE: DiagnosticCode = DiagnosticCode::new("FAI0805");
+/// A selected graph is missing or stale under locked operation.
+pub const STALE_LOCK: DiagnosticCode = DiagnosticCode::new("FAI0806");
+/// The lock format or resolution policy is not supported.
+pub const UNSUPPORTED_LOCK: DiagnosticCode = DiagnosticCode::new("FAI0807");
+/// Lock references or graph structure are inconsistent.
+pub const INVALID_LOCK: DiagnosticCode = DiagnosticCode::new("FAI0808");
 /// The selected compiler does not satisfy project requirements.
 pub const COMPILER_MISMATCH: DiagnosticCode = DiagnosticCode::new("FAI0809");
 /// Invalid target descriptors or unsupported package platforms.
 pub const INVALID_PLATFORM: DiagnosticCode = DiagnosticCode::new("FAI0810");
 /// A declared source cannot be materialized by the current source provider.
 pub const SOURCE_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("FAI0811");
+/// Git credentials are unavailable or rejected.
+pub const AUTHENTICATION_REQUIRED: DiagnosticCode = DiagnosticCode::new("FAI0812");
+/// Required metadata or content is not available offline.
+pub const OFFLINE_UNAVAILABLE: DiagnosticCode = DiagnosticCode::new("FAI0813");
+/// Immutable source bytes disagree with their expected identity.
+pub const SOURCE_INTEGRITY: DiagnosticCode = DiagnosticCode::new("FAI0814");
+/// A previously accepted release now points at another commit.
+pub const RELEASE_MOVED: DiagnosticCode = DiagnosticCode::new("FAI0815");
+/// A metadata transaction observed concurrent changes.
+pub const INPUTS_CHANGED: DiagnosticCode = DiagnosticCode::new("FAI0825");
+/// The source tree requires unsupported external content or link semantics.
+pub const UNSUPPORTED_SOURCE_LAYOUT: DiagnosticCode = DiagnosticCode::new("FAI0827");
 /// More than one replacement can apply to the same package and root.
 pub const OVERLAPPING_OVERRIDES: DiagnosticCode = DiagnosticCode::new("FAI0816");
 /// More than one dependency declaration can bind the same active alias.
@@ -29,6 +47,60 @@ pub const INVALID_TARGET: DiagnosticCode = DiagnosticCode::new("FAI0819");
 
 /// Package metadata diagnostics, shared by the parser and source planner.
 pub const CODES: &[CodeInfo] = &[
+    CodeInfo {
+        code: AUTHENTICATION_REQUIRED,
+        title: "Git authentication required",
+        default_severity: Severity::Error,
+        explanation: "Git credentials are unavailable or repository access was rejected. Configure the installed Git credential helper or SSH access, then retry. Credentials are not stored in package manifests, lockfiles, or diagnostic URLs.",
+    },
+    CodeInfo {
+        code: UNSUPPORTED_SOURCE_LAYOUT,
+        title: "unsupported package source layout",
+        default_severity: Severity::Error,
+        explanation: "The package tree contains external-content dependencies or nonportable entries such as Git submodules, LFS pointers, or escaping/cyclic links. Package source must be fully available inside its selected tree.",
+    },
+    CodeInfo {
+        code: STALE_LOCK,
+        title: "selected locked graph is stale",
+        default_severity: Severity::Error,
+        explanation: "The selected root/platform graph is missing or its manifest, replacement, or shared-baseline inputs changed. Prepare that graph without --locked before using it in locked or frozen mode. Unselected stale graphs do not require updates.",
+    },
+    CodeInfo {
+        code: UNSUPPORTED_LOCK,
+        title: "unsupported lock format",
+        default_severity: Severity::Error,
+        explanation: "The lockfile format or resolver policy version is not supported by this compiler. Use a compatible compiler or explicitly regenerate the lock; do not silently reinterpret another version.",
+    },
+    CodeInfo {
+        code: INVALID_LOCK,
+        title: "invalid locked graph",
+        default_severity: Severity::Error,
+        explanation: "A lockfile is malformed or contains inconsistent identities, references, dependency aliases, reachability, or cycles. Restore a valid lock or explicitly regenerate it. A plausible fingerprint does not replace structural validation.",
+    },
+    CodeInfo {
+        code: OFFLINE_UNAVAILABLE,
+        title: "source unavailable offline",
+        default_severity: Severity::Error,
+        explanation: "Required source bytes or version metadata are absent from the local cache or vendor tree. Prepare them online before using --offline or --frozen. A valid locked selection is never downgraded to make an offline build succeed.",
+    },
+    CodeInfo {
+        code: SOURCE_INTEGRITY,
+        title: "package source integrity mismatch",
+        default_severity: Severity::Error,
+        explanation: "Package bytes do not match the expected immutable checksum or source identity. Restore the exact source; modified cache or vendor content cannot replace a locked package.",
+    },
+    CodeInfo {
+        code: RELEASE_MOVED,
+        title: "package release tag moved",
+        default_severity: Severity::Error,
+        explanation: "A previously accepted package version now points at a different commit. Release mappings are immutable once observed. Publish a new version rather than replacing a release tag.",
+    },
+    CodeInfo {
+        code: INPUTS_CHANGED,
+        title: "package inputs changed during preparation",
+        default_severity: Severity::Error,
+        explanation: "A manifest or lock changed while a metadata operation was preparing its result. The newer inputs are retained. Retry from the current state; a pending journal resumes only when its recorded before/after contents still match.",
+    },
     CodeInfo {
         code: RESOLUTION_CONFLICT,
         title: "dependency requirements conflict",
