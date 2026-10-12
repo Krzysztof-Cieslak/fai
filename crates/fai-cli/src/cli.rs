@@ -7,6 +7,17 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+impl GlobalArgs {
+    pub(crate) fn options(&self) -> fai_driver::ProjectOptions {
+        fai_driver::ProjectOptions {
+            no_local: self.no_local,
+            locked: self.locked || self.frozen,
+            offline: self.offline || self.frozen,
+            no_vendor: self.no_vendor,
+        }
+    }
+}
+
 /// The `fai` command-line interface.
 #[derive(Debug, Parser)]
 #[command(
@@ -41,6 +52,21 @@ pub struct GlobalArgs {
     /// Ignore personal root overrides and use the shared project context.
     #[arg(long, global = true)]
     pub no_local: bool,
+    /// Require a valid selected lock graph without changing selections.
+    #[arg(long, global = true)]
+    pub locked: bool,
+    /// Use only cached source content and metadata.
+    #[arg(long, global = true)]
+    pub offline: bool,
+    /// Combine locked and offline operation.
+    #[arg(long, global = true)]
+    pub frozen: bool,
+    /// Bypass the configured vendor tree.
+    #[arg(long, global = true)]
+    pub no_vendor: bool,
+    /// Metadata target matrix; compilation supports the host target only.
+    #[arg(long = "target", global = true, value_name = "TRIPLE")]
+    pub targets: Vec<String>,
     /// Run in-process; do not spawn or connect to a daemon.
     #[arg(long, global = true)]
     pub no_daemon: bool,
@@ -92,6 +118,23 @@ impl std::fmt::Display for ColorChoice {
 /// Top-level subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Create an application or library package.
+    Init(InitArgs),
+    /// Add a Git or local dependency and repair the active lock.
+    Add(AddArgs),
+    /// Remove a declared dependency and repair the active lock.
+    Remove(RemoveArgs),
+    /// Conservatively prepare selected lock graphs.
+    Resolve,
+    /// Prepare selected graphs and materialize their sources.
+    Fetch,
+    /// Update all dependencies or the specified aliases/logical keys.
+    Update { packages: Vec<String> },
+    /// Inspect recorded dependency graphs without updating them.
+    Deps {
+        #[command(subcommand)]
+        sub: Option<DepsCommand>,
+    },
     /// Print compiler identity and build provenance as JSON.
     BuildInfo,
     /// Compile to a native executable (AOT).
@@ -127,6 +170,66 @@ pub enum Command {
         #[command(subcommand)]
         sub: DaemonCommand,
     },
+}
+
+/// Arguments for package initialization.
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// New or existing directory, relative to the selected project directory.
+    #[arg(default_value = ".")]
+    pub path: Utf8PathBuf,
+    /// Package name; otherwise use the directory name.
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Create a library instead of an application.
+    #[arg(long = "lib")]
+    pub library: bool,
+}
+
+/// A dependency source with explicit optional version intent.
+#[derive(Debug, Args)]
+pub struct AddArgs {
+    /// Git URL or github:owner/repository shorthand.
+    #[arg(required_unless_present = "path", conflicts_with = "path")]
+    pub source: Option<String>,
+    /// Local package directory.
+    #[arg(long, conflicts_with_all = ["source", "branch", "rev", "subdir"])]
+    pub path: Option<Utf8PathBuf>,
+    /// Package path within the Git repository.
+    #[arg(long)]
+    pub subdir: Option<String>,
+    /// Authored version requirement; omitted Git versions default to a selected caret range.
+    #[arg(long, conflicts_with_all = ["branch", "rev"])]
+    pub version: Option<String>,
+    /// Literal branch to pin in the active lock.
+    #[arg(long, conflicts_with = "rev")]
+    pub branch: Option<String>,
+    /// Full commit ID.
+    #[arg(long)]
+    pub rev: Option<String>,
+    /// Dependency import alias.
+    #[arg(long = "as")]
+    pub alias: Option<String>,
+    /// Add to development dependencies.
+    #[arg(long)]
+    pub dev: bool,
+}
+
+/// Arguments for removing one declared dependency.
+#[derive(Debug, Args)]
+pub struct RemoveArgs {
+    /// Declared import alias to remove.
+    pub alias: String,
+    /// Remove the development entry instead of the normal one.
+    #[arg(long)]
+    pub dev: bool,
+}
+
+/// Read-only dependency explanations.
+#[derive(Debug, Subcommand)]
+pub enum DepsCommand {
+    /// Show recorded incoming dependency chains for an alias.
+    Why { selector: String },
 }
 
 /// Arguments for `fai check`.

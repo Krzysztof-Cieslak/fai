@@ -5467,5 +5467,17 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   Metadata writes use an exact before/after journal; recovery stops rather than
   overwriting an independent user edit.
 
+- **D166 Integrated package preparation and commands.** Ordinary project sessions
+  validate selected lock graphs, restore exact Git bytes, and conservatively repair
+  stale unlocked graphs. Root metadata and applicable replacements determine graph
+  inputs; source body/comment edits do not rewrite locks. Explicit resolve/fetch/
+  update prepares the declared target matrix atomically. Add/remove uses an in-memory
+  manifest candidate and publishes its edits with the active lock only after solving.
+  An unqualified Git add derives its caret and alias from the selected package.
+  Personal graphs track per-key shared baselines, while local edits leave shared
+  lock bytes untouched and report affected graphs stale. Read-only deps inspection
+  does not fetch sources. Daemon restoration occurs outside the database mutex;
+  prepared inputs are checked again before compiler publication.
+
 To change a locked decision: update this log **and** the table in `AGENTS.md`,
 and note the migration in the affected decisions.

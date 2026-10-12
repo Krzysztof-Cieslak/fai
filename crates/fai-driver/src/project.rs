@@ -17,6 +17,57 @@ use fai_span::SourceMap;
 
 use crate::{DriverError, NativeDeps};
 
+mod resolution;
+
+/// Package preparation policy shared by CLI, daemon, and language server.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ProjectOptions {
+    /// Ignore personal root overrides.
+    pub no_local: bool,
+    /// Forbid changes to selected graph records.
+    pub locked: bool,
+    /// Forbid all Git network activity.
+    pub offline: bool,
+    /// Bypass a configured vendor source tree.
+    pub no_vendor: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum PreparePolicy {
+    #[default]
+    Conservative,
+    Resolve,
+    Update(Vec<String>),
+}
+
+#[derive(Clone)]
+pub(crate) struct PrepareMode {
+    pub policy: PreparePolicy,
+    pub metadata_only: bool,
+    pub inspect: bool,
+    pub selection_only: bool,
+    pub write: bool,
+    pub targets: Vec<TargetPlatform>,
+    pub manifest_edits: BTreeMap<Utf8PathBuf, String>,
+    pub seed_lock: Option<fai_package::LockFile>,
+}
+
+impl Default for PrepareMode {
+    fn default() -> Self {
+        Self {
+            policy: PreparePolicy::Conservative,
+            metadata_only: false,
+            inspect: false,
+            selection_only: false,
+            write: true,
+            targets: Vec::new(),
+            manifest_edits: BTreeMap::new(),
+            seed_lock: None,
+        }
+    }
+}
+
 /// Located project failures, renderable even before a compiler session exists.
 #[derive(Debug, Clone)]
 pub struct ProjectError {
@@ -33,12 +84,29 @@ impl fmt::Display for ProjectError {
 }
 impl std::error::Error for ProjectError {}
 
+impl From<fai_package::ProviderFailure> for DriverError {
+    fn from(error: fai_package::ProviderFailure) -> Self {
+        let diagnostic = Diagnostic::error(error.code, &error.message, crate::tooling_span());
+        Self::Project(Box::new(ProjectError {
+            human: format!("error [{}]: {}\n", error.code.as_str(), error.message),
+            diagnostics: fai_diagnostics::wire::to_wire(&[diagnostic], &SourceMap::new()),
+        }))
+    }
+}
+
+impl From<fai_package::LockError> for DriverError {
+    fn from(error: fai_package::LockError) -> Self {
+        fai_package::ProviderFailure { code: error.code, message: error.message }.into()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct PreparedSource {
     pub path: Utf8PathBuf,
     pub package: String,
     pub role: SourceRole,
     pub selected: bool,
+    pub read_only: bool,
 }
 
 #[derive(Clone)]
@@ -64,6 +132,13 @@ pub(crate) struct PreparedProject {
     pub default_entry: Option<(String, String)>,
     pub local: bool,
     pub roots: Vec<(String, Utf8PathBuf)>,
+    pub observed: Vec<(Utf8PathBuf, fai_package::Digest)>,
+    pub configuration_root: Utf8PathBuf,
+    pub lock: Option<fai_package::LockFile>,
+    pub previous_lock: Option<fai_package::LockFile>,
+    pub targets: Vec<TargetPlatform>,
+    pub stale_graphs: Vec<String>,
+    pub notices: Vec<String>,
 }
 
 struct LoadedPackage {
@@ -93,22 +168,34 @@ struct Loader<'a> {
     shared: Vec<RootOverride>,
     local: Vec<RootOverride>,
     project: PreparedProject,
+    mode: PrepareMode,
+    observed: BTreeMap<Utf8PathBuf, fai_package::Digest>,
 }
 
 /// Returns `None` for a directory/legacy-native project.
-pub(crate) fn prepare(
+pub(crate) fn prepare_with_options(
     root: &Utf8Path,
     overlays: &[Utf8PathBuf],
-    no_local: bool,
+    options: &ProjectOptions,
 ) -> Result<Option<PreparedProject>, DriverError> {
-    prepare_selected(root, overlays, no_local, None)
+    prepare_selected(root, overlays, options, None)
 }
 
 fn prepare_selected(
     root: &Utf8Path,
     overlays: &[Utf8PathBuf],
-    no_local: bool,
+    options: &ProjectOptions,
     selector: Option<&str>,
+) -> Result<Option<PreparedProject>, DriverError> {
+    prepare_request(root, overlays, options, selector, PrepareMode::default())
+}
+
+pub(crate) fn prepare_request(
+    root: &Utf8Path,
+    overlays: &[Utf8PathBuf],
+    options: &ProjectOptions,
+    selector: Option<&str>,
+    mode: PrepareMode,
 ) -> Result<Option<PreparedProject>, DriverError> {
     if !root.join(fai_package::MANIFEST_NAME).is_file() {
         return Ok(None);
@@ -135,7 +222,16 @@ fn prepare_selected(
             default_entry: None,
             local: false,
             roots: Vec::new(),
+            observed: Vec::new(),
+            configuration_root: base.clone(),
+            lock: None,
+            previous_lock: None,
+            targets: Vec::new(),
+            stale_graphs: Vec::new(),
+            notices: Vec::new(),
         },
+        mode,
+        observed: BTreeMap::new(),
     };
     let document = loader.document(&base.join(fai_package::MANIFEST_NAME), false)?;
     if document.kind() == ManifestKind::LegacyNative {
@@ -192,7 +288,7 @@ fn prepare_selected(
         })
         .collect();
     let local_path = loader.configuration_root.join("fai.local.toml");
-    if !no_local && local_path.is_file() {
+    if !options.no_local && local_path.is_file() {
         let local = loader.document(&local_path, true)?;
         loader.local = local
             .manifest()
@@ -240,72 +336,119 @@ fn prepare_selected(
         }
         roots = selected;
     }
+    loader.project.configuration_root = loader.configuration_root.clone();
     let one_root = roots.len() == 1;
-    for root in roots {
-        let member = root.strip_prefix(&loader.configuration_root).unwrap_or(&root);
-        let member = PackagePath::parse(&portable_path(member))
-            .map_err(|error| project_message(error.to_string()))?;
-        let mut graph =
-            Graph { root: root.clone(), member, selected: BTreeMap::new(), visiting: Vec::new() };
-        let logical = loader.local_key(&root);
-        let key = loader.visit(&mut graph, logical, root.clone())?;
-        let package = loader.load_package(&root, true)?;
-        loader.project.roots.push((
-            package
-                .document
-                .manifest()
-                .package
-                .as_ref()
-                .expect("validated package")
-                .name
-                .to_string(),
-            root.clone(),
-        ));
-        let development = loader.dependencies(
-            &mut graph,
-            &package,
-            &package.active.dev_dependencies,
-            "dev-dependencies",
-        )?;
-        if let Some(prepared) = loader.project.packages.get_mut(&key) {
-            prepared.development = development;
-        }
-        for path in &package.plan.library {
-            loader.project.sources.push(PreparedSource {
-                path: root.join(path.as_str()),
-                package: key.clone(),
-                role: SourceRole::Library,
-                selected: true,
-            });
-        }
-        for path in &package.plan.tests {
-            loader.project.sources.push(PreparedSource {
-                path: root.join(path.as_str()),
-                package: key.clone(),
-                role: SourceRole::Test,
-                selected: true,
-            });
-        }
-        for executable in &package.plan.executables {
-            let path = root.join(executable.entry.as_str());
-            let name = executable.name.to_string();
-            loader.project.sources.push(PreparedSource {
-                path: path.clone(),
-                package: key.clone(),
-                role: SourceRole::Executable(name.clone()),
-                selected: true,
-            });
-            loader.project.entries.push(PreparedEntry { name, path, package: key.clone() });
-        }
-        if one_root {
-            let metadata = package.document.manifest().package.as_ref().expect("validated package");
-            if let Some(default) = &metadata.default_run {
-                loader.project.default_entry = Some((key.clone(), default.to_string()));
-            } else if package.plan.executables.len() == 1 {
-                loader.project.default_entry =
-                    Some((key.clone(), package.plan.executables[0].name.to_string()));
+    let explicit_targets = !loader.mode.targets.is_empty();
+    let targets = if explicit_targets {
+        loader.mode.targets.clone()
+    } else if loader.mode.metadata_only && !configuration.manifest().lock_targets.is_empty() {
+        configuration.manifest().lock_targets.clone()
+    } else {
+        vec![loader.target.clone()]
+    };
+    loader.project.targets = targets.clone();
+    let mut state = if loader.mode.selection_only {
+        None
+    } else {
+        Some(resolution::State::open(&mut loader, options)?)
+    };
+    for target in targets {
+        loader.target = target;
+        loader.loaded.clear();
+        for root in roots.clone() {
+            let document = loader.document(&root.join(fai_package::MANIFEST_NAME), false)?;
+            let metadata = document.manifest().package.as_ref().ok_or_else(|| {
+                loader.error(
+                    &document,
+                    "package",
+                    fai_package::INVALID_MANIFEST,
+                    "workspace member has no package",
+                )
+            })?;
+            if !metadata.supported_platforms.is_empty()
+                && !metadata
+                    .supported_platforms
+                    .iter()
+                    .any(|predicate| predicate.matches(&loader.target))
+            {
+                if explicit_targets || (one_root && !loader.mode.metadata_only) {
+                    return Err(loader.error(
+                        &document,
+                        "package.supported-platforms",
+                        fai_package::INVALID_PLATFORM,
+                        format!("{} does not support {}", metadata.name, loader.target),
+                    ));
+                }
+                loader
+                    .project
+                    .notices
+                    .push(format!("{} is not applicable on {}", metadata.name, loader.target));
+                continue;
+            }
+            if !loader.project.roots.iter().any(|(_, path)| path == &root) {
+                loader.project.roots.push((metadata.name.to_string(), root.clone()));
+            }
+            let member = root.strip_prefix(&loader.configuration_root).unwrap_or(&root);
+            let member = PackagePath::parse(&portable_path(member))
+                .map_err(|error| project_message(error.to_string()))?;
+            let key = if let Some(state) = &mut state {
+                if loader.mode.inspect {
+                    state.inspect_root(&mut loader, &root, &member)?;
+                    String::new()
+                } else {
+                    state.resolve_root(&mut loader, &root, &member)?
+                }
+            } else {
+                String::new()
+            };
+            if loader.mode.metadata_only {
+                continue;
+            }
+            let package = loader.load_package(&root, true)?;
+            for path in &package.plan.library {
+                loader.project.sources.push(PreparedSource {
+                    path: root.join(path.as_str()),
+                    package: key.clone(),
+                    role: SourceRole::Library,
+                    selected: true,
+                    read_only: false,
+                });
+            }
+            for path in &package.plan.tests {
+                loader.project.sources.push(PreparedSource {
+                    path: root.join(path.as_str()),
+                    package: key.clone(),
+                    role: SourceRole::Test,
+                    selected: true,
+                    read_only: false,
+                });
+            }
+            for executable in &package.plan.executables {
+                let path = root.join(executable.entry.as_str());
+                let name = executable.name.to_string();
+                loader.project.sources.push(PreparedSource {
+                    path: path.clone(),
+                    package: key.clone(),
+                    role: SourceRole::Executable(name.clone()),
+                    selected: true,
+                    read_only: false,
+                });
+                loader.project.entries.push(PreparedEntry { name, path, package: key.clone() });
+            }
+            if one_root {
+                let metadata =
+                    package.document.manifest().package.as_ref().expect("validated package");
+                if let Some(default) = &metadata.default_run {
+                    loader.project.default_entry = Some((key.clone(), default.to_string()));
+                } else if package.plan.executables.len() == 1 {
+                    loader.project.default_entry =
+                        Some((key.clone(), package.plan.executables[0].name.to_string()));
+                }
             }
         }
+    }
+    if let Some(state) = state {
+        state.commit(&mut loader)?;
     }
     Ok(Some(loader.project))
 }
@@ -316,7 +459,33 @@ pub fn project_package_root(
     selector: &str,
     no_local: bool,
 ) -> Result<Utf8PathBuf, DriverError> {
-    let project = prepare_selected(root, &[], no_local, Some(selector))?.ok_or_else(|| {
+    project_package_root_with_options(
+        root,
+        selector,
+        &ProjectOptions { no_local, ..ProjectOptions::default() },
+    )
+}
+
+/// Selects a workspace member under an explicit lock/network policy.
+pub fn project_package_root_with_options(
+    root: &Utf8Path,
+    selector: &str,
+    options: &ProjectOptions,
+) -> Result<Utf8PathBuf, DriverError> {
+    let project = prepare_request(
+        root,
+        &[],
+        options,
+        Some(selector),
+        PrepareMode {
+            selection_only: true,
+            metadata_only: true,
+            write: false,
+            targets: vec![host_target()?],
+            ..PrepareMode::default()
+        },
+    )?
+    .ok_or_else(|| {
         project_message("--package requires a versioned package or workspace manifest".into())
     })?;
     project
@@ -332,7 +501,27 @@ pub fn project_entry_path(
     binary: Option<&str>,
     no_local: bool,
 ) -> Result<Utf8PathBuf, DriverError> {
-    let project = prepare(root, &[], no_local)?.ok_or_else(|| {
+    project_entry_path_with_options(
+        root,
+        binary,
+        &ProjectOptions { no_local, ..ProjectOptions::default() },
+    )
+}
+
+/// Selects a declared executable under an explicit lock/network policy.
+pub fn project_entry_path_with_options(
+    root: &Utf8Path,
+    binary: Option<&str>,
+    options: &ProjectOptions,
+) -> Result<Utf8PathBuf, DriverError> {
+    let project = prepare_request(
+        root,
+        &[],
+        options,
+        None,
+        PrepareMode { selection_only: true, write: false, ..PrepareMode::default() },
+    )?
+    .ok_or_else(|| {
         project_message("executable selection requires a versioned package manifest".into())
     })?;
     let entries: Vec<_> = project
@@ -354,13 +543,6 @@ pub fn project_entry_path(
     Ok(entries[0].path.clone())
 }
 
-struct Graph {
-    root: Utf8PathBuf,
-    member: PackagePath,
-    selected: BTreeMap<String, (Utf8PathBuf, String)>,
-    visiting: Vec<String>,
-}
-
 impl Loader<'_> {
     fn document(
         &mut self,
@@ -372,6 +554,9 @@ impl Loader<'_> {
         }
         let text = std::fs::read_to_string(path)
             .map_err(|source| DriverError::Io { path: path.to_owned(), source })?;
+        self.observed
+            .insert(path.to_owned(), fai_package_store::FileEdit::fingerprint(text.as_bytes()));
+        let text = self.mode.manifest_edits.get(path).cloned().unwrap_or(text);
         let label = path.strip_prefix(&self.base).unwrap_or(path).to_owned();
         let id = self.sources.add(label, text.clone());
         let parsed = if local {
@@ -514,145 +699,6 @@ impl Loader<'_> {
         Ok(package)
     }
 
-    fn local_key(&self, path: &Utf8Path) -> String {
-        format!(
-            "path:{}",
-            portable_path(path.strip_prefix(&self.configuration_root).unwrap_or(path))
-        )
-    }
-
-    fn visit(
-        &mut self,
-        graph: &mut Graph,
-        logical: String,
-        directory: Utf8PathBuf,
-    ) -> Result<String, DriverError> {
-        let package = self.load_package(&directory, false)?;
-        if graph.visiting.contains(&logical) || graph.visiting.len() >= 128 {
-            return Err(self.error(
-                &package.document,
-                "dependencies",
-                fai_package::PACKAGE_CYCLE,
-                format!(
-                    "normal package dependency cycle/depth limit: {} -> {logical}",
-                    graph.visiting.join(" -> ")
-                ),
-            ));
-        }
-        if let Some((previous, key)) = graph.selected.get(&logical) {
-            if previous != &directory {
-                return Err(self.error(
-                    &package.document,
-                    "dependencies",
-                    fai_package::RESOLUTION_CONFLICT,
-                    format!("logical package {logical} has multiple local sources"),
-                ));
-            }
-            return Ok(key.clone());
-        }
-        graph.visiting.push(logical.clone());
-        let dependencies =
-            self.dependencies(graph, &package, &package.active.dependencies, "dependencies")?;
-        graph.visiting.pop();
-        let version =
-            &package.document.manifest().package.as_ref().expect("validated package").version;
-        let description = serde_json::to_vec(&(
-            logical.as_str(),
-            self.local_key(&directory),
-            version,
-            self.target.to_string(),
-            &dependencies,
-        ))
-        .map_err(|error| project_message(error.to_string()))?;
-        let key = format!("local:{}", blake3::hash(&description).to_hex());
-        if !self.project.packages.contains_key(&key) {
-            let native = native_requirements(&directory, &package.active.native, &self.target)
-                .map_err(|message| {
-                    self.error(&package.document, "native", fai_package::INVALID_TARGET, message)
-                })?;
-            self.project.packages.insert(
-                key.clone(),
-                PreparedPackage { dependencies, development: BTreeMap::new(), native },
-            );
-            for path in &package.plan.library {
-                self.project.sources.push(PreparedSource {
-                    path: directory.join(path.as_str()),
-                    package: key.clone(),
-                    role: SourceRole::Library,
-                    selected: false,
-                });
-            }
-        }
-        graph.selected.insert(logical, (directory, key.clone()));
-        Ok(key)
-    }
-
-    fn dependencies(
-        &mut self,
-        graph: &mut Graph,
-        package: &LoadedPackage,
-        dependencies: &BTreeMap<fai_package::DependencyAlias, Dependency>,
-        kind: &str,
-    ) -> Result<BTreeMap<String, String>, DriverError> {
-        let mut bindings = BTreeMap::new();
-        for (alias, dependency) in dependencies {
-            let field = format!("{kind}.{alias}");
-            let (logical, directory, extra) =
-                self.dependency_location(graph, package, dependency, &field)?;
-            let selected = self.load_package(&directory, false)?;
-            let metadata =
-                selected.document.manifest().package.as_ref().expect("validated package");
-            let requirement = match dependency {
-                Dependency::Path { version, .. } => version.as_ref(),
-                Dependency::Git { selector: GitSelector::Version(version), .. } => Some(version),
-                _ => None,
-            };
-            if requirement.is_some_and(|requirement| !requirement.matches(&metadata.version))
-                || extra.as_ref().is_some_and(|requirement| !requirement.matches(&metadata.version))
-            {
-                return Err(self.error(&package.document, &field, fai_package::RESOLUTION_CONFLICT,
-                    format!("dependency `{alias}` selects version {}, which does not satisfy its declared requirements", metadata.version)));
-            }
-            let key = self.visit(graph, logical, directory)?;
-            bindings.insert(alias.to_string(), key);
-        }
-        Ok(bindings)
-    }
-
-    fn dependency_location(
-        &self,
-        graph: &Graph,
-        package: &LoadedPackage,
-        dependency: &Dependency,
-        field: &str,
-    ) -> Result<(String, Utf8PathBuf, Option<fai_package::VersionRequirement>), DriverError> {
-        match dependency {
-            Dependency::Path { path, .. } => {
-                let directory = canonical(&package.directory.join(path))?;
-                Ok((self.local_key(&directory), directory, None))
-            }
-            Dependency::Git { package: identity, .. } => {
-                let replacement = self.override_for(identity, &graph.member).ok_or_else(|| self.error(&package.document, field, fai_package::SOURCE_UNAVAILABLE,
-                    format!("Git dependency `{field}` has no local source; configure an explicit path override until Git restoration is available")))?;
-                let Dependency::Path { path, version } = &replacement.rule.with else {
-                    return Err(self.error(
-                        &replacement.document,
-                        &format!("overrides[{}].with", replacement.index),
-                        fai_package::SOURCE_UNAVAILABLE,
-                        "this project requires a Git source that has not been restored",
-                    ));
-                };
-                let directory = canonical(&replacement.directory.join(path))?;
-                let logical = if directory == graph.root {
-                    self.local_key(&directory)
-                } else {
-                    format!("git:{}#{}", identity.repository, identity.subdir)
-                };
-                Ok((logical, directory, version.clone()))
-            }
-        }
-    }
-
     fn override_for(&self, identity: &GitPackage, member: &PackagePath) -> Option<&RootOverride> {
         let matches = |entry: &&RootOverride| {
             &entry.rule.replace == identity
@@ -716,6 +762,11 @@ fn canonical(path: &Utf8Path) -> Result<Utf8PathBuf, DriverError> {
         .map_err(|source| DriverError::Io { path: path.to_owned(), source })?;
     Utf8PathBuf::from_path_buf(canonical)
         .map_err(|path| DriverError::NonUtf8Path(path.to_string_lossy().into_owned()))
+}
+
+fn host_target() -> Result<TargetPlatform, DriverError> {
+    TargetPlatform::parse(&target_lexicon::HOST.to_string())
+        .map_err(|failure| project_message(failure.to_string()))
 }
 
 fn collect_inventory(

@@ -39,7 +39,7 @@ pub use resolver::{
     CandidateSet, PackageCandidate, PackageKey, PackagePin, PackageRequirement, PackageSelector,
     PackageSource, ProviderFailure, RequirementOrigin, ResolutionConflict, ResolutionError,
     ResolutionPolicy, ResolutionRequest, ResolvedEdge, ResolvedGraph, ResolverProvider,
-    resolve_graph,
+    matches_selector as candidate_satisfies, resolve_graph,
 };
 pub use version::{PackageVersion, VersionRequirement};
 

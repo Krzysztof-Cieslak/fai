@@ -66,6 +66,11 @@ pub struct GitStore {
 }
 
 impl GitStore {
+    /// Whether this operation forbids all source-network access.
+    #[must_use]
+    pub fn is_offline(&self) -> bool {
+        self.offline
+    }
     /// Constructs a store rooted in the caller's configured cache directory.
     #[must_use]
     pub fn new(cache: Utf8PathBuf, offline: bool) -> Self {
@@ -271,7 +276,10 @@ impl GitStore {
             return Ok(None);
         }
         let bytes = git(Some(&directory), &["show", &object])?;
-        String::from_utf8(bytes).map(Some).map_err(io_error)
+        String::from_utf8(bytes).map(Some).map_err(|_| ProviderFailure {
+            code: fai_package::INVALID_MANIFEST,
+            message: "Git package manifest is not valid UTF-8".into(),
+        })
     }
 
     /// Materializes and verifies exactly one package subdirectory at a commit.

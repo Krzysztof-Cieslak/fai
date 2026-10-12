@@ -7,6 +7,32 @@ use indoc::indoc;
 
 const BASE: &str = "manifest-version = 1\n[package]\nname = 'demo'\nversion = '0.1.0'\n";
 
+#[test]
+fn dependency_edits_retain_surrounding_comments() {
+    let text = format!(
+        "{BASE}\n# shared tools\n[dependencies]\ntools = {{path = '../old'}} # keep this comment\n"
+    );
+    let original = parse(&text);
+    let alias = fai_package::DependencyAlias::parse("tools").unwrap();
+    let edited = original
+        .with_dependency(&alias, &Dependency::Path { path: "../new".into(), version: None }, false)
+        .unwrap();
+    assert!(edited.text().contains("# shared tools"));
+    assert!(edited.text().contains("# keep this comment"));
+    assert_eq!(original.text(), text);
+}
+
+#[test]
+fn removing_a_normal_dependency_retains_development_entries() {
+    let original = parse(&format!(
+        "{BASE}\n[dependencies]\ntools = {{path = '../tools'}}\n[dev-dependencies]\nchecks = {{path = '../checks'}}\n"
+    ));
+    let alias = fai_package::DependencyAlias::parse("tools").unwrap();
+    let edited = original.without_dependency(&alias, false).unwrap();
+    assert!(edited.manifest().dependencies.is_empty());
+    assert_eq!(edited.manifest().dev_dependencies.len(), 1);
+}
+
 fn parse(text: &str) -> ManifestDocument {
     ManifestDocument::parse(SourceId::new(7), text).unwrap()
 }

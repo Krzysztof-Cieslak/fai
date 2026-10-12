@@ -151,6 +151,75 @@ impl ManifestDocument {
         Self::parse(self.source, &document.to_string())
     }
 
+    /// Sets one root dependency while retaining surrounding authored TOML trivia.
+    pub fn with_dependency(
+        &self,
+        alias: &crate::DependencyAlias,
+        dependency: &crate::Dependency,
+        development: bool,
+    ) -> Result<Self, Vec<Diagnostic>> {
+        let mut document = self.document.clone().into_mut();
+        let section = if development { "dev-dependencies" } else { "dependencies" };
+        let mut fields = toml_edit::InlineTable::new();
+        match dependency {
+            crate::Dependency::Path { path, version } => {
+                fields.insert("path", Value::from(path.clone()));
+                if let Some(version) = version {
+                    fields.insert("version", Value::from(version.to_string()));
+                }
+            }
+            crate::Dependency::Git { package, selector } => {
+                fields.insert("git", Value::from(package.repository.to_string()));
+                if !package.subdir.is_root() {
+                    fields.insert("subdir", Value::from(package.subdir.to_string()));
+                }
+                let (key, value) = match selector {
+                    crate::GitSelector::Version(version) => ("version", version.to_string()),
+                    crate::GitSelector::Revision(revision) => ("rev", revision.to_string()),
+                    crate::GitSelector::Branch(branch) => ("branch", branch.to_string()),
+                };
+                fields.insert(key, Value::from(value));
+            }
+        }
+        let section =
+            document.as_table_mut().entry(section).or_insert(Item::Table(toml_edit::Table::new()));
+        let Some(table) = section.as_table_like_mut() else {
+            return Err(vec![self.diagnostic(
+                INVALID_MANIFEST,
+                "dependency section is not a table",
+                "dependencies",
+            )]);
+        };
+        let mut value = Value::InlineTable(fields);
+        if let Some(previous) = table.get(alias.as_str()).and_then(Item::as_value) {
+            *value.decor_mut() = previous.decor().clone();
+        }
+        table.insert(alias.as_str(), Item::Value(value));
+        Self::parse(self.source, &document.to_string())
+    }
+
+    /// Removes one explicitly selected dependency table entry.
+    pub fn without_dependency(
+        &self,
+        alias: &crate::DependencyAlias,
+        development: bool,
+    ) -> Result<Self, Vec<Diagnostic>> {
+        let mut document = self.document.clone().into_mut();
+        let section = if development { "dev-dependencies" } else { "dependencies" };
+        let removed = document
+            .get_mut(section)
+            .and_then(Item::as_table_like_mut)
+            .and_then(|table| table.remove(alias.as_str()));
+        if removed.is_none() {
+            return Err(vec![self.diagnostic(
+                INVALID_MANIFEST,
+                format!("dependency `{alias}` is not declared in [{section}]"),
+                section,
+            )]);
+        }
+        Self::parse(self.source, &document.to_string())
+    }
+
     pub(crate) fn diagnostic(
         &self,
         code: DiagnosticCode,

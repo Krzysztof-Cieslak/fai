@@ -45,7 +45,7 @@ pub struct Session {
     /// All package inputs, including dependencies excluded from user selection.
     loaded: FxHashSet<SourceId>,
     project: Option<Arc<LiveProject>>,
-    no_local: bool,
+    options: crate::ProjectOptions,
 }
 
 struct LiveProject {
@@ -53,6 +53,16 @@ struct LiveProject {
     native: BTreeMap<PackageId, crate::NativeDeps>,
     entries: Vec<(String, SourceId)>,
     default_entry: Option<SourceId>,
+    read_only: FxHashSet<SourceId>,
+    notices: Vec<String>,
+}
+
+/// Fully prepared project metadata, produced without holding a compiler database lock.
+pub struct PreparedProjectUpdate {
+    root: Utf8PathBuf,
+    options: crate::ProjectOptions,
+    project: Option<crate::project::PreparedProject>,
+    dirty: Vec<DirtyFile>,
 }
 
 impl Session {
@@ -66,28 +76,74 @@ impl Session {
 
     /// Opens a project with explicit control over personal root overrides.
     pub fn open_with_local(root: Utf8PathBuf, use_local: bool) -> Result<Self, DriverError> {
+        Self::open_with_options(
+            root,
+            crate::ProjectOptions { no_local: !use_local, ..crate::ProjectOptions::default() },
+        )
+    }
+
+    /// Opens a session under the same lock and network policy used by package commands.
+    pub fn open_with_options(
+        root: Utf8PathBuf,
+        options: crate::ProjectOptions,
+    ) -> Result<Self, DriverError> {
+        Self::open_prepared(Self::prepare_update(root, &[], options)?)
+    }
+
+    /// Performs dependency restoration before taking a semantic database write lock.
+    pub fn prepare_update(
+        root: Utf8PathBuf,
+        dirty: &[DirtyFile],
+        options: crate::ProjectOptions,
+    ) -> Result<PreparedProjectUpdate, DriverError> {
         if !root.is_dir() {
             return Err(DriverError::NotADirectory(root));
         }
         let root =
             root.canonicalize_utf8().map_err(|source| DriverError::Io { path: root, source })?;
+        let overlays: Vec<_> = dirty
+            .iter()
+            .filter(|entry| entry.content.is_some())
+            .map(|entry| root.join(&entry.path))
+            .collect();
+        let project = crate::project::prepare_with_options(&root, &overlays, &options)?;
+        Ok(PreparedProjectUpdate { root, options, project, dirty: dirty.to_vec() })
+    }
+
+    /// Creates a database from an already restored graph snapshot.
+    pub fn open_prepared(update: PreparedProjectUpdate) -> Result<Self, DriverError> {
         let mut db = FaiDatabase::new();
         // The embedded standard library is loaded first as high-durability
         // synthetic files, so their module names are reserved and rarely-changing.
         fai_types::std_lib::load_std(&mut db);
         let mut session = Self {
             db,
-            root,
+            root: update.root.clone(),
             stats: FxHashMap::default(),
             live: FxHashSet::default(),
             overlays: FxHashSet::default(),
             overlay_contents: FxHashMap::default(),
             loaded: FxHashSet::default(),
             project: None,
-            no_local: !use_local,
+            options: update.options.clone(),
         };
-        session.sync_from_disk()?;
+        session.apply_prepared(update)?;
         Ok(session)
+    }
+
+    /// Publishes restored metadata after checking that its inputs are still current.
+    pub fn apply_prepared(&mut self, update: PreparedProjectUpdate) -> Result<(), DriverError> {
+        if self.root != update.root {
+            return Err(DriverError::InvalidSelection(update.root));
+        }
+        self.options = update.options;
+        if let Some(project) = update.project {
+            self.apply_project(project, &update.dirty)?;
+        } else {
+            self.sync_directory()?;
+            self.apply_directory_dirty(&update.dirty)?;
+        }
+        Ok(())
     }
 
     /// Re-scans the workspace and updates the database for files that actually
@@ -115,6 +171,10 @@ impl Session {
         if let Some(project) = self.prepare_project(&[])? {
             return self.apply_project(project, &[]);
         }
+        self.sync_directory()
+    }
+
+    fn sync_directory(&mut self) -> Result<bool, DriverError> {
         if self.project.take().is_some() {
             self.db.remove_sources(self.loaded.iter().copied());
             self.loaded.clear();
@@ -204,7 +264,7 @@ impl Session {
                 .filter(|entry| entry.content.is_some())
                 .map(|entry| base.join(&entry.path)),
         );
-        crate::project::prepare(&self.root, &overlays, self.no_local)
+        crate::project::prepare_with_options(&self.root, &overlays, &self.options)
     }
 
     fn apply_project(
@@ -212,6 +272,17 @@ impl Session {
         project: crate::project::PreparedProject,
         dirty: &[DirtyFile],
     ) -> Result<bool, DriverError> {
+        for (path, expected) in &project.observed {
+            let bytes = std::fs::read(path)
+                .map_err(|source| DriverError::Io { path: path.clone(), source })?;
+            if fai_package_store::FileEdit::fingerprint(&bytes) != *expected {
+                return Err(fai_package::ProviderFailure {
+                    code: fai_package::INPUTS_CHANGED,
+                    message: "project inputs changed before compiler snapshot publication".into(),
+                }
+                .into());
+            }
+        }
         let previous: BTreeMap<_, _> = self
             .loaded
             .iter()
@@ -222,6 +293,14 @@ impl Session {
         for source in &project.sources {
             let relative =
                 source.path.strip_prefix(&project.base).unwrap_or(&source.path).to_owned();
+            if source.read_only
+                && (self.overlay_contents.contains_key(&relative)
+                    || dirty.iter().any(|entry| {
+                        project.base.join(&entry.path) == source.path && entry.content.is_some()
+                    }))
+            {
+                return Err(DriverError::InvalidSelection(source.path.clone()));
+            }
             if contents.contains_key(&relative) {
                 continue;
             }
@@ -280,6 +359,7 @@ impl Session {
         }
         let mut loaded = FxHashSet::default();
         let mut live = FxHashSet::default();
+        let mut read_only = FxHashSet::default();
         for source in &project.sources {
             let relative =
                 source.path.strip_prefix(&project.base).unwrap_or(&source.path).to_owned();
@@ -295,6 +375,9 @@ impl Session {
                 self.db.add_source_scoped(relative, text.clone(), origin, source.role.clone())
             };
             loaded.insert(id);
+            if source.read_only {
+                read_only.insert(id);
+            }
             if source.selected {
                 live.insert(id);
             }
@@ -323,14 +406,23 @@ impl Session {
                 entries.push((entry.name.clone(), id));
             }
         }
-        self.project =
-            Some(Arc::new(LiveProject { local: project.local, native, entries, default_entry }));
+        self.project = Some(Arc::new(LiveProject {
+            local: project.local,
+            native,
+            entries,
+            default_entry,
+            read_only,
+            notices: project.notices,
+        }));
         Ok(changed)
     }
 
     /// Gives the editor ownership of one source until [`Self::clear_overlay`].
     /// Its text and active membership survive external edits and deletion.
     pub fn set_overlay(&mut self, path: &Utf8Path, text: String) -> Result<(), DriverError> {
+        if self.analysis_files(Some(path)).iter().any(|&file| self.is_read_only(file)) {
+            return Err(DriverError::InvalidSelection(path.to_owned()));
+        }
         if self.project.is_some() {
             let previous = self.overlay_contents.insert(path.to_owned(), text.clone());
             let was_open = !self.overlays.insert(path.to_owned());
@@ -377,6 +469,10 @@ impl Session {
             self.apply_project(project, dirty)?;
             return Ok(());
         }
+        self.apply_directory_dirty(dirty)
+    }
+
+    fn apply_directory_dirty(&mut self, dirty: &[DirtyFile]) -> Result<(), DriverError> {
         for entry in dirty {
             let relative = Utf8PathBuf::from(&entry.path);
             let absolute = self.root.join(&relative);
@@ -486,7 +582,7 @@ impl Session {
             overlay_contents: self.overlay_contents.clone(),
             loaded: self.loaded.clone(),
             project: self.project.clone(),
-            no_local: self.no_local,
+            options: self.options.clone(),
         }
     }
 
@@ -545,10 +641,26 @@ impl Session {
         self.project.is_some()
     }
 
+    /// Whether edits require an explicit local replacement of the selected source.
+    #[must_use]
+    pub fn is_read_only(&self, file: SourceFile) -> bool {
+        file.is_std(&self.db)
+            || self
+                .project
+                .as_ref()
+                .is_some_and(|project| project.read_only.contains(&file.source(&self.db)))
+    }
+
     /// Whether personal root overrides are active in this package project.
     #[must_use]
     pub fn has_local_overrides(&self) -> bool {
         self.project.as_ref().is_some_and(|project| project.local)
+    }
+
+    /// Notices emitted while preparing this request's dependency graph.
+    #[must_use]
+    pub fn package_notices(&self) -> &[String] {
+        self.project.as_ref().map_or(&[], |project| project.notices.as_slice())
     }
 
     /// Native requirements of a source's selected package dependency projection.

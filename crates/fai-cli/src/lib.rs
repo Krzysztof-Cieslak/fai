@@ -75,6 +75,27 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
     // Subcommands that always run in this process, never through the daemon.
     match &parsed.command {
+        Command::Init(args) => {
+            let root = match workspace_root(parsed.global.project.clone()) {
+                Ok(root) => root,
+                Err(error) => return emit_error(&error, format, color, out, err),
+            };
+            let path = root.join(&args.path);
+            if let Err(error) = fai_driver::init_package(&path, args.name.as_deref(), args.library)
+            {
+                return emit_error(&error, format, color, out, err);
+            }
+            if matches!(format, MessageFormat::Json) {
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    serde_json::json!({"schemaVersion": 1, "command": "init", "ok": true, "path": path})
+                );
+            } else {
+                let _ = writeln!(out, "created package at {path}");
+            }
+            return EXIT_OK;
+        }
         Command::BuildInfo => {
             return match serde_json::to_writer(&mut *out, &fai_driver::build_info()) {
                 Ok(()) => {
@@ -101,10 +122,97 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         Err(error) => return emit_error(&error, format, color, out, err),
     };
     if let Some(package) = &parsed.global.package {
-        root = match fai_driver::project_package_root(&root, package, parsed.global.no_local) {
+        root = match fai_driver::project_package_root_with_options(
+            &root,
+            package,
+            &parsed.global.options(),
+        ) {
             Ok(root) => root,
             Err(error) => return emit_error(&error, format, color, out, err),
         };
+    }
+
+    if let Some(command) = package_command(&parsed.command) {
+        let command = match command {
+            Ok(command) => command,
+            Err(error) => return emit_error(&error, format, color, out, err),
+        };
+        let targets = match parsed
+            .global
+            .targets
+            .iter()
+            .map(|target| fai_package::TargetPlatform::parse(target))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(targets) => targets,
+            Err(error) => {
+                return emit_error(&metadata_error(error.to_string()), format, color, out, err);
+            }
+        };
+        return match fai_driver::run_package_command(
+            &root,
+            &command,
+            &parsed.global.options(),
+            &targets,
+        ) {
+            Ok(output) => {
+                if matches!(format, MessageFormat::Json) {
+                    match serde_json::to_string_pretty(&output) {
+                        Ok(json) => {
+                            let _ = writeln!(out, "{json}");
+                        }
+                        Err(error) => {
+                            let _ = writeln!(err, "{error}");
+                            return EXIT_INTERNAL;
+                        }
+                    }
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "{}: {} graph target(s), {:?} context",
+                        output.command,
+                        output.targets.len(),
+                        output.context
+                    );
+                    for change in &output.changes {
+                        let _ = writeln!(
+                            out,
+                            "{} {:?}: {:?} -> {:?}",
+                            change.kind,
+                            change.package,
+                            change.before.as_ref().map(|selection| &selection.version),
+                            change.after.as_ref().map(|selection| &selection.version)
+                        );
+                    }
+                    if let Some(graph) = &output.graph {
+                        for package in &graph.packages {
+                            let _ = writeln!(
+                                out,
+                                "{:?} {} ({:?})",
+                                package.logical, package.version, package.source
+                            );
+                        }
+                    }
+                    if let Some(why) = &output.why {
+                        let _ = writeln!(out, "{why}");
+                    }
+                }
+                for notice in &output.notices {
+                    let _ = writeln!(err, "{notice}");
+                }
+                for graph in &output.stale_graphs {
+                    let _ = writeln!(err, "stale graph: {graph}");
+                }
+                if output.context == fai_package::LockContext::Local {
+                    let _ = err.write_all(fai_driver::LOCAL_CONTEXT_NOTICE.as_bytes());
+                }
+                EXIT_OK
+            }
+            Err(error) => emit_error(&error, format, color, out, err),
+        };
+    }
+    if parsed.global.targets.iter().any(|target| target != fai_driver::build_info().target) {
+        return emit_error(&metadata_error("compilation supports only the host target; use resolve/update for other metadata targets".into()), format, color, out, err);
     }
 
     match &parsed.command {
@@ -117,7 +225,7 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             route(&parsed.global, &root, spec, format, color, log, out, err)
         }
         Command::Build(args) => {
-            let spec = match build_spec(args, &root, parsed.global.no_local) {
+            let spec = match build_spec(args, &root, &parsed.global.options()) {
                 Ok(spec) => spec,
                 Err(error) => return emit_error(&error, format, color, out, err),
             };
@@ -131,15 +239,93 @@ fn dispatch(parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         Command::Test(args) => run_test(&parsed.global, &root, args, format, color, log, out, err),
         // The language server owns the stdio loop directly (it speaks LSP, not the
         // CLI's command envelopes), so it bypasses the usual command routing.
-        Command::Lsp => fai_lsp::run_stdio_with_local(root, !parsed.global.no_local),
+        Command::Lsp => fai_lsp::run_stdio_with_options(root, parsed.global.options()),
         Command::Daemon { sub } => run_daemon_command(&root, sub, log, out, err),
         Command::BuildInfo
+        | Command::Init(_)
+        | Command::Add(_)
+        | Command::Remove(_)
+        | Command::Resolve
+        | Command::Fetch
+        | Command::Update { .. }
+        | Command::Deps { .. }
         | Command::RunWorker(_)
         | Command::TestWorker(_)
         | Command::DaemonServe => {
             unreachable!("handled above")
         }
     }
+}
+
+fn package_command(command: &Command) -> Option<Result<fai_driver::PackageCommand, DriverError>> {
+    use fai_driver::PackageCommand as Package;
+    let result = match command {
+        Command::Resolve => Ok(Package::Resolve),
+        Command::Fetch => Ok(Package::Fetch),
+        Command::Update { packages } => Ok(Package::Update(packages.clone())),
+        Command::Deps { sub } => Ok(Package::Deps {
+            why: sub.as_ref().map(|cli::DepsCommand::Why { selector }| selector.clone()),
+        }),
+        Command::Remove(args) => fai_package::DependencyAlias::parse(&args.alias)
+            .map(|alias| Package::Remove { alias, development: args.dev })
+            .map_err(|error| metadata_error(error.to_string())),
+        Command::Add(args) => (|| {
+            let version = args
+                .version
+                .as_deref()
+                .map(fai_package::VersionRequirement::parse)
+                .transpose()
+                .map_err(|error| metadata_error(error.to_string()))?;
+            let default_version = args.version.is_none()
+                && args.rev.is_none()
+                && args.branch.is_none()
+                && args.path.is_none();
+            let dependency = if let Some(path) = &args.path {
+                fai_package::Dependency::Path { path: path.to_string(), version }
+            } else {
+                let repository =
+                    fai_package::GitRepository::parse(args.source.as_deref().unwrap_or_default())
+                        .map_err(|error| metadata_error(error.to_string()))?;
+                let subdir = args
+                    .subdir
+                    .as_deref()
+                    .map(fai_package::PackagePath::parse)
+                    .transpose()
+                    .map_err(|error| metadata_error(error.to_string()))?
+                    .unwrap_or_else(fai_package::PackagePath::root);
+                let selector = if let Some(branch) = &args.branch {
+                    fai_package::GitSelector::Branch(
+                        fai_package::GitBranch::parse(branch)
+                            .map_err(|error| metadata_error(error.to_string()))?,
+                    )
+                } else if let Some(revision) = &args.rev {
+                    fai_package::GitSelector::Revision(
+                        fai_package::GitRevision::parse(revision)
+                            .map_err(|error| metadata_error(error.to_string()))?,
+                    )
+                } else {
+                    fai_package::GitSelector::Version(version.unwrap_or_default())
+                };
+                fai_package::Dependency::Git {
+                    package: fai_package::GitPackage { repository, subdir },
+                    selector,
+                }
+            };
+            let alias = args
+                .alias
+                .as_deref()
+                .map(fai_package::DependencyAlias::parse)
+                .transpose()
+                .map_err(|error| metadata_error(error.to_string()))?;
+            Ok(Package::Add { dependency, alias, development: args.dev, default_version })
+        })(),
+        _ => return None,
+    };
+    Some(result)
+}
+
+fn metadata_error(message: String) -> DriverError {
+    fai_package::ProviderFailure { code: fai_package::INVALID_MANIFEST, message }.into()
 }
 
 /// Runs a daemon-eligible command: through the warm daemon by default, in-process
@@ -158,7 +344,7 @@ fn route(
     let opts = RenderOpts { format: to_output_format(format), color };
 
     let rendered = if global.no_daemon {
-        match run_in_process(root, &spec, opts, global.no_local) {
+        match run_in_process(root, &spec, opts, global.options()) {
             Ok(rendered) => rendered,
             Err(error) => return emit_error(&error, format, color, out, err),
         }
@@ -169,7 +355,7 @@ fn route(
             opts,
             Vec::new(),
             log,
-            global.no_local,
+            global.options(),
         ) {
             Ok(rendered) => rendered,
             Err(error) if error.may_have_executed() => {
@@ -187,7 +373,7 @@ fn route(
                     "warning [{}]: daemon unavailable ({daemon_error}); running in-process",
                     fai_driver::DAEMON_UNAVAILABLE
                 );
-                match run_in_process(root, &spec, opts, global.no_local) {
+                match run_in_process(root, &spec, opts, global.options()) {
                     Ok(rendered) => rendered,
                     Err(error) => return emit_error(&error, format, color, out, err),
                 }
@@ -205,9 +391,9 @@ fn run_in_process(
     root: &Utf8Path,
     spec: &CommandSpec,
     opts: RenderOpts,
-    no_local: bool,
+    project: fai_driver::ProjectOptions,
 ) -> Result<Rendered, DriverError> {
-    let session = Session::open_with_local(root.to_owned(), !no_local)?;
+    let session = Session::open_with_options(root.to_owned(), project)?;
     Ok(fai_driver::run_command(&session, spec, opts))
 }
 
@@ -232,7 +418,7 @@ fn run_test(
         max_size: args.max_size.unwrap_or(defaults.max_size),
     };
     if global.no_daemon {
-        return run_test_in_process(root, args, config, format, color, out, err, global.no_local);
+        return run_test_in_process(root, args, config, format, color, out, err, global.options());
     }
     let opts = RenderOpts { format: to_output_format(format), color };
     match fai_server::test_in_context(
@@ -246,7 +432,7 @@ fn run_test(
         log,
         out,
         err,
-        global.no_local,
+        global.options(),
     ) {
         Ok(exit) => exit,
         Err(daemon_error) => {
@@ -255,7 +441,7 @@ fn run_test(
                 "warning [{}]: daemon unavailable ({daemon_error}); running in-process",
                 fai_driver::DAEMON_UNAVAILABLE
             );
-            run_test_in_process(root, args, config, format, color, out, err, global.no_local)
+            run_test_in_process(root, args, config, format, color, out, err, global.options())
         }
     }
 }
@@ -272,14 +458,17 @@ fn run_test_in_process(
     color: bool,
     out: &mut dyn Write,
     err: &mut dyn Write,
-    no_local: bool,
+    project: fai_driver::ProjectOptions,
 ) -> i32 {
-    let session = match Session::open_with_local(root.to_owned(), !no_local) {
+    let session = match Session::open_with_options(root.to_owned(), project) {
         Ok(session) => session,
         Err(error) => return emit_error(&error, format, color, out, err),
     };
     if session.has_local_overrides() {
         let _ = err.write_all(fai_driver::LOCAL_CONTEXT_NOTICE.as_bytes());
+    }
+    for notice in session.package_notices() {
+        let _ = writeln!(err, "{notice}");
     }
     let files = match session.select_files_checked(args.path.as_deref()) {
         Ok(files) => files,
@@ -342,10 +531,10 @@ fn run_test_worker(bundle_path: &Utf8Path, start: usize, err: &mut dyn Write) ->
 fn build_spec(
     args: &BuildArgs,
     root: &Utf8Path,
-    no_local: bool,
+    project: &fai_driver::ProjectOptions,
 ) -> Result<CommandSpec, DriverError> {
     let path = match &args.bin {
-        Some(name) => fai_driver::project_entry_path(root, Some(name), no_local)?,
+        Some(name) => fai_driver::project_entry_path_with_options(root, Some(name), project)?,
         None => args.path.clone(),
     };
     let stem = args
@@ -486,17 +675,19 @@ fn run_program(
     err: &mut dyn Write,
 ) -> i32 {
     let path = match &args.bin {
-        Some(name) => match fai_driver::project_entry_path(root, Some(name), global.no_local) {
-            Ok(path) => path,
-            Err(error) => {
-                let _ = writeln!(err, "error: {error}");
-                return EXIT_WORKSPACE;
+        Some(name) => {
+            match fai_driver::project_entry_path_with_options(root, Some(name), &global.options()) {
+                Ok(path) => path,
+                Err(error) => {
+                    let _ = writeln!(err, "error: {error}");
+                    return EXIT_WORKSPACE;
+                }
             }
-        },
+        }
         None => args.path.clone(),
     };
     if global.no_daemon {
-        return run_in_process_worker(root, &path, &args.args, err, global.no_local);
+        return run_in_process_worker(root, &path, &args.args, err, global.options());
     }
     match fai_server::run_in_context(
         root,
@@ -505,7 +696,7 @@ fn run_program(
         log,
         out,
         err,
-        global.no_local,
+        global.options(),
     ) {
         Ok(exit) => exit,
         Err(error) if error.may_have_executed() => submitted_error(err, &error),
@@ -515,7 +706,7 @@ fn run_program(
                 "warning [{}]: daemon unavailable ({daemon_error}); running in-process",
                 fai_driver::DAEMON_UNAVAILABLE
             );
-            run_in_process_worker(root, &path, &args.args, err, global.no_local)
+            run_in_process_worker(root, &path, &args.args, err, global.options())
         }
     }
 }
@@ -527,9 +718,9 @@ fn run_in_process_worker(
     path: &Utf8Path,
     program_args: &[String],
     err: &mut dyn Write,
-    no_local: bool,
+    project: fai_driver::ProjectOptions,
 ) -> i32 {
-    let session = match Session::open_with_local(root.to_owned(), !no_local) {
+    let session = match Session::open_with_options(root.to_owned(), project) {
         Ok(session) => session,
         Err(error) => {
             let _ = writeln!(err, "error: {error}");
@@ -538,6 +729,9 @@ fn run_in_process_worker(
     };
     if session.has_local_overrides() {
         let _ = err.write_all(fai_driver::LOCAL_CONTEXT_NOTICE.as_bytes());
+    }
+    for notice in session.package_notices() {
+        let _ = writeln!(err, "{notice}");
     }
     let entry = match session.entry_file(path) {
         Ok(entry) => entry,

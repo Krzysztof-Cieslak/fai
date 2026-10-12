@@ -52,8 +52,17 @@ pub fn run_stdio(root: Utf8PathBuf) -> i32 {
 /// Runs stdio LSP with explicit selection of personal or shared project context.
 #[must_use]
 pub fn run_stdio_with_local(root: Utf8PathBuf, use_local: bool) -> i32 {
+    run_stdio_with_options(
+        root,
+        fai_driver::ProjectOptions { no_local: !use_local, ..Default::default() },
+    )
+}
+
+/// Runs stdio LSP with explicit lock, network, and override policy.
+#[must_use]
+pub fn run_stdio_with_options(root: Utf8PathBuf, options: fai_driver::ProjectOptions) -> i32 {
     let (connection, io_threads) = Connection::stdio();
-    let result = serve_with_local(&connection, root, use_local);
+    let result = serve_with_options(&connection, root, options);
     drop(connection);
     let _ = io_threads.join();
     match result {
@@ -80,6 +89,19 @@ pub fn serve_with_local(
     root: Utf8PathBuf,
     use_local: bool,
 ) -> Result<(), Box<dyn Error>> {
+    serve_with_options(
+        connection,
+        root,
+        fai_driver::ProjectOptions { no_local: !use_local, ..Default::default() },
+    )
+}
+
+/// Serves a project with the same dependency policy as the CLI.
+pub fn serve_with_options(
+    connection: &Connection,
+    root: Utf8PathBuf,
+    options: fai_driver::ProjectOptions,
+) -> Result<(), Box<dyn Error>> {
     // Split handshake: read the client's capabilities first so the advertised
     // position encoding can match what the client supports.
     let (id, init_params) = connection.initialize_start()?;
@@ -87,7 +109,7 @@ pub fn serve_with_local(
     let examples_enabled = examples_enabled(&init_params);
     let capabilities = serde_json::to_value(server_capabilities(encoding))?;
     connection.initialize_finish(id, serde_json::json!({ "capabilities": capabilities }))?;
-    let mut server = Server::new(root, encoding, examples_enabled, use_local)?;
+    let mut server = Server::new(root, encoding, examples_enabled, options)?;
     if server.session.has_local_overrides() {
         connection.sender.send(Message::Notification(Notification::new(
             "window/logMessage".to_owned(),
@@ -248,11 +270,11 @@ impl Server {
         root: Utf8PathBuf,
         encoding: Encoding,
         examples_enabled: bool,
-        use_local: bool,
+        options: fai_driver::ProjectOptions,
     ) -> Result<Self, Box<dyn Error>> {
         let root = Utf8PathBuf::from_path_buf(std::path::absolute(root)?)
             .map_err(|_| std::io::Error::other("workspace path is not UTF-8"))?;
-        let session = Session::open_with_local(root.clone(), use_local)?;
+        let session = Session::open_with_options(root.clone(), options)?;
         let standard_documents = StandardDocuments::new(session.db())?;
         Ok(Self {
             session,
@@ -474,6 +496,9 @@ impl Server {
         let text = self.open.get(uri)?;
         let files = self.session.analysis_files(Some(&rel));
         let file = files.first()?;
+        if self.session.is_read_only(*file) {
+            return None;
+        }
         // The open buffer is already overlaid into the database, so the warm
         // formatter sees the unsaved text.
         let result = fmt(self.session.db(), &[*file]);
@@ -509,6 +534,9 @@ impl Server {
         let rel = self.relative(uri)?;
         let original = self.open.get(uri)?;
         let file = *self.session.analysis_files(Some(&rel)).first()?;
+        if self.session.is_read_only(file) {
+            return None;
+        }
         let result = fmt(self.session.db(), &[file]);
         let formatted = &result.files.first()?.formatted;
         Some(range_formatting_edits(original, formatted, range))
@@ -554,6 +582,14 @@ impl Server {
         let (file, offset) = self.locate(&params.text_document.uri, params.position)?;
         let target =
             fai_ide::prepare_rename_at(self.session.db(), file, offset, &self.session.resolver())?;
+        if self
+            .session
+            .db()
+            .source_file(target.span.source)
+            .is_some_and(|file| self.session.is_read_only(file))
+        {
+            return None;
+        }
         let range = self.range_in_file(&target.span)?;
         Some(PrepareRenameResponse::RangeWithPlaceholder { range, placeholder: target.name })
     }
@@ -575,6 +611,16 @@ impl Server {
         // Group the per-occurrence replacements by file into a workspace edit.
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
         for loc in locations {
+            if self
+                .session
+                .db()
+                .source_file(loc.span.source)
+                .is_some_and(|file| self.session.is_read_only(file))
+            {
+                return Err(
+                    "immutable dependency sources require a local override before renaming".into(),
+                );
+            }
             let uri = self
                 .uri_for_span(&loc.span)
                 .ok_or_else(|| "cannot locate a rename occurrence".to_owned())?;
