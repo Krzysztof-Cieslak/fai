@@ -1,0 +1,43 @@
+module LogFilter
+
+public type Override = { minimum : Option LogTypes.Level, target : String }
+
+public type Options = {
+  limits : LogTypes.Limits,
+  minimum : Option LogTypes.Level,
+  overrides : List Override
+}
+
+public defaults : Options
+let defaults = { limits = LogTypes.limits, minimum = Some LogTypes.Info, overrides = [] }
+
+public validate : Options -> Result Unit LogTypes.Error
+let validate options =
+  match LogBudget.validate options.limits with
+  | Err error -> Err error
+  | Ok _ ->
+    if List.length options.overrides > 128 || List.any (fun rule ->
+      rule.target = "") options.overrides || Set.size (Set.fromList (List.map (fun rule ->
+      rule.target) options.overrides)) <> List.length options.overrides then
+      Err (LogTypes.error LogTypes.Configuration "" "invalid or duplicate target overrides")
+    else
+      Ok ()
+
+let matches prefix target =
+  target = prefix || String.take (String.length prefix + 1) target = prefix ++ "."
+
+choose : String -> List Override -> Int -> Option LogTypes.Level -> Option LogTypes.Level
+let choose target rules length minimum =
+  match rules with
+  | [] -> minimum
+  | rule :: rest ->
+    if String.length rule.target > length && matches rule.target target then
+      choose target rest (String.length rule.target) rule.minimum
+    else
+      choose target rest length minimum
+
+public enabled : Options -> String -> LogTypes.Level -> Bool
+let enabled options target level =
+  match choose target options.overrides (-1) options.minimum with
+  | None -> false
+  | Some minimum -> level >= minimum

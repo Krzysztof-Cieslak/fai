@@ -1931,6 +1931,13 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/logging` supplies structured log records and typed `LogField` builders,
+longest dotted-prefix `LogFilter` rules, and pure `LogFormat` human/JSON Lines
+rendering. Later fields override earlier context; final keys are sorted. Record
+limits cover encoded UTF-8 bytes, field count, value depth and node count. Its
+source dependency is `packages/json`; native contracts run with
+`fai test -C packages logging`.
+
 `packages/llm` supplies pure `Llm.request` builders, ordered `LlmTypes` content and
 provider-tagged continuation items. `LlmSchema` combines a wire schema and typed
 JSON decoder (`field`, `map2`, `list`, `nullable`, scalar schemas and local

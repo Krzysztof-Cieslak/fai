@@ -1,0 +1,66 @@
+module LogFormat
+
+public type Format =
+  | JsonLines
+  | Human Bool
+
+public levelName : LogTypes.Level -> String
+let levelName level =
+  match level with
+  | LogTypes.Trace -> "trace"
+  | LogTypes.Debug -> "debug"
+  | LogTypes.Info -> "info"
+  | LogTypes.Warn -> "warn"
+  | LogTypes.Error -> "error"
+  | LogTypes.Fatal -> "fatal"
+
+public toJson : LogTypes.Record -> Json.Value
+let toJson record =
+  Json.Object (Array.fromList (List.concat [
+    [("schemaVersion", Json.Number (JsonNumber.fromInt 1))],
+    (match record.timestamp with
+    | None -> []
+    | Some time -> [("timestamp", Json.String (Instant.toString time))]),
+    [("level", Json.String (levelName record.level)), ("target", Json.String record.target)],
+    (match record.event with
+    | None -> []
+    | Some event -> [("event", Json.String event)]),
+    [("message", Json.String record.message), ("fields", record.fields)]
+  ]))
+
+let quoted text = Json.toString (Json.String text)
+
+let colour level =
+  match level with
+  | LogTypes.Trace -> "\u{1b}[90m"
+  | LogTypes.Debug -> "\u{1b}[36m"
+  | LogTypes.Info -> "\u{1b}[32m"
+  | LogTypes.Warn -> "\u{1b}[33m"
+  | _ -> "\u{1b}[31m"
+
+public render : LogTypes.Limits -> Format -> LogTypes.Record -> Result String LogTypes.Error
+let render limits format record =
+  let value = toJson record
+  match LogBudget.check limits value with
+  | Err error -> Err error
+  | Ok size ->
+    if size >= limits.maxRecordBytes then
+      Err (LogTypes.error LogTypes.Formatting "" "record newline exceeds byte limit")
+    else
+      let line =
+        match format with
+        | JsonLines -> Json.toString value
+        | Human colours ->
+          (match record.timestamp with
+          | None -> ""
+          | Some time ->
+            Instant.toString time ++ " ") ++ (if colours then
+            colour record.level
+          else
+            "") ++ String.toUpper (levelName record.level) ++ (if colours then
+            "\u{1b}[0m"
+          else
+            "") ++ " " ++ quoted record.target ++ " " ++ quoted record.message ++ (match record.event with
+          | None -> ""
+          | Some event -> " event=" ++ quoted event) ++ " " ++ Json.toString record.fields
+      Result.map (fun _ -> line) (LogBudget.textBytes (limits.maxRecordBytes - 1) line)
