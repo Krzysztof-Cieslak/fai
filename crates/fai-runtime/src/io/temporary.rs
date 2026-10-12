@@ -94,12 +94,14 @@ fn create(parent: &Path, directory: bool, probe: &CancellationProbe) -> Result<T
         let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         let path = parent.join(format!("fai-{name}"));
         let created = if directory {
-            let mut builder = fs::DirBuilder::new();
+            let builder = fs::DirBuilder::new();
             #[cfg(unix)]
-            {
+            let builder = {
                 use std::os::unix::fs::DirBuilderExt;
+                let mut builder = builder;
                 builder.mode(0o700);
-            }
+                builder
+            };
             builder.create(&path).map(|_| None)
         } else {
             let mut builder = OpenOptions::new();
