@@ -19,22 +19,27 @@ example: Path.relativeTo (named "a/b") (named "a/c") = Ok (Path.normalize (named
 example: Path.resolve (named "relative") (named "child") = Err Path.IncompatibleBase
 example: Path.toNativeBytes Path.empty = Bytes.empty
 
-nativeNames : Runtime -> Path -> Bool / { FileSystem }
-let nativeNames env root =
+nativeNames : Runtime -> Int -> Path -> Bool / { FileSystem }
+let nativeNames env expectedError root =
   let raw = Bytes.fromList (if Path.nativeEncoding = "windows" then [0, 216] else [255])
   let name = Result.withDefault Path.empty (Path.fromNativeBytes raw)
   let path = Path.join root name
   let wrote = env.fs.writeBytes path (Bytes.fromList [255, 0, 42])
-  let read = env.fs.readBytes path 3
-  let found = env.fs.linkMetadata path
-  let removed = env.fs.removeFile path
-  Result.isErr (Path.toString name) && wrote = Ok () && read = Ok (Bytes.fromList [
-    255,
-    0,
-    42
-  ]) && removed = Ok () && (match found with
-  | Ok info -> info.length = 3 && info.kind = FileSystem.RegularFile
-  | _ -> false)
+  if expectedError <> 0 then
+    Result.isErr (Path.toString name) && (match wrote with
+    | Err error -> error.nativeCode = Some expectedError
+    | _ -> false)
+  else
+    let read = env.fs.readBytes path 3
+    let found = env.fs.linkMetadata path
+    let removed = env.fs.removeFile path
+    Result.isErr (Path.toString name) && wrote = Ok () && read = Ok (Bytes.fromList [
+      255,
+      0,
+      42
+    ]) && removed = Ok () && (match found with
+    | Ok info -> info.length = 3 && info.kind = FileSystem.RegularFile
+    | _ -> false)
 
 aliases : Runtime -> Path -> Bool / { FileSystem }
 let aliases env root =
@@ -120,22 +125,33 @@ let atomic env root =
   else
     durable.outcome = Ok ())
 
-check : Runtime -> Temp.Directory -> Result Bool String / { Concurrency, FileSystem }
-let check env temporary =
-  let names = nativeNames env temporary.path
+check : Runtime -> Int -> Temp.Directory -> Result Bool String / { Concurrency, FileSystem }
+let check env expectedError temporary =
+  let names = nativeNames env expectedError temporary.path
   let handles = aliases env temporary.path
   let identities = links env temporary.path
   let cancelled = env.concurrency.scope (cancelScope env temporary.path)
   let replaced = atomic env temporary.path
-  Ok (names && handles && identities && cancelled && replaced)
+  if not names then
+    Err "native filename support differs from the OS probe"
+  else if not handles then
+    Err "handle alias checks failed"
+  else if not identities then
+    Err "link and identity checks failed"
+  else if not cancelled then
+    Err "cancellation cleanup checks failed"
+  else if not replaced then Err "atomic replacement checks failed" else Ok true
 
-public main : Runtime -> Unit / { Concurrency, Console, FileSystem }
+public main : Runtime -> Unit / { Concurrency, Console, Env, FileSystem }
 let main env =
-  match env.fs.temporaryDirectory () with
-  | Err error -> env.console.writeLine (FileSystem.errorToString error)
-  | Ok parent ->
-    let result = Temp.withDirectory env parent (check env)
-    env.console.writeLine (if result = Ok true then
-      "filesystem checks passed"
-    else
-      "filesystem checks FAILED")
+  match env.env.args () with
+  | [parent, nativeError] ->
+    let result =
+      Temp.withDirectory env (named parent) (check env (Option.withDefault 0 (Int.fromString nativeError)))
+    env.console.writeLine (match result with
+    | Ok true -> "filesystem checks passed"
+    | Err (FileSystem.BodyError message) -> "filesystem checks FAILED: " ++ message
+    | Err (FileSystem.OpenError error) -> FileSystem.errorToString error
+    | Err (FileSystem.CloseError error) -> FileSystem.errorToString error
+    | _ -> "filesystem checks FAILED: cleanup")
+  | _ -> env.console.writeLine "expected fixture directory and native name probe result"
