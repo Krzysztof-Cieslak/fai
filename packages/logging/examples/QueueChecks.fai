@@ -1,0 +1,60 @@
+module LogQueueChecks
+
+append : Concurrency -> Channel (List String) -> String -> Result LogTypes.Delivery Log.Error / { Concurrency }
+let append c store line =
+  let previous = Option.withDefault [] (c.recv store)
+  let saved = c.send store (line :: previous)
+  Ok LogTypes.Completed
+
+collecting : Concurrency -> Channel (List String) -> LogSink.Output { Concurrency }
+let collecting c store = { flush = fun _ -> Ok (), writeLine = append c store }
+
+useQueue : Runtime -> LogSink.Output { Concurrency } -> Result (LogSink.Output { Concurrency }) Log.Error / { Concurrency }
+let useQueue env output =
+  let results =
+    Async.mapConcurrent env.concurrency (fun i ->
+      output.writeLine (Int.toString i)) (List.range 0 40)
+  let flushed = output.flush ()
+  if List.all Result.isOk results && flushed = Ok () then
+    Ok output
+  else
+    Err (LogTypes.error LogTypes.Write "test" "queue write failed")
+
+normal : Runtime -> Bool / { Clock, Concurrency }
+let normal env =
+  let store = env.concurrency.channel 1
+  let seeded = env.concurrency.send store []
+  let result =
+    LogQueue.withOutput env { LogQueue.defaults with
+      maxBytes = 8,
+      maxRecordBytes = 8,
+      maxRecords = 2
+    } (collecting env.concurrency store) (useQueue env)
+  let values = Option.withDefault [] (env.concurrency.recv store)
+  match result with
+  | Err _ -> false
+  | Ok finished ->
+    let expired = finished.value.writeLine "late"
+    finished.summary.accepted = 40 && finished.summary.completed = 40 && finished.summary.abandoned = 0 && finished.summary.peakRecords <= 2 && finished.summary.peakBytes <= 8 && Result.isErr expired && List.length values = 40 && Set.size (Set.fromList values) = 40
+
+failed : Runtime -> Bool / { Clock, Concurrency }
+let failed env =
+  let error = LogTypes.error LogTypes.Write "broken" "deliberate failure"
+  let output = { flush = fun _ -> Ok (), writeLine = fun _ -> Err error }
+  let work queue =
+    let accepted = queue.writeLine "first"
+    queue.flush ()
+  let result = LogQueue.withOutput env { LogQueue.defaults with maxRecords = 1 } output work
+  match result with
+  | Ok _ -> false
+  | Err error ->
+    error.summary.accepted = 1 && error.summary.failed = 1 && error.summary.failure <> None
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console }
+let main env =
+  let normal = normal env
+  let failed = failed env
+  env.console.writeLine (if normal && failed then
+    "queued logging checks passed"
+  else
+    "queued logging checks FAILED")

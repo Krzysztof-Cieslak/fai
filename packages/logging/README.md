@@ -42,6 +42,35 @@ flushing; OnFlush buffers until an explicit flush or close. Neither implies fsyn
 Retained aliases return Closed after the scope. `LogSink.serialized` supplies a
 shared gate for custom outputs that need compound-operation serialization.
 
+## Background delivery
+
+`LogQueue.withOutput env options output work` borrows a line output and gives the
+callback an `Output { Concurrency }`. `withQueue` additionally exposes a live
+snapshot of outstanding records/bytes and summary counters. The owner carries
+Clock, Concurrency and the underlying output/callback effects; a queued log call
+itself performs Concurrency. Filtering and formatting happen before admission.
+
+An Accepted receipt is returned only after a masked, bounded reservation and
+transfer commit. It is never inferred from Channel.send alone. Record slots and
+UTF-8 byte budgets include in-flight output. FIFO flush barriers also consume a
+slot, but no record bytes. Full queues block before admission; cancellation there
+returns a checked error without accepting the record. Callers blocked before
+admission retain their own line buffer outside the queue's accepted-byte budget.
+
+Normal scope exit closes admission, drains, flushes and joins. Cancellation and
+the optional drain deadline abandon pending records and join in-flight work;
+an already executing output is allowed to settle, so the deadline is not a hard
+bound on a blocked OS operation. Failure closes admission, wakes producers and
+barriers, and retains the first error plus completed/failed/abandoned counts.
+No write is automatically replayed. Retained endpoints report Closed or the
+stored failure. The result always retains the shutdown summary, including when
+the callback also failed. Admission-wait counts are saturating retry counters.
+
+Defaults are 1024 outstanding slots, 8 MiB of accepted UTF-8 record bytes,
+256 KiB per record (including newline), and no drain deadline. Limits and positive
+optional deadlines are validated before the worker starts. Close the file owner
+outside the queue scope so its Writer survives draining.
+
 ```sh
 fai fmt --check -C packages logging
 fai check -C packages logging

@@ -1,0 +1,135 @@
+module LogBackpressureChecks
+
+stalled : Concurrency -> Channel Unit -> Channel Unit -> Channel Bool -> Bool -> String -> Result LogTypes.Delivery Log.Error / { Concurrency }
+let stalled c entered release first fail line =
+  let initial = Option.withDefault false (c.recv first)
+  let restored = c.send first false
+  if initial then
+    let signalled = c.send entered ()
+    let released = c.recv release
+    if fail then
+      Err (LogTypes.error LogTypes.Write "test" "stalled failure")
+    else
+      Ok LogTypes.Completed
+  else
+    Ok LogTypes.Completed
+
+waitBlocked : Runtime -> LogQueue.Queue -> Bool / { Clock, Concurrency }
+let waitBlocked env queue =
+  let snapshot = queue.snapshot ()
+  if snapshot.summary.blockedAdmissions > 0 then
+    snapshot.pendingRecords > 0
+  else
+    let slept = env.clock.sleep 1
+    waitBlocked env queue
+
+pressureBody : Runtime -> LogQueue.Queue -> Channel Unit -> Channel Unit -> Bool -> Bool -> Nursery -> Result Bool Log.Error / { Clock, Concurrency }
+let pressureBody env queue entered release bytes fail nursery =
+  let one = queue.output.writeLine "aa"
+  let active = env.concurrency.recv entered
+  let two = if bytes then queue.output.writeLine "bb" else Ok LogTypes.Completed
+  let blocked = env.concurrency.spawn nursery (fun _ -> queue.output.writeLine "cc")
+  let waited = waitBlocked env queue
+  let before = queue.snapshot ()
+  let released = env.concurrency.send release ()
+  let last = env.concurrency.await blocked
+  let flushed = queue.output.flush ()
+  let good =
+    waited && Result.isOk one && Result.isOk two && before.pendingRecords = (if bytes then
+      2
+    else
+      1) && before.pendingBytes = (if bytes then
+      6
+    else
+      3) && (if fail then
+      Result.isErr last && Result.isErr flushed
+    else
+      Result.isOk last && Result.isOk flushed)
+  if good then
+    Ok true
+  else
+    Err (LogTypes.error LogTypes.Admission "test" "backpressure invariant failed")
+
+pressure : Runtime -> Bool -> Bool -> Bool / { Clock, Concurrency }
+let pressure env bytes fail =
+  let entered = env.concurrency.channel 1
+  let release = env.concurrency.channel 1
+  let first = env.concurrency.channel 1
+  let seeded = env.concurrency.send first true
+  let output = {
+    flush = fun _ -> Ok (),
+    writeLine = stalled env.concurrency entered release first fail
+  }
+  let options = { LogQueue.defaults with
+    maxBytes = if bytes then 6 else 64,
+    maxRecordBytes = 6,
+    maxRecords = if bytes then 8 else 1
+  }
+  let result =
+    LogQueue.withQueue env options output (fun queue ->
+      env.concurrency.scope (pressureBody env queue entered release bytes fail))
+  match result with
+  | Ok result -> not fail && result.value && result.summary.completed = (if bytes then 3 else 2)
+  | Err error ->
+    fail && error.body = None && error.summary.failed = 1 && error.summary.abandoned = (if bytes then
+      1
+    else
+      0)
+
+waitStopped : Runtime -> LogQueue.Queue -> Unit / { Clock, Concurrency }
+let waitStopped env queue =
+  if (queue.snapshot ()).summary.failure <> None then
+    ()
+  else
+    let slept = env.clock.sleep 1
+    waitStopped env queue
+
+closingBody : Runtime -> Channel LogQueue.Queue -> Channel Unit -> Channel Unit -> Bool -> LogQueue.Queue -> Result Unit String / { Concurrency }
+let closingBody env published entered bodyGate cancel queue =
+  let first = queue.output.writeLine "aa"
+  let active = env.concurrency.recv entered
+  let second = queue.output.writeLine "bb"
+  let sent = env.concurrency.send published queue
+  let wait = if cancel then env.concurrency.recv bodyGate else Some ()
+  if Result.isOk first && Result.isOk second then Ok () else Err "admission failed"
+
+closingScope : Runtime -> Bool -> Nursery -> Bool / { Clock, Concurrency }
+let closingScope env cancel nursery =
+  let published = env.concurrency.channel 1
+  let entered = env.concurrency.channel 1
+  let release = env.concurrency.channel 1
+  let first = env.concurrency.channel 1
+  let bodyGate = env.concurrency.channel 1
+  let seeded = env.concurrency.send first true
+  let output = {
+    flush = fun _ -> Ok (),
+    writeLine = stalled env.concurrency entered release first false
+  }
+  let options = { LogQueue.defaults with drainTimeoutMs = if cancel then None else Some 20 }
+  let task =
+    env.concurrency.spawn nursery (fun _ ->
+      LogQueue.withQueue env options output (closingBody env published entered bodyGate cancel))
+  match env.concurrency.recv published with
+  | None -> false
+  | Some queue ->
+    let cancelled = if cancel then env.concurrency.cancel task else ()
+    let stopped = waitStopped env queue
+    let released = env.concurrency.send release ()
+    let result = env.concurrency.await task
+    let late = queue.output.writeLine "late"
+    match result with
+    | Ok _ -> false
+    | Err error ->
+      error.summary.accepted = 2 && error.summary.completed = 1 && error.summary.abandoned = 1 && error.summary.failure <> None && Result.isErr late
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console }
+let main env =
+  let records = pressure env false false
+  let bytes = pressure env true false
+  let failure = pressure env true true
+  let deadline = env.concurrency.scope (closingScope env false)
+  let cancel = env.concurrency.scope (closingScope env true)
+  env.console.writeLine (if records && bytes && failure && deadline && cancel then
+    "logging backpressure checks passed"
+  else
+    "logging backpressure checks FAILED")

@@ -51,6 +51,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Queued logging uses acknowledged admission with a shared lifetime/credit gate,
+  not the success-less Channel.send return. Accepted bytes include in-flight
+  records; flush barriers share bounded slots. Shutdown retains counts and the
+  first output failure, abandons pending work on cancellation/deadline, and joins
+  in-flight output without automatic replay.
+
 - Logging outputs own line framing. File outputs borrow a writer or scope one
   explicitly and preserve callback/cleanup failures. One native write carries a
   complete record. Console completion reflects its existing unacknowledged write

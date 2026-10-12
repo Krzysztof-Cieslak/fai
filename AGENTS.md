@@ -1177,6 +1177,11 @@ Logging file outputs write complete records in one native call, support explicit
 flush policies, and expire after scoped close. Console outputs reflect Console's
 existing Unit-returning write contract. Custom outputs can share a serialization
 gate, and mixed sink/callback effects remain explicit in logger types.
+The optional logging queue acknowledges a reserved transfer under one lifetime
+gate, bounds outstanding slots/UTF-8 bytes including in-flight output, and uses
+FIFO flush barriers. Closed or failed admission wakes blocked callers. Scoped
+drain, cancellation and optional deadlines retain completion/failure/abandonment
+counts and join the worker; retained endpoints cannot emit after shutdown.
 
 `Path` is a lossless opaque native path value: raw filename bytes on Unix and
 little-endian UTF-16 units on Windows. Its pure lexical operations never consult

@@ -1,0 +1,15 @@
+module LogQueueSpec
+
+example: LogQueue.validate LogQueue.defaults = Ok ()
+example: LogQueue.validate { LogQueue.defaults with maxRecords = 0 } |> Result.isErr
+example: LogQueue.validate { LogQueue.defaults with maxBytes = 0 } |> Result.isErr
+example: LogQueue.validate { LogQueue.defaults with
+  maxRecordBytes = LogQueue.defaults.maxBytes + 1
+} |> Result.isErr
+example: LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some 0 } |> Result.isErr
+example: LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some (-1) } |> Result.isErr
+example: LogQueue.validate { LogQueue.defaults with
+  maxBytes = 1,
+  maxRecordBytes = 1,
+  maxRecords = 1
+} = Ok ()

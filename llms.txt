@@ -1945,6 +1945,10 @@ adds Unit-returning calls with a supplied error handler.
 `LogSink.withFile` scopes append/truncate/exclusive file outputs with EachRecord or
 OnFlush policy. `writer` borrows an existing Writer; `stdout`/`stderr` use Console.
 `serialized` adds a shared concurrency gate for custom outputs.
+`LogQueue.withOutput` adds scoped bounded delivery; `withQueue` also exposes live
+snapshots. Accepted receipts acknowledge reservation and transfer; flush is FIFO.
+The scope carries output effects and returns shutdown counts/failure details.
+Queued calls perform Concurrency, while filtering/formatting remain on the caller.
 
 `packages/llm` supplies pure `Llm.request` builders, ordered `LlmTypes` content and
 provider-tagged continuation items. `LlmSchema` combines a wire schema and typed
