@@ -34,6 +34,13 @@ macro_rules! string_identity {
             }
         }
 
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+                Self::parse(&text).map_err(serde::de::Error::custom)
+            }
+        }
+
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(&self.0)

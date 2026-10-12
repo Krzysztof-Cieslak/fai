@@ -4,6 +4,7 @@ members = [
     "crates/fai-span",
     "crates/fai-diagnostics",
     "crates/fai-package",
+    "crates/fai-package-store",
     "crates/fai-db",
     "crates/fai-syntax",
     "crates/fai-fmt",
@@ -147,6 +148,7 @@ libloading = "0.8"
 fai-span = { path = "crates/fai-span" }
 fai-diagnostics = { path = "crates/fai-diagnostics" }
 fai-package = { path = "crates/fai-package" }
+fai-package-store = { path = "crates/fai-package-store" }
 fai-db = { path = "crates/fai-db" }
 fai-syntax = { path = "crates/fai-syntax" }
 fai-fmt = { path = "crates/fai-fmt" }

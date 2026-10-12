@@ -7,6 +7,11 @@ normal edges in consumed packages, and supports conservative, targeted-update,
 and full-update preferences. Retrieval failures stay distinct from unsatisfiable
 constraints. Replacements preserve the original logical key and version ranges.
 
+`LockFile` validates generated source records, graph-local edges and branch
+bindings, reachability, aliases, and normal dependency cycles. Graph replacement
+retains unrelated selections; local baselines record shared selections per key.
+Filesystem publication and exact source retrieval belong to `fai-package-store`.
+
 Pure project metadata for Fai's package system. The crate validates manifests,
 package source identities, version requirements, platform declarations, and source
 ownership without filesystem access or compiler database queries.
