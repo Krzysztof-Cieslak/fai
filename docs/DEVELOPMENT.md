@@ -324,7 +324,9 @@ show the active lane; compiler preparation reports cache, artifact or build.
 
 The four protected check names remain unchanged. They explicitly require a
 successful classification, so a failed selector cannot pass through skipped
-jobs. On package-only changes their source checks are direct commands:
+jobs. Their job conditions still run after a failed selector but honor workflow
+cancellation, so superseded runs release the PR's concurrency slot. On package-only
+changes their source checks are direct commands:
 
 ```sh
 python scripts/ci.py validate-packages --fai /path/to/fai

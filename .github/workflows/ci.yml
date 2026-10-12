@@ -42,10 +42,11 @@ jobs:
 
   # Keep the four branch-protection check names. Each runs even when selection
   # fails, so a failed classifier cannot turn required checks into skipped greens.
+  # Cancellation still stops superseded runs and releases their concurrency slot.
   lint:
     name: fmt + clippy
     needs: changes
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
       SCOPE_RESULT: ${{ needs.changes.result }}
@@ -92,7 +93,7 @@ jobs:
   unit:
     name: unit + e2e tests (linux)
     needs: changes
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
       SCOPE_RESULT: ${{ needs.changes.result }}
@@ -204,7 +205,7 @@ jobs:
   cross-os:
     name: platform tests
     needs: changes
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:

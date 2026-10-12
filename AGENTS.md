@@ -1891,6 +1891,8 @@ root documentation-only changes receive lightweight validation. The selector
 uses the actual PR base and both dependency catalogs, including renames/deletions.
 Failed selection fails the required gates. `docs/DEVELOPMENT.md` documents the
 bundle cache, native local workflow, and CI rules.
+Required jobs honor workflow cancellation while still running after selection
+failure, so a superseded PR revision cannot hold the next run's concurrency slot.
 
 A change is done when:
 
