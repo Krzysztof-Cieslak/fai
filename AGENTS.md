@@ -1177,6 +1177,10 @@ preserves ragged records. Parsed records own their contents, not the whole input
 Checked scalar readers preserve missing/empty/invalid distinctions; independent
 errors accumulate with field indexes, header bytes and source spans. Extra
 columns are accepted unless `exactColumns` is explicitly requested.
+CSV writers validate and encode a complete record before exposing it to a sink.
+Quoting, record endings, BOMs and total/buffered output limits are explicit.
+Typed encoders validate named column schemas and preserve conversion errors;
+text output protects a leading literal BOM from default-reader stripping.
 
 The optional `packages/toml` source library supplies pure TOML scalar and string
 parsing. Integer conversion checks signed 64-bit bounds; temporal values retain

@@ -1,0 +1,13 @@
+module CsvBytesEncode
+
+public options : CsvWrite.Options
+let options = CsvWrite.options
+
+public toBytesWith : CsvWrite.Options -> Array CsvBytes.Record -> Result Bytes CsvTypes.Error
+let toBytesWith options records = CsvWrite.render false options (Array.map CsvBytes.inspect records)
+
+public toBytes : Array CsvBytes.Record -> Result Bytes CsvTypes.Error
+let toBytes records = toBytesWith options records
+
+public renderRecord : CsvBytes.Record -> Result Bytes CsvTypes.Error
+let renderRecord record = toBytes [| record |]

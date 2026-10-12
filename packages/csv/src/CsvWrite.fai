@@ -1,0 +1,218 @@
+module CsvWrite
+
+public type Quoting =
+  | Minimal
+  | Always
+
+public type Options = {
+  dialect : CsvTypes.Dialect,
+  emitBom : Bool,
+  ending : CsvTypes.LineEnding,
+  limits : CsvTypes.Limits,
+  maxBufferedBytes : Int,
+  maxOutputBytes : Option Int,
+  quoting : Quoting,
+  width : CsvTypes.Width
+}
+
+public options : Options
+let options = {
+  dialect = CsvTypes.dialect,
+  emitBom = false,
+  ending = CsvTypes.CrLf,
+  limits = CsvTypes.limits,
+  maxBufferedBytes = 33554432,
+  maxOutputBytes = None,
+  quoting = Minimal,
+  width = CsvTypes.Strict
+}
+
+public opaque type State = {
+  bytes : Int,
+  ended : Bool,
+  expected : Int,
+  index : Int,
+  options : Options,
+  text : Bool
+}
+
+public state : Bool -> Options -> Result State CsvTypes.Error
+let state text options =
+  match CsvTypes.validate {
+    bom = CsvTypes.PreserveBom,
+    dialect = options.dialect,
+    limits = options.limits,
+    width = options.width
+  } with
+  | Err error -> Err error
+  | Ok _ ->
+    if options.maxBufferedBytes < 0 || (match options.maxOutputBytes with
+    | Some maximum -> maximum < 0
+    | None -> false) then
+      Err (CsvTypes.error CsvTypes.InvalidOptions "negative CSV output limit")
+    else
+      Ok {
+        bytes = 0,
+        ended = false,
+        expected = (match options.width with
+        | CsvTypes.Exact width -> width
+        | _ -> -1),
+        index = 0,
+        options = options,
+        text = text
+      }
+
+public count : State -> Int
+let count state = state.index
+
+public byteCount : State -> Int
+let byteCount state = state.bytes
+
+let ending options =
+  match options.ending with
+  | CsvTypes.CrLf -> [13, 10]
+  | CsvTypes.Lf -> [10]
+  | CsvTypes.Cr -> [13]
+
+let bom = [239, 187, 191]
+
+let scan bytes index quote delimiter count needsQuote =
+  if index >= Bytes.length bytes then
+    (count, needsQuote)
+  else
+    let byte = Bytes.unsafeGet index bytes
+    scan bytes (index + 1) quote delimiter (count + (if byte = quote then
+      1
+    else
+      0)) (needsQuote || byte = quote || byte = delimiter || byte = 10 || byte = 13)
+
+let beginsBom bytes =
+  Bytes.length bytes >= 3 && Bytes.get 0 bytes = Some 239 && Bytes.get 1 bytes = Some 187 && Bytes.get 2 bytes = Some 191
+
+measure : State -> CsvTypes.Record Bytes -> Int -> Int -> Array Bool -> Result (Int * Array Bool) CsvTypes.Error
+let measure state record index total quoted =
+  if index >= Array.length record.fields then
+    Ok (total, quoted)
+  else
+    let field = Array.unsafeGet index record.fields
+    let length = Bytes.length field.value
+    if length > state.options.limits.maxFieldBytes then
+      Err (CsvTypes.at record (Some index) (CsvTypes.error CsvTypes.FieldLimit "CSV field byte limit exceeded"))
+    else
+      let (quotes, needsQuote) =
+        scan field.value 0 (Char.toCode state.options.dialect.quote) (Char.toCode state.options.dialect.delimiter) 0 (state.options.quoting = Always || (state.text && state.index = 0 && index = 0 && beginsBom field.value))
+      let overhead = (if needsQuote then quotes + 2 else 0) + (if index = 0 then 0 else 1)
+      let available = state.options.limits.maxRecordBytes - total
+      if overhead > available || length > available - overhead then
+        Err (CsvTypes.at record (Some index) (CsvTypes.error CsvTypes.RecordLimit "CSV encoded record byte limit exceeded"))
+      else
+        measure state record (index + 1) (total + overhead + length) (Array.push needsQuote quoted)
+
+let pushList values output = List.foldl (fun output value -> Array.push value output) output values
+
+let copy bytes index quote escaped output =
+  if index >= Bytes.length bytes then
+    output
+  else
+    let byte = Bytes.unsafeGet index bytes
+    copy bytes (index + 1) quote escaped (if escaped && byte = quote then
+      Array.push byte (Array.push byte output)
+    else
+      Array.push byte output)
+
+encodeFields : Options -> Array (CsvTypes.Field Bytes) -> Array Bool -> Int -> Array Int -> Array Int
+let encodeFields options fields quoted index output =
+  if index >= Array.length fields then
+    output
+  else
+    let quote = Char.toCode options.dialect.quote
+    let escaped = Array.unsafeGet index quoted
+    let output =
+      if index = 0 then output else Array.push (Char.toCode options.dialect.delimiter) output
+    let output = if escaped then Array.push quote output else output
+    let output = copy (Array.unsafeGet index fields).value 0 quote escaped output
+    let output = if escaped then Array.push quote output else output
+    encodeFields options fields quoted (index + 1) output
+
+let outputFits state length =
+  length <= 9223372036854775807 - state.bytes && (match state.options.maxOutputBytes with
+  | None -> true
+  | Some maximum -> length <= maximum - state.bytes)
+
+/// Validate and encode a complete record before exposing bytes to a sink.
+pushRecord : State -> CsvTypes.Record Bytes -> Result (Bytes * State) CsvTypes.Error
+let pushRecord state record =
+  let width = Array.length record.fields
+  if state.ended then
+    Err (CsvTypes.error CsvTypes.InvalidState "CSV output after finish")
+  else if width = 0 then
+    Err (CsvTypes.error CsvTypes.EmptyRecord "a CSV record must have at least one field")
+  else if width > state.options.limits.maxFields then
+    Err (CsvTypes.at record None (CsvTypes.error CsvTypes.FieldCountLimit "CSV field count limit exceeded"))
+  else if state.options.width <> CsvTypes.Flexible && state.expected >= 0 && width <> state.expected then
+    Err { (CsvTypes.at record None (CsvTypes.error CsvTypes.ColumnCount "CSV output record has an unexpected field count")) with
+      actual = Some width,
+      expected = Some state.expected
+    }
+  else if state.index = 9223372036854775807 || (match state.options.limits.maxRecords with
+  | None -> false
+  | Some maximum -> state.index >= maximum) then
+    Err (CsvTypes.error CsvTypes.RecordCountLimit "CSV output record limit exceeded")
+  else
+    match measure state record 0 0 [||] with
+    | Err error -> Err error
+    | Ok (bodyLength, quoted) ->
+      let prefix = if state.options.emitBom && state.index = 0 then bom else []
+      let suffix = ending state.options
+      let extra = List.length prefix + List.length suffix
+      if bodyLength > 9223372036854775807 - extra || not (outputFits state (bodyLength + extra)) then
+        Err (CsvTypes.at record None (CsvTypes.error CsvTypes.OutputLimit "CSV output byte limit exceeded"))
+      else
+        let length = bodyLength + extra
+        let output = pushList prefix (Array.withCapacity length)
+        let output = pushList suffix (encodeFields state.options record.fields quoted 0 output)
+        Ok (Bytes.fromList (Array.toList output), { state with
+          bytes = state.bytes + length,
+          expected = if state.expected < 0 then width else state.expected,
+          index = state.index + 1
+        })
+
+public push : State -> CsvTypes.Record Bytes -> Result (Bytes * State) CsvTypes.Error
+let push state record =
+  Result.mapError (fun error -> { error with
+    recordIndex = Some (Option.withDefault state.index error.recordIndex)
+  }) (pushRecord state record)
+
+public finish : State -> Result (Bytes * State) CsvTypes.Error
+let finish state =
+  let prefix = if state.options.emitBom && state.index = 0 && not state.ended then bom else []
+  let length = List.length prefix
+  if not (outputFits state length) then
+    Err (CsvTypes.error CsvTypes.OutputLimit "CSV output byte limit exceeded")
+  else
+    Ok (Bytes.fromList prefix, { state with bytes = state.bytes + length, ended = true })
+
+let joinInto bytes output = copy bytes 0 0 false output
+
+let renderLoop convert state records index output =
+  if index >= Array.length records then
+    match finish state with
+    | Err error -> Err error
+    | Ok (bytes, _) -> Ok (Bytes.fromList (Array.toList (joinInto bytes output)))
+  else
+    match push state (convert (Array.unsafeGet index records)) with
+    | Err error -> Err error
+    | Ok (bytes, state) -> renderLoop convert state records (index + 1) (joinInto bytes output)
+
+public render : Bool -> Options -> Array (CsvTypes.Record Bytes) -> Result Bytes CsvTypes.Error
+let render text options records = renderWith identity text options records
+
+public renderWith : ('a -> CsvTypes.Record Bytes) -> Bool -> Options -> Array 'a -> Result Bytes CsvTypes.Error
+let renderWith convert text options records =
+  let maximum =
+    match options.maxOutputBytes with
+    | None -> options.maxBufferedBytes
+    | Some limit -> if limit < options.maxBufferedBytes then limit else options.maxBufferedBytes
+  match state text { options with maxOutputBytes = Some maximum } with
+  | Err error -> Err error
+  | Ok state -> renderLoop convert state records 0 [||]

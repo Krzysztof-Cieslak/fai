@@ -1,0 +1,121 @@
+module CsvEncode
+
+public type Options = CsvWrite.Options
+
+public options : Options
+let options = CsvWrite.options
+
+public toBytesWith : Options -> Array Csv.Record -> Result Bytes CsvTypes.Error
+let toBytesWith options records =
+  CsvWrite.renderWith (fun record ->
+    CsvRecord.map Bytes.fromString (Csv.inspect record)) true options records
+
+public toBytes : Array Csv.Record -> Result Bytes CsvTypes.Error
+let toBytes records = toBytesWith options records
+
+public toStringWith : Options -> Array Csv.Record -> Result String CsvTypes.Error
+let toStringWith options records =
+  Result.map (fun bytes ->
+    Option.withDefault "" (Bytes.toString bytes)) (toBytesWith options records)
+
+public toString : Array Csv.Record -> Result String CsvTypes.Error
+let toString records = toStringWith options records
+
+public renderRecord : Csv.Record -> Result String CsvTypes.Error
+let renderRecord record = toString [| record |]
+
+public opaque type Value 'a =
+  | Value ('a -> Result String String)
+
+public custom : ('a -> Result String String) -> Value 'a
+let custom render = Value render
+
+public renderValue : Value 'a -> 'a -> Result String String
+let renderValue value input =
+  match value with
+  | Value render -> render input
+
+public string : Value String
+let string = custom (fun value -> Ok value)
+
+public int : Value Int
+let int = custom (fun value -> Ok (Int.toString value))
+
+public bool : Value Bool
+let bool = custom (fun value -> Ok (if value then "true" else "false"))
+
+public float : Value Float
+let float = custom (fun value -> Result.map JsonNumber.toString (JsonNumber.fromFloat value))
+
+public option : String -> Value 'a -> Value (Option 'a)
+let option absent value =
+  custom (fun input ->
+    match input with
+    | None -> Ok absent
+    | Some input -> renderValue value input)
+
+public contramap : ('a -> 'b) -> Value 'b -> Value 'a
+let contramap project value = custom (fun input -> renderValue value (project input))
+
+public opaque type Column 'a = { name : String, render : 'a -> Result String String }
+
+public column : String -> Value 'b -> ('a -> 'b) -> Column 'a
+let column name value project = {
+  name = name,
+  render = fun input -> renderValue value (project input)
+}
+
+public opaque type Encoder 'a = { columns : Array (Column 'a), header : Csv.Record }
+
+public schema : Array (Column 'a) -> Result (Encoder 'a) CsvTypes.Error
+let schema columns =
+  match Csv.record (Array.map (fun column -> column.name) columns) with
+  | Err error -> Err error
+  | Ok header ->
+    match Csv.headers header with
+    | Err error -> Err error
+    | Ok _ -> Ok { columns = columns, header = header }
+
+public header : Encoder 'a -> Csv.Record
+let header encoder = encoder.header
+
+encodeLoop : CsvTypes.Limits -> Encoder 'a -> 'a -> Int -> Array String -> List CsvTypes.Error -> Int -> Result Csv.Record (List CsvTypes.Error)
+let encodeLoop limits encoder value index fields errors used =
+  if index >= Array.length encoder.columns || List.length errors >= limits.maxErrors then
+    if List.isEmpty errors then
+      Result.mapError (fun error -> [error]) (Csv.recordWith limits fields)
+    else
+      Err (List.reverse errors)
+  else
+    let column = Array.unsafeGet index encoder.columns
+    match column.render value with
+    | Ok text ->
+      let bytes = Bytes.length (Bytes.fromString text)
+      if bytes > limits.maxFieldBytes || bytes > limits.maxRecordBytes - used then
+        encodeLoop limits encoder value (index + 1) fields ({ (CsvTypes.error (if bytes > limits.maxFieldBytes then
+          CsvTypes.FieldLimit
+        else
+          CsvTypes.RecordLimit) "CSV encoded field exceeds content limits") with
+          fieldIndex = Some index,
+          header = Some (Bytes.fromString column.name)
+        } :: errors) used
+      else
+        encodeLoop limits encoder value (index + 1) (Array.push text fields) errors (used + bytes)
+    | Err message ->
+      encodeLoop limits encoder value (index + 1) fields ({ (CsvTypes.error CsvTypes.InvalidValue message) with
+        fieldIndex = Some index,
+        header = Some (Bytes.fromString column.name)
+      } :: errors) used
+
+public encodeWith : CsvTypes.Limits -> Encoder 'a -> 'a -> Result Csv.Record (List CsvTypes.Error)
+let encodeWith limits encoder value =
+  match CsvTypes.validateLimits limits with
+  | Err error -> Err [error]
+  | Ok _ ->
+    if Array.length encoder.columns > limits.maxFields then
+      Err [CsvTypes.error CsvTypes.FieldCountLimit "CSV schema exceeds field count limit"]
+    else
+      encodeLoop limits encoder value 0 [||] [] 0
+
+public encode : Encoder 'a -> 'a -> Result Csv.Record (List CsvTypes.Error)
+let encode encoder value = encodeWith CsvTypes.limits encoder value

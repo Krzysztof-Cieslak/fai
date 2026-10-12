@@ -1,0 +1,91 @@
+module CsvEncodeSpec
+
+let render values =
+  match Csv.record values with
+  | Err error -> Err error
+  | Ok record -> CsvEncode.renderRecord record
+example: render [| "a", "b" |] = Ok "a,b\r\n"
+example: render [| "a,b", "a\"b", "line\r\nline" |] = Ok "\"a,b\",\"a\"\"b\",\"line\r\nline\"\r\n"
+example: render [| "" |] = Ok "\r\n"
+example: render [| "\u{feff}literal" |] = Ok "\"\u{feff}literal\"\r\n"
+example: (match Csv.record [| "a" |] with
+| Ok record ->
+  CsvEncode.toStringWith { CsvEncode.options with
+    ending = CsvTypes.Lf,
+    quoting = CsvWrite.Always
+  } [| record |] = Ok "\"a\"\n"
+| _ -> false)
+example: CsvEncode.toStringWith { CsvEncode.options with emitBom = true } [||] = Ok "\u{feff}"
+example: (match Csv.record [| "\"" |] with
+| Ok record ->
+  CsvEncode.toStringWith { CsvEncode.options with
+    limits = { CsvTypes.limits with maxRecordBytes = 3 }
+  } [| record |] |> Result.isErr
+| _ -> false)
+example: (match Csv.record [| "a" |] with
+| Ok record ->
+  CsvEncode.toStringWith { CsvEncode.options with
+    maxBufferedBytes = 2
+  } [| record |] |> Result.isErr
+| _ -> false)
+
+let people = CsvEncode.schema [|
+  CsvEncode.column "name" CsvEncode.string (fun person -> person.name),
+  CsvEncode.column "age" CsvEncode.int (fun person -> person.age)
+|]
+example: (match people with
+| Ok encoder ->
+  (match CsvEncode.encode encoder { age = 42, name = "A,B" } with
+  | Ok record ->
+    CsvEncode.toString [| CsvEncode.header encoder, record |] = Ok "name,age\r\n\"A,B\",42\r\n"
+  | _ -> false)
+| _ -> false)
+example: CsvEncode.renderValue CsvEncode.float (Float.fromBits 0x7ff0000000000000) |> Result.isErr
+example: CsvEncode.schema [|
+  CsvEncode.column "a" CsvEncode.int identity,
+  CsvEncode.column "a" CsvEncode.int identity
+|] |> Result.isErr
+
+let roundTrip text =
+  match render [| text |] with
+  | Err _ -> false
+  | Ok output -> Result.map (Array.map Csv.fields) (Csv.parse output) = Ok [| [| text |] |]
+forall text: roundTrip text
+
+let byteRoundTrip values =
+  let bytes = Bytes.fromList values
+  match CsvBytes.record [| bytes |] with
+  | Err _ -> false
+  | Ok record ->
+    match CsvBytesEncode.renderRecord record with
+    | Err _ -> false
+    | Ok encoded ->
+      Result.map (Array.map CsvBytes.fields) (CsvBytes.parse encoded) = Ok [| [| bytes |] |]
+forall values: byteRoundTrip values
+example: (match Csv.record [| "a" |] with
+| Ok record ->
+  CsvEncode.toStringWith { CsvEncode.options with
+    maxOutputBytes = Some 3
+  } [| record |] = Ok "a\r\n"
+| _ -> false)
+example: (match Csv.record [| "a" |] with
+| Ok record ->
+  CsvEncode.toStringWith { CsvEncode.options with
+    maxOutputBytes = Some 2
+  } [| record |] |> Result.isErr
+| _ -> false)
+example: (match (Csv.record [| "a" |], Csv.record [| "a", "b" |]) with
+| (Ok a, Ok b) ->
+  (match CsvEncode.toString [| a, b |] with
+  | Err error -> error.kind = CsvTypes.ColumnCount && error.recordIndex = Some 1
+  | _ -> false)
+| _ -> false)
+
+let preflight =
+  match CsvEncode.schema [|
+    CsvEncode.column "x" (CsvEncode.custom (fun unit -> Ok (Int.toString (1 / 0)))) identity
+  |] with
+  | Err _ -> false
+  | Ok encoder ->
+    CsvEncode.encodeWith { CsvTypes.limits with maxFields = 0 } encoder () |> Result.isErr
+example: preflight

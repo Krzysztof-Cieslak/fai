@@ -71,3 +71,22 @@ raw `bytes` and explicit `utf8` conversion through a text value decoder.
 
 See `examples/People.fai` for a typed row decoder and `fai run -C packages
 csv/examples/People.fai` to execute it.
+
+`CsvEncode.toString`/`toBytes` encode arrays of text records; `CsvBytesEncode`
+encodes byte records. Options select minimal/always quoting, CRLF/LF/CR endings,
+strict/flexible widths and optional BOM output. Empty documents emit a BOM only
+when requested. Minimal text output quotes a literal BOM at the start of the first
+field so the default reader preserves it. Every record receives a terminator.
+
+`CsvEncode.schema` validates ordered named columns once. A `column` combines a
+name, a scalar encoder and a projection from the application value. `encode`
+produces a record and `header` its ordered header record. Scalar encoders include
+strings, exact integers, booleans, finite Floats and explicit Option tokens.
+Custom conversion failures retain column names/indexes and accumulate up to the
+configured error limit. Schema/limit validation precedes column evaluation.
+
+`CsvWrite` is the shared immutable writer state: `push` validates and assembles
+one complete record, and `finish` completes an empty BOM-enabled document.
+Per-record limits include quoting/delimiters but exclude the terminator and BOM;
+the optional total-output limit includes both. Whole-document encoding has a
+separate 32 MiB default buffer limit. It converts one input record at a time.
