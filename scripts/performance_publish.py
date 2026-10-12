@@ -82,13 +82,19 @@ def archive_files(run, config, migration):
     for role in ROLES:
         name = config["trackers"][role]["report"]
         files[name] = {"content": (run / "reports" / name).read_text()}
+    for name in ["report-data.json", "render-info.json"]:
+        path = run / "reports" / name
+        if path.exists():
+            files[name] = {"content": path.read_text()}
+    if (run / "catalog.json").exists():
+        files["catalog.json"] = {"content": (run / "catalog.json").read_text()}
     for path in sorted((run / "raw").glob("*")):
         if path.is_file():
             files["raw-" + path.name] = {"content": path.read_text()}
     provenance = {}
-    for folder in ["artifacts", "build-records", "attempts"]:
+    for folder in ["artifacts", "build-records", "attempts", "presentation"]:
         for path in sorted((run / folder).rglob("*")):
-            if path.is_file() and path.suffix in {".json", ".jsonl", ".txt", ".fai", ".rs", ".ml", ".ir", ".stdout", ".stderr"}:
+            if path.is_file() and path.suffix in {".json", ".jsonl", ".txt", ".fai", ".rs", ".ml", ".ir", ".stdout", ".stderr", ".py"}:
                 provenance[path.relative_to(run).as_posix()] = path.read_text()
     files["artifact-provenance.json"] = {"content": json.dumps(provenance, indent=2)}
     if migration:
@@ -115,6 +121,12 @@ def publish(run, config, args, render):
     receipt = read(path) if path.exists() else {"schemaVersion": 1, "snapshotSha256": snapshot_hash, "issues": {}, "retired": []}
     if receipt["snapshotSha256"] != snapshot_hash:
         raise ValueError("a published snapshot is immutable; create a new run")
+    render_info = run / "reports/render-info.json"
+    presentation_id = digest(render_info.read_text()) if render_info.exists() else ""
+    if render_info.exists():
+        receipt["presentation"] = read(render_info)
+        receipt.pop("presentationRevision", None)
+        receipt.pop("presentationRendererSha256", None)
     api = Github()
     repo = "repos/" + config["repository"]
     migration_path = run / "migration-before.json"
@@ -124,10 +136,16 @@ def publish(run, config, args, render):
         if any("pull_request" in issue for issue in migration):
             raise ValueError("migration contains a pull request")
         save(migration_path, migration)
+    if "archiveId" in receipt and presentation_id != receipt.get("presentationId", ""):
+        files = archive_files(run, config, migration if receipt.get("archiveHasMigration") else [])
+        api.request("gists/" + receipt["archiveId"], {"files": files})
+        receipt.update(previousArchiveUrl=receipt.get("archiveUrl"), archiveValidated=False,
+                       presentationId=presentation_id)
+        save(path, receipt)
     if "archiveId" not in receipt:
         files = archive_files(run, config, migration)
         archive = api.request("gists", {"description": f"Fai performance snapshot {manifest['runId']} ({manifest['measuredRevision'][:12]})", "public": config.get("archivePublic", False), "files": files}, "POST")
-        receipt.update(archiveId=archive["id"], archiveHasMigration=bool(migration))
+        receipt.update(archiveId=archive["id"], archiveHasMigration=bool(migration), presentationId=presentation_id)
         save(path, receipt)
     if not receipt.get("archiveValidated"):
         files = archive_files(run, config, migration if receipt.get("archiveHasMigration") else [])
@@ -189,7 +207,8 @@ def publish(run, config, args, render):
             raise ValueError("tracker publication verification failed")
 
     for role, number in numbers.items():
-        marker = f"<!-- fai-performance-refresh:{manifest['runId']} -->"
+        suffix = ":presentation:" + presentation_id if presentation_id else ""
+        marker = f"<!-- fai-performance-refresh:{manifest['runId']}{suffix} -->"
         comments = api.pages(f"{repo}/issues/{number}/comments")
         if not any(marker in comment["body"] for comment in comments):
             api.request(f"{repo}/issues/{number}/comments", {"body": marker + f"\nUpdated the main body from validated snapshot `{manifest['runId']}`, measured at `{manifest['measuredRevision']}`. [Versioned report and raw evidence]({receipt['archiveUrl']})."}, "POST")

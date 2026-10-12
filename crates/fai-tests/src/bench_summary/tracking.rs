@@ -3,7 +3,7 @@
 //! Unlike the best-effort console summary, publication rejects missing records,
 //! incompatible sources/builds, corrupt artifacts and incomplete measurements.
 
-mod render;
+mod data;
 #[cfg(test)]
 mod tests;
 mod validate;
@@ -18,6 +18,9 @@ use super::Report;
 
 /// Version of the retained snapshot and generated report contract.
 pub const SCHEMA_VERSION: u32 = 2;
+
+/// Version of the validated, presentation-independent report data.
+pub const REPORT_DATA_VERSION: u32 = 1;
 
 /// One immutable file in a snapshot. Hash algorithms are explicit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,9 +178,9 @@ impl Snapshot {
         validate::load(directory)
     }
 
-    /// Generates all three bodies from one validated snapshot.
-    pub fn render(&self, evidence_url: &str) -> Result<BTreeMap<String, String>, Error> {
-        render::reports(self, evidence_url)
+    /// Exports full-precision comparisons and statistics for an external renderer.
+    pub fn report_data(&self) -> serde_json::Value {
+        data::export(self)
     }
 
     /// The verified source/build identity shared by the reports.

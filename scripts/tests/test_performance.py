@@ -2,6 +2,7 @@
 
 import copy
 import gzip
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -128,6 +129,40 @@ class PerformanceTests(unittest.TestCase):
         performance.write_json(self.root / "snapshot.json", value)
         with self.assertRaisesRegex(ValueError, "immutable"):
             self.publish()
+
+    def test_presentation_refresh_versions_the_archive_and_keeps_measurements(self):
+        self.publish()
+        before = (self.root / "snapshot.json").read_bytes()
+        performance.write_json(self.root / "reports/render-info.json", {"rendererId": "new-presentation"})
+        self.publish()
+        receipt = performance.read_json(self.root / "publication.json")
+        self.assertEqual(receipt["archiveUrl"], "https://gist.github.com/archive/updated")
+        self.assertEqual((self.root / "snapshot.json").read_bytes(), before)
+        self.assertIn("render-info.json", self.github.gist["files"])
+        revisions = len(self.github.gist["history"])
+        self.publish()
+        self.assertEqual(len(self.github.gist["history"]), revisions)
+        self.assertEqual([len(self.github.comments[n]) for n in [11, 12, 13]], [2, 2, 2])
+
+    def test_render_invokes_the_retained_exporter_and_python_without_building(self):
+        executable = self.root / "bin/performance-report"
+        executable.parent.mkdir()
+        executable.write_bytes(b"validator")
+        manifest = performance.read_json(self.root / "snapshot.json")
+        manifest.update(reporterRevision="a" * 40, files=[{"path": "bin/performance-report", "sha256": performance.digest(executable)}])
+        performance.write_json(self.root / "snapshot.json", manifest)
+        snapshot_hash = performance.digest(self.root / "snapshot.json")
+        reports = {name: "rendered\n" for name in performance.performance_report.REPORTS}
+        def export(command, **kwargs):
+            self.assertEqual(command, [str(executable), "export", str(self.root), str(self.root / "reports")])
+            performance.write_json(self.root / "reports/report-data.json", {"schemaVersion": 1, "snapshotSha256": snapshot_hash})
+        with patch("performance.subprocess.run", side_effect=export) as calls, patch("performance.output", return_value="b" * 40), patch("performance.performance_report.render", return_value=reports):
+            performance.render(self.root)
+        self.assertEqual(calls.call_count, 1)
+        self.assertEqual((self.root / "reports/language-memory.md").read_text(), "rendered\n")
+        info = performance.read_json(self.root / "reports/render-info.json")
+        self.assertEqual(info["snapshotSha256"], snapshot_hash)
+        self.assertEqual(info["validator"]["sha256"], hashlib.sha256(b"validator").hexdigest())
 
     def test_archive_verification_failure_resumes_the_same_archive(self):
         with patch.object(self.github, "verify_archive", side_effect=RuntimeError("interrupted read")):
