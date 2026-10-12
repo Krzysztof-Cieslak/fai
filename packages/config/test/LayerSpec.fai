@@ -1,0 +1,81 @@
+module ConfigLayerSpec
+
+let layer name text =
+  Config.toml Config.limits (ConfigTypes.origin ConfigTypes.Supplied name) (Bytes.fromString text)
+
+let merged first second =
+  match (layer "first" first, layer "second" second) with
+  | (Ok a, Ok b) -> Config.merge [a, b]
+  | (Err error, _) -> Err error
+  | (_, Err error) -> Err error
+
+let leaf path config =
+  Option.map ConfigTree.body (ConfigTree.find (List.map TomlTypes.Key path) (Config.inspect config))
+
+let check first second path expected =
+  Result.map (leaf path) (merged first second) = Ok (Some expected)
+example: check "a=1\nb=2" "a=3" ["a"] (ConfigTree.Scalar (TomlTypes.Integer 3))
+example: check "[a]\nb=1\nc=2" "[a]\nb=3" ["a", "c"] (ConfigTree.Scalar (TomlTypes.Integer 2))
+example: check "a={b=1}" "a=3" ["a"] (ConfigTree.Scalar (TomlTypes.Integer 3))
+example: check "a=3" "a={b=1}" ["a", "b"] (ConfigTree.Scalar (TomlTypes.Integer 1))
+example: (match merged "a=[1,2]" "a=[3]" with
+| Ok config ->
+  (match leaf ["a"] config with
+  | Some (ConfigTree.Array items) -> Array.length items = 1
+  | _ -> false)
+| _ -> false)
+example: (match merged "[a]\nb=1\nc=2" "[a]\nb=3" with
+| Ok config ->
+  Option.map (fun origin ->
+    origin.label) (Config.origin config [TomlTypes.Key "a", TomlTypes.Key "c"]) = Some "first"
+| _ -> false)
+example: (match merged "a=1" "a=3" with
+| Ok config ->
+  Option.map (fun origin -> origin.label) (Config.origin config [TomlTypes.Key "a"]) = Some "second"
+| _ -> false)
+example: Config.validateBindings Config.limits [
+  { name = "A", path = ["a"] },
+  { name = "B", path = ["a", "b"] }
+] |> Result.isErr
+example: Config.validateBindings Config.limits [
+  { name = "A", path = ["a"] },
+  { name = "A", path = ["b"] }
+] = Ok ()
+example: Config.validateBindings Config.limits [
+  { name = "A", path = ["a.b"] },
+  { name = "B", path = ["a", "b"] }
+] = Ok ()
+example: ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "env") [] [
+  ("A", "1"),
+  ("A", "2")
+] |> Result.isErr
+
+let emptyOverrides =
+  match (layer "file" "a='original'", ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "env") [
+    { name = "A", path = ["a"] }
+  ] [("A", "")]) with
+  | (Ok a, Ok b) -> Result.map (leaf ["a"]) (Config.merge [a, b]) = Ok (Some (ConfigTree.Text ""))
+  | _ -> false
+example: emptyOverrides
+
+let missingPreserves =
+  match (layer "file" "a=42", ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "env") [
+    { name = "A", path = ["a"] }
+  ] []) with
+  | (Ok a, Ok b) ->
+    Result.map (leaf [
+      "a"
+    ]) (Config.merge [a, b]) = Ok (Some (ConfigTree.Scalar (TomlTypes.Integer 42)))
+  | _ -> false
+example: missingPreserves
+example: ConfigSource.snapshot { Config.limits with
+  maxInputBytes = 1
+} (ConfigTypes.origin ConfigTypes.Environment "env") [
+  { name = "A", path = ["a"] }
+] [("A", "é")] |> Result.isErr
+example: (match layer "file" "a=1\nb=2" with
+| Ok a -> Config.mergeWith { Config.limits with maxNodes = 2 } [a] |> Result.isErr
+| _ -> false)
+forall earlier later: check ("a=" ++ Int.toString earlier) ("a=" ++ Int.toString later) [
+  "a"
+] (ConfigTree.Scalar (TomlTypes.Integer later))

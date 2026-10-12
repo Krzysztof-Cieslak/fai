@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Configuration layers are explicit, immutable and later-wins. Tables merge;
+  arrays/scalars replace. Named environment bindings preserve missing versus empty
+  input and reject overlapping target paths. Optional file loading skips only
+  NotFound, uses an explicit base, and preserves native/parser failure details.
+
 - Dotenv has an explicit literal dialect: optional export, ASCII environment
   names, unquoted comments, literal single quotes and a small double-quote escape
   set. Duplicate names fail with both locations; interpolation is not implicit.

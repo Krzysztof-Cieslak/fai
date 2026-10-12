@@ -1,0 +1,177 @@
+module Config
+
+public opaque type Config = ConfigTree.Node
+
+public opaque type Layer = ConfigTree.Node
+
+public type Limits = ConfigTypes.Limits
+
+public type Error = ConfigTypes.Error
+
+public type Origin = ConfigTypes.Origin
+
+public type Binding = ConfigTypes.Binding
+
+public limits : Limits
+let limits = ConfigTypes.limits
+
+public inspect : Config -> ConfigTree.Node
+let inspect config = config
+
+public origin : Config -> List TomlTypes.Segment -> Option Origin
+let origin config path = Option.map ConfigTree.origin (ConfigTree.find path config)
+
+public explain : Config -> List TomlTypes.Segment -> Option Origin
+let explain config path = origin config path
+
+public fromValue : Limits -> Origin -> Toml.Value -> Result Layer Error
+let fromValue limits origin value =
+  match ConfigTypes.validateLimits limits with
+  | Err error -> Err error
+  | Ok _ ->
+    match value with
+    | TomlTypes.Table _ -> ConfigTree.fromValue limits origin value
+    | _ ->
+      Err (ConfigTypes.error ConfigTypes.InvalidSource "configuration layer root must be a table")
+
+public defaults : Toml.Value -> Result Layer Error
+let defaults value = fromValue limits (ConfigTypes.origin ConfigTypes.Defaults "defaults") value
+
+public toml : Limits -> Origin -> Bytes -> Result Layer Error
+let toml limits origin source =
+  match ConfigTypes.validateLimits limits with
+  | Err error -> Err error
+  | Ok _ ->
+    match Toml.parseBytesWith {
+      maxBytes = limits.maxInputBytes,
+      maxDepth = limits.maxDepth,
+      maxNodes = limits.maxNodes
+    } source with
+    | Err native -> Err { (ConfigTypes.error ConfigTypes.ParseFailure native.message) with
+      origin = Some origin,
+      tomlError = Some native
+    }
+    | Ok document -> ConfigTree.fromDocument limits origin source document
+
+let mergeLoop limits layers config =
+  match layers with
+  | [] -> Ok config
+  | layer :: rest ->
+    match ConfigTree.validate limits layer with
+    | Err error -> Err error
+    | Ok _ ->
+      let merged = ConfigTree.merge config layer
+      match ConfigTree.validate limits merged with
+      | Err error -> Err error
+      | Ok _ -> mergeLoop limits rest merged
+
+public validateLayer : Limits -> Layer -> Result Unit Error
+let validateLayer limits layer = ConfigTree.validate limits layer
+
+public mergeWith : Limits -> List Layer -> Result Config Error
+let mergeWith limits layers =
+  match ConfigTypes.validateLimits limits with
+  | Err error -> Err error
+  | Ok _ ->
+    if List.length layers > limits.maxLayers then
+      Err (ConfigTypes.error ConfigTypes.LimitExceeded "configuration layer limit exceeded")
+    else
+      mergeLoop limits layers (ConfigTree.empty (ConfigTypes.origin ConfigTypes.Composite "empty configuration"))
+
+public merge : List Layer -> Result Config Error
+let merge layers = mergeWith limits layers
+
+let isPrefix left right =
+  match (left, right) with
+  | ([], _) -> true
+  | (a :: xs, b :: ys) -> a = b && isPrefix xs ys
+  | _ -> false
+
+checkBindings : Limits -> List Binding -> List (List String) -> Result Unit Error
+let checkBindings limits remaining seen =
+  match remaining with
+  | [] -> Ok ()
+  | binding :: rest ->
+    if binding.name = "" || String.contains binding.name "=" || String.contains binding.name "\u{0}" || List.isEmpty binding.path then
+      Err (ConfigTypes.error ConfigTypes.InvalidBinding "binding requires a valid name and nonempty path")
+    else if List.length binding.path > limits.maxDepth then
+      Err (ConfigTypes.error ConfigTypes.LimitExceeded "binding path depth exceeded")
+    else if List.any (fun path ->
+      isPrefix path binding.path || isPrefix binding.path path) seen then
+      Err (ConfigTypes.error ConfigTypes.DuplicateBinding "binding target paths overlap")
+    else
+      checkBindings limits rest (binding.path :: seen)
+
+public validateBindings : Limits -> List Binding -> Result Unit Error
+let validateBindings limits bindings =
+  match ConfigTypes.validateLimits limits with
+  | Err error -> Err error
+  | Ok _ ->
+    if List.length bindings > limits.maxBindings then
+      Err (ConfigTypes.error ConfigTypes.LimitExceeded "binding count exceeded")
+    else
+      checkBindings limits bindings []
+
+bindLoop : Limits -> Origin -> List Binding -> Dict String (String * Option TomlTypes.Location) -> ConfigTree.Node -> Int -> Result ConfigTree.Node Error
+let bindLoop limits origin remaining values root used =
+  match remaining with
+  | [] -> Result.map (fun _ -> root) (ConfigTree.validate limits root)
+  | binding :: rest ->
+    match Dict.get binding.name values with
+    | None -> bindLoop limits origin rest values root used
+    | Some (text, location) ->
+      let size = Bytes.length (Bytes.fromString text)
+      if size > limits.maxInputBytes - used then
+        Err (ConfigTypes.error ConfigTypes.LimitExceeded "bound input byte limit exceeded")
+      else
+        let here = { origin with location = location, name = Some binding.name }
+        let leaf = ConfigTree.Node (ConfigTypes.stored here) (ConfigTree.Text text)
+        let root = ConfigTree.merge root (ConfigTree.nest origin binding.path leaf)
+        match ConfigTree.validate limits root with
+        | Err error -> Err error
+        | Ok _ -> bindLoop limits origin rest values root (used + size)
+
+/// Absent names contribute nothing; present empty text is an intentional value.
+public bindings : Limits -> Origin -> List Binding -> Dict String (String * Option TomlTypes.Location) -> Result Layer Error
+let bindings limits origin bindings values =
+  match validateBindings limits bindings with
+  | Err error -> Err error
+  | Ok _ -> bindLoop limits origin bindings values (ConfigTree.empty origin) 0
+
+public dotenv : Limits -> Origin -> List Binding -> Bytes -> Result Layer Error
+let dotenv limits origin bindingList source =
+  match validateBindings limits bindingList with
+  | Err error -> Err error
+  | Ok _ ->
+    match Dotenv.parseBytesWith {
+      maxBytes = limits.maxInputBytes,
+      maxEntries = limits.maxBindings
+    } source with
+    | Err native -> Err { (ConfigTypes.error ConfigTypes.ParseFailure native.message) with
+      dotenvError = Some native,
+      origin = Some origin
+    }
+    | Ok document ->
+      bindings limits origin bindingList (Array.foldl (fun values entry ->
+        Dict.insert entry.name (entry.value, Some entry.valueLocation) values) Dict.empty (Dotenv.entries document))
+
+/// Build one explicit typed or textual override. Optional CLI values add no layer when absent.
+public override : Limits -> Origin -> List String -> Toml.Value -> Result Layer Error
+let override limits origin path value =
+  match validateBindings limits [{ name = "override", path = path }] with
+  | Err error -> Err error
+  | Ok _ ->
+    match ConfigTree.fromValue limits origin value with
+    | Err error -> Err error
+    | Ok node ->
+      let layer = ConfigTree.nest origin path node
+      Result.map (fun _ -> layer) (ConfigTree.validate limits layer)
+
+public textOverride : Limits -> Origin -> List String -> String -> Result Layer Error
+let textOverride limits origin path text =
+  bindings limits origin [
+    { name = Option.withDefault "override" origin.name, path = path }
+  ] (Dict.singleton (Option.withDefault "override" origin.name) (text, origin.location))
+
+public errorToString : Error -> String
+let errorToString error = ConfigTypes.describe error
