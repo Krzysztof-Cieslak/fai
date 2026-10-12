@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Structured logging is an optional source package with pure records, filtering,
+  field merging and formatting. Context layers use later-value precedence; the
+  versioned JSON envelope keeps user fields separate from metadata. Validation
+  bounds encoded UTF-8 size and tree work before rendering.
+
 - Atomic writes use an exclusive temporary sibling and explicit rename policy.
   Visibility-only, file-sync and file-plus-directory-sync modes are distinct.
   Results retain commit phase separately from callback, native and cleanup

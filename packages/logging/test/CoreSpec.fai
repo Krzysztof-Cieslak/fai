@@ -1,0 +1,50 @@
+module LogCoreSpec
+
+let limits = LogTypes.limits
+
+let record = {
+  event = None,
+  fields = Json.Object [||],
+  level = LogTypes.Info,
+  message = "hello\nworld",
+  target = "test",
+  timestamp = None
+}
+example: LogFilter.enabled LogFilter.defaults "test" LogTypes.Info
+example: not (LogFilter.enabled LogFilter.defaults "test" LogTypes.Debug)
+example: not (LogFilter.enabled { LogFilter.defaults with minimum = None } "test" LogTypes.Fatal)
+example: LogFilter.enabled { LogFilter.defaults with
+  overrides = [{ minimum = Some LogTypes.Trace, target = "db" }]
+} "db.pool" LogTypes.Debug
+example: not (LogFilter.enabled { LogFilter.defaults with
+  overrides = [{ minimum = Some LogTypes.Trace, target = "db" }]
+} "dbBackup" LogTypes.Debug)
+example: LogFilter.validate { LogFilter.defaults with
+  overrides = [{ minimum = None, target = "db" }, { minimum = None, target = "db" }]
+} |> Result.isErr
+example: LogField.merge limits [
+  LogField.int "x" 1,
+  LogField.int "x" 2
+] = Ok (Json.Object [| ("x", Json.Number (JsonNumber.fromInt 2)) |])
+example: LogField.merge limits [
+  LogField.float "x" (Float.fromBits 0x7ff0000000000000)
+] |> Result.isErr
+example: LogField.merge limits [
+  LogField.float "x" (Float.fromBits 0x7ff0000000000000),
+  LogField.int "x" 3
+] |> Result.isOk
+example: LogBudget.check limits (Json.Object [|
+  ("x", Json.Null),
+  ("x", Json.Null)
+|]) |> Result.isErr
+example: LogBudget.check { limits with maxRecordBytes = 3 } (Json.String "a") = Ok 3
+example: LogBudget.check { limits with maxRecordBytes = 2 } (Json.String "a") |> Result.isErr
+example: LogBudget.check { limits with
+  maxValueDepth = 1
+} (Json.Array [| Json.Array [| Json.Null |] |]) |> Result.isErr
+example: LogBudget.check { limits with
+  maxValueNodes = 1
+} (Json.Array [| Json.Null |]) |> Result.isErr
+example: (LogFormat.render limits LogFormat.JsonLines record |> Result.map (String.contains "\n")) = Ok false
+example: (LogFormat.render limits (LogFormat.Human false) record |> Result.map (String.contains "\n")) = Ok false
+forall text: LogBudget.check limits (Json.String text) = Ok (Bytes.length (Bytes.fromString (Json.toString (Json.String text))))

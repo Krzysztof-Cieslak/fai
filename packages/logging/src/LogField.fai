@@ -1,0 +1,67 @@
+module LogField
+
+public type Field = LogTypes.Field
+
+/// Field encoding is checked only when an enabled event is prepared.
+public string : String -> String -> Field
+let string name value = { name = name, value = JsonEncode.string value }
+
+public int : String -> Int -> Field
+let int name value = { name = name, value = JsonEncode.int value }
+
+public bool : String -> Bool -> Field
+let bool name value = { name = name, value = JsonEncode.bool value }
+
+public float : String -> Float -> Field
+let float name value = { name = name, value = JsonEncode.float value }
+
+public null : String -> Field
+let null name = { name = name, value = Ok Json.Null }
+
+public json : String -> Json.Value -> Field
+let json name value = { name = name, value = Ok value }
+
+public encoded : String -> JsonEncode.Encoder 'a -> 'a -> Field
+let encoded name encoder value = { name = name, value = encoder value }
+
+insert : Int -> List Field -> Dict String (Result Json.Value JsonEncode.Error) -> Result (Dict String (Result Json.Value JsonEncode.Error)) LogTypes.Error
+let insert fuel fields result =
+  match fields with
+  | [] -> Ok result
+  | field :: rest ->
+    if fuel <= 0 then
+      Err (LogTypes.error LogTypes.Validation "" "field input limit exceeded")
+    else if field.name = "" then
+      Err (LogTypes.error LogTypes.Validation "" "field names must not be empty")
+    else
+      insert (fuel - 1) rest (Dict.insert field.name field.value result)
+
+values : List (String * Result Json.Value JsonEncode.Error) -> List (String * Json.Value) -> Result Json.Value LogTypes.Error
+let values fields result =
+  match fields with
+  | [] -> Ok (Json.Object (Array.fromList (List.reverse result)))
+  | (name, Ok value) :: rest -> values rest ((name, value) :: result)
+  | (name, Err detail) :: _ -> Err {
+    failures = [
+      {
+        destination = "",
+        encoding = Some { detail with path = JsonEncode.Field name :: detail.path },
+        message = JsonEncode.errorToString detail,
+        native = None,
+        stage = LogTypes.Validation,
+        uncertain = false
+      }
+    ],
+    outcomes = []
+  }
+
+/// Later fields override earlier ones; resulting keys are sorted deterministically.
+public merge : LogTypes.Limits -> List Field -> Result Json.Value LogTypes.Error
+let merge limits fields =
+  match insert limits.maxValueNodes fields Dict.empty with
+  | Err error -> Err error
+  | Ok fields ->
+    if Dict.size fields > limits.maxFields then
+      Err (LogTypes.error LogTypes.Validation "" "merged field limit exceeded")
+    else
+      values (Dict.toList fields) []

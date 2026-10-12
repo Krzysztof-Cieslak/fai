@@ -1164,6 +1164,12 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/logging` source package provides structured log records,
+typed fields, target-prefix filtering and pure human/JSON Lines formatting.
+Field layers use later-value precedence with sorted final keys. Validation bounds
+the encoded record before JSON rendering, preserving exact integers and rejecting
+non-finite Float encoding and duplicate nested JSON keys.
+
 `Path` is a lossless opaque native path value: raw filename bytes on Unix and
 little-endian UTF-16 units on Windows. Its pure lexical operations never consult
 the filesystem or working directory. Text conversion is checked; diagnostic

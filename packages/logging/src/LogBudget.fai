@@ -1,0 +1,113 @@
+module LogBudget
+
+let invalid message = Err (LogTypes.error LogTypes.Validation "" message)
+
+public validate : LogTypes.Limits -> Result Unit LogTypes.Error
+let validate limits =
+  if limits.maxRecordBytes <= 0 || limits.maxFields < 0 || limits.maxValueDepth <= 0 || limits.maxValueDepth > 128 || limits.maxValueNodes <= 0 then
+    invalid "invalid logging limits"
+  else
+    Ok ()
+
+/// Check character length before the byte copy, bounding that copy by 4 * limit.
+public textBytes : Int -> String -> Result Int LogTypes.Error
+let textBytes limit text =
+  if limit < 0 || String.length text > limit then
+    invalid "record byte limit exceeded"
+  else
+    let size = Bytes.length (Bytes.fromString text)
+    if size > limit then invalid "record byte limit exceeded" else Ok size
+
+escapedLoop : Bytes -> Int -> Int -> Result Int LogTypes.Error
+let escapedLoop bytes index remaining =
+  if index >= Bytes.length bytes then
+    Ok remaining
+  else
+    let byte = Bytes.unsafeGet index bytes
+    let size =
+      if byte = 34 || byte = 92 || byte = 8 || byte = 9 || byte = 10 || byte = 12 || byte = 13 then
+        2
+      else if byte < 32 then 6 else 1
+    if size > remaining then
+      invalid "record byte limit exceeded"
+    else
+      escapedLoop bytes (index + 1) (remaining - size)
+
+escaped : Int -> String -> Result Int LogTypes.Error
+let escaped remaining text =
+  match textBytes remaining text with
+  | Err error -> Err error
+  | Ok _ ->
+    if remaining < 2 then
+      invalid "record byte limit exceeded"
+    else
+      escapedLoop (Bytes.fromString text) 0 (remaining - 2)
+
+walk : Int -> Int -> Int -> Json.Value -> Result (Int * Int) LogTypes.Error
+let walk depth fuel remaining value =
+  if depth < 0 || fuel <= 0 then
+    invalid "value depth or node limit exceeded"
+  else
+    match value with
+    | Json.Null -> scalar 4 fuel remaining
+    | Json.Boolean flag -> scalar (if flag then 4 else 5) fuel remaining
+    | Json.Number number ->
+      match textBytes remaining (JsonNumber.toString number) with
+      | Err error -> Err error
+      | Ok size -> scalar size fuel remaining
+    | Json.String text -> Result.map (fun left -> (fuel - 1, left)) (escaped remaining text)
+    | Json.Array items ->
+      if remaining < 2 then
+        invalid "record byte limit exceeded"
+      else
+        array (depth - 1) (fuel - 1) (remaining - 2) items 0
+    | Json.Object fields ->
+      if remaining < 2 then
+        invalid "record byte limit exceeded"
+      else
+        object (depth - 1) (fuel - 1) (remaining - 2) fields 0 Set.empty
+
+scalar : Int -> Int -> Int -> Result (Int * Int) LogTypes.Error
+let scalar size fuel remaining =
+  if size > remaining then invalid "record byte limit exceeded" else Ok (fuel - 1, remaining - size)
+
+array : Int -> Int -> Int -> Array Json.Value -> Int -> Result (Int * Int) LogTypes.Error
+let array depth fuel remaining items index =
+  if index >= Array.length items then
+    Ok (fuel, remaining)
+  else
+    let remaining = remaining - (if index = 0 then 0 else 1)
+    match walk depth fuel remaining (Array.unsafeGet index items) with
+    | Err error -> Err error
+    | Ok (fuel, remaining) -> array depth fuel remaining items (index + 1)
+
+object : Int -> Int -> Int -> Array (String * Json.Value) -> Int -> Set String -> Result (Int * Int) LogTypes.Error
+let object depth fuel remaining fields index seen =
+  if index >= Array.length fields then
+    Ok (fuel, remaining)
+  else
+    let (name, value) = Array.unsafeGet index fields
+    if Set.member name seen then
+      invalid "duplicate nested JSON key"
+    else
+      match escaped (remaining - (if index = 0 then 1 else 2)) name with
+      | Err error -> Err error
+      | Ok remaining ->
+        match walk depth fuel remaining value with
+        | Err error -> Err error
+        | Ok (fuel, remaining) ->
+          object depth fuel remaining fields (index + 1) (Set.insert name seen)
+
+/// Validate before rendering. The budget counts the complete JSON tree and UTF-8
+/// encoding, including escapes; no oversized rendered copy is constructed.
+public check : LogTypes.Limits -> Json.Value -> Result Int LogTypes.Error
+let check limits value =
+  match validate limits with
+  | Err error -> Err error
+  | Ok _ ->
+    Result.map (fun pair ->
+      letSize limits.maxRecordBytes pair) (walk limits.maxValueDepth limits.maxValueNodes limits.maxRecordBytes value)
+
+let letSize size pair =
+  let (_, remaining) = pair
+  size - remaining

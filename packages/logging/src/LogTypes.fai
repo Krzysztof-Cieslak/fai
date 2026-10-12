@@ -1,0 +1,124 @@
+module LogTypes
+
+public type Level =
+  | Trace
+  | Debug
+  | Info
+  | Warn
+  | Error
+  | Fatal
+
+public type Stage =
+  | Configuration
+  | Validation
+  | Formatting
+  | Admission
+  | Write
+  | Flush
+  | Close
+
+public type Delivery =
+  | Completed
+  | Accepted Int
+
+public type Outcome = { delivery : Delivery, destination : String }
+
+public type Receipt =
+  | Filtered
+  | Emitted (List Outcome)
+
+public type Failure = {
+  destination : String,
+  encoding : Option JsonEncode.Error,
+  message : String,
+  native : Option FileSystem.Error,
+  stage : Stage,
+  uncertain : Bool
+}
+
+public type Error = { failures : List Failure, outcomes : List Outcome }
+
+public error : Stage -> String -> String -> Error
+let error stage destination message = {
+  failures = [
+    {
+      destination = destination,
+      encoding = None,
+      message = message,
+      native = None,
+      stage = stage,
+      uncertain = false
+    }
+  ],
+  outcomes = []
+}
+
+public nativeError : Stage -> String -> FileSystem.Error -> Error
+let nativeError stage destination native = {
+  failures = [
+    {
+      destination = destination,
+      encoding = None,
+      message = FileSystem.errorToString native,
+      native = Some native,
+      stage = stage,
+      uncertain = stage = Write
+    }
+  ],
+  outcomes = []
+}
+
+public uncertain : Error -> Error
+let uncertain error = { error with
+  failures = List.map (fun failure -> { failure with uncertain = true }) error.failures
+}
+
+public errorToString : Error -> String
+let errorToString error =
+  String.join "; " (List.map (fun failure ->
+    failure.destination ++ ": " ++ failure.message) error.failures)
+
+public type Limits = {
+  maxFields : Int,
+  maxRecordBytes : Int,
+  maxValueDepth : Int,
+  maxValueNodes : Int
+}
+
+public limits : Limits
+let limits = { maxFields = 128, maxRecordBytes = 262144, maxValueDepth = 32, maxValueNodes = 4096 }
+
+public type Field = { name : String, value : Result Json.Value JsonEncode.Error }
+
+public type Entry = { event : Option String, fields : List Field, message : String }
+
+public type Record = {
+  event : Option String,
+  fields : Json.Value,
+  level : Level,
+  message : String,
+  target : String,
+  timestamp : Option Instant
+}
+
+/// A line contains no raw CR/LF and excludes its terminating newline.
+public type Output 'e = {
+  flush : Unit -> Result Unit Error / 'e,
+  writeLine : String -> Result Delivery Error / 'e
+}
+
+public type Sink 'e = {
+  emit : Record -> Result (List Outcome) Error / 'e,
+  flush : Unit -> Result Unit Error / 'e,
+  names : List String
+}
+
+public type ScopeError 'error = { body : Option 'error, cleanup : Option Error }
+
+public scopeResult : Result 'a 'error -> Result Unit Error -> Result 'a (ScopeError 'error)
+let scopeResult body cleanup =
+  match (body, cleanup) with
+  | (Ok value, Ok _) -> Ok value
+  | (Err error, Ok _) -> Err { body = Some error, cleanup = None }
+  | (Ok _, Err error) -> Err { body = None, cleanup = Some error }
+  | (Err body, Err cleanup) -> Err { body = Some body, cleanup = Some cleanup }
