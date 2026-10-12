@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Regex split counts intentionally preserve the untouched final tail, separately
+  from result/output budgets. Native text boundary checks use the runtime String
+  invariant rather than revalidating the full input at every cursor step. Tests
+  cover native cache lifetime, cross-module cutoff, effects and JIT/AOT behavior.
+
 - Regex replacement text is literal unless compiled as a capture template.
   Template references are validated before matching and bind to one regex schema.
   Callback replacement processes original-input matches once in order, forwards

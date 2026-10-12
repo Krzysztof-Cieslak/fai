@@ -206,3 +206,32 @@ let replaceWithLimits limits count regex replacement text =
 public replaceWith : Regex -> (Captures -> Result String 'error / 'e) -> String -> Result String (RegexTypes.ReplaceError 'error) / 'e
 let replaceWith regex replacement text =
   replaceWithLimits limits 9223372036854775807 regex replacement text
+
+public splitNWithLimits : Limits -> Int -> Regex -> String -> Result (Array String) Error
+let splitNWithLimits limits count regex text =
+  Result.map (Array.map RegexInternal.sourceText) (RegexInternal.split limits count regex (RegexInternal.Text text))
+
+public split : Regex -> String -> Result (Array String) Error
+let split regex text = splitNWithLimits limits 9223372036854775807 regex text
+
+public splitN : Int -> Regex -> String -> Result (Array String) Error
+let splitN count regex text = splitNWithLimits limits count regex text
+
+public splitWithLimits : Limits -> Regex -> String -> Result (Array String) Error
+let splitWithLimits limits regex text = splitNWithLimits limits 9223372036854775807 regex text
+
+public foldCaptures : Regex -> String -> 'state -> ('state -> Captures -> Result ('state * RegexTypes.Decision) 'error / 'e) -> RegexTypes.FoldResult 'state 'error / 'e
+let foldCaptures regex text state step = foldCapturesWithLimits limits regex text state step
+
+public cursorFromCharWithLimits : Limits -> Int -> Regex -> String -> Result Cursor Error
+let cursorFromCharWithLimits limits start regex text =
+  match RegexInternal.validate limits regex (RegexInternal.Text text) 0 with
+  | Err error -> Err error
+  | Ok _ ->
+    match RegexInternal.fromChar text start with
+    | Err error -> Err error
+    | Ok start -> cursorFromByteWithLimits limits start regex text
+
+public captureCursorFromByteWithLimits : Limits -> Int -> Regex -> String -> Result CaptureCursor Error
+let captureCursorFromByteWithLimits limits start regex text =
+  RegexInternal.cursor limits regex (RegexInternal.Text text) start true

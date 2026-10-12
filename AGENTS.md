@@ -1181,6 +1181,10 @@ Regex replacements distinguish literal values from compiled capture templates.
 Templates validate references and numeric bounds against their retained regex;
 callback replacement forwards effects and preserves typed failures with progress.
 Output lengths are checked before joining pieces, and unmatched input is retained.
+Regex splitting preserves empty pieces and uses explicit split counts separately
+from resource limits. Native text requests validate scalar boundaries without
+rescanning UTF-8 prefixes. Package contracts and relocated JIT/AOT fixtures cover
+Unicode, bytes, shared programs, cursor aliases, callback order and output bounds.
 
 The optional `packages/logging` source package provides structured log records,
 typed fields, target-prefix filtering and pure human/JSON Lines formatting.

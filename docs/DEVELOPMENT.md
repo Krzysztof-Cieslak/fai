@@ -15,6 +15,12 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Regex package contracts run with `fai test -C packages regex`.
+`scripts/tests/regex_toolchain.py --fai /path/to/fai` exercises the pure native
+engine through a relocated JIT/AOT compiler, including shared programs, immutable
+cursors, binary data, callbacks and compile-negative effect/type fixtures. Native
+engine changes additionally run the runtime regex tests and space/storage guards.
+
 Logging contracts run with `fai test -C packages logging`.
 `scripts/tests/logging_toolchain.py --fai /path/to/fai` checks direct and queued
 logging through JIT/AOT, complete file records, scoped capture, cancellation,

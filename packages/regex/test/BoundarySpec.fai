@@ -1,0 +1,69 @@
+module RegexBoundarySpec
+
+let test pattern input =
+  match Regex.compile pattern with
+  | Err error -> Err error
+  | Ok regex -> Regex.isMatch regex input
+example: test "\\d+" "𝟚" = Ok true
+example: test "[0-9]+" "𝟚" = Ok false
+example: test "(?i)δ" "Δ" = Ok true
+example: test "(?mR)^x$" "\r\nx\r\n" = Ok true
+example: (match Regex.compileWith { Regex.options with dotMatchesNewline = true } "." with
+| Ok regex -> Regex.isMatch regex "\n" = Ok true
+| _ -> false)
+example: (match Regex.compileWith { Regex.options with unicode = false } "." with
+| Err error -> error.kind = RegexTypes.Syntax
+| _ -> false)
+example: (match Regex.compile "(a)\\1" with
+| Err error -> error.kind = RegexTypes.Unsupported
+| _ -> false)
+example: (match Regex.compile "é[" with
+| Err error ->
+  error.location = Some {
+    byteEnd = 3,
+    byteStart = 2,
+    column = 2,
+    endColumn = 3,
+    endLine = 1,
+    line = 1
+  }
+| _ -> false)
+example: (match Regex.compile "a" with
+| Ok regex -> Regex.findFromByte (-1) regex "a" |> Result.isErr
+| _ -> false)
+example: (match Regex.compile "" with
+| Ok regex ->
+  (Regex.findFromChar 1 regex "é" |> Result.map (Option.map Regex.span)) = Ok (Some {
+    endByte = 2,
+    endChar = 1,
+    startByte = 2,
+    startChar = 1
+  })
+| _ -> false)
+example: (match Regex.compile "\\Aa" with
+| Ok regex -> Regex.findFromByte 1 regex "ba" = Ok None
+| _ -> false)
+example: (match Regex.compile "\\ba" with
+| Ok regex -> Regex.findFromByte 1 regex "ba" = Ok None
+| _ -> false)
+example: (match Regex.compile "" with
+| Ok regex -> Regex.replaceAll regex "x" "" = Ok "x"
+| _ -> false)
+example: (match Regex.compile "z" with
+| Ok regex ->
+  Regex.replaceNWithLimits { Regex.limits with
+    maxOutputBytes = 1
+  } 0 regex "" "long" |> Result.isErr
+| _ -> false)
+example: (match Regex.compile "a" with
+| Ok regex ->
+  (match RegexTemplate.compileWith { RegexTemplate.options with maxBytes = -1 } regex "" with
+  | Err error -> error.kind = RegexTypes.InvalidOptions
+  | _ -> false)
+| _ -> false)
+example: (match Regex.compile "(?<名>a)" with
+| Ok regex ->
+  (match RegexTemplate.compile regex "${名}" with
+  | Ok template -> RegexTemplate.replace template "a" = Ok "a"
+  | _ -> false)
+| _ -> false)

@@ -133,6 +133,7 @@ const TYPECHECK_CLEAN: &[&str] = &[
     "OpaqueClient.fai",
     "Optional.fai",
     "Patterns.fai",
+    "RegexNative.fai",
     "Properties.fai",
     "RecordMatch.fai",
     "Rows.fai",

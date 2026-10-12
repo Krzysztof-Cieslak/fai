@@ -66,6 +66,64 @@ preserve them. Text template locations count Unicode scalar columns; non-UTF-8
 template locations count byte columns. Template limits default to 64 KiB and
 4096 parts. `RegexTemplate.escape` quotes dollars for literal template text.
 
+`split` preserves leading, trailing and repeated empty pieces and excludes
+delimiters, including captured delimiter groups. `splitN` deliberately limits
+pieces: zero returns no pieces, one returns the whole input, and the final piece
+keeps the untouched remainder. Negative counts fail. Resource limits remain
+independent of deliberate split/replacement counts. The text and byte APIs share
+the same empty-match progression rules.
+
+## Limits and errors
+
+| Compilation setting | Default |
+|---|---|
+| Pattern bytes | 64 KiB |
+| Approximate compiled program bytes | 10 MiB |
+| Lazy-DFA cache bytes | 2 MiB per scratch cache |
+| Retained scratch caches | 1 per program |
+| Parser nesting | 128 |
+| Explicit capture groups | 256, plus group zero |
+
+| Operation setting | Default |
+|---|---|
+| Input bytes | 16 MiB |
+| Match/piece results | 100,000 |
+| Materialized capture slots | 1,000,000 |
+| Output bytes | 16 MiB |
+
+The compile limits and operation limits are separate records. Zero result limits
+allow an empty result but fail when a result exists. Slot budgets count group
+zero and every capture slot, including nonparticipating groups. Split output
+budgets count the copied pieces; replacement budgets count the final result.
+Compiled/cache limits use engine accounting, not exact process RSS. Simultaneous
+searches lease independent scratch; only the configured number are retained.
+There is no global cache retaining compiled programs after their final owner dies.
+
+Errors have stable `kind` values, a human message and an optional location.
+Pattern/template locations refer to their input text, with zero-based half-open
+byte ranges and one-based lines/columns. Native error messages may change with
+the pinned engine version. Replacement callback errors retain their original
+type alongside prior completed count and the failing input byte span.
+
+Searching uses Rust's leftmost-first policy. A single search has worst-case
+O(m*n) work; repeatedly discovering all matches can take O(m*n*n). Limits are
+deterministic; pure matching does not consult a clock or ambient cancellation.
+Case-insensitive text matching uses Unicode simple case folding without Unicode
+normalization. Multiline/CRLF and dot-newline behavior are explicit options.
+
+## Examples and verification
+
+```sh
+fai run -C packages regex/examples/UnicodeScan.fai
+python scripts/tests/regex_toolchain.py --fai /path/to/fai
+```
+
+The integration fixture uses a relocated compiler for JIT/AOT execution, shared
+programs across tasks, callback order, binary templates and bounded stress cases.
+Compile-negative cases pin text/binary separation, opacity and effect forwarding.
+Rust tests cover native value semantics, located errors, explicit scratch release,
+bounded cache retention and a differential oracle from the public Rust regex API.
+
 ```sh
 fai fmt --check -C packages regex
 fai check -C packages regex

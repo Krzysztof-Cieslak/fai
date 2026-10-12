@@ -190,3 +190,30 @@ let replaceWithLimits limits count regex replacement bytes =
 public replaceWith : Regex -> (Captures -> Result Bytes 'error / 'e) -> Bytes -> Result Bytes (RegexTypes.ReplaceError 'error) / 'e
 let replaceWith regex replacement bytes =
   replaceWithLimits limits 9223372036854775807 regex replacement bytes
+
+public splitNWithLimits : Limits -> Int -> Regex -> Bytes -> Result (Array Bytes) Error
+let splitNWithLimits limits count regex bytes =
+  Result.map (Array.map RegexInternal.sourceBytes) (RegexInternal.split limits count regex (RegexInternal.Binary bytes))
+
+public split : Regex -> Bytes -> Result (Array Bytes) Error
+let split regex bytes = splitNWithLimits limits 9223372036854775807 regex bytes
+
+public splitN : Int -> Regex -> Bytes -> Result (Array Bytes) Error
+let splitN count regex bytes = splitNWithLimits limits count regex bytes
+
+public splitWithLimits : Limits -> Regex -> Bytes -> Result (Array Bytes) Error
+let splitWithLimits limits regex bytes = splitNWithLimits limits 9223372036854775807 regex bytes
+
+public foldCaptures : Regex -> Bytes -> 'state -> ('state -> Captures -> Result ('state * RegexTypes.Decision) 'error / 'e) -> RegexTypes.FoldResult 'state 'error / 'e
+let foldCaptures regex bytes state step = foldCapturesWithLimits limits regex bytes state step
+
+public captureCursorFromByteWithLimits : Limits -> Int -> Regex -> Bytes -> Result CaptureCursor Error
+let captureCursorFromByteWithLimits limits start regex bytes =
+  RegexInternal.cursor limits regex (RegexInternal.Binary bytes) start true
+
+let byteEscape byte =
+  "\\x" ++ String.substring (byte / 16) 1 "0123456789ABCDEF" ++ String.substring (byte % 16) 1 "0123456789ABCDEF"
+
+/// Escape arbitrary bytes as a byte-mode literal pattern.
+public escape : Bytes -> String
+let escape bytes = "(?-u:" ++ String.join "" (List.map byteEscape (Bytes.toList bytes)) ++ ")"

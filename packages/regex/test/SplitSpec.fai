@@ -1,0 +1,47 @@
+module RegexSplitSpec
+
+let split pattern input =
+  match Regex.compile pattern with
+  | Err error -> Err error
+  | Ok regex -> Regex.split regex input
+example: split "," ",a,,b," = Ok [| "", "a", "", "b", "" |]
+example: split "(,)" "a,b" = Ok [| "a", "b" |]
+example: split "" "é🙂" = Ok [| "", "é", "🙂", "" |]
+example: split "" "" = Ok [| "", "" |]
+example: split "," "" = Ok [| "" |]
+example: (match Regex.compile "," with
+| Err _ -> false
+| Ok regex ->
+  Regex.splitN 0 regex "a,b,c" = Ok [||] && Regex.splitN 1 regex "a,b,c" = Ok [|
+    "a,b,c"
+  |] && Regex.splitN 2 regex "a,b,c" = Ok [| "a", "b,c" |])
+example: (match Regex.compile "," with
+| Err _ -> false
+| Ok regex -> Regex.splitN (-1) regex "a,b" |> Result.isErr)
+example: (match Regex.compile "," with
+| Err _ -> false
+| Ok regex ->
+  Regex.splitWithLimits { Regex.limits with maxResults = 2 } regex "a,b" = Ok [| "a", "b" |])
+example: (match Regex.compile "," with
+| Err _ -> false
+| Ok regex ->
+  Regex.splitWithLimits { Regex.limits with maxResults = 1 } regex "a,b" |> Result.isErr)
+example: (match Regex.compile "," with
+| Err _ -> false
+| Ok regex ->
+  Regex.splitWithLimits { Regex.limits with maxOutputBytes = 1 } regex "a,b" |> Result.isErr)
+example: (match RegexBytes.compile "\\x00" with
+| Err _ -> false
+| Ok regex ->
+  RegexBytes.split regex (Bytes.fromList [
+    255,
+    0,
+    254
+  ]) = Ok [| Bytes.fromList [255], Bytes.fromList [254] |])
+
+let escapedBytes values =
+  let bytes = Bytes.fromList values
+  match RegexBytes.compile (RegexBytes.escape bytes) with
+  | Err _ -> false
+  | Ok regex -> RegexBytes.isMatch regex bytes = Ok true
+forall values: escapedBytes values

@@ -321,10 +321,13 @@ let slice source start finish =
       | Text text ->
         Result.map Text (Result.mapError (RegexTypes.nativeError None) (RegexEngine.slice text start finish))
 
-let bytePairs chunks =
+let bytePairs chunks = bytePairsInto chunks []
+
+let bytePairsInto chunks output =
   match chunks with
-  | a :: b :: rest -> Bytes.concat a b :: bytePairs rest
-  | rest -> rest
+  | a :: b :: rest -> bytePairsInto rest (Bytes.concat a b :: output)
+  | [one] -> List.reverse (one :: output)
+  | [] -> List.reverse output
 
 let joinBytes chunks =
   match chunks with
@@ -436,3 +439,45 @@ let sourceText source = stringOf source
 
 public sourceBytes : Source -> Bytes
 let sourceBytes source = bytesOf source
+
+appendPiece : Cursor -> Int -> Int -> Int -> Array Source -> Result (Int * Array Source) RegexTypes.Error
+let appendPiece cursor start finish used pieces =
+  if Array.length pieces >= cursor.limits.maxResults then
+    Err (RegexTypes.error RegexTypes.ResultLimit "split piece limit exceeded")
+  else if finish - start > cursor.limits.maxOutputBytes - used then
+    Err outputLimit
+  else
+    let piece =
+      if start = 0 && finish = cursor.size then
+        Ok cursor.source
+      else
+        slice cursor.source start finish
+    Result.map (fun piece -> (used + finish - start, Array.push piece pieces)) piece
+
+splitLoop : Cursor -> Int -> Int -> Int -> Array Source -> Result (Array Source) RegexTypes.Error
+let splitLoop cursor maximum position used pieces =
+  if Array.length pieces >= maximum - 1 then
+    Result.map (fun pair -> snd pair) (appendPiece cursor position cursor.size used pieces)
+  else
+    match next cursor with
+    | Err error -> Err error
+    | Ok None ->
+      Result.map (fun pair -> snd pair) (appendPiece cursor position cursor.size used pieces)
+    | Ok (Some (delimiter, rest)) ->
+      let span = (whole delimiter).span
+      match appendPiece cursor position span.startByte used pieces with
+      | Err error -> Err error
+      | Ok (used, pieces) -> splitLoop rest maximum span.endByte used pieces
+
+let snd pair =
+  let (_, second) = pair
+  second
+
+public split : RegexTypes.Limits -> Int -> Compiled -> Source -> Result (Array Source) RegexTypes.Error
+let split limits maximum regex source =
+  if maximum < 0 then
+    Err (RegexTypes.error RegexTypes.InvalidOptions "negative split count")
+  else
+    match cursor limits regex source 0 false with
+    | Err error -> Err error
+    | Ok cursor -> if maximum = 0 then Ok [||] else splitLoop cursor maximum 0 0 [||]
