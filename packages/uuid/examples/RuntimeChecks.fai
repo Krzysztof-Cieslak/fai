@@ -1,0 +1,107 @@
+module UuidRuntimeChecks
+
+public type UuidRuntime = { clock : Clock, console : Console, entropy : Crypto.Entropy }
+
+let runtime = { clock = stdClock, console = stdConsole, entropy = Crypto.systemEntropy }
+
+let v4Bytes = Bytes.fromList [145, 145, 8, 247, 82, 209, 51, 32, 91, 172, 248, 71, 219, 65, 72, 168]
+
+let v7Bytes = Bytes.fromList [12, 195, 24, 196, 220, 12, 12, 7, 57, 143]
+
+let fixedEntropy expected bytes = { Crypto.Entropy with
+  bytes = fun count -> if count = expected then Ok bytes else Err "wrong entropy request size"
+}
+
+let failedEntropy = { Crypto.Entropy with bytes = fun _ -> Err "fixture entropy failure" }
+
+let trapEntropy = { Crypto.Entropy with bytes = fun _ -> Ok (Bytes.fromList [1 / 0]) }
+
+let fixedClock millis = { Clock with
+  localOffset = fun _ -> 1 / 0,
+  now = fun _ -> millis,
+  sleep = fun _ -> if 1 / 0 = 0 then () else ()
+}
+
+errorKind : Uuid.ErrorKind -> Result Uuid.Uuid Uuid.Error -> Bool
+let errorKind expected result =
+  match result with
+  | Err error -> error.kind = expected
+  | Ok _ -> false
+
+wrongLength : Int -> Int -> Result Uuid.Uuid Uuid.Error -> Bool
+let wrongLength expected actual result =
+  match result with
+  | Err error ->
+    error.kind = Uuid.UnexpectedEntropyLength && error.expected = Some expected && error.actual = Some actual && error.cause = None
+  | Ok _ -> false
+
+checks : UuidRuntime -> List (String * Bool) / { Clock, Crypto.Entropy }
+let checks env =
+  let generated4 = Uuid.v4 (fixedEntropy 16 v4Bytes)
+  let generated7 = Uuid.v7 { clock = fixedClock 1645557742000, entropy = fixedEntropy 10 v7Bytes }
+  let same7 = Uuid.v7 { clock = fixedClock 1645557742000, entropy = fixedEntropy 10 v7Bytes }
+  let rollback7 = Uuid.v7 { clock = fixedClock 1645557741999, entropy = fixedEntropy 10 v7Bytes }
+  let failed4 = Uuid.v4 failedEntropy
+  let failed7 = Uuid.v7At failedEntropy 0
+  let short4 = Uuid.v4 (fixedEntropy 16 (Bytes.fromList (List.range 0 15)))
+  let long4 = Uuid.v4 (fixedEntropy 16 (Bytes.fromList (List.range 0 17)))
+  let short7 = Uuid.v7At (fixedEntropy 10 (Bytes.fromList (List.range 0 9))) 0
+  let long7 = Uuid.v7At (fixedEntropy 10 (Bytes.fromList (List.range 0 11))) 0
+  let negative = Uuid.v7At trapEntropy (-1)
+  let oversized = Uuid.v7At trapEntropy 281474976710656
+  let clockInvalid = Uuid.v7 { clock = fixedClock (-1), entropy = trapEntropy }
+  let epoch7 = Uuid.v7At (fixedEntropy 10 v7Bytes) 0
+  let maximum7 = Uuid.v7At (fixedEntropy 10 v7Bytes) 281474976710655
+  let real4 = Uuid.v4 env.entropy
+  let real7 = Uuid.v7 env
+  [
+    ("v4 RFC vector", Result.map Uuid.toString generated4 = Ok "919108f7-52d1-4320-9bac-f847db4148a8"),
+    ("v7 RFC vector", Result.map Uuid.toString generated7 = Ok "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"),
+    ("stateless generation", generated7 = same7),
+    ("clock rollback", match (rollback7, generated7) with
+    | (Ok earlier, Ok later) -> earlier < later && Uuid.v7UnixMillis earlier = Some 1645557741999
+    | _ -> false),
+    ("entropy failure", match failed4 with
+    | Err error ->
+      error.kind = Uuid.EntropyFailure && error.cause = Some "fixture entropy failure" && Uuid.errorToString error = "UUID entropy request failed: fixture entropy failure"
+    | _ -> false),
+    ("v7 entropy failure", errorKind Uuid.EntropyFailure failed7),
+    ("short v4 entropy", wrongLength 16 15 short4),
+    ("long v4 entropy", wrongLength 16 17 long4),
+    ("short v7 entropy", wrongLength 10 9 short7),
+    ("long v7 entropy", wrongLength 10 11 long7),
+    ("negative timestamp preflight", errorKind Uuid.TimestampOutOfRange negative),
+    ("oversized timestamp preflight", errorKind Uuid.TimestampOutOfRange oversized),
+    ("invalid clock preflight", errorKind Uuid.TimestampOutOfRange clockInvalid),
+    ("epoch timestamp", Result.map Uuid.v7UnixMillis epoch7 = Ok (Some 0)),
+    ("maximum timestamp", Result.map Uuid.v7UnixMillis maximum7 = Ok (Some 281474976710655)),
+    ("OS-backed v4", match real4 with
+    | Ok uuid ->
+      Uuid.isV4 uuid && Uuid.parse (Uuid.toString uuid) = Ok uuid && Bytes.length (Uuid.toBytes uuid) = 16
+    | _ -> false),
+    ("OS-backed v7", match real7 with
+    | Ok uuid ->
+      Uuid.isV7 uuid && Option.isSome (Uuid.v7UnixMillis uuid) && Uuid.fromBytes (Uuid.toBytes uuid) = Ok uuid
+    | _ -> false)
+  ]
+
+report : Console -> List (String * Bool) -> Unit / { Console }
+let report console failures =
+  match failures with
+  | [] -> ()
+  | (name, _) :: rest ->
+    let logged = console.writeLine ("FAILED: " ++ name)
+    report console rest
+
+let failed pair =
+  let (_, passed) = pair
+  not passed
+
+public main : UuidRuntime -> Unit / { Clock, Console, Crypto.Entropy }
+let main env =
+  let failures = List.filter failed (checks env)
+  let reported = report env.console failures
+  env.console.writeLine (if List.isEmpty failures then
+    "UUID runtime checks passed"
+  else
+    "UUID runtime checks FAILED")

@@ -1,0 +1,16 @@
+module UuidGenerate
+
+public type UuidRuntime = { clock : Clock, console : Console, entropy : Crypto.Entropy }
+
+let runtime = { clock = stdClock, console = stdConsole, entropy = Crypto.systemEntropy }
+
+show : Console -> String -> Result Uuid.Uuid Uuid.Error -> Unit / { Console }
+let show console label result =
+  match result with
+  | Ok uuid -> console.writeLine (label ++ Uuid.toString uuid)
+  | Err error -> console.writeLine (Uuid.errorToString error)
+
+public main : UuidRuntime -> Unit / { Clock, Console, Crypto.Entropy }
+let main env =
+  let random = show env.console "v4: " (Uuid.v4 env.entropy)
+  show env.console "v7: " (Uuid.v7 env)

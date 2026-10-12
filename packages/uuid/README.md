@@ -49,4 +49,44 @@ Run contracts with `fai test -C packages uuid`. They include RFC 9562 v4/v7
 vectors, malformed inputs, full-width timestamp bounds, bit preservation,
 text/byte round trips, and equality/order/hash behavior.
 
+## Capability-based generation
+
+```fai
+Uuid.v4 entropy
+Uuid.v7At entropy unixMillis
+Uuid.v7 { clock = clock, entropy = entropy }
+```
+
+`v4` takes `Crypto.Entropy` and performs exactly one request for 16 bytes.
+`v7At` validates explicit Unix milliseconds before requesting ten entropy bytes.
+`v7` takes a least-authority record containing `Clock` and `Crypto.Entropy`, reads
+the clock once and delegates to `v7At`. The effects are `{ Crypto.Entropy }` and
+`{ Clock, Crypto.Entropy }` respectively. The supplied capability controls the
+randomness; `Crypto.systemEntropy` is the existing OS-backed implementation.
+
+Provider failures retain their original message in `cause`. A successful entropy
+response with the wrong byte count is `UnexpectedEntropyLength`; it is neither
+truncated nor padded. Pure random-input constructors use `InvalidByteLength`
+for their own malformed arguments.
+
+Generation is stateless. v7 values sort by their encoded millisecond, but values
+generated within one millisecond are ordered by their random suffix. A clock
+rollback is used as reported; there is no hidden last timestamp, counter, clamp
+or wait. Injecting identical timestamps and entropy therefore gives identical
+results. Generation provides no per-call monotonicity guarantee.
+
+`examples/Generate.fai` builds an application runtime with an explicit entropy
+capability and prints generated IDs. `examples/RuntimeChecks.fai` verifies known
+entropy/clock vectors, provider failures, short/long responses, timestamp
+preflight, statelessness and live OS-backed generation. It checks live structure
+without probabilistic assertions about distinct outputs.
+
+```sh
+fai run -C packages uuid/examples/Generate.fai
+python3 scripts/package_integrations.py uuid --fai /path/to/fai
+```
+
+The integration entrypoint is declared in `ci.json` for both JIT and AOT. This
+source package uses existing capabilities and needs no compiler/std changes.
+
 Reference: https://www.rfc-editor.org/rfc/rfc9562.html

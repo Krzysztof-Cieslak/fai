@@ -603,6 +603,11 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+The optional UUID package generates v4 values from `Crypto.Entropy`, and v7 values
+from a record containing `Clock` and `Crypto.Entropy`. `v7At` accepts explicit Unix
+milliseconds and needs only entropy. Clock rollback is preserved; generation has
+no hidden monotonic state. Pure parsing and byte construction need no capabilities.
+
 CSV parsing/encoding is pure. `CsvStream.fold CsvStream.next reader state step`
 forwards source and callback effects and retains committed state on failure.
 `CsvIO` uses FileSystem plus Concurrency for scoped cleanup; it preserves native
@@ -1969,6 +1974,11 @@ patterns round-trip; `variant`, `version`, `isV4` and `isV7` inspect their layou
 `v4FromRandom` and `v7FromRandom` are pure constructors with explicit byte inputs;
 v7 requires unsigned 48-bit Unix milliseconds. `v7UnixMillis`/`v7Instant` extract
 only RFC-variant v7 timestamps. Test with `fai test -C packages uuid`.
+`Uuid.v4 entropy`, `v7At entropy unixMillis` and
+`v7 { clock = clock, entropy = entropy }` generate with explicit effects.
+Entropy is requested once (16/10 bytes); wrong lengths and
+provider failures return typed errors. See `uuid/examples/Generate.fai`; native
+integration runs through the package's `ci.json` with the cached compiler.
 
 Package CI entrypoints live in each package's `ci.json`. Declare ordinary Fai
 integration programs there instead of editing GitHub workflows; the generic
