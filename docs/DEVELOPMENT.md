@@ -138,7 +138,8 @@ inside it. Each integration name is unique within the package. The runner uses
 the existing compiler to execute JIT, build AOT, and execute the native binary,
 with identical application arguments and environment overrides. Commands use
 argument arrays, never shell evaluation. Both executions use the shared
-`packages/` directory as their working directory and Fai workspace. Temporary
+`packages/` directory as their working directory; compiler requests select the
+entrypoint's owning manifest, including nested example packages. Temporary
 native executables are removed when the run ends, including after failures.
 
 All programs must exit successfully. Optional `stdoutLines` require complete

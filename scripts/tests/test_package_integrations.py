@@ -57,6 +57,16 @@ class IntegrationTests(unittest.TestCase):
         with patch.object(integrations.shutil, "which", side_effect=AssertionError("unexpected compiler lookup")):
             self.assertEqual(self.run_package(package), 0)
 
+    def test_nested_manifest_selects_compiler_scope_without_changing_working_directory(self):
+        (self.entry.parent / packages.MANIFEST).write_text('manifest-version = 1\n[package]\nname = "example-programs"\nversion = "0.1.0"\n')
+        with patch.object(integrations, "command", return_value=self.output) as command:
+            self.run_package()
+        jit, build, native = command.call_args_list
+        self.assertEqual(jit.args[0][4], self.entry.parent.resolve())
+        self.assertEqual(build.args[0][4], self.entry.parent.resolve())
+        self.assertEqual(jit.args[1], self.directory.parent.resolve())
+        self.assertEqual(native.args[1], self.directory.parent.resolve())
+
     def test_all_entries_are_validated_before_execution(self):
         package = replace(self.package, integrations=(self.spec, replace(self.spec, name="missing", entry="Missing.fai")))
         with patch.object(integrations, "command", side_effect=AssertionError("unexpected execution")):
