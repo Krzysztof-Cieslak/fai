@@ -1948,6 +1948,10 @@ and `findFromByte` preserve full-input anchor context; malformed offsets fail.
 `text`/`bytes` copy matched contents; `detach` pairs a copy with original spans.
 Keep compiled values in local/application state rather than repeatedly forcing a
 top-level initializer. Run contracts with `fai test -C packages regex`.
+`cursor`/`next` and `captureCursor`/`nextCaptures` advance immutably; `findAll` and
+`capturesAll` collect bounded arrays. `foldWithLimits` threads state and forwards
+callback effects, retaining committed state on failure. Text empty matches move
+between scalar boundaries; binary matches can occur between any bytes.
 
 `packages/logging` supplies structured log records and typed `LogField` builders,
 longest dotted-prefix `LogFilter` rules, and pure `LogFormat` human/JSON Lines

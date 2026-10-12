@@ -1173,6 +1173,10 @@ The optional `packages/regex` package provides distinct text and binary regex,
 match and capture types. Text spans expose Unicode-scalar and UTF-8 coordinates;
 search offsets preserve original-input anchor context. Capture access separates
 unknown groups, unmatched groups and empty matches. All APIs remain pure.
+Regex cursors are immutable values with advancing scalar checkpoints. Empty-match
+iteration follows the native engine's non-overlapping rules; text advances on
+scalar boundaries, binary input on byte boundaries. Bounded collection and
+effect-forwarding folds preserve exact exhaustion and committed callback state.
 
 The optional `packages/logging` source package provides structured log records,
 typed fields, target-prefix filtering and pure human/JSON Lines formatting.

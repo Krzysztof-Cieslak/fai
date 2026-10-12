@@ -1,0 +1,77 @@
+module RegexCursorSpec
+
+let spans pattern input =
+  match Regex.compile pattern with
+  | Err error -> Err error
+  | Ok regex -> Result.map (Array.map Regex.span) (Regex.findAll regex input)
+example: spans "" "é" = Ok [|
+  { endByte = 0, endChar = 0, startByte = 0, startChar = 0 },
+  { endByte = 2, endChar = 1, startByte = 2, startChar = 1 }
+|]
+example: spans "a*" "aa" = Ok [| { endByte = 2, endChar = 2, startByte = 0, startChar = 0 } |]
+example: spans "" "" = Ok [| { endByte = 0, endChar = 0, startByte = 0, startChar = 0 } |]
+example: (match RegexBytes.compile "" with
+| Err _ -> false
+| Ok regex ->
+  (RegexBytes.findAll regex (Bytes.fromString "é") |> Result.map (Array.map RegexBytes.span)) = Ok [|
+    { endByte = 0, startByte = 0 },
+    { endByte = 1, startByte = 1 },
+    { endByte = 2, startByte = 2 }
+  |])
+example: (match Regex.compile "." with
+| Err _ -> false
+| Ok regex ->
+  (match Regex.cursor regex "é🙂" with
+  | Err _ -> false
+  | Ok cursor -> Regex.next cursor = Regex.next cursor))
+example: (match Regex.compile "." with
+| Err _ -> false
+| Ok regex ->
+  (Regex.findAllWithLimits { Regex.limits with
+    maxResults = 1
+  } regex "é" |> Result.map Array.length) = Ok 1)
+example: (match Regex.compile "." with
+| Err _ -> false
+| Ok regex ->
+  Regex.findAllWithLimits { Regex.limits with maxResults = 1 } regex "é🙂" |> Result.isErr)
+example: (match Regex.compile "a*" with
+| Err _ -> false
+| Ok regex ->
+  (Regex.findAllWithLimits { Regex.limits with
+    maxResults = 1
+  } regex "aa" |> Result.map Array.length) = Ok 1)
+example: (match Regex.compile "." with
+| Err _ -> false
+| Ok regex ->
+  (Regex.findAllWithLimits { Regex.limits with
+    maxResults = 0
+  } regex "" |> Result.map Array.length) = Ok 0)
+
+let stopped =
+  match Regex.compile "." with
+  | Err _ -> false
+  | Ok regex ->
+    let result =
+      Regex.foldWithLimits { Regex.limits with
+        maxResults = 1
+      } regex "abc" 0 (fun count found -> Ok (count + 1, RegexTypes.Stop))
+    result.outcome = Ok () && result.state = 1 && result.stopped
+example: stopped
+
+let failed =
+  match Regex.compile "." with
+  | Err _ -> false
+  | Ok regex ->
+    let result =
+      Regex.fold regex "abc" "" (fun text found ->
+        if Regex.text found = "b" then
+          Err "stop here"
+        else
+          Ok (text ++ Regex.text found, RegexTypes.Continue))
+    result.outcome = Err (RegexTypes.CallbackError "stop here") && result.state = "a" && result.visited = 1
+example: failed
+forall input: match Regex.compile "." with
+| Err _ -> false
+| Ok regex ->
+  (Regex.findAll regex input |> Result.map (fun matches ->
+    Array.length matches)) = Ok (String.length input - List.length (String.split "\n" input) + 1)

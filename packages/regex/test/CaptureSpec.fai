@@ -1,0 +1,42 @@
+module RegexCaptureSpec
+
+let run =
+  match Regex.compile "(?<a>é)(?<b>🙂)?" with
+  | Err _ -> false
+  | Ok regex ->
+    match Regex.capturesAll regex "é🙂é" with
+    | Ok groups ->
+      let first = Array.unsafeGet 0 groups
+      let second = Array.unsafeGet 1 groups
+      Array.length groups = 2 && Regex.span (Regex.whole second) = {
+        endByte = 8,
+        endChar = 3,
+        startByte = 6,
+        startChar = 2
+      } && (Regex.groupNamed "b" first |> Result.map (Option.map Regex.text)) = Ok (Some "🙂") && Regex.groupNamed "b" second = Ok None && (Regex.groupNamed "missing" first |> Result.isErr)
+    | Err _ -> false
+example: run
+example: (match Regex.compile "(a)(b)" with
+| Err _ -> false
+| Ok regex ->
+  Regex.capturesAllWithLimits { Regex.limits with
+    maxCaptureSlots = 5
+  } regex "abab" |> Result.isErr)
+example: (match Regex.compile "(a)(b)" with
+| Err _ -> false
+| Ok regex ->
+  (Regex.capturesAllWithLimits { Regex.limits with
+    maxCaptureSlots = 6
+  } regex "abab" |> Result.map Array.length) = Ok 2)
+example: (match Regex.compile "(?:a)(?<b>b)" with
+| Err _ -> false
+| Ok regex -> Regex.captureCount regex = 2 && Regex.captureNames regex = [| None, Some "b" |])
+example: (match RegexBytes.compile "(.)" with
+| Err _ -> false
+| Ok regex ->
+  (match RegexBytes.captures regex (Bytes.fromList [255]) with
+  | Ok (Some found) ->
+    (RegexBytes.group 1 found |> Result.map (Option.map RegexBytes.bytes)) = Ok (Some (Bytes.fromList [
+      255
+    ]))
+  | _ -> false))
