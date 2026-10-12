@@ -4,9 +4,9 @@ Three durable issues report the current validated checkpoint:
 
 - **[Perceus memory guarantees and allocation evidence](https://github.com/Krzysztof-Cieslak/fai/issues/745):** source-identical Fai
   controls, reference-count/space guards, live objects and allocator backing.
-- **[Native process memory](https://github.com/Krzysztof-Cieslak/fai/issues/746):** isolated Fai/Rust/OCaml executables, raw peak RSS,
+- **[Memory footprint](https://github.com/Krzysztof-Cieslak/fai/issues/746):** isolated Fai/Rust/OCaml executables, raw peak RSS,
   repetition counts and same-executable floors.
-- **[Native runtime](https://github.com/Krzysztof-Cieslak/fai/issues/747):** warm AOT kernel comparisons, application observations,
+- **[Runtime performance](https://github.com/Krzysztof-Cieslak/fai/issues/747):** warm AOT algorithm comparisons, library workloads,
   and separate end-to-end medians.
 
 The issue bodies contain one current snapshot. Previous snapshots live in
@@ -129,15 +129,15 @@ are not part of the retirement list.
 
 ## Interpretation
 
-The runtime report has independent **Matched kernels** and **Application
-comparisons** sections, each with its own coverage, warm measurements and
-end-to-end table. Kernel ratios require reviewed contracts and floor
-qualification. Their summary shows arithmetic and geometric means plus
-nearest-rank p90 across eligible, unrounded case ratios. Applications retain
-absolute timings and visible floor shares; their native-library and
+The runtime report has independent **Shared algorithms** and **Standard-library
+workloads** sections, each with its own coverage, running-time measurements and
+complete-process table. Shared-algorithm ratios require reviewed contracts and
+overhead qualification. Their summary shows arithmetic and geometric means plus
+nearest-rank p90 across included, unrounded case ratios. Library workloads retain
+absolute timings and overhead measurements in the details; their native-library and
 representation choices are described explicitly. End-to-end medians retain their
 startup/shutdown scope and do not enter warm aggregates. Supplemental matched
-components have a third section and contribute no main-kernel summary weight.
+components have an expandable section and contribute no main-summary weight.
 
 The memory report uses the same two categories. Each owns its summary statistics,
 paired coverage, peak-RSS table, post-workload residency table and input axes.
@@ -148,16 +148,25 @@ more declared cases therefore receive more weight. P90 describes the distributio
 of case ratios, not a percentile of individual RSS samples. These are descriptive
 process-footprint summaries, not compiler-memory win counts.
 
-The generated runtime report includes an **Eligibility legend** for
-`matched kernel` and `floor: <languages>`, including the pairwise effect on F/R
-and F/O. Its application section explains that category's scope separately.
-The memory report explains **comparison class and floor share** separately:
-both matched kernels and application cases retain total-RSS
-ratios when each pair has compatible, uninstrumented observations and enough
-samples. Large baseline shares remain visible; they do not exclude a process
-comparison, and an unavailable third peer cannot suppress a valid pair. The
-10% floor exclusion applies only to timing. Both reports explain abbreviations
-and withheld-ratio dashes next to their measurement tables.
+The display labels correspond to the stable machine-readable `matched-kernel`
+and `application` tags. Each section explains its scope once. Main tables omit
+classification/status columns and use explicit **Time vs Rust/OCaml** or
+**Memory vs Rust/OCaml** headings. A short note explains any omitted time ratios;
+the paired overhead observations live in expandable details. The 10% overhead
+exclusion applies only to timing. Both memory categories retain total-RSS ratios
+when their pairs have compatible, uninstrumented observations and enough samples.
+An unavailable third peer cannot suppress a valid pair.
+
+The initial view shows readable benchmark names linked to source, grouped input
+numbers and human-sized time/memory units. Its overview consistently selects the
+largest registered input per benchmark; memory additionally selects the lowest
+registered repetition count (one invocation in the current matrix). **Summary
+statistics still cover all declared inputs and repetitions.** Expandable tables
+retain every case, timing overhead, complete-process measurements, before/after
+RSS, input definitions and reproducibility metadata. Detailed tables use the
+source identifiers. Ratios are always calculated from unrounded observations,
+independently of the display units. Perceus controls likewise show a largest-input
+overview with all inputs and counters in details.
 
 RSS is process footprint, not a common live-heap measure or a compiler-memory
 win count. Perceus evidence uses its own Fai object/backing accounting domain.

@@ -1,52 +1,29 @@
 ---
 source: crates/fai-tests/src/bench_summary/tracking/tests.rs
-expression: "reports[\"language-memory.md\"].split(\"### Peak process footprints\\n\").next().unwrap()"
+expression: "reports[\"language-memory.md\"].split(\"### At a glance\\n\").next().unwrap()"
 ---
 <!-- fai-performance-tracker:memory -->
-# Native process memory: Fai / Rust / OCaml
+# Memory footprint: Fai, Rust and OCaml
 
-**Snapshot:** `fixture-checkpoint` · **Completed:** 2026-10-12T00:00:01Z
+**Measured:** 2026-10-12 · **Source:** [`aaaaaaaaaaaa`](https://github.com/example/fai/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · [Data and reproducibility](https://example.test/evidence)
 
-**Measured main revision:** [`aaaaaaaaaaaa`](https://github.com/example/fai/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · **Method:** `isolated-memory-v3`
+Peak RAM used by each complete process (RSS), including program code, the runtime and allocator storage. Memory after execution is available in the details.
 
-**Host:** fixture / fixture · **CPU:** fixture
+**Lower ratios favor Fai.** Each ratio is Fai ÷ the comparison language: **0.80× means 20% less memory**; **1.20× means 20% more**.
 
-**Peers:** fixture · OCaml fixture (Flambda, `-O3`)
+[Shared algorithms](#shared-algorithms) · [Standard-library workloads](#standard-library-workloads) · [Measurement details](#measurement-details)
 
-[Raw data, identities and reproducibility record](https://example.test/evidence)
+## Shared algorithms
 
-[Matched kernels](#matched-kernels) · [Application comparisons](#application-comparisons)
+The same algorithms and logical data structures in all three languages. Compiler optimizations and runtime representations may differ.
 
-## Current coverage
+**Coverage:** 41 benchmarks · 208 input/repetition cases · 5 fresh processes per language and mode.
 
-**50 workloads · 254 size/repetition cases · 5 fresh processes per side and mode.** Predeclared memory-specific input curves and 1/16 whole-workload repetitions are included. Additional storage fixtures vary elements, keys, nodes, UTF-8 chunks and body counts. Every peer is an isolated, uninstrumented executable. Input units and fixed-state cases are listed below.
+### Summary — all measured inputs
 
-The tables report **process footprint**, including code, stacks, allocator retention and GC policy. Each displayed peak and floor is the maximum across fresh processes, in KiB (1,024 bytes). They do not measure comparable cross-language live heaps. Floors use the same executable; peaks are never subtracted or converted into compiler-memory win counts.
-
-## Comparison and floor legend
-
-The floor is the same executable running its harness without the workload. `Process F/R` is Fai's peak RSS divided by Rust's; `Process F/O` divides it by OCaml's. Lower ratios mean a smaller observed process footprint.
-
-| Label | Meaning |
-|---|---|
-| `matched kernel` | Peers share the reviewed algorithm and logical data structures. Runtime representation and allocator costs remain observable. |
-| `application` | Algorithms, containers or implementation policies differ. Ratios still compare total process footprints, including those choices. |
-| `Floor share F/R/O` | Each language's floor divided by its workload peak, shown as a percentage. A high share describes a baseline-dominated process; it does not suppress ratios. Independent process observations can give a share above 100%. |
-| `F/R: …` or `F/O: …` | Only the named ratio is withheld because its pair is missing, incompatible, instrumented, or has fewer than five observations. |
-
-`—` denotes an unavailable value or withheld ratio, with the reason shown alongside the comparison. Floors are never subtracted. Whole-process RSS includes code, stacks, allocator retention and GC policy; live-heap efficiency and Perceus guarantees require their own evidence.
-
-## Matched kernels
-
-Peers share the reviewed algorithm, logical data and evaluation phases. Native representation, allocation and reclamation costs remain observable.
-
-**41 workloads · 208 size/repetition cases.** Statistics and tables below cover this category only.
-
-### Process-RSS ratio summary
-
-Ratios are **Fai ÷ peer; lower means a smaller process footprint**. Arithmetic and geometric means use unrounded case ratios with equal weight per workload/input/repetition case. P90 is nearest-rank across case ratios, not a percentile of RSS samples. Only compatible, uninstrumented pairs with sufficient observations contribute; large floor shares remain included.
-
-| Peer | Paired / cases | Geometric mean | Arithmetic mean | P90 |
+| Compared with | Cases used | Geometric mean | Arithmetic mean | 90th percentile |
 |---|---:|---:|---:|---:|
-| rust | 208 / 208 | 1.000× | 1.000× | 1.000× |
-| ocaml | 208 / 208 | 1.000× | 1.000× | 1.000× |
+| Rust | 208 / 208 | 1.000× | 1.000× | 1.000× |
+| OCaml | 208 / 208 | 1.000× | 1.000× | 1.000× |
+
+Each included case has equal weight. The geometric mean summarizes multiplicative ratios; the arithmetic mean averages them directly. The 90th percentile is the ratio at or below which 90% of the included cases fall.

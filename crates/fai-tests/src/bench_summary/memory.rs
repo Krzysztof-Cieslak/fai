@@ -220,21 +220,29 @@ fn paired_ratio(
         .ok_or("invalid peak")
 }
 
-pub(super) struct FootprintComparison {
+pub(super) struct FootprintComparison<'a> {
+    pub name: &'a str,
+    pub size: i64,
+    pub iterations: usize,
+    pub records: Vec<&'a FootprintSample>,
     pub class: Option<crate::benchmark_contracts::Comparison>,
     pub rust: Option<f64>,
     pub ocaml: Option<f64>,
 }
 
-pub(super) fn comparisons(samples: &[FootprintSample]) -> Vec<FootprintComparison> {
+pub(super) fn comparisons(samples: &[FootprintSample]) -> Vec<FootprintComparison<'_>> {
     footprint_groups(samples)
-        .into_values()
-        .map(|records| {
+        .into_iter()
+        .map(|((name, size, iterations, _, _, _), records)| {
             let contract = reviewed_contract(records[0]);
             FootprintComparison {
+                name,
+                size,
+                iterations,
                 class: contract.as_ref().map(|c| c.comparison),
                 rust: paired_ratio(&records, "rust", contract.as_ref()).ok(),
                 ocaml: paired_ratio(&records, "ocaml", contract.as_ref()).ok(),
+                records,
             }
         })
         .collect()
@@ -504,7 +512,8 @@ mod tests {
 
     #[test]
     fn summary_ratios_keep_precision_beyond_display_rounding() {
-        let cases = comparisons(&[footprint("fai", 1004, 1000), footprint("rust", 1000, 1000)]);
+        let samples = [footprint("fai", 1004, 1000), footprint("rust", 1000, 1000)];
+        let cases = comparisons(&samples);
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].rust, Some(1.004));
         assert_eq!(cases[0].ocaml, None);
@@ -512,11 +521,12 @@ mod tests {
 
     #[test]
     fn summary_excludes_only_the_instrumented_pair() {
-        let cases = comparisons(&[
+        let samples = [
             footprint("fai", 40000, 3000),
             footprint("rust", 50000, 2000),
             FootprintSample { instrumented: true, ..footprint("ocaml", 30000, 4000) },
-        ]);
+        ];
+        let cases = comparisons(&samples);
         assert_eq!(cases[0].rust, Some(0.8));
         assert_eq!(cases[0].ocaml, None);
     }
@@ -532,7 +542,8 @@ mod tests {
             comparison: "application".into(),
             ..footprint(side, peak, 2000)
         };
-        let cases = comparisons(&[application("fai", 3000), application("rust", 4000)]);
+        let samples = [application("fai", 3000), application("rust", 4000)];
+        let cases = comparisons(&samples);
         assert_eq!(cases[0].class, Some(crate::benchmark_contracts::Comparison::Application));
         assert_eq!(cases[0].rust, Some(0.75));
     }
