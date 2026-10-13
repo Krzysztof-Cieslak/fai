@@ -122,6 +122,162 @@ class ReleaseEnvironmentTests(unittest.TestCase):
         self.assertEqual(environment["MACOSX_DEPLOYMENT_TARGET"], "15.0")
 
 
+class GitHubReleaseTests(unittest.TestCase):
+    def test_published_release_uses_the_tag_endpoint(self):
+        published = {"id": 42, "tag_name": "v0.0.1", "draft": False}
+        with mock.patch.object(release, "gh_api", return_value=published) as api:
+            self.assertEqual(release.github_release("v0.0.1"), published)
+        self.assertEqual(api.call_count, 1)
+
+    def test_authenticated_draft_is_found_when_tag_endpoint_returns_404(self):
+        draft = {"id": 43, "tag_name": "v0.0.1", "draft": True}
+        with mock.patch.object(release, "gh_api", side_effect=[None, [draft]]) as api:
+            self.assertEqual(release.github_release("v0.0.1"), draft)
+        self.assertIn("releases?per_page=100&page=1", api.call_args.args[0])
+
+    def test_draft_lookup_traverses_full_pages(self):
+        other = [{"tag_name": f"other-{index}"} for index in range(100)]
+        draft = {"id": 44, "tag_name": "v0.0.1", "draft": True}
+        with mock.patch.object(release, "gh_api", side_effect=[None, other, [draft]]) as api:
+            self.assertEqual(release.github_release("v0.0.1"), draft)
+        self.assertIn("page=2", api.call_args.args[0])
+
+    def test_missing_optional_release_returns_none(self):
+        with mock.patch.object(release, "gh_api", side_effect=[None, []]):
+            self.assertIsNone(release.github_release("v0.0.1", missing=True))
+
+    def test_missing_required_release_is_an_error(self):
+        with mock.patch.object(release, "gh_api", side_effect=[None, []]):
+            with self.assertRaisesRegex(release.ReleaseError, "was not found"):
+                release.github_release("v0.0.1")
+
+    def test_network_errors_do_not_become_missing_releases(self):
+        with mock.patch.object(release, "gh_api", side_effect=release.ReleaseError("HTTP 502")):
+            with self.assertRaisesRegex(release.ReleaseError, "HTTP 502"):
+                release.github_release("v0.0.1", missing=True)
+
+
+class ResumeQualificationTests(unittest.TestCase):
+    def setUp(self):
+        self.commit = "a" * 40
+        self.repo = release.config()["repository"]
+        self.source = {"event": "workflow_dispatch", "path": ".github/workflows/release.yml",
+                       "status": "completed", "head_branch": "main", "head_sha": self.commit,
+                       "repository": {"full_name": self.repo}, "head_repository": {"full_name": self.repo}}
+        names = [f"Qualify {item['target']}" for item in release.config()["targets"]]
+        names += ["Validate prepared release", "Full source verification / Select affected checks",
+                  "Full source verification / fmt + clippy", "Full source verification / unit + e2e tests (linux)",
+                  "Full source verification / platform tests (macos-latest)", "Full source verification / platform tests (windows-latest)"]
+        self.checks = [{"name": name, "status": "completed", "conclusion": "success",
+                        "details_url": f"https://github.com/{self.repo}/actions/runs/123/job/{index}"}
+                       for index, name in enumerate(names)]
+        self.api = self.enterContext(mock.patch.object(release, "gh_api", side_effect=self.response))
+        self.enterContext(mock.patch.object(release, "require_repository"))
+        self.tag = self.enterContext(mock.patch.object(release, "remote_tag", return_value=self.commit))
+
+    def response(self, path, root):
+        if "/actions/runs/" in path:
+            return self.source
+        return {"check_runs": self.checks}
+
+    def test_fully_qualified_run_identifies_the_unchanged_tagged_source(self):
+        self.assertEqual(release.qualified_run("0.0.1", 123), {"version": "0.0.1", "commit": self.commit, "runId": "123"})
+
+    def test_invalid_run_id_is_rejected_before_network_access(self):
+        with self.assertRaisesRegex(release.ReleaseError, "positive integer"):
+            release.qualified_run("0.0.1", "../123")
+        self.api.assert_not_called()
+
+    def test_unfinished_run_cannot_be_resumed(self):
+        self.source["status"] = "in_progress"
+        with self.assertRaisesRegex(release.ReleaseError, "completed manual Release"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_other_workflows_cannot_authorize_publication(self):
+        self.source["path"] = ".github/workflows/ci.yml"
+        with self.assertRaisesRegex(release.ReleaseError, "completed manual Release"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_pull_request_runs_cannot_authorize_publication(self):
+        self.source["event"] = "pull_request"
+        with self.assertRaisesRegex(release.ReleaseError, "completed manual Release"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_unprotected_branches_cannot_authorize_publication(self):
+        self.source["head_branch"] = "experiment"
+        with self.assertRaisesRegex(release.ReleaseError, "completed manual Release"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_fork_runs_cannot_authorize_publication(self):
+        self.source["head_repository"]["full_name"] = "other/fai"
+        with self.assertRaisesRegex(release.ReleaseError, "completed manual Release"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_existing_tag_cannot_move_to_the_workflow_commit(self):
+        self.tag.return_value = "b" * 40
+        with self.assertRaisesRegex(release.ReleaseError, "tag does not identify"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_missing_native_qualification_blocks_resume(self):
+        self.checks.pop(0)
+        with self.assertRaisesRegex(release.ReleaseError, "all six native"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_failed_native_qualification_blocks_resume(self):
+        self.checks[0]["conclusion"] = "failure"
+        with self.assertRaisesRegex(release.ReleaseError, "all six native"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_skipped_full_source_check_blocks_resume(self):
+        self.checks[-1]["conclusion"] = "skipped"
+        with self.assertRaisesRegex(release.ReleaseError, "all six native"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_other_runs_checks_do_not_authorize_resume(self):
+        self.checks[0]["details_url"] = self.checks[0]["details_url"].replace("/123/", "/456/")
+        with self.assertRaisesRegex(release.ReleaseError, "all six native"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_duplicate_qualification_checks_are_rejected(self):
+        self.checks.append(self.checks[0].copy())
+        with self.assertRaisesRegex(release.ReleaseError, "ambiguous"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_running_check_cannot_authorize_resume(self):
+        self.checks[0]["status"] = "in_progress"
+        with self.assertRaisesRegex(release.ReleaseError, "all six native"):
+            release.qualified_run("0.0.1", 123)
+
+    def test_resume_assembles_and_publishes_from_the_original_checkout(self):
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch"}), \
+                mock.patch.object(release, "git") as git, mock.patch.object(release, "run") as run, \
+                mock.patch.object(release, "assemble") as assemble, mock.patch.object(release, "publish", return_value={"ok": True}) as publish:
+            self.assertEqual(release.resume("0.0.1", 123), {"ok": True})
+        checkout = Path(git.call_args_list[0].args[3])
+        self.assertEqual(git.call_args_list[0].args[:3], ("worktree", "add", "--detach"))
+        self.assertEqual(git.call_args_list[0].args[4], self.commit)
+        self.assertIn("123", run.call_args.args)
+        self.assertEqual(assemble.call_args.args[-1], checkout)
+        self.assertEqual(publish.call_args.args[-1], checkout)
+        self.assertEqual(git.call_args.args, ("worktree", "remove", str(checkout)))
+
+    def test_resume_cleans_up_the_source_checkout_after_verification_fails(self):
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch"}), \
+                mock.patch.object(release, "git") as git, mock.patch.object(release, "run"), \
+                mock.patch.object(release, "assemble", side_effect=release.ReleaseError("corrupt artifact")), \
+                mock.patch.object(release, "publish") as publish:
+            with self.assertRaisesRegex(release.ReleaseError, "corrupt artifact"):
+                release.resume("0.0.1", 123)
+        publish.assert_not_called()
+        self.assertEqual(git.call_args.args[:2], ("worktree", "remove"))
+
+    def test_local_resume_cannot_bypass_the_manual_workflow(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(release.ReleaseError, "manually dispatched"):
+                release.resume("0.0.1", 123)
+        self.api.assert_not_called()
+
+
 class RepositoryTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

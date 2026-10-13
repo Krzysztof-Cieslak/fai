@@ -432,6 +432,28 @@ def gh_api(path, root=ROOT, missing=False):
     return json.loads(result.stdout)
 
 
+def github_release(tag, root=ROOT, missing=False):
+    repo = config(root)["repository"]
+    release = gh_api(f"repos/{repo}/releases/tags/{tag}", root, missing=True)
+    if release is not None:
+        return release
+    # The tag endpoint exposes published releases, not authenticated drafts.
+    page = 1
+    while True:
+        releases = gh_api(f"repos/{repo}/releases?per_page=100&page={page}", root)
+        matches = [item for item in releases if item["tag_name"] == tag]
+        if len(matches) > 1:
+            raise ReleaseError(f"multiple releases identify {tag}")
+        if matches:
+            return matches[0]
+        if len(releases) < 100:
+            break
+        page += 1
+    if not missing:
+        raise ReleaseError(f"GitHub release {tag} was not found")
+    return None
+
+
 def require_repository(root=ROOT):
     remote = git("remote", "get-url", "origin", root=root)
     prefixes = ("https://github.com/", "ssh://git@github.com/", "git@github.com:")
@@ -446,6 +468,60 @@ def remote_tag(tag, root=ROOT):
     if f"refs/tags/{tag}" in refs and f"refs/tags/{tag}^{{}}" not in refs:
         raise ReleaseError("release tags must be annotated")
     return refs.get(f"refs/tags/{tag}^{{}}")
+
+
+def qualified_run(version, run_id, root=ROOT):
+    version_key(version)
+    if not re.fullmatch(r"[1-9][0-9]*", str(run_id)):
+        raise ReleaseError("source run ID must be a positive integer")
+    require_repository(root)
+    repo = config(root)["repository"]
+    source = gh_api(f"repos/{repo}/actions/runs/{run_id}", root)
+    if (source["event"] != "workflow_dispatch" or source["path"] != ".github/workflows/release.yml"
+            or source["status"] != "completed" or source["head_branch"] not in config(root)["releaseBranches"]
+            or source["repository"]["full_name"] != repo or source["head_repository"]["full_name"] != repo):
+        raise ReleaseError("source must be a completed manual Release run on a protected release branch")
+    commit = source["head_sha"]
+    if remote_tag(f"v{version}", root) != commit:
+        raise ReleaseError("release tag does not identify the source run commit")
+    required = {f"Qualify {item['target']}" for item in config(root)["targets"]}
+    required.update({"Validate prepared release", "Full source verification / Select affected checks"})
+    required.update(f"Full source verification / {name}" for name in (
+        "fmt + clippy", "unit + e2e tests (linux)", "platform tests (macos-latest)", "platform tests (windows-latest)"))
+    found = {}
+    page = 1
+    prefix = f"https://github.com/{repo}/actions/runs/{run_id}/"
+    while True:
+        checks = gh_api(f"repos/{repo}/commits/{commit}/check-runs?per_page=100&page={page}", root)["check_runs"]
+        for check in checks:
+            if check.get("details_url", "").startswith(prefix) and check["name"] in required:
+                if check["name"] in found:
+                    raise ReleaseError("source run has ambiguous qualification checks")
+                found[check["name"]] = check
+        if len(checks) < 100:
+            break
+        page += 1
+    if set(found) != required or any(check["status"] != "completed" or check["conclusion"] != "success" for check in found.values()):
+        raise ReleaseError("all six native qualifications and full source checks must pass in the source run")
+    return {"version": version, "commit": commit, "runId": str(run_id)}
+
+
+def resume(version, run_id, root=ROOT):
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+        raise ReleaseError("resume runs inside the manually dispatched Resume release workflow")
+    source = qualified_run(version, run_id, root)
+    with tempfile.TemporaryDirectory(prefix="fai-release-resume-") as temporary:
+        directory = Path(temporary)
+        checkout = directory / "source"
+        git("worktree", "add", "--detach", str(checkout), source["commit"], root=root)
+        try:
+            inputs, output = directory / "inputs", directory / "release"
+            run("gh", "run", "download", str(run_id), "--repo", config(root)["repository"],
+                "--pattern", "release-*", "--dir", str(inputs), root=root)
+            assemble(version, inputs, output, checkout)
+            return publish(version, output, checkout)
+        finally:
+            git("worktree", "remove", str(checkout), root=root)
 
 
 def verify_assets(release, manifest, directory):
@@ -479,7 +555,7 @@ def verify(version, directory=None, root=ROOT):
     if manifest["version"] != version:
         raise ReleaseError("release directory has a different version")
     repo = config(root)["repository"]
-    release = gh_api(f"repos/{repo}/releases/tags/v{version}", root)
+    release = github_release(f"v{version}", root)
     if release["draft"] or remote_tag(f"v{version}", root) != manifest["commit"]:
         raise ReleaseError("release is not published at the expected commit")
     if release.get("immutable") is not True:
@@ -530,7 +606,7 @@ def publish(version, directory, root=ROOT):
         git("push", "origin", f"refs/tags/{tag}", root=root)
         if remote_tag(tag, root) != prepared["commit"]:
             raise ReleaseError("remote tag verification failed")
-    release = gh_api(f"repos/{repo}/releases/tags/{tag}", root, missing=True)
+    release = github_release(tag, root, missing=True)
     if release and not release["draft"]:
         return verify(version, directory, root)
     with tempfile.TemporaryDirectory(prefix="fai-notes-") as temporary:
@@ -541,7 +617,7 @@ def publish(version, directory, root=ROOT):
         else:
             run("gh", "release", "edit", tag, "--repo", repo, "--notes-file", str(note_file), root=root)
         run("gh", "release", "upload", tag, "--repo", repo, "--clobber", *[str(directory / name) for name in asset_names(manifest)], root=root)
-    release = gh_api(f"repos/{repo}/releases/tags/{tag}", root)
+    release = github_release(tag, root)
     verify_assets(release, manifest, directory)
     latest = gh_api(f"repos/{repo}/releases/latest", root, missing=True)
     promote = "-" not in version
@@ -600,6 +676,9 @@ def main():
         child = commands.add_parser(name)
         child.add_argument("--version", required=True)
         child.add_argument("--directory", type=Path, default=ROOT / "dist" if name == "publish" else None)
+    recovery = commands.add_parser("resume")
+    recovery.add_argument("--version", required=True)
+    recovery.add_argument("--run-id", required=True)
     for child in commands.choices.values():
         child.add_argument("--json", action="store_true", help="emit machine-readable output (also the default)")
     args = parser.parse_args()
@@ -616,6 +695,7 @@ def main():
         elif args.command == "pack": result = pack(args.target, args.output.resolve(), build=not args.no_build)
         elif args.command == "assemble": result = assemble(args.version, args.input.resolve(), args.output.resolve())
         elif args.command == "publish": result = publish(args.version, args.directory.resolve())
+        elif args.command == "resume": result = resume(args.version, args.run_id)
         else: result = verify(args.version, args.directory.resolve() if args.directory else None)
         print(json.dumps({"schemaVersion": 1, "ok": True, "result": result}, sort_keys=True))
     except (ReleaseError, OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:

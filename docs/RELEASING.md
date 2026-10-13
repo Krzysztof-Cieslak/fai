@@ -65,6 +65,24 @@ there deliberately. The workflow has no tag-push or release-event trigger.
 The `publish` helper is workflow-only; local maintainers use `dispatch` so the
 complete qualification dependency graph runs before any public release is made.
 
+If publication fails after creating the annotated tag, keep the tag and tested
+artifacts unchanged. After correcting the publication helper, use the manual
+recovery workflow from `main`:
+
+```sh
+gh workflow run release-resume.yml --ref main -f version=0.0.1 -f run_id=SOURCE_RUN_ID
+```
+
+Recovery accepts only a completed manual Release run from a protected release
+branch, with every native qualification and full-source check successful in that
+same run. The existing tag must identify its commit. The corrected helper checks
+out that original source separately, downloads its original artifacts, rechecks
+the complete matrix and checksums, and publishes the draft. It never moves the
+tag or substitutes a new compiler build. The original build attestations remain
+attached to the exact artifact bytes. Runs dispatched against source different
+from their workflow commit require a fresh complete qualification rather than
+this recovery path.
+
 To diagnose a candidate on one native host before merging, dispatch the workflow
 from that branch with `build_only=true` and an optional `qualification_target`:
 
