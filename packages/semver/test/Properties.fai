@@ -1,0 +1,120 @@
+module SemverProperties
+
+let bigNumber values =
+  "1" ++ String.join "" (List.map (fun value ->
+    Int.toString ((Int.and value 15) % 10)) (List.take 40 values))
+
+let make values = Semver.fromParts {
+  build = ["source"],
+  major = bigNumber values,
+  minor = "2",
+  patch = "3",
+  prerelease = ["rc", "1"]
+}
+
+let sign value = if value < 0 then -1 else if value > 0 then 1 else 0
+
+let roundTrip values =
+  match make values with
+  | Err _ -> false
+  | Ok version ->
+    Semver.parse (Semver.toString version) = Ok version && Semver.fromParts (Semver.parts version) = Ok version && Semver.compare version version = 0
+forall values: roundTrip values
+
+let antisymmetric first second =
+  match (make first, make second) with
+  | (Ok first, Ok second) ->
+    sign (Semver.compare first second) = 0 - sign (Semver.compare second first)
+  | _ -> false
+forall first second: antisymmetric first second
+
+let transitive first second third =
+  match (make first, make second, make third) with
+  | (Ok a, Ok b, Ok c) ->
+    if Semver.compare a b <= 0 && Semver.compare b c <= 0 then Semver.compare a c <= 0 else true
+  | _ -> false
+forall first second third: transitive first second third
+
+let bumps values =
+  match make values with
+  | Err _ -> false
+  | Ok version ->
+    let major = Semver.bumpMajor version
+    let minor = Semver.bumpMinor version
+    let patch = Semver.bumpPatch version
+    let released = Semver.release version
+    Semver.compare major version > 0 && Semver.compare minor version > 0 && Semver.compare patch version > 0 && Semver.compare released version > 0 && (Semver.parts major).minor = "0" && (Semver.parts major).patch = "0" && (Semver.parts minor).patch = "0" && (Semver.parts patch).build = [] && (Semver.parts patch).prerelease = [] && Semver.release released = released
+forall values: bumps values
+
+let metadata values stamp =
+  match make values with
+  | Err _ -> false
+  | Ok original ->
+    match Semver.fromParts { Semver.parts original with build = [Int.toString stamp] } with
+    | Err _ -> false
+    | Ok changed -> Semver.samePrecedence original changed && Semver.compare original changed = 0
+forall values stamp: metadata values stamp
+
+let total text =
+  match Semver.parse text with
+  | Ok version -> Semver.toString version = text
+  | Err error ->
+    match error.offset with
+    | None -> true
+    | Some offset -> offset >= 0 && offset <= Bytes.length (Bytes.fromString text)
+forall text: total text
+
+let rangeTotal text =
+  match SemverRange.parse text with
+  | Ok range -> SemverRange.parse (SemverRange.toString range) = Ok range
+  | Err error ->
+    match error.offset with
+    | None -> true
+    | Some offset -> offset >= 0 && offset <= Bytes.length (Bytes.fromString text)
+forall text: rangeTotal text
+
+let matching values =
+  let core = bigNumber values
+  match (Semver.parse (core ++ ".2.3"), SemverRange.parse ("^" ++ core ++ ".0.0")) with
+  | (Ok version, Ok range) ->
+    SemverRange.matches range version && SemverRange.maxSatisfying range [
+      version,
+      version
+    ] = Some version && not (SemverRange.matches range (Semver.bumpMajor version))
+  | _ -> false
+forall values: matching values
+
+let machineIntegers major minor patch =
+  let major = Int.and major 9223372036854775807
+  let minor = Int.and minor 9223372036854775807
+  let patch = Int.and patch 9223372036854775807
+  match Semver.fromInts major minor patch with
+  | Err _ -> false
+  | Ok version ->
+    Semver.toInts version = Ok {
+      major = major,
+      minor = minor,
+      patch = patch
+    } && SemverFai.validateVersion version = Ok ()
+forall major minor patch: machineIntegers major minor patch
+
+let stableComparisons low high word =
+  let low = Int.and low 15
+  let high = Int.and high 15
+  let major = Int.and word 15
+  let minor = Int.and (Int.shiftRightLogical word 4) 15
+  let patch = Int.and (Int.shiftRightLogical word 8) 15
+  let source = ">=" ++ Int.toString low ++ ".2.3, <" ++ Int.toString high ++ ".4.5"
+  match (SemverRange.parse source, Semver.fromInts major minor patch) with
+  | (Ok range, Ok version) ->
+    SemverRange.matches range version = ((major, minor, patch) >= (low, 2, 3) && (major, minor, patch) < (high, 4, 5))
+  | _ -> false
+forall low high word: stableComparisons low high word
+
+let canonicalPreserves low high =
+  let low = Int.and low 15
+  let high = Int.and high 15
+  let first = ">=" ++ Int.toString low ++ ".0.0"
+  let second = "<" ++ Int.toString high ++ ".0.0"
+  SemverRange.parse (first ++ ", " ++ second ++ " || *") = SemverRange.parse ("* || " ++ second ++ ", " ++ first ++ ", " ++ first)
+forall low high: canonicalPreserves low high

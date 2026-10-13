@@ -1,0 +1,463 @@
+module Semver
+
+/// Stable categories for syntax, conversion, compatibility and resource failures.
+public type ErrorKind =
+  | InvalidVersion
+  | InvalidComponent
+  | InvalidIdentifier
+  | LeadingZero
+  | InvalidRequirement
+  | BuildMetadataNotAllowed
+  | OutOfRange
+  | InputLimit
+  | IdentifierLimit
+  | ComparatorLimit
+  | AlternativeLimit
+  | InvalidOptions
+
+/// Offsets are zero-based UTF-8 bytes in parsed input. Constructed-part errors
+/// instead identify their component and zero-based identifier, without an offset.
+public type Error = {
+  component : Option String,
+  identifier : Option Int,
+  kind : ErrorKind,
+  message : String,
+  offset : Option Int
+}
+
+/// Parsing budgets do not impose a machine-integer bound on numeric components.
+public type Options = { maxBytes : Int, maxIdentifiers : Int }
+
+/// Up to 4096 input bytes and 256 combined prerelease/build identifiers.
+public defaults : Options
+let defaults = { maxBytes = 4096, maxIdentifiers = 256 }
+
+/// Numeric components are canonical decimal strings. Identifier case and build
+/// spelling are preserved, including permitted leading zeros in build metadata.
+public type Parts = {
+  build : List String,
+  major : String,
+  minor : String,
+  patch : String,
+  prerelease : List String
+}
+
+/// A validated SemVer 2.0 value. Structural equality includes build metadata;
+/// use Semver.compare for precedence rather than structural ordering.
+public opaque type Version = Parts
+
+/// Checked machine-integer projection of the three numeric core components.
+public type IntParts = { major : Int, minor : Int, patch : Int }
+
+internal error : ErrorKind -> String -> Option Int -> Error
+let error kind message offset = {
+  component = None,
+  identifier = None,
+  kind = kind,
+  message = message,
+  offset = offset
+}
+
+/// Render an error with its optional component and original input location.
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.component with
+  | None -> ""
+  | Some component ->
+    " (" ++ component ++ (match error.identifier with
+    | None -> ""
+    | Some index -> "[" ++ Int.toString index ++ "]") ++ ")") ++ (match error.offset with
+  | None -> ""
+  | Some offset -> " at byte " ++ Int.toString offset)
+
+internal validateOptions : Options -> Result Unit Error
+let validateOptions options =
+  if options.maxBytes < 0 || options.maxIdentifiers < 0 then
+    Err (error InvalidOptions "version limits must be nonnegative" None)
+  else
+    Ok ()
+
+let at input index = Option.withDefault (-1) (Bytes.get index input)
+
+let digit byte = byte >= 48 && byte <= 57
+
+let identifierByte byte =
+  digit byte || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte = 45
+
+let ascii input start finish =
+  Option.withDefault "" (Bytes.toString (Bytes.slice start finish input))
+
+let digitsEnd input index = if digit (at input index) then digitsEnd input (index + 1) else index
+
+let number input start component =
+  if not (digit (at input start)) then
+    Err { (error InvalidComponent "expected a decimal component" (Some start)) with
+      component = Some component
+    }
+  else if at input start = 48 && digit (at input (start + 1)) then
+    Err { (error LeadingZero "numeric components cannot have leading zeros" (Some (start + 1))) with
+      component = Some component
+    }
+  else
+    let finish = digitsEnd input start
+    Ok (ascii input start finish, finish)
+
+let identifierEnd input index numeric =
+  if identifierByte (at input index) then
+    identifierEnd input (index + 1) (numeric && digit (at input index))
+  else
+    (index, numeric)
+
+identifiers : Options -> Bytes -> String -> Int -> Int -> Int -> List String -> Result (List String * Int * Int) Error
+let identifiers options input component start count index output =
+  if count >= options.maxIdentifiers then
+    Err { (error IdentifierLimit "too many version identifiers" (Some start)) with
+      component = Some component,
+      identifier = Some index
+    }
+  else
+    let (finish, numeric) = identifierEnd input start true
+    if finish = start then
+      Err { (error InvalidIdentifier "expected a nonempty ASCII identifier" (Some start)) with
+        component = Some component,
+        identifier = Some index
+      }
+    else if component = "prerelease" && numeric && finish - start > 1 && at input start = 48 then
+      Err { (error LeadingZero "numeric prerelease identifiers cannot have leading zeros" (Some (start + 1))) with
+        component = Some component,
+        identifier = Some index
+      }
+    else
+      let output = ascii input start finish :: output
+      if at input finish = 46 then
+        identifiers options input component (finish + 1) (count + 1) (index + 1) output
+      else
+        Ok (List.reverse output, finish, count + 1)
+
+let tail options input major minor patch index =
+  let pre =
+    if at input index = 45 then
+      identifiers options input "prerelease" (index + 1) 0 0 []
+    else
+      Ok ([], index, 0)
+  match pre with
+  | Err error -> Err error
+  | Ok (prerelease, index, count) ->
+    let build =
+      if at input index = 43 then
+        identifiers options input "build" (index + 1) count 0 []
+      else
+        Ok ([], index, count)
+    match build with
+    | Err error -> Err error
+    | Ok (build, index, _) ->
+      if index <> Bytes.length input then
+        Err (error InvalidVersion "unexpected character after version" (Some index))
+      else
+        Ok { build = build, major = major, minor = minor, patch = patch, prerelease = prerelease }
+
+readVersion : Options -> Bytes -> Int -> Result Version Error
+let readVersion options input start =
+  match number input start "major" with
+  | Err error -> Err error
+  | Ok (major, next) ->
+    if at input next <> 46 then
+      Err (error InvalidVersion "expected '.' after major component" (Some next))
+    else
+      match number input (next + 1) "minor" with
+      | Err error -> Err error
+      | Ok (minor, next) ->
+        if at input next <> 46 then
+          Err (error InvalidVersion "expected '.' after minor component" (Some next))
+        else
+          match number input (next + 1) "patch" with
+          | Err error -> Err error
+          | Ok (patch, next) -> tail options input major minor patch next
+
+let parseInput options tag text =
+  match validateOptions options with
+  | Err error -> Err error
+  | Ok _ ->
+    let input = Bytes.fromString text
+    if Bytes.length input > options.maxBytes then
+      Err (error InputLimit "version exceeds its input byte limit" None)
+    else
+      readVersion options input (if tag && at input 0 = 118 then 1 else 0)
+
+/// Parse one complete version, without trimming or filling missing components.
+public parseWith : Options -> String -> Result Version Error
+let parseWith options text = parseInput options false text
+
+/// Strict SemVer parsing with the default resource limits.
+public parse : String -> Result Version Error
+let parse text = parseWith defaults text
+
+/// Like parseWith, additionally accepting one leading lowercase 'v'. Offsets and
+/// the byte budget refer to the complete original tag, including that prefix.
+public parseTagWith : Options -> String -> Result Version Error
+let parseTagWith options text = parseInput options true text
+
+/// Parse a complete release tag with default limits and optional lowercase 'v'.
+public parseTag : String -> Result Version Error
+let parseTag text = parseTagWith defaults text
+
+/// Inspect immutable, validated parts without narrowing numeric components.
+public parts : Version -> Parts
+let parts version = version
+
+/// Render canonical SemVer spelling, retaining identifier case and build metadata.
+public toString : Version -> String
+let toString version =
+  version.major ++ "." ++ version.minor ++ "." ++ version.patch ++ (if List.isEmpty version.prerelease then
+    ""
+  else
+    "-" ++ String.join "." version.prerelease) ++ (if List.isEmpty version.build then
+    ""
+  else
+    "+" ++ String.join "." version.build)
+
+let fieldError component identifier failure = { failure with
+  component = Some component,
+  identifier = identifier,
+  offset = None
+}
+
+let checkNumber component text =
+  let input = Bytes.fromString text
+  match number input 0 component with
+  | Err error -> Err (fieldError component None error)
+  | Ok (_, finish) ->
+    if finish = Bytes.length input then
+      Ok ()
+    else
+      Err (fieldError component None (error InvalidComponent "core component must contain only decimal digits" None))
+
+let checkIdentifiers component index values =
+  match values with
+  | [] -> Ok ()
+  | text :: rest ->
+    let input = Bytes.fromString text
+    let (finish, numeric) = identifierEnd input 0 true
+    if finish = 0 || finish <> Bytes.length input then
+      Err (fieldError component (Some index) (error InvalidIdentifier "expected a nonempty ASCII identifier" None))
+    else if component = "prerelease" && numeric && finish > 1 && at input 0 = 48 then
+      Err (fieldError component (Some index) (error LeadingZero "numeric prerelease identifiers cannot have leading zeros" None))
+    else
+      checkIdentifiers component (index + 1) rest
+
+let consume remaining text =
+  let size = Bytes.length (Bytes.fromString text)
+  if size > remaining then
+    Err (error InputLimit "version exceeds its input byte limit" None)
+  else
+    Ok (remaining - size)
+
+let consumeCore remaining texts =
+  match texts with
+  | [] -> Ok remaining
+  | text :: rest ->
+    match consume remaining text with
+    | Err error -> Err error
+    | Ok remaining -> consumeCore remaining rest
+
+let consumeIds options remaining count texts =
+  match texts with
+  | [] -> Ok (remaining, count)
+  | text :: rest ->
+    if count >= options.maxIdentifiers then
+      Err (error IdentifierLimit "too many version identifiers" None)
+    else if remaining < 1 then
+      Err (error InputLimit "version exceeds its input byte limit" None)
+    else
+      match consume (remaining - 1) text with
+      | Err error -> Err error
+      | Ok remaining -> consumeIds options remaining (count + 1) rest
+
+let checkBudget options value =
+  if options.maxBytes < 2 then
+    Err (error InputLimit "version exceeds its input byte limit" None)
+  else
+    match consumeCore (options.maxBytes - 2) [value.major, value.minor, value.patch] with
+    | Err error -> Err error
+    | Ok remaining ->
+      match consumeIds options remaining 0 value.prerelease with
+      | Err error -> Err error
+      | Ok (remaining, count) ->
+        Result.map (fun _ -> ()) (consumeIds options remaining count value.build)
+
+/// Validate each constructed part independently; dots in an identifier cannot
+/// silently become multiple identifiers. Budgets count the final rendered form.
+public fromPartsWith : Options -> Parts -> Result Version Error
+let fromPartsWith options value =
+  match validateOptions options with
+  | Err error -> Err error
+  | Ok _ ->
+    match checkBudget options value with
+    | Err error -> Err error
+    | Ok _ ->
+      match checkNumber "major" value.major with
+      | Err error -> Err error
+      | Ok _ ->
+        match checkNumber "minor" value.minor with
+        | Err error -> Err error
+        | Ok _ ->
+          match checkNumber "patch" value.patch with
+          | Err error -> Err error
+          | Ok _ ->
+            match checkIdentifiers "prerelease" 0 value.prerelease with
+            | Err error -> Err error
+            | Ok _ ->
+              match checkIdentifiers "build" 0 value.build with
+              | Err error -> Err error
+              | Ok _ -> Ok value
+
+/// Construct a version with the default limits.
+public fromParts : Parts -> Result Version Error
+let fromParts value = fromPartsWith defaults value
+
+/// Construct a stable version from nonnegative machine integers.
+public fromInts : Int -> Int -> Int -> Result Version Error
+let fromInts major minor patch =
+  let invalid =
+    if major < 0 then
+      Some "major"
+    else if minor < 0 then Some "minor" else if patch < 0 then Some "patch" else None
+  match invalid with
+  | Some component ->
+    Err (fieldError component None (error OutOfRange "version integers must be nonnegative" None))
+  | None -> Ok {
+    build = [],
+    major = Int.toString major,
+    minor = Int.toString minor,
+    patch = Int.toString patch,
+    prerelease = []
+  }
+
+let integer input index value =
+  if index = Bytes.length input then
+    Some value
+  else
+    let digit = at input index - 48
+    if value > (9223372036854775807 - digit) / 10 then
+      None
+    else
+      integer input (index + 1) (value * 10 + digit)
+
+let narrow component text =
+  match integer (Bytes.fromString text) 0 0 with
+  | Some value -> Ok value
+  | None ->
+    Err (fieldError component None (error OutOfRange "component exceeds the Int range" None))
+
+/// Project the core to Ints only when all three components fit exactly.
+public toInts : Version -> Result IntParts Error
+let toInts version =
+  match narrow "major" version.major with
+  | Err error -> Err error
+  | Ok major ->
+    match narrow "minor" version.minor with
+    | Err error -> Err error
+    | Ok minor ->
+      Result.map (fun patch -> {
+        major = major,
+        minor = minor,
+        patch = patch
+      }) (narrow "patch" version.patch)
+
+internal compareNumber : String -> String -> Int
+let compareNumber left right =
+  let size = Prelude.compare (String.length left) (String.length right)
+  if size = 0 then Prelude.compare left right else size
+
+internal sameCore : Version -> Version -> Bool
+let sameCore left right =
+  left.major = right.major && left.minor = right.minor && left.patch = right.patch
+
+let numeric text =
+  let input = Bytes.fromString text
+  digitsEnd input 0 = Bytes.length input
+
+let compareIdentifier left right =
+  let a = numeric left
+  let b = numeric right
+  if a && b then
+    compareNumber left right
+  else if a then -1 else if b then 1 else Prelude.compare left right
+
+let compareIds left right =
+  match (left, right) with
+  | ([], []) -> 0
+  | ([], _) -> -1
+  | (_, []) -> 1
+  | (a :: restA, b :: restB) ->
+    let order = compareIdentifier a b
+    if order = 0 then compareIds restA restB else order
+
+let comparePre left right =
+  match (left, right) with
+  | ([], []) -> 0
+  | ([], _) -> 1
+  | (_, []) -> -1
+  | _ -> compareIds left right
+
+/// SemVer precedence: numeric core, then prerelease identifiers. Build metadata
+/// never changes this result. Returns a negative value, zero, or a positive value.
+public compare : Version -> Version -> Int
+let compare left right =
+  let major = compareNumber left.major right.major
+  if major <> 0 then
+    major
+  else
+    let minor = compareNumber left.minor right.minor
+    if minor <> 0 then
+      minor
+    else
+      let patch = compareNumber left.patch right.patch
+      if patch <> 0 then patch else comparePre left.prerelease right.prerelease
+
+/// Equality of precedence, ignoring build metadata.
+public samePrecedence : Version -> Version -> Bool
+let samePrecedence left right = compare left right = 0
+
+let carry reversed zeros =
+  match reversed with
+  | [] -> 49 :: zeros
+  | 57 :: rest -> carry rest (48 :: zeros)
+  | byte :: rest -> List.append (List.reverse rest) ((byte + 1) :: zeros)
+
+let increment text =
+  Option.withDefault "" (Bytes.toString (Bytes.fromList (carry (List.reverse (Bytes.toList (Bytes.fromString text))) [])))
+
+/// Keep the numeric core and clear both prerelease and build metadata.
+public release : Version -> Version
+let release version = { version with build = [], prerelease = [] }
+
+/// Increment major exactly, reset minor/patch, and clear all metadata.
+public bumpMajor : Version -> Version
+let bumpMajor version = {
+  build = [],
+  major = increment version.major,
+  minor = "0",
+  patch = "0",
+  prerelease = []
+}
+
+/// Increment minor exactly, reset patch, and clear all metadata.
+public bumpMinor : Version -> Version
+let bumpMinor version = {
+  build = [],
+  major = version.major,
+  minor = increment version.minor,
+  patch = "0",
+  prerelease = []
+}
+
+/// Increment patch exactly and clear all metadata, including on prereleases.
+public bumpPatch : Version -> Version
+let bumpPatch version = {
+  build = [],
+  major = version.major,
+  minor = version.minor,
+  patch = increment version.patch,
+  prerelease = []
+}

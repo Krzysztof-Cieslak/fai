@@ -50,6 +50,17 @@ path = "glob"
 path = "glob"
 
 [[packages]]
+id = "p-265796508ec936a7ca5480f7b69dc04a73429180247b4c8e34649f53a4f9fac7"
+version = "0.1.0"
+manifest-fingerprint = "blake3:b3c241f1265b0b4c86098730db108e5b012483735594299822a5a91733cf0166"
+
+[packages.logical]
+path = "semver"
+
+[packages.source]
+path = "semver"
+
+[[packages]]
 id = "p-29a3dc47c17c9decbc8bf9376daf4d3ff821a41c264596b5bc803afa27ddbc16"
 version = "0.1.0"
 manifest-fingerprint = "blake3:83bb544efecdcc7702f26a69d3f5a32ace435ac83799d2f403eda29c09d9f7ae"
@@ -2611,6 +2622,39 @@ target = "x86_64-unknown-linux-gnu"
 root-package = "p-10af05c7e3a19a3b796965f4cec33e569d90791d1cdadf5fdd8f6f8f7cf42647"
 input-fingerprint = "blake3:d0167e8ff4fc1c138220770dca50c4baec2bd05ed5518f3b989f1c2ccea51e43"
 packages = ["p-10af05c7e3a19a3b796965f4cec33e569d90791d1cdadf5fdd8f6f8f7cf42647"]
+edges = []
+branches = []
+resolved-with = "0.1.0"
+
+[[graphs]]
+id = "g-2f7cc59ac67d6f6b1fd92bb21c02de07845af2530af86fc686cf603704aabd4a"
+root = "semver"
+target = "aarch64-apple-darwin"
+root-package = "p-265796508ec936a7ca5480f7b69dc04a73429180247b4c8e34649f53a4f9fac7"
+input-fingerprint = "blake3:2d16301f04a35a6eec856aa04e4a3592a0e5eba80ea27c7d28189ce78c415303"
+packages = ["p-265796508ec936a7ca5480f7b69dc04a73429180247b4c8e34649f53a4f9fac7"]
+edges = []
+branches = []
+resolved-with = "0.1.0"
+
+[[graphs]]
+id = "g-84606914c1ca824a80f154ad83fe1a3f7a8708a7eee2ce9d671fc7e0fc3722ae"
+root = "semver"
+target = "x86_64-pc-windows-msvc"
+root-package = "p-265796508ec936a7ca5480f7b69dc04a73429180247b4c8e34649f53a4f9fac7"
+input-fingerprint = "blake3:a5413e5e5540492c5c9854a9f7df3a59f52a22644b49506143710e5439234527"
+packages = ["p-265796508ec936a7ca5480f7b69dc04a73429180247b4c8e34649f53a4f9fac7"]
+edges = []
+branches = []
+resolved-with = "0.1.0"
+
+[[graphs]]
+id = "g-90cab466a2eb8be06ae9ddbebd0fbd1bbf0c81bfece8529ba9b004a409ce007a"
+root = "semver"
+target = "x86_64-unknown-linux-gnu"
+root-package = "p-265796508ec936a7ca5480f7b69dc04a73429180247b4c8e34649f53a4f9fac7"
+input-fingerprint = "blake3:173010059b5406d269c7b6882e07439a2b17b189d2776261bf04275b5bb87b33"
+packages = ["p-265796508ec936a7ca5480f7b69dc04a73429180247b4c8e34649f53a4f9fac7"]
 edges = []
 branches = []
 resolved-with = "0.1.0"

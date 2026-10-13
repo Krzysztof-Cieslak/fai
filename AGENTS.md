@@ -1183,6 +1183,16 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/semver` library provides pure SemVer 2.0 values with
+unbounded decimal core components, strict parsing and an explicit lowercase-v
+tag parser. Equality preserves build metadata; `Semver.compare` implements
+metadata-independent precedence. Core bumps and `release` clear both metadata
+sections. `SemverRange` uses Fai's full-version requirement syntax, with prerelease
+eligibility scoped to the matching alternative and stable first-input selection
+on precedence ties. `SemverFai` validates the compiler's unsigned-64 core and
+no-build-metadata constraints. Native contracts and JIT/AOT fixtures cover input
+locations, large values, canonical requirements, and version selection.
+
 The optional `packages/glob` library provides pure byte-oriented `Glob`,
 `GlobSet` and Git-compatible `Ignore` matching, plus capability-based `GlobWalk`
 discovery. Compiled immutable automata avoid recursive backtracking; recursive

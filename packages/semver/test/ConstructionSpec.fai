@@ -1,0 +1,55 @@
+module SemverConstructionSpec
+
+let parts = {
+  build = ["commit", "abc"],
+  major = "1",
+  minor = "2",
+  patch = "3",
+  prerelease = ["rc", "1"]
+}
+example: Result.map Semver.parts (Semver.fromParts parts) = Ok parts
+example: Result.map Semver.toString (Semver.fromParts parts) = Ok "1.2.3-rc.1+commit.abc"
+example: Semver.fromParts { parts with major = "01" } |> Result.isErr
+example: Semver.fromParts { parts with minor = "" } |> Result.isErr
+example: Semver.fromParts { parts with patch = "1.2" } |> Result.isErr
+example: Semver.fromParts { parts with prerelease = ["a.b"] } |> Result.isErr
+example: Semver.fromParts { parts with prerelease = [""] } |> Result.isErr
+example: Semver.fromParts { parts with build = ["a+b"] } |> Result.isErr
+example: Semver.fromParts { parts with build = ["a.b"] } |> Result.isErr
+example: Semver.fromParts { parts with build = ["é"] } |> Result.isErr
+example: (match Semver.fromParts { parts with prerelease = ["a", "01"] } with
+| Err error ->
+  error.kind = Semver.LeadingZero && error.component = Some "prerelease" && error.identifier = Some 1 && error.offset = None
+| _ -> false)
+example: Result.map Semver.toString (Semver.fromInts 0 0 0) = Ok "0.0.0"
+example: Semver.fromInts (-1) 0 0 |> Result.isErr
+example: Semver.fromInts 0 (-1) 0 |> Result.isErr
+example: Semver.fromInts 0 0 (-1) |> Result.isErr
+example: (match Semver.fromInts 0 (-1) 0 with
+| Err error ->
+  error.kind = Semver.OutOfRange && error.component = Some "minor" && error.offset = None
+| _ -> false)
+example: (match Semver.fromInts 9223372036854775807 2 3 with
+| Ok version -> Semver.toInts version = Ok { major = 9223372036854775807, minor = 2, patch = 3 }
+| _ -> false)
+example: (match Semver.parse "1.9223372036854775808.3" with
+| Ok version ->
+  (match Semver.toInts version with
+  | Err error ->
+    error.kind = Semver.OutOfRange && error.component = Some "minor" && error.offset = None
+  | _ -> false)
+| _ -> false)
+
+let changed operation text expected =
+  Result.map (fun version -> Semver.toString (operation version)) (Semver.parse text) = Ok expected
+example: changed Semver.bumpMajor "1.2.3-rc.1+commit.abc" "2.0.0"
+example: changed Semver.bumpMinor "1.2.3-rc.1+commit.abc" "1.3.0"
+example: changed Semver.bumpPatch "1.2.3-rc.1+commit.abc" "1.2.4"
+example: changed Semver.release "1.2.3-rc.1+commit.abc" "1.2.3"
+example: changed Semver.release "1.2.3+commit.abc" "1.2.3"
+example: changed Semver.release "1.2.3" "1.2.3"
+example: changed Semver.bumpMajor "999999999999999999999999999999.2.3" "1000000000000000000000000000000.0.0"
+example: changed Semver.bumpMinor "0.99.99" "0.100.0"
+example: changed Semver.bumpPatch "0.0.1299" "0.0.1300"
+example: changed Semver.bumpPatch "0.0.0" "0.0.1"
+example: changed Semver.bumpPatch "0.0.9223372036854775807" "0.0.9223372036854775808"

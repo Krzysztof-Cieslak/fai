@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "integrations": [
+    {
+      "name": "runtime",
+      "entry": "examples/RuntimeChecks.fai",
+      "stdoutLines": ["Semver runtime checks passed"]
+    },
+    {
+      "name": "selection",
+      "entry": "examples/SelectVersion.fai",
+      "args": ["^1.2.0", "v1.2.0", "1.4.0+first", "1.4.0+second", "2.0.0", "1.5.0-beta.1"],
+      "stdoutLines": ["1.4.0+first"]
+    }
+  ]
+}

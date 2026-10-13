@@ -1,0 +1,291 @@
+module SemverRange
+
+/// Resource limits count written alternatives and comparators before deduplication.
+/// A '*' token counts as a comparator. Version limits apply to each endpoint.
+public type Options = {
+  maxAlternatives : Int,
+  maxBytes : Int,
+  maxComparators : Int,
+  version : Semver.Options
+}
+
+/// Up to 64 KiB of input, 256 alternatives and 1024 written comparators.
+public defaults : Options
+let defaults = {
+  maxAlternatives = 256,
+  maxBytes = 65536,
+  maxComparators = 1024,
+  version = Semver.defaults
+}
+
+type Operator =
+  | Exact
+  | Caret
+  | Tilde
+  | GreaterEqual
+  | Greater
+  | Less
+  | LessEqual
+
+type Comparator = { operator : Operator, version : Semver.Version }
+
+/// Canonical alternatives of comparator conjunctions. Source positions do not
+/// participate in identity. Each alternative retains its own prerelease gate.
+public opaque type Requirement = List (List Comparator)
+
+let at input index = Option.withDefault (-1) (Bytes.get index input)
+
+let issue kind message index = Semver.error kind message (Some index)
+
+// The manifest parser trims Unicode whitespace around each comparator token;
+// only ASCII spaces are accepted between an operator and its version.
+let spaceWidth input index finish =
+  let first = at input index
+  if first = 32 || (first >= 9 && first <= 13) then
+    1
+  else if index + 1 < finish && first = 194 && (at input (index + 1) = 133 || at input (index + 1) = 160) then
+    2
+  else if index + 2 < finish then
+    let second = at input (index + 1)
+    let third = at input (index + 2)
+    if (first = 225 && second = 154 && third = 128) || (first = 226 && second = 128 && ((third >= 128 && third <= 138) || third = 168 || third = 169 || third = 175)) || (first = 226 && second = 129 && third = 159) || (first = 227 && second = 128 && third = 128) then
+      3
+    else
+      0
+  else
+    0
+
+let trimStart input start finish =
+  if start >= finish then
+    start
+  else
+    let width = spaceWidth input start finish
+    if width = 0 then start else trimStart input (start + width) finish
+
+let trimEnd input start finish =
+  if finish <= start then
+    finish
+  else if spaceWidth input (finish - 1) finish = 1 then
+    trimEnd input start (finish - 1)
+  else if finish - start >= 2 && spaceWidth input (finish - 2) finish = 2 then
+    trimEnd input start (finish - 2)
+  else if finish - start >= 3 && spaceWidth input (finish - 3) finish = 3 then
+    trimEnd input start (finish - 3)
+  else
+    finish
+
+let spaces input index finish =
+  if index < finish && at input index = 32 then spaces input (index + 1) finish else index
+
+let findPlus input index finish =
+  if index = finish then
+    None
+  else if at input index = 43 then Some index else findPlus input (index + 1) finish
+
+let operator input start =
+  match at input start with
+  | 61 -> Ok (Exact, start + 1)
+  | 94 -> Ok (Caret, start + 1)
+  | 126 -> Ok (Tilde, start + 1)
+  | 62 ->
+    if at input (start + 1) = 61 then Ok (GreaterEqual, start + 2) else Ok (Greater, start + 1)
+  | 60 -> if at input (start + 1) = 61 then Ok (LessEqual, start + 2) else Ok (Less, start + 1)
+  | byte ->
+    if byte >= 48 && byte <= 57 then
+      Ok (Exact, start)
+    else
+      Err (issue Semver.InvalidRequirement "expected a full version, comparator, or '*'" start)
+
+let shift start error = { error with
+  offset = Option.map (fun offset -> start + offset) error.offset
+}
+
+token : Options -> (Semver.Version -> Result Unit Semver.Error) -> Bytes -> Int -> Int -> Result (Option Comparator) Semver.Error
+let token options validate input start finish =
+  let start = trimStart input start finish
+  let finish = trimEnd input start finish
+  if start = finish then
+    Err (issue Semver.InvalidRequirement "expected a nonempty comparator" start)
+  else if at input start = 42 && start + 1 = finish then
+    Ok None
+  else
+    match findPlus input start finish with
+    | Some index ->
+      Err (issue Semver.BuildMetadataNotAllowed "requirements cannot contain build metadata" index)
+    | None ->
+      match operator input start with
+      | Err error -> Err error
+      | Ok (operator, next) ->
+        let next = spaces input next finish
+        let text = Option.withDefault "" (Bytes.toString (Bytes.slice next finish input))
+        match Semver.parseWith options.version text with
+        | Err error -> Err (shift next error)
+        | Ok version ->
+          match validate version with
+          | Err error -> Err (shift next error)
+          | Ok _ -> Ok (Some { operator = operator, version = version })
+
+let symbol operator =
+  match operator with
+  | Exact -> "="
+  | Caret -> "^"
+  | Tilde -> "~"
+  | GreaterEqual -> ">="
+  | Greater -> ">"
+  | Less -> "<"
+  | LessEqual -> "<="
+
+let comparatorText comparator = symbol comparator.operator ++ Semver.toString comparator.version
+
+let comparatorOrder left right =
+  let operator = Prelude.compare left.operator right.operator
+  if operator <> 0 then
+    operator
+  else
+    Prelude.compare (Semver.toString left.version) (Semver.toString right.version)
+
+let unique sorted previous output =
+  match sorted with
+  | [] -> List.reverse output
+  | value :: rest ->
+    if previous = Some value then
+      unique rest previous output
+    else
+      unique rest (Some value) (value :: output)
+
+let canonicalClause comparators = unique (List.sortBy comparatorOrder comparators) None []
+
+let clauseText clause =
+  if List.isEmpty clause then "*" else String.join ", " (List.map comparatorText clause)
+
+let canonical clauses = unique (List.sortBy (fun left right ->
+  Prelude.compare (clauseText left) (clauseText right)) clauses) None []
+
+scan : Options -> (Semver.Version -> Result Unit Semver.Error) -> Bytes -> Int -> Int -> Int -> Int -> List Comparator -> List (List Comparator) -> Result Requirement Semver.Error
+let scan options validate input start index count alternatives comparators clauses =
+  if alternatives > options.maxAlternatives then
+    Err (issue Semver.AlternativeLimit "requirement exceeds its alternative limit" start)
+  else if index = Bytes.length input || at input index = 44 || at input index = 124 then
+    if count >= options.maxComparators then
+      Err (issue Semver.ComparatorLimit "requirement exceeds its comparator limit" start)
+    else
+      match token options validate input start index with
+      | Err error -> Err error
+      | Ok comparator ->
+        let comparators =
+          match comparator with
+          | None -> comparators
+          | Some comparator -> comparator :: comparators
+        if index = Bytes.length input then
+          Ok (canonical (canonicalClause comparators :: clauses))
+        else if at input index = 44 then
+          scan options validate input (index + 1) (index + 1) (count + 1) alternatives comparators clauses
+        else if at input (index + 1) <> 124 then
+          Err (issue Semver.InvalidRequirement "alternatives require '||'" index)
+        else
+          scan options validate input (index + 2) (index + 2) (count + 1) (alternatives + 1) [] (canonicalClause comparators :: clauses)
+  else
+    scan options validate input start (index + 1) count alternatives comparators clauses
+
+internal parseUsing : Options -> (Semver.Version -> Result Unit Semver.Error) -> String -> Result Requirement Semver.Error
+let parseUsing options validate text =
+  if options.maxBytes < 0 || options.maxAlternatives < 1 || options.maxComparators < 1 then
+    Err (Semver.error Semver.InvalidOptions "requirement byte limit must be nonnegative and counts positive" None)
+  else
+    match Semver.validateOptions options.version with
+    | Err error -> Err error
+    | Ok _ ->
+      let input = Bytes.fromString text
+      if Bytes.length input > options.maxBytes then
+        Err (Semver.error Semver.InputLimit "requirement exceeds its input byte limit" None)
+      else
+        scan options validate input 0 0 0 1 [] []
+
+/// Parse Fai's explicit range dialect over unbounded numeric components.
+/// Bare full versions are exact; commas intersect and '||' forms alternatives.
+public parseWith : Options -> String -> Result Requirement Semver.Error
+let parseWith options text = parseUsing options (fun _ -> Ok ()) text
+
+/// Parse a requirement with the default resource limits.
+public parse : String -> Result Requirement Semver.Error
+let parse text = parseWith defaults text
+
+/// Canonical comparator and alternative order, with duplicates removed.
+/// This is canonical syntax, not a reduction to a unique mathematical set.
+public toString : Requirement -> String
+let toString requirement = String.join " || " (List.map clauseText requirement)
+
+let comparatorMatches comparator version =
+  let order = Semver.compare version comparator.version
+  let expected = Semver.parts comparator.version
+  let actual = Semver.parts version
+  match comparator.operator with
+  | Exact -> order = 0
+  | GreaterEqual -> order >= 0
+  | Greater -> order > 0
+  | Less -> order < 0
+  | LessEqual -> order <= 0
+  | Tilde -> actual.major = expected.major && actual.minor = expected.minor && order >= 0
+  | Caret ->
+    actual.major = expected.major && order >= 0 && (if expected.major <> "0" then
+      true
+    else if expected.minor <> "0" then
+      actual.minor = expected.minor
+    else
+      actual.minor = expected.minor && actual.patch = expected.patch)
+
+let prereleaseOptIn version comparator =
+  Semver.sameCore version comparator.version && not (List.isEmpty (Semver.parts comparator.version).prerelease)
+
+let clauseMatches version clause =
+  List.all (fun comparator ->
+    comparatorMatches comparator version) clause && (List.isEmpty (Semver.parts version).prerelease || List.any (prereleaseOptIn version) clause)
+
+/// Build metadata is ignored. A prerelease must also be opted into by a
+/// comparator with the same numeric core in the alternative that matched.
+public matches : Requirement -> Semver.Version -> Bool
+let matches requirement version = List.any (clauseMatches version) requirement
+
+/// Keep matching values in their original order, including build variants.
+public filter : Requirement -> List Semver.Version -> List Semver.Version
+let filter requirement versions = List.filter (matches requirement) versions
+
+let select maximum requirement versions chosen =
+  match versions with
+  | [] -> chosen
+  | version :: rest ->
+    let chosen =
+      if not (matches requirement version) then
+        chosen
+      else
+        match chosen with
+        | None -> Some version
+        | Some previous ->
+          let order = Semver.compare version previous
+          if (maximum && order > 0) || (not maximum && order < 0) then Some version else chosen
+    select maximum requirement rest chosen
+
+/// Highest matching precedence, retaining the first input when precedence ties.
+public maxSatisfying : Requirement -> List Semver.Version -> Option Semver.Version
+let maxSatisfying requirement versions = select true requirement versions None
+
+/// Lowest matching precedence, retaining the first input when precedence ties.
+public minSatisfying : Requirement -> List Semver.Version -> Option Semver.Version
+let minSatisfying requirement versions = select false requirement versions None
+
+let checkClause validate clause =
+  match clause with
+  | [] -> Ok ()
+  | comparator :: rest ->
+    match validate comparator.version with
+    | Err error -> Err error
+    | Ok _ -> checkClause validate rest
+
+internal validateEndpoints : (Semver.Version -> Result Unit Semver.Error) -> Requirement -> Result Unit Semver.Error
+let validateEndpoints validate requirement =
+  match requirement with
+  | [] -> Ok ()
+  | clause :: rest ->
+    match checkClause validate clause with
+    | Err error -> Err error
+    | Ok _ -> validateEndpoints validate rest

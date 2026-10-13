@@ -1,0 +1,63 @@
+module SemverVersionSpec
+
+let roundTrip text = Result.map Semver.toString (Semver.parse text) = Ok text
+example: roundTrip "0.0.0"
+example: roundTrip "1.2.3"
+example: roundTrip "1.2.3-alpha.1"
+example: roundTrip "1.2.3-0.3.7"
+example: roundTrip "1.2.3-x.7.z.92"
+example: roundTrip "1.2.3-x-y-z.--"
+example: roundTrip "1.2.3+001.000"
+example: roundTrip "1.2.3-beta+exp.sha.5114f85"
+example: roundTrip "18446744073709551616.999999999999999999999999999999.0"
+example: roundTrip "1.0.0-99999999999999999999999999999999"
+example: roundTrip "1.0.0-01a+01"
+example: Result.map Semver.toString (Semver.parseTag "v1.2.3-rc.1+Build") = Ok "1.2.3-rc.1+Build"
+example: Result.map Semver.toString (Semver.parseTag "1.2.3") = Ok "1.2.3"
+
+let errorAt kind offset text =
+  match Semver.parse text with
+  | Err error -> error.kind = kind && error.offset = Some offset
+  | Ok _ -> false
+example: errorAt Semver.InvalidComponent 0 ""
+example: errorAt Semver.InvalidVersion 1 "1"
+example: errorAt Semver.InvalidVersion 3 "1.2"
+example: errorAt Semver.InvalidVersion 5 "1.2.3.4"
+example: errorAt Semver.InvalidComponent 0 "v1.2.3"
+example: errorAt Semver.InvalidComponent 0 " 1.2.3"
+example: errorAt Semver.InvalidVersion 5 "1.2.3 "
+example: errorAt Semver.InvalidVersion 5 "1.2.3\n"
+example: errorAt Semver.InvalidComponent 0 "+1.2.3"
+example: errorAt Semver.InvalidComponent 0 "-1.2.3"
+example: errorAt Semver.InvalidComponent 2 "1..3"
+example: errorAt Semver.InvalidComponent 4 "1.2."
+example: errorAt Semver.LeadingZero 1 "01.2.3"
+example: errorAt Semver.LeadingZero 3 "1.02.3"
+example: errorAt Semver.LeadingZero 5 "1.2.03"
+example: errorAt Semver.InvalidIdentifier 6 "1.2.3-"
+example: errorAt Semver.InvalidIdentifier 6 "1.2.3+"
+example: errorAt Semver.InvalidIdentifier 8 "1.2.3-a."
+example: errorAt Semver.InvalidIdentifier 8 "1.2.3+a."
+example: errorAt Semver.InvalidIdentifier 8 "1.2.3-a..b"
+example: errorAt Semver.InvalidIdentifier 8 "1.2.3+a..b"
+example: errorAt Semver.InvalidIdentifier 6 "1.2.3-é"
+example: errorAt Semver.InvalidIdentifier 6 "1.2.3+é"
+example: errorAt Semver.InvalidVersion 7 "1.2.3-a_b"
+example: errorAt Semver.InvalidVersion 7 "1.2.3+a_b"
+example: errorAt Semver.InvalidVersion 7 "1.2.3+a+b"
+example: errorAt Semver.LeadingZero 7 "1.2.3-00"
+example: errorAt Semver.LeadingZero 9 "1.2.3-a.01"
+example: errorAt Semver.InvalidVersion 5 "1.2.3\u{0}"
+example: (match Semver.parseTag "vv1.2.3" with
+| Err error -> error.offset = Some 1
+| _ -> false)
+example: (match Semver.parseTag "V1.2.3" with
+| Err error -> error.offset = Some 0
+| _ -> false)
+example: (match Semver.parseTag "v1.02.3" with
+| Err error -> error.offset = Some 4 && error.component = Some "minor"
+| _ -> false)
+example: (match Semver.parse "1.2.3-a.01" with
+| Err error ->
+  error.component = Some "prerelease" && error.identifier = Some 1 && error.message = "numeric prerelease identifiers cannot have leading zeros"
+| _ -> false)
