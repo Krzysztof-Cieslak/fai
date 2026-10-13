@@ -94,18 +94,26 @@ jobs:
       - name: Build and package release executables
         env:
           RELEASE_TARGET: ${{ matrix.target }}
-        shell: bash
-        run: python scripts/release.py pack --target "$RELEASE_TARGET" --output dist
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, "scripts/release.py", "pack", "--target", os.environ["RELEASE_TARGET"], "--output", "dist"], check=True)
       - name: Relocated compiler, JIT, contracts, AOT, and daemon
         env:
           RELEASE_TARGET: ${{ matrix.target }}
-        shell: bash
-        run: python scripts/tests/smoke_compiler.py --fai "target/$RELEASE_TARGET/release/fai"
+        shell: python
+        run: |
+          import os, subprocess, sys
+          from pathlib import Path
+          compiler = Path("target") / os.environ["RELEASE_TARGET"] / "release" / "fai"
+          subprocess.run([sys.executable, "scripts/tests/smoke_compiler.py", "--fai", str(compiler)], check=True)
       - name: Install and qualify the exact packaged bytes
         env:
           RELEASE_TARGET: ${{ matrix.target }}
-        shell: bash
-        run: python scripts/tests/release_smoke.py --directory dist --target "$RELEASE_TARGET" --previous-stable
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, "scripts/tests/release_smoke.py", "--directory", "dist", "--target", os.environ["RELEASE_TARGET"], "--previous-stable"], check=True)
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
