@@ -20,5 +20,8 @@ toml.workspace = true
 toml_edit.workspace = true
 glob.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console"] }
+
 [lints]
 workspace = true

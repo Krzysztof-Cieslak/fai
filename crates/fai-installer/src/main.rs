@@ -30,6 +30,8 @@ fn main() {
 }
 
 fn run(args: Vec<std::ffi::OsString>) -> Result<i32> {
+    #[cfg(windows)]
+    fai_toolchain::prevent_stdio_inheritance();
     if std::env::var_os("FAI_TOOLCHAIN_PROBE").is_some() {
         return Err(invalid("register a compiler payload, not the fai launcher"));
     }
