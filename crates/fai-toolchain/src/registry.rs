@@ -1,6 +1,11 @@
 //! Backwards-compatible inventory and atomic settings for installed compilers.
 
-use std::{fs::File, io::Write, path::Path, process::Command};
+use std::{
+    fs::File,
+    io::{self, Write},
+    path::Path,
+    process::{Command, Stdio},
+};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_package::PackageVersion;
@@ -204,11 +209,12 @@ fn absolute(path: &Path) -> Result<Utf8PathBuf> {
 /// Probes a real compiler without opening a project or allowing launcher recursion.
 pub fn probe(path: &Utf8Path) -> Result<InstalledCompiler> {
     let executable = path.canonicalize_utf8()?;
-    let output = Command::new(&executable)
-        .arg("build-info")
-        .env("FAI_TOOLCHAIN_PROBE", "1")
-        .stdin(std::process::Stdio::null())
-        .output()?;
+    let mut command = Command::new(&executable);
+    command.arg("build-info").env("FAI_TOOLCHAIN_PROBE", "1").stdin(Stdio::null());
+    let output = spawn_probe(&mut command, || {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    })?
+    .wait_with_output()?;
     if !output.status.success() {
         return Err(invalid(format!("{} did not report compiler build information", executable)));
     }
@@ -224,6 +230,32 @@ pub fn probe(path: &Utf8Path) -> Result<InstalledCompiler> {
         executable,
         build_id: field("toolBuildId")?.into(),
     })
+}
+
+const MAX_BUSY_RETRIES: usize = 20;
+
+fn spawn_probe(command: &mut Command, mut pause: impl FnMut()) -> io::Result<std::process::Child> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    retry_executable_busy(|| command.spawn(), &mut pause)
+}
+
+fn retry_executable_busy<T>(
+    mut spawn: impl FnMut() -> io::Result<T>,
+    mut pause: impl FnMut(),
+) -> io::Result<T> {
+    // A concurrent fork can briefly retain a just-written executable's writer,
+    // even after its owner closes it: CLOEXEC applies only when that child execs.
+    // Retry only failed spawns, never a running process or its exit status.
+    let mut remaining = MAX_BUSY_RETRIES;
+    loop {
+        match spawn() {
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && remaining > 0 => {
+                remaining -= 1;
+                pause();
+            }
+            result => return result,
+        }
+    }
 }
 
 /// An exclusive advisory file lock, released on drop.
@@ -283,4 +315,118 @@ pub fn atomic_write(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn successful_probe_spawns_are_not_repeated() {
+        let mut attempts = 0;
+        let result = retry_executable_busy(
+            || {
+                attempts += 1;
+                Ok(42)
+            },
+            || panic!("successful spawns must not wait"),
+        );
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn busy_probe_spawns_are_retried_until_success() {
+        let mut attempts = 0;
+        let mut pauses = 0;
+        let result = retry_executable_busy(
+            || {
+                attempts += 1;
+                if attempts < 3 { Err(io::ErrorKind::ExecutableFileBusy.into()) } else { Ok(42) }
+            },
+            || pauses += 1,
+        );
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!((attempts, pauses), (3, 2));
+    }
+
+    #[test]
+    fn persistent_busy_probe_spawns_return_the_original_error() {
+        let mut attempts = 0;
+        let mut pauses = 0;
+        let result: io::Result<()> = retry_executable_busy(
+            || {
+                attempts += 1;
+                Err(io::Error::new(io::ErrorKind::ExecutableFileBusy, "still open for writing"))
+            },
+            || pauses += 1,
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ExecutableFileBusy);
+        assert_eq!(error.to_string(), "still open for writing");
+        assert_eq!((attempts, pauses), (MAX_BUSY_RETRIES + 1, MAX_BUSY_RETRIES));
+    }
+
+    #[test]
+    fn permission_errors_are_not_retried() {
+        let result: io::Result<()> = retry_executable_busy(
+            || Err(io::ErrorKind::PermissionDenied.into()),
+            || panic!("permission errors must not wait"),
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn missing_executables_are_not_retried() {
+        let result: io::Result<()> = retry_executable_busy(
+            || Err(io::ErrorKind::NotFound.into()),
+            || panic!("missing executables must not wait"),
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_different_error_ends_busy_retries_immediately() {
+        let mut attempts = 0;
+        let mut pauses = 0;
+        let result: io::Result<()> = retry_executable_busy(
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(io::ErrorKind::ExecutableFileBusy.into())
+                } else {
+                    Err(io::ErrorKind::InvalidInput.into())
+                }
+            },
+            || pauses += 1,
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!((attempts, pauses), (2, 1));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn real_probe_waits_for_the_executable_writer_to_close() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let executable = temporary.path().join("probe");
+        let mut writer = File::create(&executable).unwrap();
+        writer
+            .write_all(b"#!/bin/sh\nprintf 'probe stdout'; printf 'probe stderr' >&2; exit 7\n")
+            .unwrap();
+        writer.set_permissions(std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut writer = Some(writer);
+        let mut pauses = 0;
+        let child = spawn_probe(&mut Command::new(&executable), || {
+            pauses += 1;
+            drop(writer.take());
+        })
+        .unwrap();
+        let output = child.wait_with_output().unwrap();
+        // A successful spawn is never replayed, even when the child fails.
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"probe stdout");
+        assert_eq!(output.stderr, b"probe stderr");
+        assert_eq!(pauses, 1);
+    }
 }
