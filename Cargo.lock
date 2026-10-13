@@ -806,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "fai-bench-workloads"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "proptest",
  "wait-timeout",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "fai-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "camino",
  "clap",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "fai-codegen"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "fai-contracts"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fai-core",
  "fai-db",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "fai-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fai-db",
  "fai-diagnostics",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "fai-corpus"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "camino",
  "fai-db",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "fai-db"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "camino",
  "fai-diagnostics",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "fai-diagnostics"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fai-span",
  "serde",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "fai-driver"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "camino",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "fai-fmt"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fai-span",
  "fai-syntax",
@@ -977,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "fai-ide"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fai-db",
  "fai-diagnostics",
@@ -994,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "fai-installer"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "camino",
  "clap",
@@ -1013,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "fai-lsp"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "camino",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "fai-package"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "fai-diagnostics",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "fai-package-store"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "camino",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "fai-rc"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fai-core",
  "fai-db",
@@ -1087,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "fai-resolve"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fai-db",
  "fai-diagnostics",
@@ -1101,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "fai-runtime"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "corosensei",
  "crossbeam-deque",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "fai-server"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "camino",
@@ -1149,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "fai-span"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "camino",
  "proptest",
@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "fai-syntax"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fai-db",
  "fai-diagnostics",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "fai-tests"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "camino",
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "fai-toolchain"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "camino",
  "fai-package",
@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "fai-types"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fai-db",
  "fai-diagnostics",

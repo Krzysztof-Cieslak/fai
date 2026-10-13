@@ -5,6 +5,8 @@ use std::{
     process::{Command, Output},
 };
 
+const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 struct Fixture {
     _temp: tempfile::TempDir,
     root: PathBuf,
@@ -27,7 +29,7 @@ impl Fixture {
         git(&root, &["remote", "add", "origin", remote.to_str().unwrap()]);
         let fixture = Self { _temp: temp, root, remote, cache };
         fixture.write(".gitignore", ".fai/\nfai.local.toml\nfai.local.lock\n");
-        fixture.write("fai.toml", "manifest-version = 1\n[package]\nname = 'library'\nversion = '1.0.0'\nfai-version = '^0.1.0'\n");
+        fixture.write("fai.toml", &format!("manifest-version = 1\n[package]\nname = 'library'\nversion = '1.0.0'\nfai-version = '^{COMPILER_VERSION}'\n"));
         fixture.write("src/Library.fai", "module Library\npublic identity : Int -> Int\nlet identity value = value\nexample: identity 1 = 1\n");
         fixture.commit();
         git(&fixture.root, &["tag", "v1.0.0"]);
@@ -146,10 +148,10 @@ fn failed_atomic_push_can_resume_without_another_version_bump() {
 fn a_batch_uses_planned_dependency_releases_and_preserves_authored_ranges() {
     let fixture = Fixture::new();
     fixture.write("fai.toml", "manifest-version = 1\n[workspace]\nmembers = ['json', 'web']\n");
-    fixture.write("json/fai.toml", "manifest-version = 1\n[package]\nname = 'json'\nversion = '1.0.0'\nfai-version = '^0.1.0'\n");
+    fixture.write("json/fai.toml", &format!("manifest-version = 1\n[package]\nname = 'json'\nversion = '1.0.0'\nfai-version = '^{COMPILER_VERSION}'\n"));
     fixture.write("json/src/Json.fai", "module Json\npublic value : Int\nlet value = 42\n");
     let url = lsp_types::Url::from_file_path(&fixture.remote).unwrap();
-    fixture.write("web/fai.toml", &format!("manifest-version = 1\n[package]\nname = 'web'\nversion = '1.0.0'\nfai-version = '^0.1.0'\n[dependencies]\njson = {{git = '{url}', subdir = 'json', version = '^1.1.0'}}\n"));
+    fixture.write("web/fai.toml", &format!("manifest-version = 1\n[package]\nname = 'web'\nversion = '1.0.0'\nfai-version = '^{COMPILER_VERSION}'\n[dependencies]\njson = {{git = '{url}', subdir = 'json', version = '^1.1.0'}}\n"));
     fixture.write("web/src/Web.fai", "module Web\nimport json.Json\npublic value : Int\nlet value = Json.value\nexample: value = 42\n");
     fixture.commit();
     git(&fixture.root, &["push", "-q", "origin", "main"]);
@@ -187,7 +189,7 @@ fn a_development_pin_cannot_mask_a_normal_consumer_failure() {
     fixture.commit();
     git(&fixture.root, &["tag", "dep/v2.0.0"]);
     git(&fixture.root, &["tag", "helper/v1.0.0"]);
-    fixture.write("fai.toml", &format!("manifest-version = 1\n[package]\nname = 'library'\nversion = '1.0.0'\nfai-version = '^0.1.0'\n[dependencies]\ndep = {{git = '{url}', subdir = 'dep', version = '*'}}\n[dev-dependencies]\nhelper = {{git = '{url}', subdir = 'helper', version = '*'}}\n"));
+    fixture.write("fai.toml", &format!("manifest-version = 1\n[package]\nname = 'library'\nversion = '1.0.0'\nfai-version = '^{COMPILER_VERSION}'\n[dependencies]\ndep = {{git = '{url}', subdir = 'dep', version = '*'}}\n[dev-dependencies]\nhelper = {{git = '{url}', subdir = 'helper', version = '*'}}\n"));
     fixture.write(
         "src/Library.fai",
         "module Library\nimport dep.Dep\npublic value : Int\nlet value = Dep.oldValue\n",

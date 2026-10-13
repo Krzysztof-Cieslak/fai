@@ -3,7 +3,7 @@ manifest-version = 1
 [package]
 name = "import-demo"
 version = "0.1.0"
-fai-version = "^0.1.0"
+fai-version = "0.0.1 || ^0.1.0"
 
 [dependencies]
 collections = { path = "../collections" }
