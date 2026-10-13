@@ -46,16 +46,32 @@ def main():
                         print(output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output,
                               file=sys.stderr)
                 if os.name == "nt" and isinstance(error, subprocess.TimeoutExpired):
+                    print(f"Executable outputs: {[(path.name, path.stat().st_size) for path in root.glob('*.exe')]}", file=sys.stderr)
                     try:
                         processes = subprocess.run([
-                            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-                            "Get-CimInstance Win32_Process -Filter \"Name='fai.exe' OR Name='link.exe' OR Name='mspdbsrv.exe'\" | "
-                            "Select-Object ProcessId,ParentProcessId,Name,CommandLine,KernelModeTime,UserModeTime,WorkingSetSize | ConvertTo-Json -Depth 3",
+                            "pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                            "Get-Process -Name fai,link,mspdbsrv -ErrorAction SilentlyContinue | "
+                            "Select-Object Id,ProcessName,CPU,WorkingSet64,Path | ConvertTo-Json -Depth 3",
                         ], capture_output=True, timeout=15)
                         print(processes.stdout.decode("utf-8", errors="replace"), file=sys.stderr)
-                        print(f"Executable outputs: {[(path.name, path.stat().st_size) for path in root.glob('*.exe')]}", file=sys.stderr)
                     except (OSError, subprocess.TimeoutExpired) as diagnostic_error:
                         print(f"Process diagnostics unavailable: {diagnostic_error}", file=sys.stderr)
+                    if arguments[0] == "build":
+                        try:
+                            stop = subprocess.run([str(executable), "daemon", "stop", "-C", str(root)],
+                                                  env=environment, capture_output=True, timeout=15)
+                            print(f"Diagnostic daemon stop: {stop.returncode}", file=sys.stderr)
+                            direct_args = list(arguments)
+                            if "--out" in direct_args:
+                                direct_args[direct_args.index("--out") + 1] = str(root / "program-in-process")
+                            direct = subprocess.run([str(executable), *direct_args, "--no-daemon", "-C", str(root)],
+                                                    env={**environment, "FAI_CACHE_DIR": str(root / "diagnostic-cache")},
+                                                    capture_output=True, timeout=120)
+                            print(f"Diagnostic in-process build: {direct.returncode}", file=sys.stderr)
+                            print(direct.stdout.decode("utf-8", errors="replace"), file=sys.stderr)
+                            print(direct.stderr.decode("utf-8", errors="replace"), file=sys.stderr)
+                        except (OSError, subprocess.TimeoutExpired) as diagnostic_error:
+                            print(f"In-process diagnostic failed: {diagnostic_error}", file=sys.stderr)
                 raise
 
         try:
