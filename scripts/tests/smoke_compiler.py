@@ -13,6 +13,12 @@ import tempfile
 import time
 
 
+def daemon_pid(status):
+    match = re.search(r"pid (\d+)", status)
+    assert match is not None, f"Expected a running daemon, got: {status}"
+    return match.group(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fai", type=Path, required=True)
@@ -23,7 +29,9 @@ def main():
     if not binary.exists() and binary.with_suffix(".exe").exists():
         binary = binary.with_suffix(".exe")
     original = json.loads(subprocess.check_output([str(binary), "build-info"], text=True))
-    with tempfile.TemporaryDirectory(prefix="fai-portable-") as temporary:
+    # macOS's default temporary path leaves too little room for a Unix socket.
+    base = Path("/tmp/opencode") if Path("/tmp/opencode").is_dir() else "/tmp" if sys.platform == "darwin" else None
+    with tempfile.TemporaryDirectory(prefix="fai-portable-", dir=base) as temporary:
         root = Path(temporary)
         relocated = root / binary.name
         shutil.copy2(binary, relocated)
@@ -85,7 +93,7 @@ def main():
             before = invoke(relocated, "daemon", "status")
             invoke(relocated, "check", "--no-examples")
             after = invoke(relocated, "daemon", "status")
-            assert re.search(r"pid (\d+)", before).group(1) == re.search(r"pid (\d+)", after).group(1)
+            assert daemon_pid(before) == daemon_pid(after)
             assert original["toolBuildId"] in after
             invoke(relocated, "test")
             assert invoke(relocated, "run", "Main.fai") == "portable\n"
@@ -110,7 +118,7 @@ def main():
                 forwarded_before = invoke(launcher, "daemon", "status")
                 invoke(launcher, "check", "--no-examples")
                 forwarded_after = invoke(launcher, "daemon", "status")
-                assert re.search(r"pid (\d+)", forwarded_before).group(1) == re.search(r"pid (\d+)", forwarded_after).group(1)
+                assert daemon_pid(forwarded_before) == daemon_pid(forwarded_after)
                 assert invoke(launcher, "run", "Main.fai") == "portable\n"
                 print("Launcher: captured output and warm daemon forwarding passed")
             if args.other_fai:
@@ -120,7 +128,7 @@ def main():
                 assert original["toolBuildId"] != other_info["toolBuildId"]
                 invoke(other, "check", "--no-examples")
                 other_status = invoke(other, "daemon", "status")
-                assert re.search(r"pid (\d+)", other_status).group(1) != re.search(r"pid (\d+)", after).group(1)
+                assert daemon_pid(other_status) != daemon_pid(after)
                 assert original["toolBuildId"] in invoke(relocated, "daemon", "status")
                 invoke(other, "daemon", "stop")
         finally:

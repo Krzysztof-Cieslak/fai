@@ -19,6 +19,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import release
+from smoke_compiler import daemon_pid
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -69,7 +70,8 @@ def qualify(directory, target, fetch_previous=False):
     manifest = {"schemaVersion": 1, "kind": "fai-compiler", "version": version, "tag": f"v{version}",
                 "commit": report["commit"], "minimumInstaller": release.config()["minimumInstaller"],
                 "targets": {target: {key: report[key] for key in ("minimumSystem", "buildInfo", "compiler", "installer")}}}
-    with tempfile.TemporaryDirectory(prefix="fai-release-") as temporary:
+    base = Path("/tmp/opencode") if Path("/tmp/opencode").is_dir() else "/tmp" if sys.platform == "darwin" else None
+    with tempfile.TemporaryDirectory(prefix="fai-release-", dir=base) as temporary:
         root = Path(temporary).resolve()
         mirror = root / "mirror"
         tagged = mirror / "download" / f"v{version}"
@@ -151,6 +153,9 @@ def qualify(directory, target, fetch_previous=False):
             selected = json.loads(invoke("toolchain", "which", "--message-format=json"))
             assert selected["result"]["reason"] == "project"
             invoke("check", "--no-examples")
+            before = daemon_pid(invoke("daemon", "status"))
+            invoke("check", "--no-examples")
+            assert daemon_pid(invoke("daemon", "status")) == before
             invoke("test")
             assert invoke("run") == "release works\n"
             invoke("build", "--out", str(root / "program"))
