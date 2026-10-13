@@ -65,6 +65,18 @@ class ChangelogTests(unittest.TestCase):
 
 
 class ReleaseEnvironmentTests(unittest.TestCase):
+    def test_python_windows_environment_keys_are_uppercase(self):
+        with tempfile.TemporaryDirectory(prefix="MSVC tools ") as temporary:
+            tools = Path(temporary)
+            linker = tools / "bin/Hostx64/x64/link.exe"
+            linker.parent.mkdir(parents=True)
+            linker.touch()
+            environment = release.release_environment("x86_64-pc-windows-msvc", environ={
+                "VCTOOLSINSTALLDIR": str(tools), "VSCMD_ARG_HOST_ARCH": "x64", "PATH": "git/usr/bin",
+            })
+            self.assertEqual(environment["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"], str(linker))
+            self.assertEqual(environment["PATH"].split(os.pathsep)[0], str(linker.parent))
+
     def test_msvc_linker_precedes_git_bash_for_host_and_target_builds(self):
         with tempfile.TemporaryDirectory(prefix="MSVC tools ") as temporary:
             tools = Path(temporary)
