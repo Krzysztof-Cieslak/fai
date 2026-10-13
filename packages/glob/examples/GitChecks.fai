@@ -165,8 +165,10 @@ let git env root arguments input =
   match Path.toString root with
   | Err error -> Err (Path.errorToString error)
   | Ok directory ->
+    // Resolve the isolated config inside the command's explicit working directory;
+    // appending '/' to a Windows verbatim path would change its interpretation.
     let command =
-      Process.command "git" arguments |> Process.workingDirectory directory |> Process.stdinText input |> Process.setEnvironment "GIT_CONFIG_NOSYSTEM" "1" |> Process.setEnvironment "GIT_CONFIG_GLOBAL" (directory ++ "/empty-config") |> Process.setEnvironment "LC_ALL" "C" |> Process.unsetEnvironment "GIT_DIR" |> Process.unsetEnvironment "GIT_WORK_TREE" |> Process.unsetEnvironment "GIT_INDEX_FILE" |> Process.unsetEnvironment "GIT_CONFIG_COUNT"
+      Process.command "git" arguments |> Process.workingDirectory directory |> Process.stdinText input |> Process.setEnvironment "GIT_CONFIG_NOSYSTEM" "1" |> Process.setEnvironment "GIT_CONFIG_GLOBAL" "empty-config" |> Process.setEnvironment "LC_ALL" "C" |> Process.unsetEnvironment "GIT_DIR" |> Process.unsetEnvironment "GIT_WORK_TREE" |> Process.unsetEnvironment "GIT_INDEX_FILE" |> Process.unsetEnvironment "GIT_CONFIG_COUNT"
     Result.mapError Process.errorToString (Process.run env { Process.defaults with
       timeoutMs = Some 30000
     } command)
