@@ -104,7 +104,7 @@ def qualify(directory, target, fetch_previous=False):
         launcher = home / "bin" / executable
         project = root / "project"
         project.mkdir()
-        text = f'manifest-version = 1\n[package]\nname = "release_smoke"\nversion = "0.1.0"\nfai-version = "{version}"\n[toolchain]\nversion = "{version}"\n'
+        text = f'manifest-version = 1\n[package]\nname = "release-smoke"\nversion = "0.1.0"\nfai-version = "{version}"\n[toolchain]\nversion = "{version}"\n'
         (project / "fai.toml").write_text(text, encoding="utf-8")
         (project / "src").mkdir()
         (project / "src/Main.fai").write_text('module Main\nexample: 40 + 2 = 42\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine "release works"\n', encoding="utf-8")
