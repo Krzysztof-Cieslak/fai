@@ -5,6 +5,24 @@ param(
     [switch]$NoModifyPath
 )
 
+function Assert-FaiInstallerArchive {
+    param([Parameter(Mandatory = $true)][string]$ArchivePath)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Zip = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        [string[]]$Names = @($Zip.Entries | ForEach-Object { $_.FullName })
+        [Array]::Sort($Names, [StringComparer]::Ordinal)
+        if ($Names.Count -ne 3 -or ($Names -join "`n") -cne "LICENSE`nbin/fai.exe`nmetadata.json") {
+            throw ('Invalid installer archive members: ' + ($Names -join ', '))
+        }
+        foreach ($Entry in $Zip.Entries) {
+            $Kind = ($Entry.ExternalAttributes -shr 16) -band 61440
+            if ($Kind -ne 0 -and $Kind -ne 32768) { throw 'Installer archive contains a non-regular file' }
+        }
+    } finally { $Zip.Dispose() }
+}
+
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $ReleaseVersion = '@VERSION@'
@@ -51,18 +69,7 @@ try {
     if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Expected) {
         throw 'Installer checksum mismatch'
     }
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $Zip = [IO.Compression.ZipFile]::OpenRead($Archive)
-    try {
-        $Names = @($Zip.Entries | ForEach-Object { $_.FullName } | Sort-Object)
-        if ($Names.Count -ne 3 -or ($Names -join "`n") -cne "LICENSE`nbin/fai.exe`nmetadata.json") {
-            throw 'Invalid installer archive members'
-        }
-        foreach ($Entry in $Zip.Entries) {
-            $Kind = ($Entry.ExternalAttributes -shr 16) -band 61440
-            if ($Kind -ne 0 -and $Kind -ne 32768) { throw 'Installer archive contains a non-regular file' }
-        }
-    } finally { $Zip.Dispose() }
+    Assert-FaiInstallerArchive -ArchivePath $Archive
     Expand-Archive -LiteralPath $Archive -DestinationPath $Temporary
     $Launcher = Join-Path $Temporary 'bin/fai.exe'
     $Arguments = @('installer', 'setup', '--version', $Version)

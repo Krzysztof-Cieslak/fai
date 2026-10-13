@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -34,9 +35,28 @@ def main():
         )
 
         def invoke(executable, *arguments):
-            return subprocess.run([str(executable), *arguments, "-C", str(root)],
-                                  env=environment, capture_output=True, text=True,
-                                  encoding="utf-8", check=True, timeout=120).stdout
+            try:
+                return subprocess.run([str(executable), *arguments, "-C", str(root)],
+                                      env=environment, capture_output=True, text=True,
+                                      encoding="utf-8", check=True, timeout=120).stdout
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                print(f"Relocated compiler command failed: {arguments}", file=sys.stderr)
+                for output in (error.stdout, error.stderr):
+                    if output:
+                        print(output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output,
+                              file=sys.stderr)
+                if os.name == "nt" and isinstance(error, subprocess.TimeoutExpired):
+                    try:
+                        processes = subprocess.run([
+                            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                            "Get-CimInstance Win32_Process -Filter \"Name='fai.exe' OR Name='link.exe' OR Name='mspdbsrv.exe'\" | "
+                            "Select-Object ProcessId,ParentProcessId,Name,CommandLine,KernelModeTime,UserModeTime,WorkingSetSize | ConvertTo-Json -Depth 3",
+                        ], capture_output=True, timeout=15)
+                        print(processes.stdout.decode("utf-8", errors="replace"), file=sys.stderr)
+                        print(f"Executable outputs: {[(path.name, path.stat().st_size) for path in root.glob('*.exe')]}", file=sys.stderr)
+                    except (OSError, subprocess.TimeoutExpired) as diagnostic_error:
+                        print(f"Process diagnostics unavailable: {diagnostic_error}", file=sys.stderr)
+                raise
 
         try:
             assert json.loads(invoke(relocated, "build-info")) == original

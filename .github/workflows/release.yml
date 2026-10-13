@@ -98,6 +98,12 @@ jobs:
         run: |
           import os, subprocess, sys
           subprocess.run([sys.executable, "scripts/release.py", "pack", "--target", os.environ["RELEASE_TARGET"], "--output", "dist"], check=True)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
       - name: Relocated compiler, JIT, contracts, AOT, and daemon
         env:
           RELEASE_TARGET: ${{ matrix.target }}
@@ -114,12 +120,6 @@ jobs:
         run: |
           import os, subprocess, sys
           subprocess.run([sys.executable, "scripts/tests/release_smoke.py", "--directory", "dist", "--target", os.environ["RELEASE_TARGET"], "--previous-stable"], check=True)
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.target }}
-          path: dist/
-          if-no-files-found: error
-          retention-days: 30
 
   publish:
     name: Publish complete immutable release
