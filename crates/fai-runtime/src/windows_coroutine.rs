@@ -2,7 +2,7 @@
 
 use std::{
     any::Any,
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
 };
@@ -37,11 +37,26 @@ impl Drop for Root {
     }
 }
 
-thread_local! { static ROOT: Root = Root::new(); }
+thread_local! {
+    static ROOT: Root = Root::new();
+    static CURRENT: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
+}
 
 #[inline(never)]
-fn root_fiber() -> *mut c_void {
-    ROOT.with(|root| root.0)
+fn current_fiber() -> *mut c_void {
+    let current = CURRENT.with(Cell::get);
+    if current.is_null() { ROOT.with(|root| root.0) } else { current }
+}
+
+#[inline(never)]
+unsafe fn switch_fiber(fiber: *mut c_void) {
+    CURRENT.with(|current| current.set(fiber));
+    // SAFETY: callers supply a live, inactive fiber owned by a coroutine or Root,
+    // and serialize all access. Tracking the immediate parent supports nested
+    // resumes and unwinding a suspended child while another fiber is running.
+    unsafe {
+        SwitchToFiber(fiber);
+    }
 }
 
 struct Core<I, Y> {
@@ -65,7 +80,7 @@ impl<I, Y> Yielder<I, Y> {
         // into Core is retained across SwitchToFiber or across worker migration.
         unsafe {
             (*self.core.get()).output = Some(value);
-            SwitchToFiber((*self.core.get()).parent);
+            switch_fiber((*self.core.get()).parent);
             if (*self.core.get()).forced {
                 resume_unwind(Box::new(ForcedUnwind));
             }
@@ -135,8 +150,8 @@ impl<I: 'static, Y: 'static, R: 'static> Coroutine<I, Y, R> {
         // The new parent is read on this worker before switching to the fiber.
         unsafe {
             (*self.state.yielder.core.get()).input = Some(input);
-            (*self.state.yielder.core.get()).parent = root_fiber();
-            SwitchToFiber(self.fiber);
+            (*self.state.yielder.core.get()).parent = current_fiber();
+            switch_fiber(self.fiber);
             if let Some(result) = (*self.state.result.get()).take() {
                 self.finished = true;
                 match result {
@@ -167,7 +182,7 @@ unsafe extern "system" fn entry<I: 'static, Y: 'static, R: 'static>(pointer: *mu
             body(&state.yielder, input)
         }));
         *state.result.get() = Some(result);
-        SwitchToFiber((*state.yielder.core.get()).parent);
+        switch_fiber((*state.yielder.core.get()).parent);
     }
     // A completed callback must never return into Windows, which exits the thread.
     std::process::abort();
@@ -181,8 +196,8 @@ impl<I: 'static, Y: 'static, R: 'static> Drop for Coroutine<I, Y, R> {
         unsafe {
             if self.started && !self.finished {
                 (*self.state.yielder.core.get()).forced = true;
-                (*self.state.yielder.core.get()).parent = root_fiber();
-                SwitchToFiber(self.fiber);
+                (*self.state.yielder.core.get()).parent = current_fiber();
+                switch_fiber(self.fiber);
                 let result = (*self.state.result.get()).take().expect("fiber failed to unwind");
                 if let Err(error) = result
                     && !error.is::<ForcedUnwind>()
@@ -255,5 +270,36 @@ mod tests {
         .join()
         .unwrap();
         assert_eq!(std::thread::spawn(move || coroutine.finish()).join().unwrap(), 42);
+    }
+
+    #[test]
+    fn nested_resumption_returns_to_the_immediate_parent() {
+        let mut parent = Coroutine::new(|_: &Yielder<(), ()>, ()| {
+            let mut child = Coroutine::new(|yielder, ()| {
+                yielder.suspend(7);
+                8
+            });
+            assert!(matches!(child.resume(()), CoroutineResult::Yield(7)));
+            assert!(matches!(child.resume(()), CoroutineResult::Return(8)));
+            42
+        });
+        assert!(matches!(parent.resume(()), CoroutineResult::Return(42)));
+    }
+
+    #[test]
+    fn a_running_parent_can_unwind_a_suspended_child() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let captured = count.clone();
+        let mut child = Coroutine::new(move |yielder, ()| {
+            let _owner = CountDrop(captured);
+            yielder.suspend(());
+        });
+        assert!(matches!(child.resume(()), CoroutineResult::Yield(())));
+        let mut parent = Coroutine::new(move |_: &Yielder<(), ()>, ()| {
+            drop(child);
+            42
+        });
+        assert!(matches!(parent.resume(()), CoroutineResult::Return(42)));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }
