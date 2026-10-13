@@ -1,0 +1,40 @@
+name: Resume release
+run-name: Resume ${{ inputs.version }} from run ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact version whose annotated tag already exists
+        required: true
+        type: string
+      run_id:
+        description: Completed Release run with all native and source checks passing
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-publication
+  cancel-in-progress: false
+
+jobs:
+  resume:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify prior qualification and publish its exact artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_RUN: ${{ inputs.run_id }}
+        run: python scripts/release.py resume --version "$RELEASE_VERSION" --run-id "$SOURCE_RUN"
