@@ -4,6 +4,23 @@ import glob.Glob
 import glob.GlobSet
 import glob.GlobWalk
 import glob.Ignore
+import process.Process
+
+public type Runtime = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  fs : FileSystem,
+  process : ProcessHost.Process
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  fs = stdFs,
+  process = ProcessHost.native
+}
 
 let check =
   match (GlobSet.compile [
@@ -17,9 +34,13 @@ let path text = Result.withDefault Path.empty (Path.fromString text)
 
 let patterns text = Result.withDefault GlobSet.empty (GlobSet.compile text)
 
-let names result =
-  List.map (fun entry ->
-    Result.withDefault "invalid Unicode" (Path.toString entry.relative)) result.value
+let portableName entry =
+  match Glob.candidate entry.relative with
+  | Err _ -> "invalid relative path"
+  | Ok candidate ->
+    Option.withDefault "invalid Unicode" (Bytes.toString (Glob.candidateSpelling candidate))
+
+let names result = List.map portableName result.value
 
 let complete result = result.outcome = Ok Directory.Exhausted && result.cleanupError = None
 
@@ -217,7 +238,12 @@ let links env root =
       "linkrules/hidden.fai"
     ]
 
-binary : Runtime -> Path -> Bool / { Concurrency, FileSystem }
+// The matcher preserves arbitrary Unix bytes even on a filesystem that rejects
+// their creation. Compare the host result with an independent native probe.
+let probeProgram =
+  "import os, sys, errno\np = os.fsencode(sys.argv[1]) + b'/\\xff'\ntry:\n f = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\nexcept OSError as e:\n if e.errno not in (errno.EILSEQ, errno.EINVAL): raise\n print(e.errno)\nelse:\n os.close(f)\n os.unlink(p)\n print(0)\n"
+
+binary : Runtime -> Path -> Bool / { Concurrency, FileSystem, ProcessHost.Process }
 let binary env root =
   if Path.nativeEncoding = "windows" then
     match Path.fromNativeBytes (Bytes.fromList [0, 216]) with
@@ -233,12 +259,30 @@ let binary env root =
       255
     ]), Glob.compileBytes (Bytes.fromList [255])) with
     | (Ok name, Ok pattern) ->
-      let wrote = env.fs.writeBytes (Path.join root name) Bytes.empty
-      let set = Result.withDefault GlobSet.empty (GlobSet.ofPatterns 100 [pattern])
-      let found = GlobWalk.collect env GlobWalk.defaults 10 root set
-      Result.isOk wrote && complete found && (match found.value with
-      | [entry] -> entry.relative = name
-      | _ -> false)
+      let pureMatch = Glob.matchesPath pattern name = Ok true
+      let probe =
+        Process.run env { Process.defaults with
+          timeoutMs = Some 10000
+        } (Process.command "python3" [
+          "-c",
+          probeProgram,
+          Result.withDefault "" (Path.toString root)
+        ])
+      match probe with
+      | Err _ -> false
+      | Ok output ->
+        if not pureMatch || not (Result.isOk (Process.expectSuccess output)) then
+          false
+        else
+          match env.fs.writeBytes (Path.join root name) Bytes.empty with
+          | Err error ->
+            output.stdout = Bytes.fromString (Int.toString (Option.withDefault (-1) error.nativeCode) ++ "\n")
+          | Ok _ ->
+            let set = Result.withDefault GlobSet.empty (GlobSet.ofPatterns 100 [pattern])
+            let found = GlobWalk.collect env GlobWalk.defaults 10 root set
+            output.stdout = Bytes.fromString "0\n" && complete found && (match found.value with
+            | [entry] -> entry.relative = name
+            | _ -> false)
     | _ -> false
 
 slow : Clock -> GlobWalk.Entry -> Int -> Result (Int * Directory.Decision) Unit / { Clock }
@@ -254,7 +298,7 @@ let cancelled env root =
   let after = GlobWalk.collect env GlobWalk.defaults 100 root (patterns ["keep.fai"])
   outcome = None && complete after && names after = ["keep.fai"]
 
-checks : Runtime -> Temp.Directory -> Result (List (String * Bool)) String / { Clock, Concurrency, FileSystem }
+checks : Runtime -> Temp.Directory -> Result (List (String * Bool)) String / { Clock, Concurrency, FileSystem, ProcessHost.Process }
 let checks env temporary =
   let root = temporary.path
   match make env.fs root [".git", "build", "build/.gitignore", "other", "src", "zother"] with
@@ -298,7 +342,7 @@ let report console failures =
     let wrote = console.writeLine ("FAILED: " ++ name)
     report console rest
 
-public main : Runtime -> Unit / { Clock, Concurrency, Console, FileSystem }
+public main : Runtime -> Unit / { Clock, Concurrency, Console, FileSystem, ProcessHost.Process }
 let main env =
   match env.fs.temporaryDirectory () with
   | Err error -> env.console.writeLine (FileSystem.errorToString error)
