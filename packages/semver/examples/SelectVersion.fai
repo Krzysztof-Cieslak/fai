@@ -1,0 +1,22 @@
+module SelectVersion
+
+let parseVersions texts output =
+  match texts with
+  | [] -> Ok (List.reverse output)
+  | text :: rest ->
+    match Semver.parseTag text with
+    | Err error -> Err error
+    | Ok version -> parseVersions rest (version :: output)
+
+public main : Runtime -> Unit / { Console, Env }
+let main env =
+  match env.env.args () with
+  | requirement :: versions ->
+    match (SemverRange.parse requirement, parseVersions versions []) with
+    | (Err error, _) -> env.console.writeLine (Semver.errorToString error)
+    | (_, Err error) -> env.console.writeLine (Semver.errorToString error)
+    | (Ok range, Ok versions) ->
+      match SemverRange.maxSatisfying range versions with
+      | None -> env.console.writeLine "No matching version"
+      | Some version -> env.console.writeLine (Semver.toString version)
+  | [] -> env.console.writeLine "Usage: select-version REQUIREMENT VERSION..."

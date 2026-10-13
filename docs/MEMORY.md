@@ -51,6 +51,18 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Semantic versions retain canonical unbounded decimal components and exact
+  prerelease/build identifiers. Parsing is strict, with lowercase-v tags handled
+  explicitly. Complete identity includes build metadata; semantic precedence does
+  not. Core bumps always increment the selected component and reset lower ones;
+  both bumps and release remove prerelease and build metadata.
+
+- Semantic requirements use Fai's explicit full-version dialect over the general
+  library's numeric domain. Comparator and alternative deduplication preserve
+  per-alternative prerelease eligibility. Selection keeps original values and
+  resolves equal precedence by input order. Compiler-package compatibility is a
+  separate validation layer enforcing unsigned-64 cores and no build metadata.
+
 - Glob matching uses immutable byte automata with forward epsilon edges and
   explicit state budgets. Ordinary wildcards stay within components; recursive
   stars and non-nested brace alternatives compile without text expansion.

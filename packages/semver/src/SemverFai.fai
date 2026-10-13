@@ -1,0 +1,62 @@
+module SemverFai
+
+let maximum = "18446744073709551615"
+
+let component name offset value =
+  if Semver.compareNumber value maximum > 0 then
+    Err { (Semver.error Semver.OutOfRange "Fai package components must fit unsigned 64-bit integers" (Some offset)) with
+      component = Some name
+    }
+  else
+    Ok ()
+
+let check version =
+  let parts = Semver.parts version
+  if not (List.isEmpty parts.build) then
+    let prefix =
+      Semver.toString (Semver.release version) ++ (if List.isEmpty parts.prerelease then
+        ""
+      else
+        "-" ++ String.join "." parts.prerelease)
+    Err { (Semver.error Semver.BuildMetadataNotAllowed "Fai package versions cannot contain build metadata" (Some (String.length prefix))) with
+      component = Some "build"
+    }
+  else
+    match component "major" 0 parts.major with
+    | Err error -> Err error
+    | Ok _ ->
+      match component "minor" (String.length parts.major + 1) parts.minor with
+      | Err error -> Err error
+      | Ok _ ->
+        component "patch" (String.length parts.major + String.length parts.minor + 2) parts.patch
+
+let unlocated error = { error with offset = None }
+
+/// Check an existing version against the compiler's unsigned-64 core and
+/// no-build-metadata rules. Validation errors identify fields, not source offsets.
+public validateVersion : Semver.Version -> Result Unit Semver.Error
+let validateVersion version = Result.mapError unlocated (check version)
+
+/// Strict parsing plus the Fai package constraints, retaining input byte offsets.
+public parseVersionWith : Semver.Options -> String -> Result Semver.Version Semver.Error
+let parseVersionWith options text =
+  match Semver.parseWith options text with
+  | Err error -> Err error
+  | Ok version -> Result.map (fun _ -> version) (check version)
+
+/// Parse a Fai package version with default resource limits.
+public parseVersion : String -> Result Semver.Version Semver.Error
+let parseVersion text = parseVersionWith Semver.defaults text
+
+/// Check every endpoint in an existing requirement without inventing a source location.
+public validateRequirement : SemverRange.Requirement -> Result Unit Semver.Error
+let validateRequirement requirement = SemverRange.validateEndpoints validateVersion requirement
+
+/// Parse Fai requirements with bounded endpoints, preserving offsets in the
+/// original requirement before canonical sorting and deduplication.
+public parseRequirementWith : SemverRange.Options -> String -> Result SemverRange.Requirement Semver.Error
+let parseRequirementWith options text = SemverRange.parseUsing options check text
+
+/// Parse a compiler-compatible requirement with default resource limits.
+public parseRequirement : String -> Result SemverRange.Requirement Semver.Error
+let parseRequirement text = parseRequirementWith SemverRange.defaults text

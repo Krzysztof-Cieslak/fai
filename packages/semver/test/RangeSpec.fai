@@ -1,0 +1,73 @@
+module SemverRangeSpec
+
+let matches requirement version =
+  match (SemverRange.parse requirement, Semver.parse version) with
+  | (Ok requirement, Ok version) -> SemverRange.matches requirement version
+  | _ -> false
+example: matches "1.2.3" "1.2.3"
+example: not (matches "1.2.3" "1.2.4")
+example: matches "=1.2.3" "1.2.3+build"
+example: matches ">1.2.3" "1.2.4"
+example: not (matches ">1.2.3" "1.2.3")
+example: matches ">=1.2.3" "1.2.3"
+example: matches "<1.2.3" "1.2.2"
+example: not (matches "<1.2.3" "1.2.3")
+example: matches "<=1.2.3" "1.2.3"
+example: matches "^1.2.3" "1.9.99"
+example: not (matches "^1.2.3" "1.2.2")
+example: not (matches "^1.2.3" "2.0.0")
+example: matches "^0.2.3" "0.2.99"
+example: not (matches "^0.2.3" "0.3.0")
+example: matches "^0.0.3" "0.0.3"
+example: not (matches "^0.0.3" "0.0.4")
+example: matches "^0.0.0" "0.0.0"
+example: not (matches "^0.0.0" "0.0.1")
+example: matches "~1.2.3" "1.2.99"
+example: not (matches "~1.2.3" "1.3.0")
+example: not (matches "~1.2.3" "1.2.2")
+example: matches ">=1.2.3, <1.7.0" "1.6.9"
+example: not (matches ">=1.2.3, <1.7.0" "1.7.0")
+example: matches "^1.0.0 || ^3.0.0" "3.1.0"
+example: not (matches "^1.0.0 || ^3.0.0" "2.1.0")
+example: matches "*" "9999999999999999999999999.0.0+build"
+example: not (matches "*" "1.0.0-rc.1")
+example: matches "* || =1.0.0-rc.1" "1.0.0-rc.1"
+example: not (matches "* || =1.0.0-rc.1" "1.0.0-rc.2")
+example: not (matches ">=1.0.0, <2.0.0" "2.0.0-rc.1")
+example: matches "^2.0.0-rc.1" "2.0.0-rc.2"
+example: matches "^2.0.0-rc.1" "2.1.0"
+example: not (matches "^2.0.0-rc.1" "2.1.0-beta.1")
+example: not (matches "=2.0.0-rc.1 || >=2.0.0-rc.3" "2.0.0-rc.2")
+example: not (matches ">=1.0.0, <2.0.0 || =2.0.0-rc.1" "2.0.0-rc.2")
+example: matches ">=1.0.0, <2.0.0, >=2.0.0-rc.1" "2.0.0-rc.2"
+example: not (matches "^1.0.0, >=2.0.0-rc.1" "2.0.0-rc.2")
+example: matches "*, >=1.0.0-rc.1" "1.0.0-rc.2"
+example: not (matches "*, >=1.0.0-rc.1" "1.1.0-beta")
+example: matches "0.0.0-0" "0.0.0-0+abc"
+example: matches "~0.0.0-0" "0.0.1"
+example: not (matches "~0.0.0-0" "0.0.1-0")
+example: not (matches "^0.0.0-0" "0.0.1")
+example: matches "^9999999999999999999999.0.0" "9999999999999999999999.9999999999999999999999.0"
+example: not (matches "^9999999999999999999999.0.0" "10000000000000000000000.0.0")
+example: not (matches ">2.0.0, <1.0.0" "1.5.0")
+example: SemverRange.parse ">2.0.0, <1.0.0" |> Result.isOk
+example: Result.map SemverRange.toString (SemverRange.parse " 1.2.3 ") = Ok "=1.2.3"
+example: Result.map SemverRange.toString (SemverRange.parse "<2.0.0,>=1.0.0 || ^3.0.0") = Ok ">=1.0.0, <2.0.0 || ^3.0.0"
+example: SemverRange.parse "<2.0.0, >=1.0.0 || ^3.0.0" = SemverRange.parse "^3.0.0 || >=1.0.0, <2.0.0"
+example: Result.map SemverRange.toString (SemverRange.parse "*, 1.2.3, =1.2.3 || 1.2.3") = Ok "=1.2.3"
+example: Result.map SemverRange.toString (SemverRange.parse "* || *") = Ok "*"
+example: matches "\u{2003}>= 1.2.3\t,\n<2.0.0\u{a0}" "1.2.3"
+
+let selection =
+  match (SemverRange.parse "^1.0.0", Semver.parse "1.2.3+first", Semver.parse "1.2.3+second", Semver.parse "1.1.0", Semver.parse "2.0.0") with
+  | (Ok range, Ok first, Ok second, Ok low, Ok outside) ->
+    let versions = [outside, first, low, second]
+    SemverRange.filter range versions = [
+      first,
+      low,
+      second
+    ] && SemverRange.maxSatisfying range versions = Some first && SemverRange.minSatisfying range versions = Some low && SemverRange.maxSatisfying range [] = None && SemverRange.minSatisfying range [
+      outside
+    ] = None
+  | _ -> false
+example: selection

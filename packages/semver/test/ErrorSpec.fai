@@ -1,0 +1,93 @@
+module SemverErrorSpec
+
+let rangeError kind offset text =
+  match SemverRange.parse text with
+  | Err error -> error.kind = kind && error.offset = Some offset
+  | _ -> false
+example: rangeError Semver.InvalidRequirement 0 ""
+example: rangeError Semver.InvalidRequirement 1 " "
+example: rangeError Semver.InvalidRequirement 6 "1.2.3,"
+example: rangeError Semver.InvalidRequirement 9 "^1.0.0 ||"
+example: rangeError Semver.InvalidRequirement 6 "1.2.3 | 2.0.0"
+example: rangeError Semver.InvalidRequirement 0 "||1.2.3"
+example: rangeError Semver.InvalidVersion 3 "1.2"
+example: rangeError Semver.InvalidVersion 4 "^1.2"
+example: rangeError Semver.InvalidComponent 2 "1.x"
+example: rangeError Semver.InvalidComponent 4 "1.2.x"
+example: rangeError Semver.InvalidRequirement 0 "x"
+example: rangeError Semver.InvalidRequirement 0 "v1.2.3"
+example: rangeError Semver.InvalidRequirement 0 "[1.0,2.0)"
+example: rangeError Semver.InvalidVersion 7 ">=1.0.0 <2.0.0"
+example: rangeError Semver.InvalidVersion 5 "1.0.0 - 2.0.0"
+example: rangeError Semver.InvalidComponent 2 ">=\t1.2.3"
+example: rangeError Semver.BuildMetadataNotAllowed 5 "1.2.3+build"
+example: rangeError Semver.BuildMetadataNotAllowed 15 ">=1.0.0, <2.0.0+abc"
+example: rangeError Semver.InvalidComponent 1 "<<1.2.3"
+example: rangeError Semver.InvalidVersion 5 "1.2.3\u{0}"
+example: rangeError Semver.InvalidComponent 5 "\u{2003}>=é.0.0"
+
+let kind expected result =
+  match result with
+  | Err error -> error.kind = expected
+  | _ -> false
+example: kind Semver.InvalidOptions (Semver.parseWith { maxBytes = -1, maxIdentifiers = 1 } "")
+example: kind Semver.InvalidOptions (Semver.parseWith {
+  maxBytes = 10,
+  maxIdentifiers = -1
+} "0.0.0")
+example: kind Semver.InputLimit (Semver.parseWith { Semver.defaults with maxBytes = 4 } "0.0.0")
+example: Semver.parseWith { Semver.defaults with maxBytes = 5 } "0.0.0" = Semver.parse "0.0.0"
+example: kind Semver.InputLimit (Semver.parseTagWith { Semver.defaults with maxBytes = 5 } "v0.0.0")
+example: Semver.parseTagWith { Semver.defaults with maxBytes = 6 } "v0.0.0" = Semver.parse "0.0.0"
+example: Semver.parseWith { Semver.defaults with maxIdentifiers = 0 } "0.0.0" = Semver.parse "0.0.0"
+example: kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with
+  maxIdentifiers = 0
+} "0.0.0-a")
+example: kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with
+  maxIdentifiers = 2
+} "0.0.0-a.b+c")
+example: Semver.parseWith { Semver.defaults with
+  maxIdentifiers = 3
+} "0.0.0-a.b+c" = Semver.parse "0.0.0-a.b+c"
+example: kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with
+  maxAlternatives = 0
+} "*")
+example: kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with
+  maxComparators = 0
+} "*")
+example: kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with
+  maxBytes = -1
+} "*")
+example: kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with
+  maxBytes = 4
+} "1.2.3")
+example: kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with
+  version = { Semver.defaults with maxBytes = 4 }
+} "1.2.3")
+example: kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with
+  maxComparators = 1
+} "*, *")
+example: kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with
+  maxComparators = 1
+} "1.2.3, 1.2.3")
+example: kind Semver.AlternativeLimit (SemverRange.parseWith { SemverRange.defaults with
+  maxAlternatives = 1
+} "* || *")
+example: SemverRange.parseWith { SemverRange.defaults with
+  maxAlternatives = 2,
+  maxComparators = 2
+} "* || *" = SemverRange.parse "*"
+
+let part = { build = ["b"], major = "0", minor = "0", patch = "0", prerelease = ["a"] }
+example: kind Semver.InputLimit (Semver.fromPartsWith { Semver.defaults with maxBytes = 8 } part)
+example: Semver.fromPartsWith { Semver.defaults with maxBytes = 9 } part = Semver.parse "0.0.0-a+b"
+example: kind Semver.IdentifierLimit (Semver.fromPartsWith { Semver.defaults with
+  maxIdentifiers = 1
+} part)
+example: kind Semver.InvalidOptions (Semver.fromPartsWith { Semver.defaults with
+  maxBytes = -1
+} part)
+example: (match Semver.parse "01.0.0" with
+| Err error ->
+  Semver.errorToString error = "numeric components cannot have leading zeros (major) at byte 1"
+| _ -> false)

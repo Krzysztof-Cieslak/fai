@@ -1,0 +1,30 @@
+module SemverComparisonSpec
+
+let less a b =
+  match (Semver.parse a, Semver.parse b) with
+  | (Ok a, Ok b) -> Semver.compare a b < 0 && Semver.compare b a > 0
+  | _ -> false
+example: less "1.0.0-alpha" "1.0.0-alpha.1"
+example: less "1.0.0-alpha.1" "1.0.0-alpha.beta"
+example: less "1.0.0-alpha.beta" "1.0.0-beta"
+example: less "1.0.0-beta" "1.0.0-beta.2"
+example: less "1.0.0-beta.2" "1.0.0-beta.11"
+example: less "1.0.0-beta.11" "1.0.0-rc.1"
+example: less "1.0.0-rc.1" "1.0.0"
+example: less "1.0.0" "2.0.0"
+example: less "2.0.0" "2.1.0"
+example: less "2.1.0" "2.1.1"
+example: less "9.99.99" "10.0.0"
+example: less "1.9.99" "1.10.0"
+example: less "1.1.9" "1.1.10"
+example: less "1.0.0-9999999999999999999999999999" "1.0.0-10000000000000000000000000000"
+example: less "1.0.0-9999999999999999999999999999" "1.0.0--"
+example: less "1.0.0-Alpha" "1.0.0-alpha"
+example: less "1.0.0-a" "1.0.0-a.0"
+example: less "9999999999999999999999999999.0.0" "10000000000000000000000000000.0.0"
+example: (match (Semver.parse "1.2.3+linux", Semver.parse "1.2.3+windows") with
+| (Ok a, Ok b) -> a <> b && Semver.compare a b = 0 && Semver.samePrecedence a b
+| _ -> false)
+example: (match (Semver.parse "1.2.3-alpha+001", Semver.parse "1.2.3-alpha+002") with
+| (Ok a, Ok b) -> a <> b && Semver.samePrecedence a b
+| _ -> false)

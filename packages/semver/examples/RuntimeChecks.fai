@@ -1,0 +1,86 @@
+module SemverRuntimeChecks
+
+let valid =
+  match (Semver.parse "1.2.3-rc.1+build", Semver.parse "1.2.3") with
+  | (Ok preview, Ok stable) ->
+    Semver.compare preview stable < 0 && Semver.release preview = stable && Semver.toString preview = "1.2.3-rc.1+build"
+  | _ -> false
+
+let hugeNumbers =
+  let digits = String.joinArray "" (Array.repeat 12000 "9")
+  let options = { Semver.defaults with maxBytes = 20000 }
+  match (Semver.parseWith options (digits ++ ".0.0"), Semver.parseWith options (digits ++ ".1.0"), SemverRange.parseWith { SemverRange.defaults with
+    maxBytes = 20000,
+    version = options
+  } ("^" ++ digits ++ ".0.0")) with
+  | (Ok low, Ok high, Ok range) ->
+    let bumped = Semver.bumpMajor low
+    Semver.compare low high < 0 && Semver.compare high bumped < 0 && (Semver.parts bumped).major = "1" ++ String.joinArray "" (Array.repeat 12000 "0") && SemverRange.matches range high && not (SemverRange.matches range bumped) && Result.isErr (Semver.toInts low) && Result.isErr (SemverFai.validateVersion low)
+  | _ -> false
+
+let manyIdentifiers =
+  let source = "1.2.3-" ++ String.joinArray "." (Array.repeat 1024 "x")
+  let options = { Semver.defaults with maxIdentifiers = 1024 }
+  match Semver.parseWith options source with
+  | Err _ -> false
+  | Ok version ->
+    Semver.toString version = source && List.length (Semver.parts version).prerelease = 1024 && Semver.compare version (Semver.release version) < 0 && Semver.fromPartsWith options (Semver.parts version) = Ok version
+
+let manyComparators =
+  Result.map SemverRange.toString (SemverRange.parse (String.joinArray ", " (Array.repeat 500 ">=1.0.0"))) = Ok ">=1.0.0"
+
+let manyAlternatives =
+  Result.map SemverRange.toString (SemverRange.parse (String.joinArray " || " (Array.repeat 200 "^1.0.0"))) = Ok "^1.0.0"
+
+let versions index output =
+  if index = 2000 then
+    Ok (List.reverse output)
+  else
+    match Semver.fromInts 1 0 index with
+    | Err error -> Err error
+    | Ok version -> versions (index + 1) (version :: output)
+
+let selection =
+  match (versions 0 [], SemverRange.parse ">=1.0.500, <1.0.1500") with
+  | (Ok versions, Ok range) ->
+    Option.map Semver.toString (SemverRange.maxSatisfying range versions) = Some "1.0.1499" && Option.map Semver.toString (SemverRange.minSatisfying range versions) = Some "1.0.500" && List.length (SemverRange.filter range versions) = 1000
+  | _ -> false
+
+let boundaries =
+  match (SemverFai.parseVersion "18446744073709551615.0.0", Semver.parse "9223372036854775807.0.0", Semver.parse "9223372036854775808.0.0") with
+  | (Ok unsigned, Ok signed, Ok wide) ->
+    Semver.toInts signed = Ok {
+      major = 9223372036854775807,
+      minor = 0,
+      patch = 0
+    } && Result.isErr (Semver.toInts wide) && Result.isErr (SemverFai.validateVersion (Semver.bumpMajor unsigned))
+  | _ -> false
+
+let failure pair =
+  let (_, passed) = pair
+  not passed
+
+report : Console -> List (String * Bool) -> Unit / { Console }
+let report console failures =
+  match failures with
+  | [] -> ()
+  | (name, _) :: rest ->
+    let shown = console.writeLine ("FAILED: " ++ name)
+    report console rest
+
+public main : { console : Console | _ } -> Unit / { Console }
+let main env =
+  let failures = List.filter failure [
+    ("metadata and precedence", valid),
+    ("unbounded numeric carry", hugeNumbers),
+    ("long identifier list", manyIdentifiers),
+    ("comparator canonicalization", manyComparators),
+    ("alternative canonicalization", manyAlternatives),
+    ("stable selection", selection),
+    ("machine boundaries", boundaries)
+  ]
+  let shown = report env.console failures
+  env.console.writeLine (if List.isEmpty failures then
+    "Semver runtime checks passed"
+  else
+    "Semver runtime checks FAILED")

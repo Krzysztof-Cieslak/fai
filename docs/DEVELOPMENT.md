@@ -15,6 +15,11 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Semver contracts run with `fai test -C packages --package semver`. Its package-local
+integration programs cover large decimal components, long identifier/requirement
+lists and stable version selection through JIT and AOT. Run them with
+`python3 scripts/package_integrations.py semver --no-dependents --fai /path/to/fai`.
+
 Glob contracts run with `fai test -C packages --package glob`. The nested
 `glob-examples` package declares native traversal and Git-oracle fixtures in its
 `ci.json`; run them with `python3 scripts/package_integrations.py glob-examples

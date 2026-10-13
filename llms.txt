@@ -642,6 +642,10 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+The optional `semver` package is entirely pure. Parsing, comparison, requirement
+matching, selection, and version bumps need no capabilities; numeric components
+remain exact beyond the machine Int range.
+
 `Glob`, `GlobSet` and `Ignore` in the optional glob package are pure.
 `GlobWalk.fold`/`collect` take explicit FileSystem and Concurrency capabilities;
 fold callbacks forward their own effects. Discovery is scoped to the supplied
@@ -2017,6 +2021,28 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 ---
 
 ### Optional source packages
+
+`packages/semver` supplies `Semver`, `SemverRange`, and `SemverFai`; import modules
+such as `import semver.Semver`. `Semver.parse` reads strict SemVer 2.0, while
+`parseTag` also accepts one leading lowercase v. Both require a complete core and
+reject surrounding whitespace. `parts` exposes canonical numeric strings and
+prerelease/build lists; `fromParts` validates them, `fromInts` constructs a stable
+version, and `toInts` checks all components before returning a machine-int record.
+The `With` parsers/builders take `{ maxBytes, maxIdentifiers }` limits.
+Use `Semver.compare` for precedence and `samePrecedence` for metadata-independent
+equality; ordinary equality preserves build metadata. `bumpMajor`/`bumpMinor`/
+`bumpPatch` increment the named decimal exactly, reset lower components and clear
+metadata; `release` clears metadata while retaining the core.
+`SemverRange.parse` accepts full-version comparisons, ^, ~, comma intersections,
+|| alternatives, and *. Bare versions are exact. `matches`, `filter`,
+`maxSatisfying`, and `minSatisfying` work on parsed versions; ties keep the first
+input. Prereleases require an explicit same-core prerelease comparator in the
+matching alternative. Canonical rendering preserves these alternative boundaries.
+`SemverFai.parseVersion`/`parseRequirement` and `validateVersion`/
+`validateRequirement` enforce unsigned-64 core components and no build metadata.
+Errors retain kinds, optional component/identifier information and original byte
+offsets. Run `fai test -C packages --package semver`; see the package README and
+the native `SelectVersion` example.
 
 `packages/glob` supplies `Glob`, `GlobSet`, `Ignore`, and `GlobWalk`. Declare the
 dependency in `fai.toml` and import modules such as `import glob.Glob`.
