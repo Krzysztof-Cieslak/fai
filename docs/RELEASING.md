@@ -65,6 +65,17 @@ there deliberately. The workflow has no tag-push or release-event trigger.
 The `publish` helper is workflow-only; local maintainers use `dispatch` so the
 complete qualification dependency graph runs before any public release is made.
 
+To diagnose a candidate on one native host before merging, dispatch the workflow
+from that branch with `build_only=true` and an optional `qualification_target`:
+
+```sh
+gh workflow run release.yml --ref BRANCH -f version=0.0.1 -f source_ref=COMMIT -F build_only=true -f qualification_target=aarch64-pc-windows-msvc
+```
+
+Build-only runs retain artifacts and execute native qualification; tag creation,
+publication, and the full-source verification job are disabled. Actual publication
+still requires a prepared, merged source commit and the complete six-host matrix.
+
 ## Qualification and artifacts
 
 `scripts/release-targets.json` defines six required native targets: Linux/glibc,
