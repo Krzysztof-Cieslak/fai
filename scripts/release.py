@@ -129,8 +129,10 @@ def clean(root=ROOT):
         raise ReleaseError("release preparation/publication requires a clean committed checkout")
 
 
-def validate(version, source_ref="HEAD", root=ROOT, ancestry=False):
+def validate(version, source_ref="HEAD", root=ROOT, ancestry=False, build_only=False, target=None):
     version_key(version)
+    if target and not build_only:
+        raise ReleaseError("a target may be selected only for build-only qualification")
     if version_key(config(root)["minimumInstaller"]) > version_key(version):
         raise ReleaseError("release version is older than the configured minimum installer")
     clean(root)
@@ -145,22 +147,29 @@ def validate(version, source_ref="HEAD", root=ROOT, ancestry=False):
     if set(locked) != names or any(value != version for value in locked.values()):
         raise ReleaseError("Cargo.lock workspace versions do not match the release")
     changelog = (root / "changelog.md").read_text(encoding="utf-8")
-    release_notes = notes(changelog, version)
-    if has_entries(sections(changelog)["Unreleased"][0]):
+    parsed = sections(changelog)
+    release_notes = "" if build_only else notes(changelog, version)
+    if not build_only and has_entries(parsed["Unreleased"][0]):
         raise ReleaseError("move all Unreleased entries into the release section before publishing")
     tag = f"v{version}"
-    existing = subprocess.run(["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], cwd=root, capture_output=True, text=True)
-    if existing.returncode == 0 and existing.stdout.strip() != commit:
-        raise ReleaseError("release tag already identifies a different commit")
+    if not build_only:
+        existing = subprocess.run(["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], cwd=root, capture_output=True, text=True)
+        if existing.returncode == 0 and existing.stdout.strip() != commit:
+            raise ReleaseError("release tag already identifies a different commit")
     if ancestry:
         allowed = any(subprocess.run(["git", "merge-base", "--is-ancestor", commit, f"origin/{branch}"], cwd=root,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
                       for branch in config(root)["releaseBranches"])
         if not allowed:
             raise ReleaseError("release commit must belong to a configured protected release branch")
-    return {"version": version, "tag": tag, "commit": commit, "notes": release_notes,
+    targets = config(root)["targets"]
+    if target:
+        targets = [item for item in targets if item["target"] == target]
+        if not targets:
+            raise ReleaseError(f"unknown qualification target: {target}")
+    return {"version": version, "tag": tag, "commit": commit, "notes": release_notes, "buildOnly": build_only,
             "rust": tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]["channel"],
-            "matrix": {"include": config(root)["targets"]}}
+            "matrix": {"include": targets}}
 
 
 def atomic_write(path, content):
@@ -577,6 +586,8 @@ def main():
         if name == "validate":
             child.add_argument("--ancestry", action="store_true")
             child.add_argument("--github-output", action="store_true")
+            child.add_argument("--build-only", action="store_true")
+            child.add_argument("--target")
     packing = commands.add_parser("pack")
     packing.add_argument("--target", required=True)
     packing.add_argument("--output", type=Path, default=ROOT / "dist")
@@ -596,7 +607,7 @@ def main():
         if args.command == "prepare": result = prepare(args.version)
         elif args.command == "check-changelog": result = check_changelog(args.base)
         elif args.command == "validate":
-            result = validate(args.version, args.source_ref, ancestry=args.ancestry)
+            result = validate(args.version, args.source_ref, ancestry=args.ancestry, build_only=args.build_only, target=args.target)
             if args.github_output:
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
                     for name in ("version", "tag", "commit", "rust", "matrix"):

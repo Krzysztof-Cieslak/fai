@@ -1,5 +1,5 @@
 name: Release
-run-name: Release ${{ inputs.version }} (${{ inputs.request_id || github.run_id }})
+run-name: ${{ inputs.build_only && 'Qualify' || 'Release' }} ${{ inputs.version }} (${{ inputs.request_id || github.run_id }})
 
 on:
   workflow_dispatch:
@@ -16,13 +16,20 @@ on:
       request_id:
         description: Optional correlation ID supplied by the release helper
         type: string
+      build_only:
+        description: Qualify artifacts without creating tags or publishing a release
+        type: boolean
+        default: false
+      qualification_target:
+        description: Optional native target for build-only qualification
+        type: string
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: release-${{ inputs.version }}
+  group: release-${{ inputs.version }}-${{ inputs.build_only && inputs.source_ref || 'publish' }}
   cancel-in-progress: false
 
 jobs:
@@ -46,10 +53,20 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           SOURCE_REF: ${{ inputs.source_ref }}
-        run: python scripts/release.py validate --version "$RELEASE_VERSION" --source-ref "$SOURCE_REF" --ancestry --github-output
+          BUILD_ONLY: ${{ inputs.build_only }}
+          QUALIFICATION_TARGET: ${{ inputs.qualification_target }}
+        shell: python
+        run: |
+          import os, subprocess, sys
+          args = [sys.executable, "scripts/release.py", "validate", "--version", os.environ["RELEASE_VERSION"], "--source-ref", os.environ["SOURCE_REF"], "--github-output"]
+          args += ["--build-only"] if os.environ["BUILD_ONLY"] == "true" else ["--ancestry"]
+          if os.environ["QUALIFICATION_TARGET"]:
+              args += ["--target", os.environ["QUALIFICATION_TARGET"]]
+          subprocess.run(args, check=True)
 
   verify:
     name: Full source verification
+    if: ${{ !inputs.build_only }}
     needs: validate
     uses: ./.github/workflows/ci.yml
     with:
@@ -123,6 +140,7 @@ jobs:
 
   publish:
     name: Publish complete immutable release
+    if: ${{ !inputs.build_only }}
     needs: [validate, verify, build]
     runs-on: ubuntu-22.04
     concurrency:

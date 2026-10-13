@@ -224,6 +224,20 @@ class RepositoryTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "origin does not match"):
             release.require_repository(self.root)
 
+    def test_build_only_can_qualify_unreleased_source_on_one_target(self):
+        result = release.validate("0.1.0", root=self.root, build_only=True, target="aarch64-pc-windows-msvc")
+        self.assertTrue(result["buildOnly"])
+        self.assertEqual([item["target"] for item in result["matrix"]["include"]], ["aarch64-pc-windows-msvc"])
+        self.assertEqual(result["notes"], "")
+
+    def test_publication_cannot_select_a_partial_target_matrix(self):
+        with self.assertRaisesRegex(release.ReleaseError, "build-only"):
+            release.validate("0.1.0", root=self.root, target="aarch64-pc-windows-msvc")
+
+    def test_unknown_qualification_target_is_rejected(self):
+        with self.assertRaisesRegex(release.ReleaseError, "unknown qualification target"):
+            release.validate("0.1.0", root=self.root, build_only=True, target="not-a-host")
+
 
 class ArtifactTests(unittest.TestCase):
     def test_local_publication_cannot_bypass_the_manual_workflow(self):
