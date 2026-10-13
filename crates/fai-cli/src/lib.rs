@@ -119,6 +119,8 @@ where
             })();
             match selected {
                 Ok(Some(compiler)) => {
+                    #[cfg(windows)]
+                    fai_toolchain::prevent_stdio_inheritance();
                     return match std::process::Command::new(&compiler.executable)
                         .args(args.iter().skip(1))
                         .env("FAI_TOOLCHAIN_DISPATCHED", compiler.version.to_string())

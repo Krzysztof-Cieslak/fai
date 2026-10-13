@@ -1,10 +1,14 @@
 //! Shared, compiler-independent installation and selection contracts.
 
 mod invocation;
+#[cfg(windows)]
+mod process;
 mod registry;
 mod release;
 
 pub use invocation::{Invocation, Pin, discover_pin, pin_project};
+#[cfg(windows)]
+pub use process::prevent_stdio_inheritance;
 pub use registry::{
     InstalledCompiler, Registry, Settings, atomic_write, lease_current, lock_file, open_lock, probe,
 };

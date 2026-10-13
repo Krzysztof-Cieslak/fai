@@ -820,8 +820,11 @@ Daemon, persistence & protocol:
   is captured blocks until the daemon's idle timeout instead of returning
   promptly. There is no safe std API to control per-handle inheritance, so this is
   a small scoped `unsafe` block — the Windows peer of the safe `nix` Unix calls
-  (see AGENTS.md §8). The daemon shuts down on an explicit `Shutdown` or after an
-  idle period (`FAI_DAEMON_IDLE_TIMEOUT`, default 600s), unlinking its socket on
+  (see AGENTS.md §8). The launcher and exact-version compiler forwarding use the
+  same protection before spawning: an extra inherited copy from either hop would
+  otherwise survive the daemon's standard-handle cleanup. The daemon shuts down
+  on an explicit `Shutdown` or after an idle period (`FAI_DAEMON_IDLE_TIMEOUT`,
+  default 600s), unlinking its socket on
   the way out.
   A full-request guard covers preparation, worker execution, streaming, and the
   final response. The idle clock starts when the last guard is released, including

@@ -167,7 +167,7 @@ jobs:
       - name: Compiler relocation and execution fixtures
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: |
-          python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}'
+          python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}' --launcher target/debug/fai-installer
           python scripts/tests/json_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
           python scripts/tests/web_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
       - uses: ./.github/actions/postgres
@@ -291,7 +291,7 @@ jobs:
           }
       - name: Compiler relocation fixture
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
-        run: python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}'
+        run: python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}' --launcher target/debug/fai-installer
       - name: JSON compiler fixtures
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: python scripts/tests/json_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'

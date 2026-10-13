@@ -17,6 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fai", type=Path, required=True)
     parser.add_argument("--other-fai", type=Path)
+    parser.add_argument("--launcher", type=Path)
     args = parser.parse_args()
     binary = args.fai.resolve()
     if not binary.exists() and binary.with_suffix(".exe").exists():
@@ -28,7 +29,11 @@ def main():
         shutil.copy2(binary, relocated)
         (root / "Main.fai").write_text('module Main\nexample: 40 + 2 = 42\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine "portable"\n')
         environment = {**os.environ, "CARGO_HOME": str(root / "empty-cargo"),
-                       "RUSTUP_HOME": str(root / "empty-rustup")}
+                       "RUSTUP_HOME": str(root / "empty-rustup"),
+                       "FAI_HOME": str(root / "home"), "FAI_TOOLCHAIN_DIR": str(root / "toolchains"),
+                       "FAI_CACHE_DIR": str(root / "cache"), "FAI_RUNTIME_DIR": str(root / "runtime")}
+        for name in ("FAI_TOOLCHAIN", "FAI_TOOLCHAIN_PROBE", "FAI_TOOLCHAIN_DISPATCHED"):
+            environment.pop(name, None)
         environment["PATH"] = os.pathsep.join(
             entry for entry in environment.get("PATH", "").split(os.pathsep)
             if ".cargo" not in entry and ".rustup" not in entry
@@ -91,6 +96,23 @@ def main():
             result = subprocess.run([str(executable)], env=environment, capture_output=True,
                                     text=True, encoding="utf-8", check=True, timeout=30)
             assert result.stdout == "portable\n", result
+            if args.launcher:
+                launcher = args.launcher.resolve()
+                if not launcher.exists() and launcher.with_suffix(".exe").exists():
+                    launcher = launcher.with_suffix(".exe")
+                invoke(launcher, "toolchain", "register", str(relocated))
+                invoke(launcher, "toolchain", "default", original["version"])
+                assert json.loads(invoke(launcher, "build-info")) == original
+                invoke(relocated, "daemon", "stop")
+                # A cold forwarded command must release captured pipes while
+                # its newly spawned daemon stays alive for the next command.
+                invoke(launcher, "check", "--no-examples")
+                forwarded_before = invoke(launcher, "daemon", "status")
+                invoke(launcher, "check", "--no-examples")
+                forwarded_after = invoke(launcher, "daemon", "status")
+                assert re.search(r"pid (\d+)", forwarded_before).group(1) == re.search(r"pid (\d+)", forwarded_after).group(1)
+                assert invoke(launcher, "run", "Main.fai") == "portable\n"
+                print("Launcher: captured output and warm daemon forwarding passed")
             if args.other_fai:
                 other = args.other_fai.resolve()
                 other_info = json.loads(invoke(other, "build-info"))

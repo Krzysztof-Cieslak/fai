@@ -29,7 +29,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: release-${{ inputs.version }}-${{ inputs.build_only && inputs.source_ref || 'publish' }}
+  group: release-${{ inputs.version }}-${{ inputs.build_only && format('{0}-{1}', inputs.source_ref, inputs.qualification_target) || 'publish' }}
   cancel-in-progress: false
 
 jobs:
@@ -129,7 +129,8 @@ jobs:
           import os, subprocess, sys
           from pathlib import Path
           compiler = Path("target") / os.environ["RELEASE_TARGET"] / "release" / "fai"
-          subprocess.run([sys.executable, "scripts/tests/smoke_compiler.py", "--fai", str(compiler)], check=True)
+          launcher = compiler.with_name("fai-installer")
+          subprocess.run([sys.executable, "scripts/tests/smoke_compiler.py", "--fai", str(compiler), "--launcher", str(launcher)], check=True)
       - name: Install and qualify the exact packaged bytes
         env:
           RELEASE_TARGET: ${{ matrix.target }}
