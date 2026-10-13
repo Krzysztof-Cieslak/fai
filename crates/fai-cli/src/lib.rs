@@ -73,6 +73,17 @@ where
     T: Into<OsString> + Clone,
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let _lease = if args.len() == 2 && args[1] == "build-info" {
+        None
+    } else {
+        match fai_toolchain::lease_current() {
+            Ok(lease) => lease,
+            Err(error) => {
+                let _ = writeln!(err, "fai: {error}");
+                return EXIT_WORKSPACE;
+            }
+        }
+    };
     if let Ok(parsed) = Cli::try_parse_from(args.clone()) {
         let skip = matches!(
             parsed.command,

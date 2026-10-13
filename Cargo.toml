@@ -20,6 +20,8 @@ members = [
     "crates/fai-server",
     "crates/fai-lsp",
     "crates/fai-cli",
+    "crates/fai-toolchain",
+    "crates/fai-installer",
     "crates/fai-corpus",
     "crates/fai-bench-workloads",
     "crates/fai-tests",
@@ -144,6 +146,9 @@ url = "2"
 glob = "0.3"
 # Dynamic loading of user native libraries for the JIT run/test path.
 libloading = "0.8"
+tar = "0.4"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 # Internal crates (path deps, versions inherited from the workspace).
 fai-span = { path = "crates/fai-span" }
@@ -165,6 +170,7 @@ fai-driver = { path = "crates/fai-driver" }
 fai-server = { path = "crates/fai-server" }
 fai-lsp = { path = "crates/fai-lsp" }
 fai-cli = { path = "crates/fai-cli" }
+fai-toolchain = { path = "crates/fai-toolchain" }
 fai-corpus = { path = "crates/fai-corpus" }
 fai-bench-workloads = { path = "crates/fai-bench-workloads" }
 

@@ -931,6 +931,8 @@ fai/
 ├── .github/workflows/   # CI: build, clippy -D, fmt --check, test     (M0)
 ├── crates/
 │   ├── fai-cli/         # thin client binary `fai`: build/run/check/fmt/test/lsp + query (M0)
+│   ├── fai-toolchain/   # shared installed-compiler inventory, pins, and release metadata
+│   ├── fai-installer/   # native public `fai` launcher, installation, and upgrades
 │   ├── fai-span/        # source ids, byte spans, line index, span resolver (M0)
 │   ├── fai-diagnostics/ # diagnostic model + human & JSON renderers  (M0)
 │   ├── fai-package/     # pure package identities, requirements, manifests, and source plans
@@ -1406,6 +1408,55 @@ incremental query database hot. `fai query` is a **read-only** introspection
 surface for agents (definitions, usages, types, module APIs, capability
 footprints, type search). See **`docs/CLI.md`** for every command, all flags, the JSON
 output schemas, and the daemon (MessagePack JSON-RPC) protocol.
+
+## Compiler releases and changelog
+
+**Every compiler, runtime, tooling, or embedded standard-library change must add
+or update an entry under `[Unreleased]` in `changelog.md`.** This includes internal
+improvements, CLI/daemon/LSP/editor changes, installers, and build/CI/release tools.
+Fai source packages under `packages/` have independent release histories and are
+excluded. Mixed changes still need an entry for the compiler/tooling/std portion.
+Describe the behavior concisely; include migration guidance for breaking changes.
+Related work can update one existing entry. CI enforces the changed-path policy.
+
+The public entry point is `fai`: **`fai update` updates dependencies**, **`fai
+upgrade` installs/selects the stable compiler**, and **`fai installer upgrade`
+updates the native launcher**. `fai toolchain` manages side-by-side installations
+and exact project pins. Downloads are explicit; compiler invocations use installed
+versions. See `docs/INSTALLATION.md` and `docs/CLI.md`.
+
+### Releasing a compiler with an agent
+
+The release workflow is **manual-only** (`.github/workflows/release.yml`). All six
+native targets in `scripts/release-targets.json` must pass before publication:
+Linux/glibc, macOS, and Windows/MSVC, each on x86-64 and ARM64. Release assets
+include compiler/launcher archives, `release.json`, `SHA256SUMS`, `install.sh`, and
+`install.ps1`. Every artifact identifies one exact source commit and version.
+
+1. Start with an explicit version or bump intent. Create a feature branch from
+   current `origin/main`, then run `python3 scripts/release.py prepare VERSION`.
+   This updates Cargo versions/lock entries and promotes Unreleased notes into a
+   dated release section while leaving a fresh Unreleased section.
+2. Review and commit those edits. Run `python3 scripts/release.py validate
+   --version VERSION`. Open the release-preparation PR and require the normal
+   protected checks before merging. Never commit release preparation directly to main.
+3. Check out the exact merged release commit in a clean checkout. Run
+   `python3 scripts/release.py dispatch --version VERSION --source-ref COMMIT`.
+   The JSON result identifies the particular workflow run; monitor it with
+   `gh run watch RUN_ID --exit-status`.
+4. The workflow forces full source verification, builds and exercises all native
+   targets, creates annotated `vVERSION` only after qualification, uploads a
+   complete draft, and publishes changelog-derived release notes. Stable Latest
+   promotion is serialized and compared by SemVer; prereleases stay opt-in.
+5. Verify publication with `python3 scripts/release.py verify --version VERSION`.
+   Report the release URL, commit, and workflow result.
+
+On failure, inspect that run and retry the **same version and commit**. Draft
+assets may be resumed; published tags/assets are immutable. Never force-move a
+release tag. Correct a published defect with a new version; the stable pointer
+can be rolled back to a known-good release. Repository administrators enable
+GitHub immutable releases before the first publication. Detailed prerequisites,
+commands, qualification, recovery, and rollback are in `docs/RELEASING.md`.
 
 ## 8. Rust coding conventions
 
@@ -1907,6 +1958,10 @@ Required jobs honor workflow cancellation while still running after selection
 failure, so a superseded PR revision cannot hold the next run's concurrency slot.
 
 A change is done when:
+
+- Compiler, runtime, tooling, and embedded standard-library changes include a
+  reviewed `changelog.md` entry. Source-package-only changes under `packages/`
+  are excluded; mixed changes still follow this rule.
 
 1. `cargo build` is clean and `cargo clippy --all-targets -- -D warnings` passes.
 2. `cargo fmt --all -- --check` passes (Rust side).

@@ -839,20 +839,12 @@ pub fn discover_project_root(directory: &Utf8Path) -> Utf8PathBuf {
 
 /// Reads the active root's exact compiler pin without resolving dependencies.
 pub fn required_project_compiler(root: &Utf8Path) -> Result<Option<PackageVersion>, DriverError> {
-    Ok(prepare_request(
-        root,
-        &[],
-        &ProjectOptions { no_local: true, ..Default::default() },
-        None,
-        PrepareMode {
-            toolchain_probe: true,
-            selection_only: true,
-            metadata_only: true,
-            write: false,
-            ..Default::default()
-        },
-    )?
-    .and_then(|project| project.required_compiler))
+    if !root.join(fai_package::MANIFEST_NAME).is_file() {
+        return Ok(None);
+    }
+    fai_toolchain::discover_pin(root)
+        .map(|pin| pin.and_then(|pin| pin.version))
+        .map_err(|error| project_message(error.to_string()))
 }
 
 fn collect_inventory(
