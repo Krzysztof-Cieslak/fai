@@ -12,7 +12,7 @@ import glob.Ignore
 ```
 
 The library has no source-package dependencies. The `glob-examples` package
-adds the process package for its independent Git compatibility fixture.
+adds the process package for independent Git and native-path compatibility checks.
 
 ## Patterns and prepared candidates
 
@@ -164,7 +164,8 @@ python3 scripts/package_integrations.py glob-examples --no-dependents --fai /pat
 
 The native fixtures exercise temporary trees, scope precedence, pruning, symlinks,
 lossless names, result/resource limits, callback failure and cancellation through
-JIT and AOT. The Git fixture compares thousands of decisions with `git check-ignore`
+JIT and AOT. A Python 3 probe distinguishes lossless matching from the mounted
+filesystem's ability to create a non-UTF-8 filename. The Git fixture compares thousands of decisions with `git check-ignore`
 in an isolated temporary repository, with explicit case policy and configuration.
 Pure contracts additionally compare the automaton against an independent small
 wildcard interpreter and cover alternatives without exponential expansion.
