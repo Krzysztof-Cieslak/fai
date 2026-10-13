@@ -81,6 +81,8 @@ selection, missing pins without downloads, contracts, JIT, AOT, daemon, LSP,
 upgrade behavior, and corrupt-transfer recovery. Published previous stable
 compilers are exercised alongside the candidate when available; first releases
 also have native multi-version launcher fixtures.
+Native build archives are retained before smoke tests to support diagnosis of a
+failed qualification. Publishing still requires every qualification job to pass.
 
 For local native packaging:
 

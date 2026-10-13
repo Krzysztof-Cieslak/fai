@@ -249,6 +249,9 @@ jobs:
       - name: Set up native Windows linker
         if: runner.os == 'Windows' && (needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages')
         uses: ilammy/msvc-dev-cmd@v1
+      - name: Windows installer archive validation
+        if: runner.os == 'Windows' && needs.changes.outputs.compiler == 'true'
+        run: python -m unittest discover -s scripts/tests -p test_install_ps1.py -v
       - uses: Swatinem/rust-cache@v2
         if: needs.changes.outputs.compiler == 'true'
       - uses: taiki-e/install-action@v2
