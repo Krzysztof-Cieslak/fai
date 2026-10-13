@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "integrations": [
+    {
+      "name": "runtime",
+      "entry": "RuntimeChecks.fai",
+      "stdoutLines": ["Glob runtime checks passed"]
+    },
+    {
+      "name": "git",
+      "entry": "GitChecks.fai",
+      "stdoutLines": ["Git ignore compatibility checks passed"]
+    }
+  ]
+}

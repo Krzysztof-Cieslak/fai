@@ -39,6 +39,17 @@ subdir = "packages/json"
 path = "json"
 
 [[packages]]
+id = "p-1d4d0ed886c27a962016b7aaf62ec100109d4a75e16fd53e38c2af9bb33ba452"
+version = "0.1.0"
+manifest-fingerprint = "blake3:044b7bccf4dae7e73e78a25ee3fcaafb590f61edc23fe2d31d8e9feeecb333d6"
+
+[packages.logical]
+path = "glob"
+
+[packages.source]
+path = "glob"
+
+[[packages]]
 id = "p-29a3dc47c17c9decbc8bf9376daf4d3ff821a41c264596b5bc803afa27ddbc16"
 version = "0.1.0"
 manifest-fingerprint = "blake3:83bb544efecdcc7702f26a69d3f5a32ace435ac83799d2f403eda29c09d9f7ae"
@@ -49,17 +60,6 @@ subdir = "packages/postgres"
 
 [packages.source]
 path = "postgres"
-
-[[packages]]
-id = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-version = "0.1.0"
-manifest-fingerprint = "blake3:8162f049e42773ef8ba78012fdefb24f9a6412c0b468958068c57b9b17075512"
-
-[packages.logical]
-path = "llm/examples"
-
-[packages.source]
-path = "llm/examples"
 
 [[packages]]
 id = "p-3d7a5deb5e20f32f04bc43976518672faa3861ac0d5cf6238c993e8d67a2773b"
@@ -141,18 +141,6 @@ subdir = "packages/uuid"
 path = "uuid"
 
 [[packages]]
-id = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-version = "0.1.0"
-manifest-fingerprint = "blake3:8162f049e42773ef8ba78012fdefb24f9a6412c0b468958068c57b9b17075512"
-
-[packages.logical]
-git = "https://github.com/krzysztof-cieslak/fai.git"
-subdir = "packages/llm/examples"
-
-[packages.source]
-path = "llm/examples"
-
-[[packages]]
 id = "p-64c2057145d5a4852257cd0c52d19a2eb32e5e74e6a8ea210aeabdcc6e290c5a"
 version = "0.1.0"
 manifest-fingerprint = "blake3:046c6c80426031146919ccea1c43ddf61008391ea317a4e49e7b96f787ed0762"
@@ -220,6 +208,18 @@ path = "postgres"
 
 [packages.source]
 path = "postgres"
+
+[[packages]]
+id = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+version = "0.1.0"
+manifest-fingerprint = "blake3:044b7bccf4dae7e73e78a25ee3fcaafb590f61edc23fe2d31d8e9feeecb333d6"
+
+[packages.logical]
+git = "https://github.com/krzysztof-cieslak/fai.git"
+subdir = "packages/glob"
+
+[packages.source]
+path = "glob"
 
 [[packages]]
 id = "p-889177e13a5c41bc1b893f0838687279f7f0fa7b729b65f79697d879523fce1d"
@@ -324,6 +324,17 @@ subdir = "packages/dotenv"
 path = "dotenv"
 
 [[packages]]
+id = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+version = "0.1.0"
+manifest-fingerprint = "blake3:72facccd28218d38a969cb1e57ddfd06dfc054afc5cbdb9e65701dc15d017f72"
+
+[packages.logical]
+path = "llm/examples"
+
+[packages.source]
+path = "llm/examples"
+
+[[packages]]
 id = "p-af49e94ddb340a70578a69debab6e038f50cb992015d2db02694cbec05e002c1"
 version = "0.1.0"
 manifest-fingerprint = "blake3:32b80f12b72feee11193cce566f1418107d078b9330ed3e7398f0b586a913ae9"
@@ -333,6 +344,17 @@ path = "web"
 
 [packages.source]
 path = "web"
+
+[[packages]]
+id = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+version = "0.1.0"
+manifest-fingerprint = "blake3:c49aa812da799b99b071bad3576ef555b20e87235db4cec94e5fa5a0d82ff829"
+
+[packages.logical]
+path = "glob/examples"
+
+[packages.source]
+path = "glob/examples"
 
 [[packages]]
 id = "p-b95384cc7c7b484b59f64b56845ba85b04750364555609e712e04898769ce6f6"
@@ -367,6 +389,18 @@ path = "config/examples"
 
 [packages.source]
 path = "config/examples"
+
+[[packages]]
+id = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+version = "0.1.0"
+manifest-fingerprint = "blake3:72facccd28218d38a969cb1e57ddfd06dfc054afc5cbdb9e65701dc15d017f72"
+
+[packages.logical]
+git = "https://github.com/krzysztof-cieslak/fai.git"
+subdir = "packages/llm/examples"
+
+[packages.source]
+path = "llm/examples"
 
 [[packages]]
 id = "p-c5f51144fb4ee8a8b44a57e648f592b862c3cf0c978fa6971e3cb5e045ca0090"
@@ -1067,6 +1101,159 @@ branches = []
 resolved-with = "0.1.0"
 
 [[graphs]]
+id = "g-cfba82239d1b934f993afbaaa61374faf41bd2c605e15fd26da144645b451294"
+root = "glob"
+target = "aarch64-apple-darwin"
+root-package = "p-1d4d0ed886c27a962016b7aaf62ec100109d4a75e16fd53e38c2af9bb33ba452"
+input-fingerprint = "blake3:bc2a5aab1e4750602d95f1e3d61d6920ae92dbc86b2cc9b534a50f5f8eb45d3b"
+packages = ["p-1d4d0ed886c27a962016b7aaf62ec100109d4a75e16fd53e38c2af9bb33ba452"]
+edges = []
+branches = []
+resolved-with = "0.1.0"
+
+[[graphs]]
+id = "g-9f5ba82b45b580c916b920064d108df09416f141cf5aa9e881f5126759b634cb"
+root = "glob"
+target = "x86_64-pc-windows-msvc"
+root-package = "p-1d4d0ed886c27a962016b7aaf62ec100109d4a75e16fd53e38c2af9bb33ba452"
+input-fingerprint = "blake3:e38d2c5a36186f684d79c565c56a26ad43db0cb46901b14fd21b0d9e5f705107"
+packages = ["p-1d4d0ed886c27a962016b7aaf62ec100109d4a75e16fd53e38c2af9bb33ba452"]
+edges = []
+branches = []
+resolved-with = "0.1.0"
+
+[[graphs]]
+id = "g-8ac768c648ed846e5de76a1fb1b9ffab7cccb87519de7f477e703a3e255fdf28"
+root = "glob"
+target = "x86_64-unknown-linux-gnu"
+root-package = "p-1d4d0ed886c27a962016b7aaf62ec100109d4a75e16fd53e38c2af9bb33ba452"
+input-fingerprint = "blake3:8a35f4c084039e0a437a9d806a668a09249698cbd27d6ccd130e1d529f871480"
+packages = ["p-1d4d0ed886c27a962016b7aaf62ec100109d4a75e16fd53e38c2af9bb33ba452"]
+edges = []
+branches = []
+resolved-with = "0.1.0"
+
+[[graphs]]
+id = "g-7229cd6a66004793766f95bf6ea8e515b44c928da5a5e21bd89f116f866a1183"
+root = "glob/examples"
+target = "aarch64-apple-darwin"
+root-package = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+input-fingerprint = "blake3:18a6de96dd622f5ecf06f219f947aa4f7e4bc17bebba9baf64faa9f3adab99a6"
+packages = [
+    "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572",
+    "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d",
+    "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2",
+    "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef",
+    "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a",
+]
+branches = []
+resolved-with = "0.1.0"
+
+[[graphs.edges]]
+from = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+alias = "tui"
+kind = "normal"
+to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
+
+[[graphs.edges]]
+from = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
+alias = "encoding"
+kind = "normal"
+to = "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef"
+
+[[graphs.edges]]
+from = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+alias = "glob"
+kind = "normal"
+to = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+
+[[graphs.edges]]
+from = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+alias = "process"
+kind = "normal"
+to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+
+[[graphs]]
+id = "g-410b0a4adf62e2c937bf710f058bcb0469c9e6cecb4b7a3755518b7b14e2dcfa"
+root = "glob/examples"
+target = "x86_64-pc-windows-msvc"
+root-package = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+input-fingerprint = "blake3:480b52d31c496efd2bae3021c7d309b79bb1ded543e246464ded063c20c26b5d"
+packages = [
+    "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572",
+    "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d",
+    "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2",
+    "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef",
+    "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a",
+]
+branches = []
+resolved-with = "0.1.0"
+
+[[graphs.edges]]
+from = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+alias = "tui"
+kind = "normal"
+to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
+
+[[graphs.edges]]
+from = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
+alias = "encoding"
+kind = "normal"
+to = "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef"
+
+[[graphs.edges]]
+from = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+alias = "glob"
+kind = "normal"
+to = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+
+[[graphs.edges]]
+from = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+alias = "process"
+kind = "normal"
+to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+
+[[graphs]]
+id = "g-98b20280d2db015623497bd0bd6cf468b651dc5bac38873dfc9a916004243d4a"
+root = "glob/examples"
+target = "x86_64-unknown-linux-gnu"
+root-package = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+input-fingerprint = "blake3:fbc8658d4a1733819cec4d017ba8470921c8b96ec8275d8f571dec21f8fb9f14"
+packages = [
+    "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572",
+    "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d",
+    "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2",
+    "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef",
+    "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a",
+]
+branches = []
+resolved-with = "0.1.0"
+
+[[graphs.edges]]
+from = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+alias = "tui"
+kind = "normal"
+to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
+
+[[graphs.edges]]
+from = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
+alias = "encoding"
+kind = "normal"
+to = "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef"
+
+[[graphs.edges]]
+from = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+alias = "glob"
+kind = "normal"
+to = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+
+[[graphs.edges]]
+from = "p-b85684de42c170a56ade6546b768db5eb74a6c6a13b697f7cc82b133772b550a"
+alias = "process"
+kind = "normal"
+to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+
+[[graphs]]
 id = "g-770fd05ae23a78ee267deb87150b6da8f79186ae1bd94622e5b90f5b34385456"
 root = "http-client"
 target = "aarch64-apple-darwin"
@@ -1182,17 +1369,18 @@ id = "g-226567f2eac8bc495503a9671eb07412429bcc2f23d8de2f5aa7d89f4ee85f94"
 root = "llm"
 target = "aarch64-apple-darwin"
 root-package = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
-input-fingerprint = "blake3:452b4bc0529275e6d0a0a82900afa3b81738a1eda55c2aabc6c17bab383256a8"
+input-fingerprint = "blake3:c1c0519fe6f0b7e94a864782ed46416ce47308777da8b02a1859746844611a9d"
 packages = [
     "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572",
     "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917",
     "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d",
     "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81",
-    "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9",
     "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2",
     "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9",
     "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c",
+    "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2",
     "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef",
+    "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc",
     "p-f3d736f133d5522ed0843c0509bc4c800ed732a7fbef84249ed14efaad1fd8e2",
     "p-fa9fb283912ce3747e10c2b016ef46257de2f06b6afece0840bdaf815014a749",
 ]
@@ -1203,7 +1391,7 @@ resolved-with = "0.1.0"
 from = "$root"
 alias = "llm_examples"
 kind = "development"
-to = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
+to = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
 
 [[graphs.edges]]
 from = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
@@ -1216,42 +1404,6 @@ from = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 alias = "encoding"
 kind = "normal"
 to = "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "cli"
-kind = "normal"
-to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "json"
-kind = "normal"
-to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "llm"
-kind = "normal"
-to = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "process"
-kind = "normal"
-to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "sql"
-kind = "normal"
-to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "tui"
-kind = "normal"
-to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 
 [[graphs.edges]]
 from = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
@@ -1282,6 +1434,48 @@ from = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
 alias = "uuid"
 kind = "normal"
 to = "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "cli"
+kind = "normal"
+to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "glob"
+kind = "normal"
+to = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "json"
+kind = "normal"
+to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "llm"
+kind = "normal"
+to = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "process"
+kind = "normal"
+to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "sql"
+kind = "normal"
+to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "tui"
+kind = "normal"
+to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 
 [[graphs.edges]]
 from = "p-fa9fb283912ce3747e10c2b016ef46257de2f06b6afece0840bdaf815014a749"
@@ -1300,17 +1494,18 @@ id = "g-d5a32cfeb5a281834bbfffcee53b0328558d4812352ef9ea926aacbbd85e9637"
 root = "llm"
 target = "x86_64-pc-windows-msvc"
 root-package = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
-input-fingerprint = "blake3:43a9b6da077a81ef2a428d2e6de5d55e30816becd39fecd797300d385df23ec2"
+input-fingerprint = "blake3:67abd76527594c214a7200b6be41dd1d5a665bc43818ee5d27055ff2d870c867"
 packages = [
     "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572",
     "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917",
     "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d",
     "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81",
-    "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9",
     "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2",
     "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9",
     "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c",
+    "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2",
     "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef",
+    "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc",
     "p-f3d736f133d5522ed0843c0509bc4c800ed732a7fbef84249ed14efaad1fd8e2",
     "p-fa9fb283912ce3747e10c2b016ef46257de2f06b6afece0840bdaf815014a749",
 ]
@@ -1321,7 +1516,7 @@ resolved-with = "0.1.0"
 from = "$root"
 alias = "llm_examples"
 kind = "development"
-to = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
+to = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
 
 [[graphs.edges]]
 from = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
@@ -1334,42 +1529,6 @@ from = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 alias = "encoding"
 kind = "normal"
 to = "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "cli"
-kind = "normal"
-to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "json"
-kind = "normal"
-to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "llm"
-kind = "normal"
-to = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "process"
-kind = "normal"
-to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "sql"
-kind = "normal"
-to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "tui"
-kind = "normal"
-to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 
 [[graphs.edges]]
 from = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
@@ -1400,6 +1559,48 @@ from = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
 alias = "uuid"
 kind = "normal"
 to = "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "cli"
+kind = "normal"
+to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "glob"
+kind = "normal"
+to = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "json"
+kind = "normal"
+to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "llm"
+kind = "normal"
+to = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "process"
+kind = "normal"
+to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "sql"
+kind = "normal"
+to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "tui"
+kind = "normal"
+to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 
 [[graphs.edges]]
 from = "p-fa9fb283912ce3747e10c2b016ef46257de2f06b6afece0840bdaf815014a749"
@@ -1418,17 +1619,18 @@ id = "g-553085079881ed2b938013c8148bd42572a4e127148c5801b817d317a5368410"
 root = "llm"
 target = "x86_64-unknown-linux-gnu"
 root-package = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
-input-fingerprint = "blake3:77757c833d7aafc24bed14a64d7494e58b1c61f3ef6e44713b702894b32fd23b"
+input-fingerprint = "blake3:e7dfc329aa46876864aced2771838895a4f3f455114303a0e8b4bd8c25d2f5a8"
 packages = [
     "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572",
     "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917",
     "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d",
     "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81",
-    "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9",
     "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2",
     "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9",
     "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c",
+    "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2",
     "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef",
+    "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc",
     "p-f3d736f133d5522ed0843c0509bc4c800ed732a7fbef84249ed14efaad1fd8e2",
     "p-fa9fb283912ce3747e10c2b016ef46257de2f06b6afece0840bdaf815014a749",
 ]
@@ -1439,7 +1641,7 @@ resolved-with = "0.1.0"
 from = "$root"
 alias = "llm_examples"
 kind = "development"
-to = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
+to = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
 
 [[graphs.edges]]
 from = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
@@ -1452,42 +1654,6 @@ from = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 alias = "encoding"
 kind = "normal"
 to = "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "cli"
-kind = "normal"
-to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "json"
-kind = "normal"
-to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "llm"
-kind = "normal"
-to = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "process"
-kind = "normal"
-to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "sql"
-kind = "normal"
-to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
-
-[[graphs.edges]]
-from = "p-62517e10d32b026e7cda76f1312d3b61aa1762e1d5a95b13b4996f2b9d1b12c9"
-alias = "tui"
-kind = "normal"
-to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 
 [[graphs.edges]]
 from = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
@@ -1520,6 +1686,48 @@ kind = "normal"
 to = "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81"
 
 [[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "cli"
+kind = "normal"
+to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "glob"
+kind = "normal"
+to = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "json"
+kind = "normal"
+to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "llm"
+kind = "normal"
+to = "p-665d34c167c17ba715735c347a2a49110ef3cfe1dfb71901ef9f6f3f4e2981b2"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "process"
+kind = "normal"
+to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "sql"
+kind = "normal"
+to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
+
+[[graphs.edges]]
+from = "p-c5e568fdf36062275c62ae24c48f434285643542ae93ec67b0cabec35289fbcc"
+alias = "tui"
+kind = "normal"
+to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
+
+[[graphs.edges]]
 from = "p-fa9fb283912ce3747e10c2b016ef46257de2f06b6afece0840bdaf815014a749"
 alias = "json"
 kind = "normal"
@@ -1535,17 +1743,18 @@ to = "p-f3d736f133d5522ed0843c0509bc4c800ed732a7fbef84249ed14efaad1fd8e2"
 id = "g-a8ea9e7b044452d329fb3d8b1004dfc0fd5dae7ceebb82daa9c0b7814f6e1fe6"
 root = "llm/examples"
 target = "aarch64-apple-darwin"
-root-package = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-input-fingerprint = "blake3:1956f4543de21b0973a3a533534459d329cdc1f78ed200b737f420d907fbc86d"
+root-package = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+input-fingerprint = "blake3:42390492a0c29fc3da7d7e767aa9fd26a0c3248ffd5e5747542eb559b9535788"
 packages = [
     "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572",
     "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917",
-    "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d",
     "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d",
     "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81",
     "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9",
     "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c",
+    "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2",
     "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef",
+    "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9",
     "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858",
     "p-f3d736f133d5522ed0843c0509bc4c800ed732a7fbef84249ed14efaad1fd8e2",
     "p-fa9fb283912ce3747e10c2b016ef46257de2f06b6afece0840bdaf815014a749",
@@ -1555,42 +1764,6 @@ resolved-with = "0.1.0"
 
 [[graphs.edges]]
 from = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
-alias = "tui"
-kind = "normal"
-to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "cli"
-kind = "normal"
-to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "json"
-kind = "normal"
-to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "llm"
-kind = "normal"
-to = "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "process"
-kind = "normal"
-to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "sql"
-kind = "normal"
-to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
 alias = "tui"
 kind = "normal"
 to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
@@ -1606,6 +1779,48 @@ from = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
 alias = "uuid"
 kind = "normal"
 to = "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "cli"
+kind = "normal"
+to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "glob"
+kind = "normal"
+to = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "json"
+kind = "normal"
+to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "llm"
+kind = "normal"
+to = "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "process"
+kind = "normal"
+to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "sql"
+kind = "normal"
+to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "tui"
+kind = "normal"
+to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 
 [[graphs.edges]]
 from = "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858"
@@ -1647,17 +1862,18 @@ to = "p-f3d736f133d5522ed0843c0509bc4c800ed732a7fbef84249ed14efaad1fd8e2"
 id = "g-2516ea2cda196d017e568004a0d53b5cc3e84f0b3fcaf40687d974e453827fd2"
 root = "llm/examples"
 target = "x86_64-pc-windows-msvc"
-root-package = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-input-fingerprint = "blake3:f0706c91dc5e3629f054d5d5648e0350174efc1847ebcac7e35c76799c9c3db1"
+root-package = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+input-fingerprint = "blake3:26b18aac45ec7e40f6bfbe4064986dc0e53aa4fda578eb9d065836a8149e4454"
 packages = [
     "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572",
     "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917",
-    "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d",
     "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d",
     "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81",
     "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9",
     "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c",
+    "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2",
     "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef",
+    "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9",
     "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858",
     "p-f3d736f133d5522ed0843c0509bc4c800ed732a7fbef84249ed14efaad1fd8e2",
     "p-fa9fb283912ce3747e10c2b016ef46257de2f06b6afece0840bdaf815014a749",
@@ -1667,42 +1883,6 @@ resolved-with = "0.1.0"
 
 [[graphs.edges]]
 from = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
-alias = "tui"
-kind = "normal"
-to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "cli"
-kind = "normal"
-to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "json"
-kind = "normal"
-to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "llm"
-kind = "normal"
-to = "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "process"
-kind = "normal"
-to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "sql"
-kind = "normal"
-to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
 alias = "tui"
 kind = "normal"
 to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
@@ -1718,6 +1898,48 @@ from = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
 alias = "uuid"
 kind = "normal"
 to = "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "cli"
+kind = "normal"
+to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "glob"
+kind = "normal"
+to = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "json"
+kind = "normal"
+to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "llm"
+kind = "normal"
+to = "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "process"
+kind = "normal"
+to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "sql"
+kind = "normal"
+to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "tui"
+kind = "normal"
+to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 
 [[graphs.edges]]
 from = "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858"
@@ -1759,17 +1981,18 @@ to = "p-f3d736f133d5522ed0843c0509bc4c800ed732a7fbef84249ed14efaad1fd8e2"
 id = "g-071225897ef103a26b461a15e62469ce0d3144ff0c0fd083376763e04e632b8f"
 root = "llm/examples"
 target = "x86_64-unknown-linux-gnu"
-root-package = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-input-fingerprint = "blake3:eb0747e54dd3dac71236a65423d76403c7ad7997cc8e09712ae26ab7541160f3"
+root-package = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+input-fingerprint = "blake3:70019939e93c87761974799e64875837de4ef896f0d8f4d36f8a5719e30c8fcf"
 packages = [
     "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572",
     "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917",
-    "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d",
     "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d",
     "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81",
     "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9",
     "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c",
+    "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2",
     "p-8b8bf2a3d963dd6dc6cc822f3316132a01ed71a710d5695698be3dae966fbeef",
+    "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9",
     "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858",
     "p-f3d736f133d5522ed0843c0509bc4c800ed732a7fbef84249ed14efaad1fd8e2",
     "p-fa9fb283912ce3747e10c2b016ef46257de2f06b6afece0840bdaf815014a749",
@@ -1779,42 +2002,6 @@ resolved-with = "0.1.0"
 
 [[graphs.edges]]
 from = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
-alias = "tui"
-kind = "normal"
-to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "cli"
-kind = "normal"
-to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "json"
-kind = "normal"
-to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "llm"
-kind = "normal"
-to = "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "process"
-kind = "normal"
-to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
-alias = "sql"
-kind = "normal"
-to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
-
-[[graphs.edges]]
-from = "p-33a5d617ccf6647a2fc4f2dcfb12b56508d5cb8a7b43ec14b254112179fce91d"
 alias = "tui"
 kind = "normal"
 to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
@@ -1830,6 +2017,48 @@ from = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
 alias = "uuid"
 kind = "normal"
 to = "p-5f638eded056d2bc1fc79be38da6bbb56ffc22657666b4a1e715a669a7c78f81"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "cli"
+kind = "normal"
+to = "p-6e0307dad89ef8653fb26b66477f37992e7696761c3b47ae6dab6a9fb8af171c"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "glob"
+kind = "normal"
+to = "p-885663f9afe4ad8114105cd4e4ee4ea44660fa58610afe6f9d250391fb5d84a2"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "json"
+kind = "normal"
+to = "p-19d78a77cf62637e0009d98d9ac69ed1d519a66578e9db93165a587d88711917"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "llm"
+kind = "normal"
+to = "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "process"
+kind = "normal"
+to = "p-01972838e88b2a626bedce32cb24d49a1f5bb4de8f4f5e01bc73e9de893e0572"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "sql"
+kind = "normal"
+to = "p-6c74a991af4d3389d94635efa3a2bd9de3940d7b23bad27a34731eca6987ded9"
+
+[[graphs.edges]]
+from = "p-a298af35370c207c852df0cf6ebeb24224b9395ef0309b38dd3a7be494b825c9"
+alias = "tui"
+kind = "normal"
+to = "p-41f49d8152a2dcb98d750a2ed9e0d3e4ac248c9a5c728f3b2073e7dcdb14750d"
 
 [[graphs.edges]]
 from = "p-e1eca48477742407853724c43870b834d4ffbce4f7da9892c3bb7ac2a9344858"

@@ -1,0 +1,315 @@
+module GlobRuntimeChecks
+
+import glob.Glob
+import glob.GlobSet
+import glob.GlobWalk
+import glob.Ignore
+
+let check =
+  match (GlobSet.compile [
+    "**/*.{fai,toml}",
+    "src/**"
+  ], Glob.candidateBytes (Bytes.fromString "src/Main.fai")) with
+  | (Ok patterns, Ok path) -> GlobSet.matches patterns path = [0, 1]
+  | _ -> false
+
+let path text = Result.withDefault Path.empty (Path.fromString text)
+
+let patterns text = Result.withDefault GlobSet.empty (GlobSet.compile text)
+
+let names result =
+  List.map (fun entry ->
+    Result.withDefault "invalid Unicode" (Path.toString entry.relative)) result.value
+
+let complete result = result.outcome = Ok Directory.Exhausted && result.cleanupError = None
+
+let stop entry count = Ok (count + 1, Directory.Stop)
+
+let failAfterOne entry count =
+  if count = 1 then Err "callback failure" else Ok (count + 1, Directory.Continue)
+
+let remember entry previous =
+  Ok (Result.withDefault "" (Path.toString entry.relative), Directory.Continue)
+
+let fileError kind result =
+  match result.outcome with
+  | Err (GlobWalk.FileError error) -> error.kind = kind
+  | _ -> false
+
+make : FileSystem -> Path -> List String -> Result Unit String / { FileSystem }
+let make fs root directories =
+  match directories with
+  | [] -> Ok ()
+  | name :: rest ->
+    match fs.createDirectory (Path.join root (path name)) with
+    | Err error -> Err (FileSystem.errorToString error)
+    | Ok _ -> make fs root rest
+
+write : FileSystem -> Path -> List (String * String) -> Result Unit String / { FileSystem }
+let write fs root files =
+  match files with
+  | [] -> Ok ()
+  | (name, text) :: rest ->
+    match fs.writeBytes (Path.join root (path name)) (Bytes.fromString text) with
+    | Err error -> Err (FileSystem.errorToString error)
+    | Ok _ -> write fs root rest
+
+let all = patterns ["**"]
+
+basic : Runtime -> Path -> List (String * Bool) / { Concurrency, FileSystem }
+let basic env root =
+  let found = GlobWalk.collect env GlobWalk.defaults 100 root all
+  let filtered =
+    GlobWalk.collect env { GlobWalk.defaults with
+      entries = GlobWalk.FilesOnly
+    } 100 root (patterns ["**/*.fai"])
+  let hidden = GlobWalk.collect env { GlobWalk.defaults with includeHidden = false } 100 root all
+  let raw = GlobWalk.collect env { GlobWalk.defaults with respectIgnore = false } 100 root all
+  let git = GlobWalk.collect env { GlobWalk.defaults with skipGit = false } 100 root all
+  let limited = GlobWalk.collect env GlobWalk.defaults 2 root all
+  let stopped = GlobWalk.fold env GlobWalk.defaults root all 0 stop
+  let failed = GlobWalk.fold env GlobWalk.defaults root all 0 failAfterOne
+  let shallow =
+    GlobWalk.collect env { GlobWalk.defaults with
+      walk = { Directory.walkOptions with maxDepth = 1, order = Directory.SortedOrder }
+    } 100 root all
+  let visited =
+    GlobWalk.collect env { GlobWalk.defaults with
+      walk = { Directory.walkOptions with maxEntries = 3, order = Directory.SortedOrder }
+    } 100 root all
+  let openLimit =
+    GlobWalk.collect env { GlobWalk.defaults with
+      walk = { Directory.walkOptions with maxOpenDirectories = 1 }
+    } 100 root all
+  let ignoreLimit =
+    GlobWalk.collect env { GlobWalk.defaults with
+      ignore = { Ignore.defaults with maxFileBytes = 2 }
+    } 100 root all
+  let activeBudget =
+    GlobWalk.collect env { GlobWalk.defaults with
+      ignore = { Ignore.defaults with maxActiveBytes = 23 }
+    } 100 root all
+  let missing = GlobWalk.collect env GlobWalk.defaults 100 (Path.join root (path "missing")) all
+  let empty =
+    GlobWalk.collect env GlobWalk.defaults 0 (Path.join root (path "missing")) GlobSet.empty
+  [
+    ("sorted nested rules", complete found && names found = [
+      ".gitignore",
+      ".hidden",
+      "keep.fai",
+      "other",
+      "src",
+      "src/.gitignore",
+      "src/keep.fai",
+      "src/keep.tmp",
+      "zother",
+      "zother/.gitignore"
+    ] && found.ignored = 6),
+    ("file filtering", complete filtered && names filtered = ["keep.fai", "src/keep.fai"]),
+    ("hidden filtering keeps rules", complete hidden && names hidden = [
+      "keep.fai",
+      "other",
+      "src",
+      "src/keep.fai",
+      "src/keep.tmp",
+      "zother"
+    ]),
+    ("ignore discovery disabled", complete raw && List.member "build/keep.fai" (names raw) && List.member "drop.tmp" (names raw) && not (List.member ".git" (names raw))),
+    ("Git metadata option", complete git && List.member ".git" (names git)),
+    ("result limit retains prefix", limited.outcome = Err GlobWalk.ResultLimit && names limited = [
+      ".gitignore",
+      ".hidden"
+    ] && limited.matched = 2 && limited.cleanupError = None),
+    ("early stop", stopped.outcome = Ok Directory.Stopped && stopped.value = 1 && stopped.cleanupError = None),
+    ("callback error retains state", failed.outcome = Err (GlobWalk.CallbackError "callback failure") && failed.value = 1 && failed.cleanupError = None),
+    ("depth limit", complete shallow && names shallow = [
+      ".gitignore",
+      ".hidden",
+      "keep.fai",
+      "other",
+      "src",
+      "zother"
+    ]),
+    ("entry limit", fileError FileSystem.TooLarge visited && visited.cleanupError = None),
+    ("open cursor limit", fileError FileSystem.TooLarge openLimit && openLimit.cleanupError = None),
+    ("ignore byte limit", fileError FileSystem.TooLarge ignoreLimit),
+    ("completed scopes release their rule budget", complete activeBudget),
+    ("missing root", fileError FileSystem.NotFound missing),
+    ("empty set performs no traversal", complete empty && empty.visited = 0)
+  ]
+
+prefixCheck : Runtime -> Path -> Bool / { Concurrency, FileSystem }
+let prefixCheck env root =
+  let made = make env.fs root ["unrelated", "unrelated/.gitignore"]
+  let found = GlobWalk.collect env GlobWalk.defaults 100 root (patterns ["src/keep.*"])
+  let skipped =
+    GlobWalk.collect env { GlobWalk.defaults with
+      walk = { Directory.walkOptions with
+        errorPolicy = Directory.SkipErrors,
+        order = Directory.SortedOrder
+      }
+    } 100 root all
+  let committed =
+    GlobWalk.fold env GlobWalk.defaults root (patterns ["unrelated", "unrelated/**"]) "" remember
+  Result.isOk made && complete found && names found = [
+    "src/keep.fai",
+    "src/keep.tmp"
+  ] && complete skipped && skipped.skippedErrors = 1 && fileError FileSystem.IsDirectory committed && committed.value = "unrelated" && committed.cleanupError = None
+
+overrides : Runtime -> Path -> Bool / { Concurrency, FileSystem }
+let overrides env root =
+  match Ignore.parse { base = Glob.root, name = "overrides" } (Bytes.fromString "!*.tmp\n") with
+  | Err _ -> false
+  | Ok file ->
+    match Ignore.append file Ignore.empty with
+    | Err _ -> false
+    | Ok rules ->
+      let found =
+        GlobWalk.collect env { GlobWalk.defaults with
+          overrideRules = rules
+        } 100 root (patterns ["**/*.tmp"])
+      complete found && names found = [
+        "drop.tmp",
+        "other/keep.tmp",
+        "src/drop.tmp",
+        "src/keep.tmp",
+        "zother/keep.tmp"
+      ]
+
+links : Runtime -> Path -> Bool / { Concurrency, FileSystem }
+let links env root =
+  match env.fs.symlink (path "src") (Path.join root (path "link")) true with
+  | Err error -> error.kind = FileSystem.Unsupported || error.kind = FileSystem.PermissionDenied
+  | Ok _ ->
+    let plain = GlobWalk.collect env GlobWalk.defaults 100 root (patterns ["link", "link/**"])
+    let linkRoot =
+      GlobWalk.collect env { GlobWalk.defaults with
+        ignore = { Ignore.defaults with maxFileBytes = 0 }
+      } 100 (Path.join root (path "link")) all
+    let followed =
+      GlobWalk.collect env { GlobWalk.defaults with
+        walk = { Directory.walkOptions with followLinks = true, order = Directory.SortedOrder }
+      } 100 root (patterns ["link", "link/**"])
+    let loop = env.fs.symlink (path ".") (Path.join root (path "loop")) true
+    let cyclic =
+      GlobWalk.collect env { GlobWalk.defaults with
+        walk = { Directory.walkOptions with followLinks = true }
+      } 100 root (patterns ["loop", "loop/**"])
+    let made = env.fs.createDirectory (Path.join root (path "linkrules"))
+    let wrote = write env.fs root [
+      ("rule-source", "hidden.fai\n"),
+      ("linkrules/hidden.fai", "visible")
+    ]
+    let linked =
+      env.fs.symlink (path "../rule-source") (Path.join root (path "linkrules/.gitignore")) false
+    let ignoreLink = GlobWalk.collect env GlobWalk.defaults 100 root (patterns ["linkrules/*.fai"])
+    complete plain && names plain = [
+      "link"
+    ] && fileError FileSystem.NotDirectory linkRoot && (match plain.value with
+    | [entry] -> entry.kind = FileSystem.SymbolicLink
+    | _ ->
+      false) && complete followed && names followed = [
+      "link",
+      "link/.gitignore",
+      "link/keep.fai",
+      "link/keep.tmp"
+    ] && Result.isOk loop && fileError FileSystem.TooManyLinks cyclic && cyclic.cleanupError = None && Result.isOk made && Result.isOk wrote && Result.isOk linked && complete ignoreLink && names ignoreLink = [
+      "linkrules/hidden.fai"
+    ]
+
+binary : Runtime -> Path -> Bool / { Concurrency, FileSystem }
+let binary env root =
+  if Path.nativeEncoding = "windows" then
+    match Path.fromNativeBytes (Bytes.fromList [0, 216]) with
+    | Err _ -> false
+    | Ok native ->
+      Result.map Glob.candidateSpelling (Glob.candidate native) = Ok (Bytes.fromList [
+        237,
+        160,
+        128
+      ])
+  else
+    match (Path.fromNativeBytes (Bytes.fromList [
+      255
+    ]), Glob.compileBytes (Bytes.fromList [255])) with
+    | (Ok name, Ok pattern) ->
+      let wrote = env.fs.writeBytes (Path.join root name) Bytes.empty
+      let set = Result.withDefault GlobSet.empty (GlobSet.ofPatterns 100 [pattern])
+      let found = GlobWalk.collect env GlobWalk.defaults 10 root set
+      Result.isOk wrote && complete found && (match found.value with
+      | [entry] -> entry.relative = name
+      | _ -> false)
+    | _ -> false
+
+slow : Clock -> GlobWalk.Entry -> Int -> Result (Int * Directory.Decision) Unit / { Clock }
+let slow clock entry count =
+  let slept = clock.sleep 100
+  Ok (count + 1, Directory.Continue)
+
+cancelled : Runtime -> Path -> Bool / { Clock, Concurrency, FileSystem }
+let cancelled env root =
+  let outcome =
+    Async.timeout env.concurrency env.clock 10 (fun _ ->
+      GlobWalk.fold env GlobWalk.defaults root all 0 (slow env.clock))
+  let after = GlobWalk.collect env GlobWalk.defaults 100 root (patterns ["keep.fai"])
+  outcome = None && complete after && names after = ["keep.fai"]
+
+checks : Runtime -> Temp.Directory -> Result (List (String * Bool)) String / { Clock, Concurrency, FileSystem }
+let checks env temporary =
+  let root = temporary.path
+  match make env.fs root [".git", "build", "build/.gitignore", "other", "src", "zother"] with
+  | Err error -> Err error
+  | Ok _ ->
+    match write env.fs root [
+      (".gitignore", "build/\n*.tmp\n"),
+      (".hidden", "hidden"),
+      ("keep.fai", "root"),
+      ("drop.tmp", "drop"),
+      ("build/keep.fai", "ignored"),
+      ("other/keep.tmp", "drop"),
+      ("src/.gitignore", "!keep.tmp\n"),
+      ("src/keep.fai", "keep"),
+      ("src/keep.tmp", "keep"),
+      ("src/drop.tmp", "drop"),
+      ("zother/.gitignore", "*.tmp\n"),
+      ("zother/keep.tmp", "drop")
+    ] with
+    | Err error -> Err error
+    | Ok _ ->
+      let results = basic env root
+      let extra = [
+        ("explicit overrides", overrides env root),
+        ("cancellation cleanup", cancelled env root),
+        ("prefix pruning and skipped errors", prefixCheck env root),
+        ("symlink policy", links env root),
+        ("lossless native names", binary env root)
+      ]
+      Ok (List.append results extra)
+
+let failed pair =
+  let (_, good) = pair
+  not good
+
+report : Console -> List (String * Bool) -> Unit / { Console }
+let report console failures =
+  match failures with
+  | [] -> ()
+  | (name, _) :: rest ->
+    let wrote = console.writeLine ("FAILED: " ++ name)
+    report console rest
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, FileSystem }
+let main env =
+  match env.fs.temporaryDirectory () with
+  | Err error -> env.console.writeLine (FileSystem.errorToString error)
+  | Ok parent ->
+    match Temp.withDirectory env parent (checks env) with
+    | Ok checks ->
+      let failures = List.filter failed (("compiled alternatives", check) :: checks)
+      let reported = report env.console failures
+      env.console.writeLine (if List.isEmpty failures then
+        "Glob runtime checks passed"
+      else
+        "Glob runtime checks FAILED")
+    | Err (FileSystem.BodyError error) -> env.console.writeLine error
+    | Err _ -> env.console.writeLine "Glob runtime fixture failed during setup or cleanup"

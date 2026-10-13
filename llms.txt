@@ -635,6 +635,11 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+`Glob`, `GlobSet` and `Ignore` in the optional glob package are pure.
+`GlobWalk.fold`/`collect` take explicit FileSystem and Concurrency capabilities;
+fold callbacks forward their own effects. Discovery is scoped to the supplied
+root, and callback progress survives failures and cancellation cleanup.
+
 The optional encoding package is entirely pure: `Base64.encode bytes`,
 `Base64.decode text`, and the Hex/Base64Url/Base32/Base32Hex peers need no
 capabilities. Incremental encoder/decoder states are immutable snapshots; the
@@ -2005,6 +2010,32 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 ---
 
 ### Optional source packages
+
+`packages/glob` supplies `Glob`, `GlobSet`, `Ignore`, and `GlobWalk`. Declare the
+dependency in `fai.toml` and import modules such as `import glob.Glob`.
+`Glob.compile`/`compileBytes` return reusable patterns; `candidate Path` and
+`candidateBytes Bytes` prepare normalized root-relative paths, rejecting roots,
+NULs and parent components. Unix bytes and Windows WTF-8 preserve filename units.
+`isMatch pattern candidate` matches the whole path: `*` and `?` stay within a
+component, `**` crosses directories, classes select bytes, and `{a,b}` branches
+without nested braces. Wildcards count bytes; case sensitivity is the default
+on every platform. `compileWith` takes `{ caseInsensitive, maxPatternBytes,
+maxStates }`; `Glob.defaults` supplies bounded defaults.
+`GlobSet.compile` accepts a list of patterns. `matches` returns matching indices
+in declaration order, including duplicate patterns; `mayMatchDescendant` permits
+conservative traversal pruning. `Ignore.parse` takes `{ base, name }` plus file
+bytes; `append`/`ofFiles` compose sources in increasing precedence. `decide` takes
+a candidate and actual entry kind and reports `NoMatch`, `Included`, or `Ignored`
+with source/line/byte information and any blocking ancestor. Braces stay literal
+in Git rules, and excluded parents prevent descendant reinclusion.
+`GlobWalk.collect env options limit root patterns` returns bounded entries and
+progress; `fold` threads user state through an effect-carrying callback returning
+`Result (state * Directory.Decision) error`. Defaults sort each directory, include
+dotfiles, skip `.git`, load nested `.gitignore` files and avoid following symlinks.
+Options contain `baseRules`/`overrideRules`, ignore budgets, entry filtering, and
+the standard `Directory.WalkOptions`. Results retain native paths, matching indices,
+committed state, counts, typed failure and a separate cleanup error. Run contracts
+with `fai test -C packages --package glob`; see `packages/glob/README.md`.
 
 `packages/encoding` supplies `Hex`, `Base64`, `Base64Url`, `Base32`, and
 `Base32Hex`. Declare an `encoding` dependency in `fai.toml` and import the modules

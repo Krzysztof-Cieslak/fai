@@ -1,0 +1,691 @@
+module Glob
+
+/// Stable pattern, path and resource-limit failures. All offsets count bytes.
+public type ErrorKind =
+  | InvalidPattern
+  | InvalidPath
+  | InvalidOptions
+  | PatternLimit
+  | StateLimit
+
+/// A byte location in the supplied pattern/candidate and an optional set index.
+public type Error = {
+  kind : ErrorKind,
+  message : String,
+  offset : Option Int,
+  patternIndex : Option Int
+}
+
+/// ASCII case folding is explicit and independent of the host filesystem.
+public type Options = { caseInsensitive : Bool, maxPatternBytes : Int, maxStates : Int }
+
+/// Case-sensitive, with 4 KiB patterns and at most 16384 compiled states.
+public defaults : Options
+let defaults = { caseInsensitive = false, maxPatternBytes = 4096, maxStates = 16384 }
+
+/// Render the error message and its optional byte location.
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.offset with
+  | None -> ""
+  | Some offset -> " at byte " ++ Int.toString offset)
+
+internal error : ErrorKind -> String -> Option Int -> Error
+let error kind message offset = {
+  kind = kind,
+  message = message,
+  offset = offset,
+  patternIndex = None
+}
+
+internal type Node =
+  | Byte Int Bool Int
+  | Any Int
+  | Class (Array Bool) Int
+  | Star Bool Int
+  | Branch (List Int)
+  | Jump Int
+  | Deep Int Int
+  | End Int
+
+internal type Program = { nodes : Array Node, roots : List Int }
+
+/// Immutable compiled byte automaton, retaining the original pattern.
+public opaque type Pattern = { program : Program, source : Bytes }
+
+/// A prepared root-relative path. Windows names use lossless WTF-8 matching bytes;
+/// Unix names preserve their original bytes. Separators are always '/'.
+public opaque type Candidate = { bytes : Bytes, parts : Array Bytes }
+
+/// The empty root-relative candidate.
+public root : Candidate
+let root = { bytes = Bytes.empty, parts = Array.empty }
+
+let at input index = Option.withDefault (-1) (Bytes.get index input)
+
+let lower byte = if byte >= 65 && byte <= 90 then byte + 32 else byte
+
+let upper byte = if byte >= 97 && byte <= 122 then byte - 32 else byte
+
+let located kind message index = error kind message (Some index)
+
+internal validateOptions : Options -> Result Unit Error
+let validateOptions options =
+  if options.maxPatternBytes < 0 || options.maxStates < 1 then
+    Err (error InvalidOptions "pattern bytes must be nonnegative and states must be positive" None)
+  else
+    Ok ()
+
+let alpha byte = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+
+let digit byte = byte >= 48 && byte <= 57
+
+let named name byte =
+  if name = "alnum" then
+    alpha byte || digit byte
+  else if name = "alpha" then
+    alpha byte
+  else if name = "blank" then
+    byte = 9 || byte = 32
+  else if name = "cntrl" then
+    byte < 32 || byte = 127
+  else if name = "digit" then
+    digit byte
+  else if name = "graph" then
+    byte > 32 && byte < 127
+  else if name = "lower" then
+    byte >= 97 && byte <= 122
+  else if name = "print" then
+    byte >= 32 && byte < 127
+  else if name = "punct" then
+    byte > 32 && byte < 127 && not (alpha byte || digit byte)
+  else if name = "space" then
+    byte = 32 || (byte >= 9 && byte <= 13)
+  else if name = "upper" then
+    byte >= 65 && byte <= 90
+  else if name = "xdigit" then digit byte || (lower byte >= 97 && lower byte <= 102) else false
+
+type Atom =
+  | Single Int
+  | Named String
+
+let nameEnd input index =
+  if index >= Bytes.length input then
+    None
+  else if at input index = 58 && at input (index + 1) = 93 then
+    Some index
+  else
+    nameEnd input (index + 1)
+
+let classAtom input index =
+  let byte = at input index
+  if byte < 0 then
+    Err (located InvalidPattern "unclosed character class" index)
+  else if byte = 0 then
+    Err (located InvalidPattern "NUL is not a path character" index)
+  else if byte = 92 then
+    if at input (index + 1) < 0 then
+      Err (located InvalidPattern "unfinished escape" index)
+    else if at input (index + 1) = 0 then
+      Err (located InvalidPattern "NUL is not a path character" (index + 1))
+    else
+      Ok (index + 2, Single (at input (index + 1)))
+  else if byte = 91 && at input (index + 1) = 58 then
+    match nameEnd input (index + 2) with
+    | None -> Err (located InvalidPattern "unclosed named character class" index)
+    | Some finish ->
+      let name = Option.withDefault "" (Bytes.toString (Bytes.slice (index + 2) finish input))
+      if List.member name [
+        "alnum",
+        "alpha",
+        "blank",
+        "cntrl",
+        "digit",
+        "graph",
+        "lower",
+        "print",
+        "punct",
+        "space",
+        "upper",
+        "xdigit"
+      ] then
+        Ok (finish + 2, Named name)
+      else
+        Err (located InvalidPattern "unknown named character class" index)
+  else
+    Ok (index + 1, Single byte)
+
+let addRange low high byte mask =
+  if byte > high then mask else addRange low high (byte + 1) (Array.unsafeSet byte true mask)
+
+let addNamed name byte mask =
+  if byte = 256 then
+    mask
+  else
+    addNamed name (byte + 1) (if named name byte then Array.unsafeSet byte true mask else mask)
+
+let finishClass insensitive negate mask byte output =
+  if byte = 256 then
+    output
+  else
+    let present =
+      Array.unsafeGet byte mask || (insensitive && (Array.unsafeGet (lower byte) mask || Array.unsafeGet (upper byte) mask))
+    finishClass insensitive negate mask (byte + 1) (Array.push (byte <> 47 && (if negate then
+      not present
+    else
+      present)) output)
+
+let classFrom input index first mask =
+  if at input index < 0 then
+    Err (located InvalidPattern "unclosed character class" index)
+  else if at input index = 93 && not first then
+    Ok (index + 1, mask)
+  else
+    match classAtom input index with
+    | Err error -> Err error
+    | Ok (next, atom) ->
+      match atom with
+      | Named name -> classFrom input next false (addNamed name 0 mask)
+      | Single byte ->
+        if at input next = 45 && at input (next + 1) <> 93 && at input (next + 1) >= 0 then
+          match classAtom input (next + 1) with
+          | Err error -> Err error
+          | Ok (finish, Single high) ->
+            if byte > high then
+              Err (located InvalidPattern "descending character range" next)
+            else
+              classFrom input finish false (addRange byte high byte mask)
+          | Ok (_, Named _) -> Err (located InvalidPattern "named class cannot end a range" next)
+        else
+          classFrom input next false (Array.unsafeSet byte true mask)
+
+let firstClose input index =
+  if at input index < 0 || at input index = 93 then index else firstClose input (index + 1)
+
+// Git folds the candidate before comparing escaped and bracket literals;
+// ranges and named classes have their own case-folding rules.
+let gitLiteral insensitive literal mask =
+  if insensitive && literal >= 65 && literal <= 90 then
+    mask
+  else
+    let mask = Array.unsafeSet literal true mask
+    if insensitive && literal >= 97 && literal <= 122 then
+      Array.unsafeSet (upper literal) true mask
+    else
+      mask
+
+let gitRange insensitive low high index mask =
+  if index = 256 then
+    mask
+  else
+    let byte = if insensitive then lower index else index
+    let matched =
+      (byte >= low && byte <= high) || (insensitive && byte >= 97 && byte <= 122 && upper byte >= low && upper byte <= high)
+    gitRange insensitive low high (index + 1) (if matched then
+      Array.unsafeSet index true mask
+    else
+      mask)
+
+let gitNamed insensitive name index mask =
+  if index = 256 then
+    mask
+  else
+    let byte = if insensitive then lower index else index
+    let matched = named name byte || (insensitive && name = "upper" && byte >= 97 && byte <= 122)
+    gitNamed insensitive name (index + 1) (if matched then
+      Array.unsafeSet index true mask
+    else
+      mask)
+
+let gitClass input index first previous insensitive mask =
+  let byte = at input index
+  if byte < 0 || byte = 0 then
+    Err (located InvalidPattern "unclosed character class" index)
+  else if byte = 93 && not first then
+    Ok (index + 1, mask)
+  else if byte = 92 then
+    let literal = at input (index + 1)
+    if literal <= 0 then
+      Err (located InvalidPattern "unfinished character-class escape" index)
+    else
+      gitClass input (index + 2) false (Some literal) insensitive (gitLiteral insensitive literal mask)
+  else if byte = 45 && previous <> None && at input (index + 1) > 0 && at input (index + 1) <> 93 then
+    let next = index + (if at input (index + 1) = 92 then 2 else 1)
+    let high = at input next
+    if high <= 0 then
+      Err (located InvalidPattern "unfinished character range" index)
+    else
+      gitClass input (next + 1) false None insensitive (gitRange insensitive (Option.withDefault 0 previous) high 0 mask)
+  else if byte = 91 && at input (index + 1) = 58 then
+    let close = firstClose input (index + 2)
+    if at input close < 0 then
+      Err (located InvalidPattern "unclosed named character class" index)
+    else if close <= index + 2 || at input (close - 1) <> 58 then
+      gitClass input (index + 1) false (Some 91) insensitive (gitLiteral insensitive 91 mask)
+    else
+      let name = Option.withDefault "" (Bytes.toString (Bytes.slice (index + 2) (close - 1) input))
+      if List.member name [
+        "alnum",
+        "alpha",
+        "blank",
+        "cntrl",
+        "digit",
+        "graph",
+        "lower",
+        "print",
+        "punct",
+        "space",
+        "upper",
+        "xdigit"
+      ] then
+        gitClass input (close + 1) false None insensitive (gitNamed insensitive name 0 mask)
+      else
+        Err (located InvalidPattern "unknown named character class" index)
+  else
+    gitClass input (index + 1) false (Some byte) insensitive (gitLiteral insensitive byte mask)
+
+let parseClass git input start insensitive =
+  let negate = at input (start + 1) = 33 || at input (start + 1) = 94
+  let first = start + (if negate then 2 else 1)
+  let parsed =
+    if git then
+      gitClass input first true None insensitive (Array.repeat 256 false)
+    else
+      classFrom input first true (Array.repeat 256 false)
+  match parsed with
+  | Err error -> Err { error with offset = Some start }
+  | Ok (next, mask) -> Ok (next, finishClass (insensitive && not git) negate mask 0 Array.empty)
+
+type Frame = {
+  boundary : Bool,
+  ends : Bool,
+  finish : Int,
+  jumps : List Int,
+  node : Int,
+  starts : List Int
+}
+
+let braceEnd input index =
+  if index >= Bytes.length input then
+    index
+  else if at input index = 92 then
+    braceEnd input (index + 2)
+  else if at input index = 125 then
+    index + 1
+  else if at input index = 91 then
+    match parseClass false input index false with
+    | Err _ -> Bytes.length input
+    | Ok (next, _) -> braceEnd input next
+  else
+    braceEnd input (index + 1)
+
+let patchJumps jumps target nodes =
+  match jumps with
+  | [] -> nodes
+  | index :: rest -> patchJumps rest target (Array.unsafeSet index (Jump target) nodes)
+
+let starsEnd input index = if at input index = 42 then starsEnd input (index + 1) else index
+
+// A recursive prefix may omit its following slash only before consuming input.
+// Following forward epsilon edges also handles a slash after a brace alternative.
+skipSlash : Array Node -> List Int -> Set Int -> List Int -> List Int
+let skipSlash nodes pending seen output =
+  match pending with
+  | [] -> output
+  | index :: rest ->
+    if Set.member index seen then
+      skipSlash nodes rest seen output
+    else
+      let seen = Set.insert index seen
+      match Array.unsafeGet index nodes with
+      | Byte 47 _ next -> skipSlash nodes rest seen (next :: output)
+      | Jump next -> skipSlash nodes (next :: rest) seen output
+      | Branch targets -> skipSlash nodes (List.append targets rest) seen output
+      | _ -> skipSlash nodes rest seen output
+
+let resolveDeep source index output =
+  if index = Array.length source then
+    output
+  else
+    let node =
+      match Array.unsafeGet index source with
+      | Deep body next -> Branch (body :: skipSlash source [next] Set.empty [])
+      | node -> node
+    resolveDeep source (index + 1) (Array.push node output)
+
+parse : Options -> Bool -> Bytes -> Int -> Bool -> Option Frame -> Array Node -> Result Program Error
+let parse options git input index boundary frame nodes =
+  let size = Array.length nodes
+  let byte = at input index
+  if size >= options.maxStates then
+    Err (located StateLimit "compiled glob exceeds its state limit" index)
+  else if byte < 0 then
+    match frame with
+    | Some _ -> Err (located InvalidPattern "unclosed brace alternative" index)
+    | None ->
+      let nodes = Array.push (End 0) nodes
+      Ok { nodes = resolveDeep nodes 0 Array.empty, roots = [0] }
+  else if byte = 0 then
+    Err (located InvalidPattern "NUL is not a path character" index)
+  else if byte = 92 then
+    if at input (index + 1) < 0 then
+      Err (located InvalidPattern "unfinished escape" index)
+    else if at input (index + 1) = 0 then
+      Err (located InvalidPattern "NUL is not a path character" (index + 1))
+    else
+      let literal = at input (index + 1)
+      let node =
+        if git && options.caseInsensitive && literal >= 65 && literal <= 90 then
+          Class (Array.repeat 256 false) (size + 1)
+        else
+          Byte literal options.caseInsensitive (size + 1)
+      parse options git input (index + 2) (literal = 47) frame (Array.push node nodes)
+  else if byte = 63 then
+    parse options git input (index + 1) false frame (Array.push (Any (size + 1)) nodes)
+  else if byte = 91 then
+    match parseClass git input index options.caseInsensitive with
+    | Err error -> Err error
+    | Ok (next, mask) ->
+      parse options git input next false frame (Array.push (Class mask (size + 1)) nodes)
+  else if byte = 42 then
+    let next = starsEnd input index
+    let right = at input next
+    let after =
+      if not git && (right = 44 || right = 125) then
+        match frame with
+        | Some frame -> frame.finish
+        | None -> next
+      else
+        next
+    let right = at input after
+    let recursive =
+      next - index >= 2 && boundary && (right < 0 || right = 47 || (right = 92 && at input (after + 1) = 47))
+    if not git && (next - index > 2 || (next - index = 2 && not recursive)) then
+      Err (located InvalidPattern "** must occupy an entire path component" index)
+    else if recursive && git && right = 92 then
+      parse options git input next false frame (Array.push (Star true (size + 1)) nodes)
+    else if recursive then
+      parse options git input next false frame (Array.push (Star true (size + 2)) (Array.push (Deep (size + 1) (size + 2)) nodes))
+    else
+      parse options git input next false frame (Array.push (Star false (size + 1)) nodes)
+  else if byte = 123 && not git then
+    match frame with
+    | Some _ -> Err (located InvalidPattern "nested brace alternatives are not supported" index)
+    | None ->
+      parse options git input (index + 1) boundary (Some {
+        boundary = boundary,
+        ends = true,
+        finish = braceEnd input (index + 1),
+        jumps = [],
+        node = size,
+        starts = [size + 1]
+      }) (Array.push (Branch []) nodes)
+  else if byte = 44 && not git && frame <> None then
+    match frame with
+    | None -> Err (located InvalidPattern "invalid alternative" index)
+    | Some frame ->
+      parse options git input (index + 1) frame.boundary (Some { frame with
+        ends = frame.ends && boundary,
+        jumps = size :: frame.jumps,
+        starts = (size + 1) :: frame.starts
+      }) (Array.push (Jump (-1)) nodes)
+  else if byte = 125 && not git then
+    match frame with
+    | None -> Err (located InvalidPattern "unmatched closing brace" index)
+    | Some frame ->
+      let nodes =
+        patchJumps frame.jumps size (Array.unsafeSet frame.node (Branch (List.reverse frame.starts)) nodes)
+      parse options git input (index + 1) (frame.ends && boundary) None nodes
+  else
+    parse options git input (index + 1) (byte = 47) frame (Array.push (Byte byte options.caseInsensitive (size + 1)) nodes)
+
+internal compileMode : Options -> Bool -> Bytes -> Result Pattern Error
+let compileMode options git input =
+  match validateOptions options with
+  | Err error -> Err error
+  | Ok _ ->
+    if Bytes.length input > options.maxPatternBytes then
+      Err (error PatternLimit "glob exceeds its pattern byte limit" None)
+    else
+      Result.map (fun program -> {
+        program = program,
+        source = input
+      }) (parse options git input 0 true None Array.empty)
+
+/// Compile a portable root-relative glob. '*' and '?' never cross '/'.
+public compileWith : Options -> String -> Result Pattern Error
+let compileWith options input = compileMode options false (Bytes.fromString input)
+
+/// Compile with the default case policy and resource limits.
+public compile : String -> Result Pattern Error
+let compile input = compileWith defaults input
+
+/// Compile raw pattern bytes, including non-UTF-8 Unix filename literals.
+public compileBytesWith : Options -> Bytes -> Result Pattern Error
+let compileBytesWith options input = compileMode options false input
+
+/// Compile raw bytes with the default case policy and resource limits.
+public compileBytes : Bytes -> Result Pattern Error
+let compileBytes input = compileBytesWith defaults input
+
+/// The exact original pattern bytes.
+public patternBytes : Pattern -> Bytes
+let patternBytes pattern = pattern.source
+
+let mark targets active =
+  match targets with
+  | [] -> active
+  | index :: rest -> mark rest (Array.unsafeSet index true active)
+
+let closure nodes index active =
+  if index = Array.length nodes then
+    active
+  else if not (Array.unsafeGet index active) then
+    closure nodes (index + 1) active
+  else
+    let active =
+      match Array.unsafeGet index nodes with
+      | Star _ next -> Array.unsafeSet next true active
+      | Jump next -> Array.unsafeSet next true active
+      | Branch targets -> mark targets active
+      | _ -> active
+    closure nodes (index + 1) active
+
+let move nodes active byte index next =
+  if index = Array.length nodes then
+    closure nodes 0 next
+  else if not (Array.unsafeGet index active) then
+    move nodes active byte (index + 1) next
+  else
+    let target =
+      match Array.unsafeGet index nodes with
+      | Byte expected insensitive target ->
+        if byte = expected || (insensitive && lower byte = lower expected) then target else -1
+      | Any target -> if byte <> 47 then target else -1
+      | Class mask target -> if Array.unsafeGet byte mask then target else -1
+      | Star slash _ -> if slash || byte <> 47 then index else -1
+      | _ -> -1
+    move nodes active byte (index + 1) (if target < 0 then
+      next
+    else
+      Array.unsafeSet target true next)
+
+let feed program input index active =
+  if index = Bytes.length input then
+    active
+  else
+    feed program input (index + 1) (move program.nodes active (Bytes.unsafeGet index input) 0 (Array.repeat (Array.length program.nodes) false))
+
+let start program =
+  closure program.nodes 0 (mark program.roots (Array.repeat (Array.length program.nodes) false))
+
+let ends nodes active index output =
+  if index = Array.length nodes then
+    List.reverse output
+  else
+    let output =
+      if Array.unsafeGet index active then
+        match Array.unsafeGet index nodes with
+        | End id -> id :: output
+        | _ -> output
+      else
+        output
+    ends nodes active (index + 1) output
+
+internal matchProgram : Program -> Bytes -> List Int
+let matchProgram program input = ends program.nodes (feed program input 0 (start program)) 0 []
+
+let consumes nodes active index =
+  if index = Array.length nodes then
+    false
+  else if not (Array.unsafeGet index active) then
+    consumes nodes active (index + 1)
+  else
+    match Array.unsafeGet index nodes with
+    | End _ -> consumes nodes active (index + 1)
+    | Jump _ -> consumes nodes active (index + 1)
+    | Branch _ -> consumes nodes active (index + 1)
+    | _ -> true
+
+internal descendants : Program -> Bytes -> Bool
+let descendants program input =
+  let active = feed program input 0 (start program)
+  let active =
+    if Bytes.isEmpty input then
+      active
+    else
+      move program.nodes active 47 0 (Array.repeat (Array.length program.nodes) false)
+  consumes program.nodes active 0
+
+internal program : Pattern -> Program
+let program pattern = pattern.program
+
+internal stateCount : Pattern -> Int
+let stateCount pattern = Array.length pattern.program.nodes
+
+let relocate base id node =
+  match node with
+  | Byte byte insensitive next -> Byte byte insensitive (base + next)
+  | Any next -> Any (base + next)
+  | Class mask next -> Class mask (base + next)
+  | Star slash next -> Star slash (base + next)
+  | Jump next -> Jump (base + next)
+  | Branch targets -> Branch (List.map (fun target -> base + target) targets)
+  | Deep body next -> Deep (base + body) (base + next)
+  | End _ -> End id
+
+let appendNodes source index base id output =
+  if index = Array.length source then
+    output
+  else
+    appendNodes source (index + 1) base id (Array.push (relocate base id (Array.unsafeGet index source)) output)
+
+internal appendProgram : Int -> Pattern -> Program -> Program
+let appendProgram id pattern combined =
+  let base = Array.length combined.nodes
+  {
+    nodes = appendNodes pattern.program.nodes 0 base id combined.nodes,
+    roots = base :: combined.roots
+  }
+
+let utf8 code output =
+  if code < 128 then
+    code :: output
+  else if code < 2048 then
+    (128 + code % 64) :: (192 + code / 64) :: output
+  else if code < 65536 then
+    (128 + code % 64) :: (128 + (code / 64) % 64) :: (224 + code / 4096) :: output
+  else
+    (128 + code % 64) :: (128 + (code / 64) % 64) :: (128 + (code / 4096) % 64) :: (240 + code / 262144) :: output
+
+let unitAt input index = at input index + 256 * at input (index + 1)
+
+let windowsBytes input index output =
+  if index = Bytes.length input then
+    Bytes.fromList (List.reverse output)
+  else
+    let first = unitAt input index
+    let second = if index + 3 < Bytes.length input then unitAt input (index + 2) else -1
+    if first >= 55296 && first <= 56319 && second >= 56320 && second <= 57343 then
+      windowsBytes input (index + 4) (utf8 (65536 + (first - 55296) * 1024 + second - 56320) output)
+    else
+      windowsBytes input (index + 2) (utf8 first output)
+
+internal nativeBytes : Path -> Bytes
+let nativeBytes path =
+  if Path.nativeEncoding = "windows" then
+    windowsBytes (Path.toNativeBytes path) 0 []
+  else
+    Path.toNativeBytes path
+
+let component input begin finish parts output =
+  let part = Bytes.slice begin finish input
+  if part = Bytes.fromString ".." then
+    Err (located InvalidPath "parent components are not root-relative candidates" begin)
+  else if Bytes.isEmpty part || part = Bytes.fromString "." then
+    Ok (parts, output)
+  else
+    Ok (Array.push part parts, List.append (List.reverse (Bytes.toList part)) (if Array.isEmpty parts then
+      output
+    else
+      47 :: output))
+
+let candidateFrom input index begin parts output =
+  if index = Bytes.length input || at input index = 47 then
+    match component input begin index parts output with
+    | Err error -> Err error
+    | Ok (parts, output) ->
+      if index = Bytes.length input then
+        Ok { bytes = Bytes.fromList (List.reverse output), parts = parts }
+      else
+        candidateFrom input (index + 1) (index + 1) parts output
+  else if at input index = 0 then
+    Err (located InvalidPath "NUL is not a path character" index)
+  else
+    candidateFrom input (index + 1) begin parts output
+
+/// Prepare slash-separated relative bytes. Redundant separators and '.' are
+/// normalized; absolute paths and '..' components are rejected.
+public candidateBytes : Bytes -> Result Candidate Error
+let candidateBytes input =
+  if at input 0 = 47 then
+    Err (located InvalidPath "candidate must be root-relative" 0)
+  else
+    candidateFrom input 0 0 Array.empty []
+
+/// Prepare a native relative path, preserving non-Unicode filename units.
+public candidate : Path -> Result Candidate Error
+let candidate path =
+  if Path.root path <> None then
+    Err (error InvalidPath "candidate must have no native root or prefix" None)
+  else
+    let parts = Array.toList (Path.components path)
+    let bytes = Bytes.fromList (List.reverse (nativeParts parts []))
+    candidateBytes bytes
+
+let nativeParts parts output =
+  match parts with
+  | [] -> output
+  | part :: rest ->
+    let output = List.append (List.reverse (Bytes.toList (nativeBytes part))) output
+    nativeParts rest (if List.isEmpty rest then output else 47 :: output)
+
+/// Portable matching bytes; never use this representation as an OS path.
+public candidateSpelling : Candidate -> Bytes
+let candidateSpelling candidate = candidate.bytes
+
+internal components : Candidate -> Array Bytes
+let components candidate = candidate.parts
+
+/// Match the entire prepared candidate, including ordinary leading dots.
+public isMatch : Pattern -> Candidate -> Bool
+let isMatch pattern candidate = not (List.isEmpty (matchProgram pattern.program candidate.bytes))
+
+/// Prepare and match a native path in one call.
+public matchesPath : Pattern -> Path -> Result Bool Error
+let matchesPath pattern path = Result.map (isMatch pattern) (candidate path)
+
+/// Conservative descendant test: false proves that traversing this directory
+/// cannot produce a matching descendant. True may include impossible suffixes.
+public mayMatchDescendant : Pattern -> Candidate -> Bool
+let mayMatchDescendant pattern candidate = descendants pattern.program candidate.bytes

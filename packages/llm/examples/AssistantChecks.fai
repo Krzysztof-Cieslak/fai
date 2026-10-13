@@ -93,6 +93,12 @@ let check env directory python database listener nursery =
       ("text", Json.String "from-tool")
     ]))
   let read = env.fs.readFile (native "written")
+  let ignored = env.fs.writeFile (native ".gitignore") "written\n"
+  let discovered =
+    LlmTool.execute tools (toolCall "find_files" (LlmJson.object [
+      ("pattern", Json.String "{a,b,written}"),
+      ("limit", LlmJson.integer 10)
+    ]))
   let ran =
     LlmTool.execute tools (toolCall "run_command" (LlmJson.object [
       ("executable", Json.String python),
@@ -104,6 +110,12 @@ let check env directory python database listener nursery =
   | Ok value -> not value.interrupted && value.request.history <> []
   | Err _ -> false) && Result.isOk wrote && read = Ok "from-tool" && (match ran with
   | Ok result -> String.contains (Json.toString result.value) "fixture-process"
+  | Err _ -> false) && Result.isOk ignored && (match discovered with
+  | Ok result ->
+    Option.map (List.map (LlmJson.text "path")) (LlmJson.list "paths" result.value) = Some [
+      Some "a",
+      Some "b"
+    ] && LlmJson.get "truncated" result.value = Some (Json.Boolean false)
   | Err _ -> false)
 
 public main : R -> Unit / { Clock, Concurrency, Console, Env, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, Tls }

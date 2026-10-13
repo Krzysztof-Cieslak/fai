@@ -8,6 +8,7 @@ source-dir = "."
 auto-main = false
 
 [dependencies]
+glob = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/glob", version = "^0.1.0" }
 cli = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/cli", version = "^0.1.0" }
 json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
 llm = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/llm", version = "^0.1.0" }

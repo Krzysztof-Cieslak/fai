@@ -1,0 +1,102 @@
+module IgnoreSpec
+
+let candidate path = Result.withDefault Glob.root (Glob.candidateBytes (Bytes.fromString path))
+
+let file base text =
+  Ignore.parse { base = candidate base, name = base ++ "/.gitignore" } (Bytes.fromString text)
+
+let rules text =
+  match file "" text with
+  | Err _ -> Ignore.empty
+  | Ok file -> Result.withDefault Ignore.empty (Ignore.append file Ignore.empty)
+
+let ignored text path kind = Ignore.isIgnored (Ignore.decide (rules text) (candidate path) kind)
+example: ignored "*.o\n" "a/b/file.o" FileSystem.RegularFile
+example: not (ignored "/*.o\n" "a/b/file.o" FileSystem.RegularFile)
+example: ignored "/file.o\n" "file.o" FileSystem.RegularFile
+example: ignored "doc/file\n" "doc/file" FileSystem.RegularFile
+example: not (ignored "doc/file\n" "a/doc/file" FileSystem.RegularFile)
+example: ignored "build/\n!build/keep.txt\n" "build/keep.txt" FileSystem.RegularFile
+example: not (ignored "build/*\n!build/keep.txt\n" "build/keep.txt" FileSystem.RegularFile)
+example: ignored "build/\n" "build" FileSystem.Directory
+example: not (ignored "build/\n" "build" FileSystem.SymbolicLink)
+example: not (ignored "build/\n" "build" FileSystem.RegularFile)
+example: ignored "build\n" "build" FileSystem.SymbolicLink
+example: ignored "cache/\n" "a/cache/item" FileSystem.RegularFile
+example: ignored "a/**/b\n" "a/b" FileSystem.RegularFile
+example: ignored "a/**/b\n" "a/x/y/b" FileSystem.RegularFile
+example: not (ignored "a/**/b\n" "a/xb" FileSystem.RegularFile)
+example: ignored "a***b\n" "axxb" FileSystem.RegularFile
+example: not (ignored "a**/b\n" "a/x/b" FileSystem.RegularFile)
+example: not (ignored "a/**\\/b\n" "a/b" FileSystem.RegularFile)
+example: ignored "a/**\\/b\n" "a/x/b" FileSystem.RegularFile
+example: ignored "a/***/b\n" "a/x/y/b" FileSystem.RegularFile
+example: ignored "**/file\n" "file" FileSystem.RegularFile
+example: ignored "{a,b}\n" "{a,b}" FileSystem.RegularFile
+example: not (ignored "{a,b}\n" "a" FileSystem.RegularFile)
+example: ignored "#comment\n\\#file\n" "#file" FileSystem.RegularFile
+example: not (ignored "#comment\n" "#comment" FileSystem.RegularFile)
+example: ignored "\\!file\n" "!file" FileSystem.RegularFile
+example: ignored "foo   \n" "foo" FileSystem.RegularFile
+example: ignored "foo\\ \n" "foo " FileSystem.RegularFile
+example: ignored "foo\\  \n" "foo " FileSystem.RegularFile
+example: not (ignored "foo\\ \n" "foo" FileSystem.RegularFile)
+example: ignored " foo\n" " foo" FileSystem.RegularFile
+example: ignored "foo\t\n" "foo\t" FileSystem.RegularFile
+example: ignored "\u{feff}foo\r\nbar\r\n" "foo" FileSystem.RegularFile
+example: ignored "foo\r\nbar\r\n" "bar" FileSystem.RegularFile
+example: ignored "*\n" ".hidden" FileSystem.RegularFile
+example: not (ignored "foo\\\n" "foo" FileSystem.RegularFile)
+example: not (ignored "[abc\n" "[abc" FileSystem.RegularFile)
+example: ignored "[[:digit:]].txt\n" "1.txt" FileSystem.RegularFile
+example: not (ignored "[[:digit:]].txt\n" "a.txt" FileSystem.RegularFile)
+example: not (ignored "?\n" "é" FileSystem.RegularFile)
+example: not (ignored "*\n" "" FileSystem.Directory)
+example: ignored "é\n" "é" FileSystem.RegularFile
+example: ignored "[z-aq]\n" "z" FileSystem.RegularFile
+example: ignored "[z-aq]\n" "q" FileSystem.RegularFile
+example: not (ignored "[z-aq]\n" "a" FileSystem.RegularFile)
+example: ignored "[a-[:digit:]]\n" "a]" FileSystem.RegularFile
+example: ignored "[[:]]\n" "[]" FileSystem.RegularFile
+
+let nested =
+  match (file "" "*.txt\n", file "src" "!keep.txt\n") with
+  | (Ok outer, Ok inner) -> Result.withDefault Ignore.empty (Ignore.ofFiles [outer, inner])
+  | _ -> Ignore.empty
+example: not (Ignore.isIgnored (Ignore.decide nested (candidate "src/keep.txt") FileSystem.RegularFile))
+example: Ignore.isIgnored (Ignore.decide nested (candidate "other/keep.txt") FileSystem.RegularFile)
+example: Ignore.isIgnored (Ignore.decide nested (candidate "src/drop.txt") FileSystem.RegularFile)
+example: not (Ignore.isIgnored (Ignore.decide (rules "foo/\n") (candidate "foobar/file") FileSystem.RegularFile))
+example: not (Ignore.isIgnored (Ignore.decideWithOverrides (rules "build/\n") (rules "!build/\n!build/keep\n") (candidate "build/keep") FileSystem.RegularFile))
+example: (match Ignore.decide (rules "# note\nbuild/\n!build/keep\n") (candidate "build/keep") FileSystem.RegularFile with
+| Ignore.Ignored matched ->
+  matched.line = 2 && matched.start = 7 && matched.finish = 13 && matched.pattern = Bytes.fromString "build/" && matched.blockedParent = Some (candidate "build")
+| _ -> false)
+example: (match file "" "foo\\\n[bad\n# comment\n\nokay\n" with
+| Ok file -> Ignore.ignoredPatternCount file = 2 && Ignore.fileRuleCount file = 1
+| _ -> false)
+example: Ignore.parseWith { Ignore.defaults with
+  maxFileBytes = 1
+} { base = Glob.root, name = "test" } (Bytes.fromString "xx") |> Result.isErr
+example: Ignore.parseWith { Ignore.defaults with
+  maxRules = 1
+} { base = Glob.root, name = "test" } (Bytes.fromString "a\nb") |> Result.isErr
+example: Ignore.parseWith { Ignore.defaults with
+  maxStates = 1
+} { base = Glob.root, name = "test" } (Bytes.fromString "ab") |> Result.isErr
+example: Ignore.ofFilesWith { Ignore.defaults with maxRules = -1 } [] |> Result.isErr
+
+let folded text name =
+  match Ignore.parseWith { Ignore.defaults with
+    glob = { Glob.defaults with caseInsensitive = true }
+  } { base = Glob.root, name = "case" } (Bytes.fromString text) with
+  | Err _ -> false
+  | Ok file ->
+    match Ignore.append file Ignore.empty with
+    | Err _ -> false
+    | Ok rules -> Ignore.isIgnored (Ignore.decide rules (candidate name) FileSystem.RegularFile)
+example: folded "README" "readme"
+example: folded "[a]" "A"
+example: not (folded "[A]" "A")
+example: folded "[A-Z]" "a"
+example: not (folded "\\A" "A")

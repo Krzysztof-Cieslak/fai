@@ -1,0 +1,288 @@
+module GlobGitChecks
+
+import glob.Glob
+import glob.Ignore
+import process.Process
+
+public type Services = {
+  concurrency : Concurrency,
+  console : Console,
+  fs : FileSystem,
+  process : ProcessHost.Process
+}
+
+let runtime = {
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  fs = stdFs,
+  process = ProcessHost.native
+}
+
+let path text = Result.withDefault Path.empty (Path.fromString text)
+
+let candidate text = Result.withDefault Glob.root (Glob.candidateBytes (Bytes.fromString text))
+
+let directories = ["a", "a/x", "a/x/y", "dir", "dir/sub", "build", "src", "src/deep", "other"]
+
+let files = [
+  "f",
+  "file",
+  "foo",
+  "bar",
+  "a/b",
+  "a/x/b",
+  "a/x/y/b",
+  "dir/file",
+  "dir/sub/file",
+  "build/keep",
+  "build/drop",
+  "src/keep.txt",
+  "src/drop.txt",
+  "src/deep/keep.txt",
+  "other/keep.txt",
+  "foo.o",
+  "src/foo.o",
+  ".hidden",
+  ".config",
+  "é",
+  "aé",
+  "foo ",
+  "foo  ",
+  "foo\t",
+  "#file",
+  "!file",
+  "[abc",
+  "{a,b}",
+  "q",
+  "z",
+  "b",
+  "Z",
+  "5",
+  "-",
+  "]",
+  "[",
+  "README",
+  "readme",
+  "axxb",
+  "dir/axxb",
+  "one.txt",
+  "a.txt",
+  "b.txt"
+]
+
+let patterns = [
+  "",
+  "*",
+  "?",
+  "??",
+  "*.txt",
+  "/*.txt",
+  "*.o",
+  "/foo",
+  "foo",
+  "foo/",
+  "dir/",
+  "dir/*",
+  "dir/**",
+  "**/file",
+  "a/**/b",
+  "a/***/b",
+  "a**b",
+  "a***b",
+  "{a,b}",
+  "#comment\n\\#file",
+  "\\!file",
+  "foo   ",
+  "foo\\ ",
+  "foo\\  ",
+  "foo\t",
+  "foo\\",
+  "[abc",
+  "[a-z]",
+  "[!a-z]",
+  "[^a-z]",
+  "[z-aq]",
+  "[a-]",
+  "[-a]",
+  "[]]",
+  "[[]",
+  "[[:digit:]]",
+  "[[:alpha:]]",
+  "[[:upper:]]",
+  "[[:lower:]]",
+  "[[:space:]]",
+  "[[:punct:]]",
+  "[[:unknown:]]",
+  "README",
+  "é",
+  "build/\n!build/keep",
+  "build/*\n!build/keep",
+  "*\n!a/\na/*\n!a/b",
+  "\u{feff}foo\r\nbar\r\n",
+  "foo\u{0}ignored\nbar"
+]
+
+// A class prefix avoids older Git releases' literal-prefix ** optimization bug.
+let edgePatterns = [
+  "**",
+  "***",
+  "**foo",
+  "[a]**/b",
+  "**/a/**",
+  "a/**",
+  "a/\\**/b",
+  "a/**\\/b",
+  "**/*",
+  "*/*",
+  "[!a]",
+  "[!]",
+  "[!]]",
+  "[a-b-c]",
+  "[a-[:digit:]]",
+  "[[:digit:]-a]",
+  "[\\]]",
+  "[]",
+  "[[:]]",
+  "[[:alpha:][:digit:]]",
+  "[[:cntrl:]]",
+  "[[:graph:]]",
+  "[[:print:]]",
+  "[[:blank:]]",
+  "[Z]",
+  "[a]",
+  "[A-Z]",
+  "[\\Z]",
+  "\\Z",
+  "/",
+  "!",
+  "!!file",
+  "foo\\  ",
+  "foo\\\\ "
+]
+
+git : Services -> Path -> List String -> String -> Result Process.Output String / { Concurrency, ProcessHost.Process }
+let git env root arguments input =
+  match Path.toString root with
+  | Err error -> Err (Path.errorToString error)
+  | Ok directory ->
+    let command =
+      Process.command "git" arguments |> Process.workingDirectory directory |> Process.stdinText input |> Process.setEnvironment "GIT_CONFIG_NOSYSTEM" "1" |> Process.setEnvironment "GIT_CONFIG_GLOBAL" (directory ++ "/empty-config") |> Process.setEnvironment "LC_ALL" "C" |> Process.unsetEnvironment "GIT_DIR" |> Process.unsetEnvironment "GIT_WORK_TREE" |> Process.unsetEnvironment "GIT_INDEX_FILE" |> Process.unsetEnvironment "GIT_CONFIG_COUNT"
+    Result.mapError Process.errorToString (Process.run env { Process.defaults with
+      timeoutMs = Some 30000
+    } command)
+
+let classify rules name =
+  Ignore.isIgnored (Ignore.decide rules (candidate name) (if List.member name directories then
+    FileSystem.Directory
+  else
+    FileSystem.RegularFile))
+
+compareOne : Services -> Path -> Bool -> Ignore.Rules -> String -> Result Unit String / { Concurrency, FileSystem, ProcessHost.Process }
+let compareOne env root insensitive nested text =
+  let wrote = env.fs.writeBytes (Path.join root (path ".gitignore")) (Bytes.fromString text)
+  let options = { Ignore.defaults with glob = { Glob.defaults with caseInsensitive = insensitive } }
+  match (wrote, Ignore.parseWith options {
+    base = Glob.root,
+    name = ".gitignore"
+  } (Bytes.fromString text)) with
+  | (Err error, _) -> Err (FileSystem.errorToString error)
+  | (_, Err error) -> Err (Ignore.errorToString error)
+  | (Ok _, Ok file) ->
+    match Ignore.append file Ignore.empty with
+    | Err error -> Err (Ignore.errorToString error)
+    | Ok rules ->
+      let names = List.append directories files
+      let input = String.join "\u{0}" names ++ "\u{0}"
+      match git env root [
+        "-c",
+        "core.ignoreCase=" ++ (if insensitive then "true" else "false"),
+        "-c",
+        "core.excludesFile=",
+        "check-ignore",
+        "--no-index",
+        "--stdin",
+        "-z"
+      ] input with
+      | Err error -> Err error
+      | Ok output ->
+        if output.exits <> [
+          Some (ProcessHost.Exited 0)
+        ] && output.exits <> [Some (ProcessHost.Exited 1)] then
+          Err ("git check-ignore failed: " ++ String.join "" (List.map (fun bytes ->
+            Option.withDefault "binary error" (Bytes.toString bytes)) output.stderr))
+        else
+          let ignored = String.split "\u{0}" (Option.withDefault "" (Bytes.toString output.stdout))
+          let mismatches =
+            List.filter (fun name ->
+              Ignore.isIgnored (Ignore.decideWithOverrides rules nested (candidate name) (if List.member name directories then
+                FileSystem.Directory
+              else
+                FileSystem.RegularFile)) <> List.member name ignored) names
+          if List.isEmpty mismatches then
+            Ok ()
+          else
+            Err ("ignore mismatch for " ++ text ++ ": " ++ String.join ", " mismatches)
+
+compareAll : Services -> Path -> Bool -> List String -> Result Unit String / { Concurrency, FileSystem, ProcessHost.Process }
+let compareAll env root insensitive remaining =
+  match remaining with
+  | [] -> Ok ()
+  | pattern :: rest ->
+    match compareOne env root insensitive Ignore.empty pattern with
+    | Err error -> Err error
+    | Ok _ -> compareAll env root insensitive rest
+
+makeDirectories : FileSystem -> Path -> List String -> Result Unit String / { FileSystem }
+let makeDirectories fs root names =
+  match names with
+  | [] -> Ok ()
+  | name :: rest ->
+    match fs.createDirectory (Path.join root (path name)) with
+    | Err error -> Err (FileSystem.errorToString error)
+    | Ok _ -> makeDirectories fs root rest
+
+nestedCheck : Services -> Path -> Result Unit String / { Concurrency, FileSystem, ProcessHost.Process }
+let nestedCheck env root =
+  let text = "!keep.txt\n/deep/*.txt\n"
+  let wrote = env.fs.writeBytes (Path.join root (path "src/.gitignore")) (Bytes.fromString text)
+  match (wrote, Ignore.parse {
+    base = candidate "src",
+    name = "src/.gitignore"
+  } (Bytes.fromString text)) with
+  | (Ok _, Ok file) ->
+    match Ignore.append file Ignore.empty with
+    | Err error -> Err (Ignore.errorToString error)
+    | Ok nested -> compareOne env root false nested "*.txt\n"
+  | _ -> Err "could not prepare nested ignore rules"
+
+checks : Services -> Temp.Directory -> Result Unit String / { Concurrency, FileSystem, ProcessHost.Process }
+let checks env temporary =
+  let root = temporary.path
+  let config = env.fs.writeBytes (Path.join root (path "empty-config")) Bytes.empty
+  match (config, git env root [
+    "init",
+    "--quiet",
+    "--template="
+  ] "", makeDirectories env.fs root directories) with
+  | (Ok _, Ok initialized, Ok _) ->
+    if initialized.exits <> [Some (ProcessHost.Exited 0)] then
+      Err "git init failed"
+    else
+      match compareAll env root false (List.append patterns edgePatterns) with
+      | Err error -> Err error
+      | Ok _ ->
+        match compareAll env root true (List.append patterns edgePatterns) with
+        | Err error -> Err error
+        | Ok _ -> nestedCheck env root
+  | _ -> Err "could not prepare Git comparison repository"
+
+public main : Services -> Unit / { Concurrency, Console, FileSystem, ProcessHost.Process }
+let main env =
+  match env.fs.temporaryDirectory () with
+  | Err error -> env.console.writeLine (FileSystem.errorToString error)
+  | Ok parent ->
+    match Temp.withDirectory env parent (checks env) with
+    | Ok _ -> env.console.writeLine "Git ignore compatibility checks passed"
+    | Err (FileSystem.BodyError error) -> env.console.writeLine error
+    | Err _ ->
+      env.console.writeLine "Git ignore compatibility checks FAILED during setup or cleanup"

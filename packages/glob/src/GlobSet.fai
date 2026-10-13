@@ -1,0 +1,80 @@
+module GlobSet
+
+/// Multiple immutable patterns sharing one candidate scan. Match indices retain
+/// insertion order, including separate indices for duplicate patterns.
+public opaque type Set = { count : Int, program : Glob.Program }
+
+/// A set matching no paths.
+public empty : Set
+let empty = { count = 0, program = { nodes = Array.empty, roots = [] } }
+
+/// Number of input patterns, including duplicates.
+public length : Set -> Int
+let length set = set.count
+
+let build maxStates patterns index set =
+  match patterns with
+  | [] -> Ok set
+  | pattern :: rest ->
+    if Glob.stateCount pattern > maxStates - Array.length set.program.nodes then
+      Err { (Glob.error Glob.StateLimit "glob set exceeds its state limit" None) with
+        patternIndex = Some index
+      }
+    else
+      build maxStates rest (index + 1) {
+        count = index + 1,
+        program = Glob.appendProgram index pattern set.program
+      }
+
+/// Combine already compiled patterns under a total compiled-state budget.
+public ofPatterns : Int -> List Glob.Pattern -> Result Set Glob.Error
+let ofPatterns maxStates patterns =
+  if maxStates < 1 then
+    Err (Glob.error Glob.InvalidOptions "glob set state limit must be positive" None)
+  else
+    build maxStates patterns 0 empty
+
+let compileFrom options patterns index set =
+  match patterns with
+  | [] -> Ok set
+  | pattern :: rest ->
+    match Glob.compileWith options pattern with
+    | Err error -> Err { error with patternIndex = Some index }
+    | Ok compiled ->
+      if Glob.stateCount compiled > options.maxStates - Array.length set.program.nodes then
+        Err { (Glob.error Glob.StateLimit "glob set exceeds its state limit" None) with
+          patternIndex = Some index
+        }
+      else
+        compileFrom options rest (index + 1) {
+          count = index + 1,
+          program = Glob.appendProgram index compiled set.program
+        }
+
+/// Compile patterns with one case policy and a shared total state budget.
+public compileWith : Glob.Options -> List String -> Result Set Glob.Error
+let compileWith options patterns =
+  match Glob.validateOptions options with
+  | Err error -> Err error
+  | Ok _ -> compileFrom options patterns 0 empty
+
+/// Compile a set using Glob.defaults.
+public compile : List String -> Result Set Glob.Error
+let compile patterns = compileWith Glob.defaults patterns
+
+/// All matching zero-based input indices in declaration order.
+public matches : Set -> Glob.Candidate -> List Int
+let matches set candidate = Glob.matchProgram set.program (Glob.candidateSpelling candidate)
+
+/// Whether any member matches the complete candidate.
+public isMatch : Set -> Glob.Candidate -> Bool
+let isMatch set candidate = not (List.isEmpty (matches set candidate))
+
+/// Prepare a native path and return every matching index.
+public matchesPath : Set -> Path -> Result (List Int) Glob.Error
+let matchesPath set path = Result.map (matches set) (Glob.candidate path)
+
+/// False proves the directory has no matching descendants.
+public mayMatchDescendant : Set -> Glob.Candidate -> Bool
+let mayMatchDescendant set candidate =
+  Glob.descendants set.program (Glob.candidateSpelling candidate)

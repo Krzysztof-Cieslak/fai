@@ -1,0 +1,122 @@
+module GlobSpec
+
+let matches pattern text =
+  match (Glob.compile pattern, Glob.candidateBytes (Bytes.fromString text)) with
+  | (Ok pattern, Ok candidate) -> Glob.isMatch pattern candidate
+  | _ -> false
+example: matches "" ""
+example: matches "*.fai" "Main.fai"
+example: not (matches "*.fai" "src/Main.fai")
+example: matches "**/*.fai" "Main.fai"
+example: matches "**/*.fai" "src/deep/Main.fai"
+example: not (matches "**/foo" "xfoo")
+example: matches "**/foo" "a/foo"
+example: not (matches "**/foo" "foo/bar")
+example: matches "a/**/b" "a/b"
+example: matches "a/**/b" "a/x/y/b"
+example: not (matches "a/**/b" "a/xb")
+example: matches "a/**" "a/b/c"
+example: not (matches "a/**" "a")
+example: matches "**" ""
+example: matches "**" "a/b/c"
+example: matches "*" ".hidden"
+example: matches "**/*" ".git/config"
+example: not (matches "?" "é")
+example: matches "??" "é"
+example: matches "é*" "éclair"
+example: not (matches "?.txt" "a/b.txt")
+example: matches "[a-z][!0-9].fai" "az.fai"
+example: not (matches "[a-z][!0-9].fai" "a1.fai")
+example: not (matches "[/]" "/")
+example: matches "[]]" "]"
+example: matches "[[]" "["
+example: matches "[-a]" "-"
+example: matches "[a-]" "-"
+example: matches "[[:digit:]][[:alpha:]]" "5z"
+example: matches "[[:space:]]" "\t"
+example: matches "[[:punct:]]" "!"
+example: matches "[[:xdigit:]]" "F"
+example: not (matches "[[:xdigit:]]" "g")
+example: matches "\\*\\?\\[\\]\\{\\}\\\\" "*?[]{}\\"
+example: matches "{src,test}/**/*.{fai,toml}" "src/Main.fai"
+example: matches "{src,test}/**/*.{fai,toml}" "test/deep/fai.toml"
+example: not (matches "{src,test}/**/*.{fai,toml}" "lib/Main.fai")
+example: matches "a{,b}c" "ac"
+example: matches "a{,b}c" "abc"
+example: matches "{**,src}/Main.fai" "Main.fai"
+example: matches "{**,src}/Main.fai" "lib/Main.fai"
+example: not (matches "{**,src}/Main.fai" "libMain.fai")
+example: matches "{a?,b*}/file" "bb/file"
+
+let insensitive pattern text =
+  match (Glob.compileWith { Glob.defaults with
+    caseInsensitive = true
+  } pattern, Glob.candidateBytes (Bytes.fromString text)) with
+  | (Ok pattern, Ok candidate) -> Glob.isMatch pattern candidate
+  | _ -> false
+example: not (matches "README" "readme")
+example: insensitive "README" "readme"
+example: insensitive "[A-C]" "b"
+example: not (insensitive "[!a]" "A")
+example: not (insensitive "É" "é")
+
+let errorAt offset pattern =
+  match Glob.compile pattern with
+  | Err error -> error.kind = Glob.InvalidPattern && error.offset = Some offset
+  | _ -> false
+example: errorAt 0 "["
+example: errorAt 0 "[z-a]"
+example: errorAt 0 "[[:unknown:]]"
+example: errorAt 1 "a\\"
+example: errorAt 1 "a**b"
+example: errorAt 0 "***"
+example: errorAt 3 "{a,{b,c}}"
+example: errorAt 0 "}"
+example: errorAt 2 "{a"
+example: errorAt 1 "a\u{0}"
+example: errorAt 0 "[\u{0}]"
+example: errorAt 1 "{**,src}foo"
+example: Glob.compileWith { Glob.defaults with maxPatternBytes = -1 } "" |> Result.isErr
+example: Glob.compileWith { Glob.defaults with maxStates = 0 } "" |> Result.isErr
+example: Glob.compileWith { Glob.defaults with maxPatternBytes = 2 } "abc" |> Result.isErr
+example: Glob.compileWith { Glob.defaults with maxStates = 2 } "a" |> Result.isOk
+example: Glob.compileWith { Glob.defaults with maxStates = 1 } "a" |> Result.isErr
+example: Glob.compileWith { Glob.defaults with maxStates = 1 } "" |> Result.isOk
+
+let spelling text = Result.map Glob.candidateSpelling (Glob.candidateBytes (Bytes.fromString text))
+example: spelling "./a//b/" = Ok (Bytes.fromString "a/b")
+example: spelling "." = Ok Bytes.empty
+example: Glob.candidateBytes (Bytes.fromString "/a") |> Result.isErr
+example: Glob.candidateBytes (Bytes.fromString "a/../b") |> Result.isErr
+example: Glob.candidateBytes (Bytes.fromString "a\u{0}b") |> Result.isErr
+example: (match (Glob.compileBytes (Bytes.fromList [
+  255
+]), Glob.candidateBytes (Bytes.fromList [255])) with
+| (Ok pattern, Ok candidate) -> Glob.isMatch pattern candidate
+| _ -> false)
+example: (match (Glob.compile "é", Path.fromString "é") with
+| (Ok pattern, Ok path) -> Glob.matchesPath pattern path = Ok true
+| _ -> false)
+
+let descendant pattern path =
+  match (Glob.compile pattern, Glob.candidateBytes (Bytes.fromString path)) with
+  | (Ok pattern, Ok candidate) -> Glob.mayMatchDescendant pattern candidate
+  | _ -> false
+example: descendant "src/**/*.fai" "src"
+example: not (descendant "src/**/*.fai" "other")
+example: not (descendant "src" "src")
+example: descendant "**" "a/b"
+example: descendant "*.fai" ""
+example: not (descendant "*.fai" "src")
+
+let setMatches patterns path =
+  match (GlobSet.compile patterns, Glob.candidateBytes (Bytes.fromString path)) with
+  | (Ok set, Ok candidate) -> GlobSet.matches set candidate
+  | _ -> [-1]
+example: setMatches [] "a" = []
+example: setMatches ["**", "*.fai", "*.fai", "src/**"] "Main.fai" = [0, 1, 2]
+example: setMatches ["**", "*.fai", "src/**"] "src/Main.fai" = [0, 2]
+example: (match GlobSet.compile ["a", "["] with
+| Err error -> error.patternIndex = Some 1
+| _ -> false)
+example: GlobSet.compileWith { Glob.defaults with maxStates = 3 } ["a", "b"] |> Result.isErr

@@ -1,0 +1,341 @@
+module GlobWalk
+
+/// Filter emitted entries without suppressing traversal through directories.
+public type EntryFilter =
+  | AllEntries
+  | FilesOnly
+  | DirectoriesOnly
+  | LinksOnly
+
+/// Root-relative discovery policies. Supplied override rules take precedence
+/// over every discovered .gitignore; base rules precede discovered files.
+public type Options = {
+  baseRules : Ignore.Rules,
+  entries : EntryFilter,
+  ignore : Ignore.Options,
+  includeHidden : Bool,
+  overrideRules : Ignore.Rules,
+  respectIgnore : Bool,
+  skipGit : Bool,
+  walk : Directory.WalkOptions
+}
+
+/// Sorted depth-first discovery, ordinary dotfiles included, .git excluded,
+/// nested .gitignore enabled, and symbolic links observed without following.
+public defaults : Options
+let defaults = {
+  baseRules = Ignore.empty,
+  entries = AllEntries,
+  ignore = Ignore.defaults,
+  includeHidden = true,
+  overrideRules = Ignore.empty,
+  respectIgnore = true,
+  skipGit = true,
+  walk = { Directory.walkOptions with order = Directory.SortedOrder }
+}
+
+/// Operational paths retain native spelling. Kind describes the entry itself,
+/// including symlinks, even when following directory symlinks is enabled.
+public type Entry = {
+  depth : Int,
+  kind : FileSystem.EntryKind,
+  matches : List Int,
+  path : Path,
+  relative : Path
+}
+
+/// Preserve native, rule, candidate and caller failures as distinct values.
+public type Error 'callback =
+  | FileError FileSystem.Error
+  | RuleError Ignore.Error
+  | PathError Glob.Error
+  | CallbackError 'callback
+  | ResultLimit
+
+/// Committed callback state is retained on every exit. Cleanup failure is
+/// independent of traversal failure; skippedErrors includes ignore-file reads.
+public type WalkResult 'state 'callback = {
+  cleanupError : Option FileSystem.Error,
+  ignored : Int,
+  invalidIgnorePatterns : Int,
+  matched : Int,
+  outcome : Result Directory.WalkEnd (Error 'callback),
+  skippedErrors : Int,
+  value : 'state,
+  visited : Int
+}
+
+type Frame = { depth : Int, rules : Ignore.Rules }
+
+type State 'value 'failure = {
+  error : Option (Error 'failure),
+  frames : List Frame,
+  ignored : Int,
+  invalid : Int,
+  matched : Int,
+  skipped : Int,
+  value : 'value
+}
+
+let result value outcome = {
+  cleanupError = None,
+  ignored = 0,
+  invalidIgnorePatterns = 0,
+  matched = 0,
+  outcome = outcome,
+  skippedErrors = 0,
+  value = value,
+  visited = 0
+}
+
+let ignoreName = Result.withDefault Path.empty (Path.fromString ".gitignore")
+
+skippable : Options -> FileSystem.Error -> Bool
+let skippable options error =
+  options.walk.errorPolicy = Directory.SkipErrors && error.kind <> FileSystem.Cancelled && error.kind <> FileSystem.TooLarge
+
+loadIgnore : FileSystem -> Options -> Path -> Glob.Candidate -> Ignore.Rules -> Result (Ignore.Rules * Int) (Error 'failure) / { FileSystem }
+let loadIgnore fs options directory candidate rules =
+  if not options.respectIgnore then
+    Ok (rules, 0)
+  else
+    let path = Path.join directory ignoreName
+    match fs.linkMetadata path with
+    | Err error -> if error.kind = FileSystem.NotFound then Ok (rules, 0) else Err (FileError error)
+    | Ok metadata ->
+      if metadata.kind = FileSystem.SymbolicLink then
+        Ok (rules, 0)
+      else
+        match File.readBytes fs options.ignore.maxFileBytes path with
+        | Err error -> Err (FileError error)
+        | Ok bytes ->
+          match Ignore.parseWith options.ignore {
+            base = candidate,
+            name = Path.display path
+          } bytes with
+          | Err error -> Err (RuleError error)
+          | Ok file ->
+            match Ignore.appendWith options.ignore file rules with
+            | Err error -> Err (RuleError error)
+            | Ok rules ->
+              match Ignore.combinedBudget options.ignore rules options.overrideRules with
+              | Err error -> Err (RuleError error)
+              | Ok _ -> Ok (rules, Ignore.ignoredPatternCount file)
+
+parents : Int -> List Frame -> List Frame
+let parents depth frames =
+  match frames with
+  | [] -> []
+  | frame :: rest -> if frame.depth >= depth then parents depth rest else frames
+
+currentRules : Options -> List Frame -> Ignore.Rules
+let currentRules options frames =
+  match frames with
+  | [] -> options.baseRules
+  | frame :: _ -> frame.rules
+
+let selected filter kind =
+  match filter with
+  | AllEntries -> true
+  | FilesOnly -> kind = FileSystem.RegularFile
+  | DirectoriesOnly -> kind = FileSystem.Directory
+  | LinksOnly -> kind = FileSystem.SymbolicLink
+
+stop : State 'value 'failure -> Error 'failure -> Result (State 'value 'failure * Directory.Decision) (Error 'failure)
+let stop state error = Ok ({ state with error = Some error }, Directory.Stop)
+
+fileFailure : Options -> State 'value 'failure -> FileSystem.Error -> Result (State 'value 'failure * Directory.Decision) (Error 'failure)
+let fileFailure options state error =
+  if skippable options error then
+    Ok ({ state with skipped = state.skipped + 1 }, Directory.SkipChildren)
+  else
+    stop state (FileError error)
+
+descend : FileSystem -> Options -> Int -> Entry -> Glob.Candidate -> State 'value 'failure -> Result (State 'value 'failure * Directory.Decision) (Error 'failure) / { FileSystem }
+let descend fs options depth entry candidate state =
+  let directory =
+    if entry.kind = FileSystem.SymbolicLink && options.walk.followLinks then
+      Result.map (fun metadata -> metadata.kind = FileSystem.Directory) (fs.metadata entry.path)
+    else
+      Ok (entry.kind = FileSystem.Directory)
+  match directory with
+  | Err error -> fileFailure options state error
+  | Ok false -> Ok (state, Directory.SkipChildren)
+  | Ok true ->
+    match loadIgnore fs options entry.path candidate (currentRules options state.frames) with
+    | Err (FileError error) ->
+      if skippable options error then
+        Ok ({ state with skipped = state.skipped + 1 }, Directory.Continue)
+      else
+        stop state (FileError error)
+    | Err error -> stop state error
+    | Ok (rules, invalid) ->
+      Ok ({ state with
+        frames = { depth = depth, rules = rules } :: state.frames,
+        invalid = state.invalid + invalid
+      }, Directory.Continue)
+
+visit : FileSystem -> Options -> GlobSet.Set -> (Entry -> 'value -> Result ('value * Directory.Decision) 'failure / 'e) -> Int -> FileSystem.Entry -> Path -> Glob.Candidate -> FileSystem.EntryKind -> State 'value 'failure -> Result (State 'value 'failure * Directory.Decision) (Error 'failure) / { FileSystem | 'e }
+let visit fs options patterns callback depth original relative candidate kind state =
+  let rules = currentRules options state.frames
+  if Ignore.isIgnored (Ignore.decideEntry rules options.overrideRules candidate kind) then
+    Ok ({ state with ignored = state.ignored + 1 }, Directory.SkipChildren)
+  else
+    let matches = GlobSet.matches patterns candidate
+    let entry = {
+      depth = depth,
+      kind = kind,
+      matches = matches,
+      path = original.path,
+      relative = relative
+    }
+    let called =
+      if List.isEmpty matches || not (selected options.entries kind) then
+        Ok (state.value, Directory.Continue)
+      else
+        callback entry state.value
+    match called with
+    | Err error -> stop state (CallbackError error)
+    | Ok (value, decision) ->
+      let state = { state with
+        matched = state.matched + (if not (List.isEmpty matches) && selected options.entries kind then
+          1
+        else
+          0),
+        value = value
+      }
+      if decision <> Directory.Continue then
+        Ok (state, decision)
+      else if depth >= options.walk.maxDepth || not (GlobSet.mayMatchDescendant patterns candidate) then
+        Ok (state, Directory.SkipChildren)
+      else
+        descend fs options depth entry candidate state
+
+step : FileSystem -> Options -> Path -> GlobSet.Set -> (Entry -> 'value -> Result ('value * Directory.Decision) 'failure / 'e) -> Int -> FileSystem.Entry -> State 'value 'failure -> Result (State 'value 'failure * Directory.Decision) (Error 'failure) / { FileSystem | 'e }
+let step fs options root patterns callback depth entry state =
+  let state = { state with frames = parents depth state.frames }
+  let name = Glob.nativeBytes entry.name
+  if (options.skipGit && name = Bytes.fromString ".git") || (not options.includeHidden && Bytes.get 0 name = Some 46) then
+    Ok ({ state with ignored = state.ignored + 1 }, Directory.SkipChildren)
+  else
+    match Path.relativeTo root entry.path with
+    | Err _ ->
+      stop state (PathError (Glob.error Glob.InvalidPath "entry is not relative to the traversal root" None))
+    | Ok relative ->
+      match Glob.candidate relative with
+      | Err error -> stop state (PathError error)
+      | Ok candidate ->
+        match fs.linkMetadata entry.path with
+        | Err error -> fileFailure options state error
+        | Ok metadata ->
+          visit fs options patterns callback depth entry relative candidate metadata.kind state
+
+finish : Directory.WalkResult (State 'value 'failure) (Error 'failure) -> WalkResult 'value 'failure
+let finish walked =
+  let state = walked.value
+  let outcome =
+    match state.error with
+    | Some error -> Err error
+    | None ->
+      match walked.outcome with
+      | Ok ended -> Ok ended
+      | Err (Directory.FileError error) -> Err (FileError error)
+      | Err (Directory.CallbackError error) -> Err error
+  {
+    cleanupError = walked.cleanupError,
+    ignored = state.ignored,
+    invalidIgnorePatterns = state.invalid,
+    matched = state.matched,
+    outcome = outcome,
+    skippedErrors = walked.skippedErrors + state.skipped,
+    value = state.value,
+    visited = walked.visited
+  }
+
+run : { concurrency : Concurrency, fs : FileSystem | _ } -> Options -> Path -> GlobSet.Set -> 'value -> (Entry -> 'value -> Result ('value * Directory.Decision) 'failure / 'e) -> Ignore.Rules -> Int -> Int -> WalkResult 'value 'failure / { Concurrency, FileSystem | 'e }
+let run env options root patterns initial callback rules invalid skipped =
+  let state = {
+    error = None,
+    frames = [{ depth = 0, rules = rules }],
+    ignored = 0,
+    invalid = invalid,
+    matched = 0,
+    skipped = skipped,
+    value = initial
+  }
+  finish (Directory.walk env options.walk root state (step env.fs options root patterns callback))
+
+/// Stream matching descendants through a sequential callback. Directory decisions
+/// retain the existing Continue/SkipChildren/Stop semantics and callback effects.
+public fold : { concurrency : Concurrency, fs : FileSystem | _ } -> Options -> Path -> GlobSet.Set -> 'value -> (Entry -> 'value -> Result ('value * Directory.Decision) 'failure / 'e) -> WalkResult 'value 'failure / { Concurrency, FileSystem | 'e }
+let fold env options root patterns initial callback =
+  if options.walk.maxDepth < 0 || options.walk.maxEntries < 0 || options.walk.maxOpenDirectories <= 0 then
+    result initial (Err (FileError (FileSystem.error FileSystem.InvalidArgument "glob" (Some root) "invalid traversal limits")))
+  else
+    match Ignore.validateOptions options.ignore with
+    | Err error -> result initial (Err (RuleError error))
+    | Ok _ ->
+      match Ignore.combinedBudget options.ignore options.baseRules options.overrideRules with
+      | Err error -> result initial (Err (RuleError error))
+      | Ok _ ->
+        if GlobSet.length patterns = 0 then
+          result initial (Ok Directory.Exhausted)
+        else if options.walk.maxDepth = 0 then
+          run env options root patterns initial callback options.baseRules 0 0
+        else
+          let metadata =
+            if options.walk.followLinks then env.fs.metadata root else env.fs.linkMetadata root
+          match metadata with
+          | Err error -> result initial (Err (FileError error))
+          | Ok metadata ->
+            if metadata.kind <> FileSystem.Directory then
+              result initial (Err (FileError (FileSystem.error FileSystem.NotDirectory "glob" (Some root) "root is not a directory")))
+            else
+              match loadIgnore env.fs options root Glob.root options.baseRules with
+              | Err (FileError error) ->
+                if skippable options error then
+                  run env options root patterns initial callback options.baseRules 0 1
+                else
+                  result initial (Err (FileError error))
+              | Err error -> result initial (Err error)
+              | Ok (rules, invalid) ->
+                run env options root patterns initial callback rules invalid 0
+
+let collectStep limit entry state =
+  if state.count >= limit then
+    Err ()
+  else
+    Ok ({ count = state.count + 1, entries = entry :: state.entries }, Directory.Continue)
+
+/// Collect at most limit matches in traversal order. A further match reports
+/// ResultLimit while preserving the previously collected entries.
+public collect : { concurrency : Concurrency, fs : FileSystem | _ } -> Options -> Int -> Path -> GlobSet.Set -> WalkResult (List Entry) Unit / { Concurrency, FileSystem }
+let collect env options limit root patterns =
+  if limit < 0 then
+    result [] (Err (FileError (FileSystem.error FileSystem.InvalidArgument "glob" (Some root) "negative result limit")))
+  else
+    let walked = fold env options root patterns { count = 0, entries = [] } (collectStep limit)
+    let outcome =
+      match walked.outcome with
+      | Err (CallbackError _) -> Err ResultLimit
+      | other -> other
+    {
+      cleanupError = walked.cleanupError,
+      ignored = walked.ignored,
+      invalidIgnorePatterns = walked.invalidIgnorePatterns,
+      matched = walked.matched,
+      outcome = outcome,
+      skippedErrors = walked.skippedErrors,
+      value = List.reverse walked.value.entries,
+      visited = walked.visited
+    }
+
+/// Render an error using a caller-supplied callback-error renderer.
+public errorToString : ('callback -> String) -> Error 'callback -> String
+let errorToString render error =
+  match error with
+  | FileError error -> FileSystem.errorToString error
+  | RuleError error -> Ignore.errorToString error
+  | PathError error -> Glob.errorToString error
+  | CallbackError error -> render error
+  | ResultLimit -> "glob result limit exceeded"

@@ -1,0 +1,50 @@
+module GlobLimitsSpec
+
+let source = { base = Glob.root, name = "rules" }
+
+let parsed text = Ignore.parse source (Bytes.fromString text)
+example: (match parsed "a\n" with
+| Err _ -> false
+| Ok file ->
+  Ignore.appendWith { Ignore.defaults with maxActiveBytes = 1 } file Ignore.empty |> Result.isErr)
+example: (match parsed "a\n" with
+| Err _ -> false
+| Ok file -> Ignore.ofFilesWith { Ignore.defaults with maxRules = 1 } [file, file] |> Result.isErr)
+example: (match parsed "a\n" with
+| Err _ -> false
+| Ok file -> Ignore.ofFilesWith { Ignore.defaults with maxStates = 3 } [file, file] |> Result.isErr)
+example: Ignore.parseWith { Ignore.defaults with
+  maxFileBytes = -1
+} source Bytes.empty |> Result.isErr
+example: Ignore.parseWith { Ignore.defaults with
+  maxActiveBytes = -1
+} source Bytes.empty |> Result.isErr
+example: Ignore.parseWith { Ignore.defaults with maxStates = 0 } source Bytes.empty |> Result.isErr
+example: (match Ignore.parseWith { Ignore.defaults with
+  glob = { Glob.defaults with maxPatternBytes = 1 }
+} source (Bytes.fromString "# comment\nabc") with
+| Err error -> error.kind = Ignore.CompileLimit && error.line = Some 2 && error.offset = Some 10
+| _ -> false)
+example: (match Ignore.parseWith { Ignore.defaults with
+  maxRules = 0
+} source (Bytes.fromString "a\n") with
+| Err error -> error.kind = Ignore.RuleLimit && error.line = Some 1 && error.offset = Some 0
+| _ -> false)
+example: (match GlobSet.compileWith { Glob.defaults with maxStates = 2 } ["a", "["] with
+| Err error -> error.patternIndex = Some 1
+| _ -> false)
+example: GlobSet.ofPatterns 0 [] |> Result.isErr
+example: GlobSet.compileWith { Glob.defaults with maxPatternBytes = -1 } [] |> Result.isErr
+
+let aliases =
+  match (parsed "*.tmp\n", parsed "!keep.tmp\n", Glob.candidateBytes (Bytes.fromString "keep.tmp")) with
+  | (Ok first, Ok second, Ok candidate) ->
+    match Ignore.append first Ignore.empty with
+    | Err _ -> false
+    | Ok before ->
+      match Ignore.append second before with
+      | Err _ -> false
+      | Ok after ->
+        Ignore.isIgnored (Ignore.decide before candidate FileSystem.RegularFile) && not (Ignore.isIgnored (Ignore.decide after candidate FileSystem.RegularFile)) && Ignore.ruleCount before = 1 && Ignore.ruleCount after = 2
+  | _ -> false
+example: aliases

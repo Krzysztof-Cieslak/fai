@@ -51,6 +51,18 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Glob matching uses immutable byte automata with forward epsilon edges and
+  explicit state budgets. Ordinary wildcards stay within components; recursive
+  stars and non-nested brace alternatives compile without text expansion.
+  Candidates preserve Unix filename bytes and Windows UTF-16 via WTF-8.
+
+- Ignore parsing and evaluation follow Git's rule semantics independently of
+  ordinary glob syntax, preserving original source locations, precedence and
+  excluded ancestors. Traversal discovers rules only inside its explicit root,
+  skips rule-file symlinks, and keeps caller overrides above discovered rules.
+  Sorted depth-first discovery preserves committed state and separate cleanup
+  errors through the standard directory walker's scoped lifetime.
+
 - Source-package workspace manifests and locks are package CI inputs. Their
   changes conservatively select every current source package and reuse the exact
   prepared compiler. Locked resolution validates all declared platform graphs

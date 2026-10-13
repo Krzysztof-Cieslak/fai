@@ -1,0 +1,387 @@
+module Ignore
+
+/// Rules are relative to this prepared directory, with a caller-defined identity.
+public type Source = { base : Glob.Candidate, name : String }
+
+/// Per-file and active-scope budgets, with an explicit byte-matching case policy.
+public type Options = {
+  glob : Glob.Options,
+  maxActiveBytes : Int,
+  maxFileBytes : Int,
+  maxRules : Int,
+  maxStates : Int
+}
+
+/// Case-sensitive rules, 1 MiB per file and 4 MiB retained across active scopes.
+public defaults : Options
+let defaults = {
+  glob = Glob.defaults,
+  maxActiveBytes = 4194304,
+  maxFileBytes = 1048576,
+  maxRules = 10000,
+  maxStates = 65536
+}
+
+/// Invalid configuration and bounded-resource failures.
+public type ErrorKind =
+  | InvalidOptions
+  | FileLimit
+  | ActiveLimit
+  | RuleLimit
+  | CompileLimit
+
+/// Physical one-based line and zero-based byte offset, with original compile cause.
+public type Error = {
+  cause : Option Glob.Error,
+  kind : ErrorKind,
+  line : Option Int,
+  message : String,
+  offset : Option Int,
+  source : Option Source
+}
+
+/// A winning rule retains its original bytes and physical source coordinates.
+/// blockedParent identifies the excluded ancestor that prevents reinclusion.
+public type Match = {
+  blockedParent : Option Glob.Candidate,
+  finish : Int,
+  line : Int,
+  matchedPath : Glob.Candidate,
+  pattern : Bytes,
+  source : Source,
+  start : Int
+}
+
+/// Preserve explicit reinclusion separately from the absence of a matching rule.
+public type Decision =
+  | NoMatch
+  | Included Match
+  | Ignored Match
+
+type Rule = {
+  basename : Bool,
+  directory : Bool,
+  info : Match,
+  negative : Bool,
+  pattern : Glob.Pattern
+}
+
+/// A compiled, scoped Git ignore file with its original rule locations.
+public opaque type File = {
+  bytes : Int,
+  caseInsensitive : Bool,
+  ignored : Int,
+  rules : Array Rule,
+  source : Source,
+  states : Int
+}
+
+/// Files have increasing precedence. Within each file the last matching rule wins.
+public opaque type Rules = { bytes : Int, files : Array File, rules : Int, states : Int }
+
+/// An empty ruleset, admitting every candidate.
+public empty : Rules
+let empty = { bytes = 0, files = Array.empty, rules = 0, states = 0 }
+
+/// Number of compiled rules across all files.
+public ruleCount : Rules -> Int
+let ruleCount rules = rules.rules
+
+/// Number of compiled rules in one file.
+public fileRuleCount : File -> Int
+let fileRuleCount file = Array.length file.rules
+
+/// Malformed Git patterns never match; blank lines and comments are not counted.
+public ignoredPatternCount : File -> Int
+let ignoredPatternCount file = file.ignored
+
+let issue kind message = {
+  cause = None,
+  kind = kind,
+  line = None,
+  message = message,
+  offset = None,
+  source = None
+}
+
+/// Render the source identity, message and optional line location.
+public errorToString : Error -> String
+let errorToString error =
+  (match error.source with
+  | None -> ""
+  | Some source -> source.name ++ ": ") ++ error.message ++ (match error.line with
+  | None -> ""
+  | Some line -> " at line " ++ Int.toString line)
+
+internal validateOptions : Options -> Result Unit Error
+let validateOptions options =
+  if options.maxFileBytes < 0 || options.maxActiveBytes < 0 || options.maxRules < 0 || options.maxStates < 1 then
+    Err (issue InvalidOptions "ignore byte/rule limits must be nonnegative and states positive")
+  else
+    match Glob.validateOptions options.glob with
+    | Ok _ -> Ok ()
+    | Err error -> Err { (issue InvalidOptions error.message) with cause = Some error }
+
+let at input index = Option.withDefault (-1) (Bytes.get index input)
+
+let backslashes input index count =
+  if index >= 0 && at input index = 92 then backslashes input (index - 1) (count + 1) else count
+
+let trimSpaces input length =
+  if length > 0 && at input (length - 1) = 32 && backslashes input (length - 2) 0 % 2 = 0 then
+    trimSpaces input (length - 1)
+  else
+    length
+
+let nulEnd input index =
+  if index = Bytes.length input || at input index = 0 then index else nulEnd input (index + 1)
+
+let hasSlash input index =
+  index < Bytes.length input && (at input index = 47 || hasSlash input (index + 1))
+
+lineRule : Options -> Source -> Int -> Int -> Bytes -> Result (Option Rule * Bool) Error
+let lineRule options source line offset original =
+  let length = nulEnd original 0
+  let length = if length > 0 && at original (length - 1) = 13 then length - 1 else length
+  let length = trimSpaces original length
+  if length = 0 || at original 0 = 35 then
+    Ok (None, false)
+  else
+    let negative = at original 0 = 33
+    let start = if negative then 1 else 0
+    let directory = length > start && at original (length - 1) = 47
+    let finish = length - (if directory then 1 else 0)
+    let anchored = at original start = 47
+    let start = start + (if anchored then 1 else 0)
+    if start >= finish then
+      Ok (None, false)
+    else
+      let spelling = Bytes.slice start finish original
+      match Glob.compileMode options.glob true spelling with
+      | Err error ->
+        if error.kind = Glob.InvalidPattern then
+          Ok (None, true)
+        else
+          Err { (issue CompileLimit error.message) with
+            cause = Some error,
+            line = Some line,
+            offset = Some (offset + start + Option.withDefault 0 error.offset),
+            source = Some source
+          }
+      | Ok pattern ->
+        Ok (Some {
+          basename = not anchored && not (hasSlash spelling 0),
+          directory = directory,
+          info = {
+            blockedParent = None,
+            finish = offset + Bytes.length original,
+            line = line,
+            matchedPath = Glob.root,
+            pattern = original,
+            source = source,
+            start = offset
+          },
+          negative = negative,
+          pattern = pattern
+        }, false)
+
+parseLines : Options -> Bytes -> Int -> Int -> Int -> File -> Result File Error
+let parseLines options input index begin line file =
+  if index = Bytes.length input || at input index = 10 then
+    match lineRule options file.source line begin (Bytes.slice begin index input) with
+    | Err error -> Err error
+    | Ok (rule, ignored) ->
+      let count =
+        match rule with
+        | None -> 0
+        | Some _ -> 1
+      let states =
+        match rule with
+        | None -> 0
+        | Some rule -> Glob.stateCount rule.pattern
+      if count > options.maxRules - Array.length file.rules then
+        Err { (issue RuleLimit "ignore file exceeds its rule limit") with
+          line = Some line,
+          offset = Some begin,
+          source = Some file.source
+        }
+      else if states > options.maxStates - file.states then
+        Err { (issue CompileLimit "ignore file exceeds its compiled-state limit") with
+          line = Some line,
+          offset = Some begin,
+          source = Some file.source
+        }
+      else
+        let file = { file with
+          ignored = file.ignored + (if ignored then 1 else 0),
+          rules = match rule with
+          | None -> file.rules
+          | Some rule -> Array.push rule file.rules,
+          states = file.states + states
+        }
+        if index = Bytes.length input then
+          Ok file
+        else
+          parseLines options input (index + 1) (index + 1) (line + 1) file
+  else
+    parseLines options input (index + 1) begin line file
+
+/// Parse Git ignore bytes: BOM, LF/CRLF, comments, escaped spaces, anchoring,
+/// directory-only rules and negation. Invalid Git patterns are nonmatching.
+public parseWith : Options -> Source -> Bytes -> Result File Error
+let parseWith options source input =
+  match validateOptions options with
+  | Err error -> Err error
+  | Ok _ ->
+    if Bytes.length input > options.maxFileBytes then
+      Err { (issue FileLimit "ignore file exceeds its byte limit") with source = Some source }
+    else
+      let begin = if at input 0 = 239 && at input 1 = 187 && at input 2 = 191 then 3 else 0
+      parseLines options input begin begin 1 {
+        bytes = Bytes.length input,
+        caseInsensitive = options.glob.caseInsensitive,
+        ignored = 0,
+        rules = Array.empty,
+        source = source,
+        states = 0
+      }
+
+/// Parse using default case policy and resource limits.
+public parse : Source -> Bytes -> Result File Error
+let parse source input = parseWith defaults source input
+
+/// Append a higher-precedence file and enforce the active ruleset's total budget.
+public appendWith : Options -> File -> Rules -> Result Rules Error
+let appendWith options file rules =
+  match validateOptions options with
+  | Err error -> Err error
+  | Ok _ ->
+    if file.bytes > options.maxActiveBytes - rules.bytes then
+      Err (issue ActiveLimit "active ignore files exceed their byte limit")
+    else if Array.length file.rules > options.maxRules - rules.rules then
+      Err (issue RuleLimit "active ignore rules exceed their limit")
+    else if file.states > options.maxStates - rules.states then
+      Err (issue CompileLimit "active ignore rules exceed their state limit")
+    else
+      Ok {
+        bytes = rules.bytes + file.bytes,
+        files = Array.push file rules.files,
+        rules = rules.rules + Array.length file.rules,
+        states = rules.states + file.states
+      }
+
+/// Append a higher-precedence file under the default active budgets.
+public append : File -> Rules -> Result Rules Error
+let append file rules = appendWith defaults file rules
+
+let filesFrom options files rules =
+  match files with
+  | [] -> Ok rules
+  | file :: rest ->
+    match appendWith options file rules with
+    | Err error -> Err error
+    | Ok rules -> filesFrom options rest rules
+
+/// Combine files in increasing precedence order, checking cumulative budgets.
+public ofFilesWith : Options -> List File -> Result Rules Error
+let ofFilesWith options files =
+  match validateOptions options with
+  | Err error -> Err error
+  | Ok _ -> filesFrom options files empty
+
+/// Combine files under default budgets.
+public ofFiles : List File -> Result Rules Error
+let ofFiles files = ofFilesWith defaults files
+
+internal combinedBudget : Options -> Rules -> Rules -> Result Unit Error
+let combinedBudget options left right =
+  if right.bytes > options.maxActiveBytes - left.bytes then
+    Err (issue ActiveLimit "active ignore files exceed their byte limit")
+  else if right.rules > options.maxRules - left.rules then
+    Err (issue RuleLimit "active ignore rules exceed their limit")
+  else if right.states > options.maxStates - left.states then
+    Err (issue CompileLimit "active ignore rules exceed their state limit")
+  else
+    Ok ()
+
+let lower byte = if byte >= 65 && byte <= 90 then byte + 32 else byte
+
+let prefix base input foldCase index =
+  if index = Bytes.length base then
+    true
+  else
+    index < Bytes.length input && (at base index = at input index || (foldCase && lower (at base index) = lower (at input index))) && prefix base input foldCase (index + 1)
+
+let lastRules rules relative basename kind candidate index decision =
+  if index = Array.length rules then
+    decision
+  else
+    let rule = Array.unsafeGet index rules
+    let input = if rule.basename then basename else relative
+    let matches =
+      (not rule.directory || kind = FileSystem.Directory) && not (List.isEmpty (Glob.matchProgram (Glob.program rule.pattern) input))
+    let decision =
+      if not matches then
+        decision
+      else
+        let info = { rule.info with matchedPath = candidate }
+        if rule.negative then Included info else Ignored info
+    lastRules rules relative basename kind candidate (index + 1) decision
+
+let lastFiles files candidate kind index decision =
+  if index = Array.length files then
+    decision
+  else
+    let file = Array.unsafeGet index files
+    let base = Glob.candidateSpelling file.source.base
+    let input = Glob.candidateSpelling candidate
+    let offset = if Bytes.isEmpty base then 0 else Bytes.length base + 1
+    let applicable =
+      Bytes.length input > offset && (Bytes.isEmpty base || (at input (offset - 1) = 47 && prefix base input file.caseInsensitive 0))
+    let decision =
+      if not applicable then
+        decision
+      else
+        let parts = Glob.components candidate
+        let basename =
+          if Array.isEmpty parts then
+            Bytes.empty
+          else
+            Array.unsafeGet (Array.length parts - 1) parts
+        lastRules file.rules (Bytes.slice offset (Bytes.length input) input) basename kind candidate 0 decision
+    lastFiles files candidate kind (index + 1) decision
+
+/// Entry evaluation for a traversal that has already admitted all ancestors.
+internal decideEntry : Rules -> Rules -> Glob.Candidate -> FileSystem.EntryKind -> Decision
+let decideEntry rules overrides candidate kind =
+  lastFiles overrides.files candidate kind 0 (lastFiles rules.files candidate kind 0 NoMatch)
+
+let ancestors rules overrides candidate kind index =
+  let input = Glob.candidateSpelling candidate
+  if index = Bytes.length input then
+    decideEntry rules overrides candidate kind
+  else if at input index <> 47 then
+    ancestors rules overrides candidate kind (index + 1)
+  else
+    match Glob.candidateBytes (Bytes.slice 0 index input) with
+    | Err _ -> NoMatch
+    | Ok parent ->
+      match decideEntry rules overrides parent FileSystem.Directory with
+      | Ignored info -> Ignored { info with blockedParent = Some parent }
+      | _ -> ancestors rules overrides candidate kind (index + 1)
+
+/// Check excluded ancestors before the final path. Overrides have higher
+/// precedence than every regular file, including files in deeper directories.
+public decideWithOverrides : Rules -> Rules -> Glob.Candidate -> FileSystem.EntryKind -> Decision
+let decideWithOverrides rules overrides candidate kind = ancestors rules overrides candidate kind 0
+
+/// Evaluate a complete path including Git's excluded-parent restriction.
+public decide : Rules -> Glob.Candidate -> FileSystem.EntryKind -> Decision
+let decide rules candidate kind = decideWithOverrides rules empty candidate kind
+
+/// Whether the decision excludes the candidate.
+public isIgnored : Decision -> Bool
+let isIgnored decision =
+  match decision with
+  | Ignored _ -> true
+  | _ -> false
