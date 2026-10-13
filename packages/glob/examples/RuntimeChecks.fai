@@ -172,10 +172,16 @@ let prefixCheck env root =
     } 100 root all
   let committed =
     GlobWalk.fold env GlobWalk.defaults root (patterns ["unrelated", "unrelated/**"]) "" remember
+  let nativeError =
+    File.readBytes env.fs Ignore.defaults.maxFileBytes (Path.join root (path "unrelated/.gitignore"))
+  let propagated =
+    match (nativeError, committed.outcome) with
+    | (Err expected, Err (GlobWalk.FileError actual)) -> actual = expected
+    | _ -> false
   Result.isOk made && complete found && names found = [
     "src/keep.fai",
     "src/keep.tmp"
-  ] && complete skipped && skipped.skippedErrors = 1 && fileError FileSystem.IsDirectory committed && committed.value = "unrelated" && committed.cleanupError = None
+  ] && complete skipped && skipped.skippedErrors = 1 && propagated && committed.value = "unrelated" && committed.cleanupError = None
 
 overrides : Runtime -> Path -> Bool / { Concurrency, FileSystem }
 let overrides env root =
