@@ -64,6 +64,52 @@ class ChangelogTests(unittest.TestCase):
             release.version_key("1.0.0-rc.01")
 
 
+class ReleaseEnvironmentTests(unittest.TestCase):
+    def test_msvc_linker_precedes_git_bash_for_host_and_target_builds(self):
+        with tempfile.TemporaryDirectory(prefix="MSVC tools ") as temporary:
+            tools = Path(temporary)
+            linker = tools / "bin/Hostx64/x64/link.exe"
+            linker.parent.mkdir(parents=True)
+            linker.touch()
+            original = {"VCToolsInstallDir": str(tools), "PATH": "git/usr/bin", "VSCMD_ARG_HOST_ARCH": "x64"}
+            environment = release.release_environment("x86_64-pc-windows-msvc", environ=original)
+            self.assertEqual(environment["PATH"].split(os.pathsep)[0], str(linker.parent))
+            self.assertEqual(environment["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"], str(linker))
+            self.assertIn("target-feature=+crt-static", environment["RUSTFLAGS"])
+            self.assertEqual(original["PATH"], "git/usr/bin")
+
+    def test_arm64_releases_select_native_arm64_tools(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary)
+            linker = tools / "bin/Hostarm64/arm64/link.exe"
+            linker.parent.mkdir(parents=True)
+            linker.touch()
+            environment = release.release_environment("aarch64-pc-windows-msvc", environ={
+                "VCToolsInstallDir": str(tools), "VSCMD_ARG_HOST_ARCH": "arm64", "PATH": "git/usr/bin",
+            })
+            self.assertEqual(environment["CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER"], str(linker))
+
+    def test_msvc_tools_are_required_before_starting_cargo(self):
+        with self.assertRaisesRegex(release.ReleaseError, "developer environment"):
+            release.release_environment("x86_64-pc-windows-msvc", environ={"PATH": "git/usr/bin"})
+
+    def test_encoded_flags_are_preserved_when_selecting_static_crt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary)
+            linker = tools / "bin/Hostx64/x64/link.exe"
+            linker.parent.mkdir(parents=True)
+            linker.touch()
+            environment = release.release_environment("x86_64-pc-windows-msvc", environ={
+                "VCToolsInstallDir": str(tools), "CARGO_ENCODED_RUSTFLAGS": "--cfg\x1fcustom_build",
+            })
+            self.assertEqual(environment["CARGO_ENCODED_RUSTFLAGS"], "--cfg\x1fcustom_build\x1f-C\x1ftarget-feature=+crt-static")
+
+    def test_macos_deployment_target_does_not_require_windows_tools(self):
+        environment = release.release_environment("aarch64-apple-darwin", "15.0", {"PATH": "/usr/bin"})
+        self.assertEqual(environment["PATH"], "/usr/bin")
+        self.assertEqual(environment["MACOSX_DEPLOYMENT_TARGET"], "15.0")
+
+
 class RepositoryTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

@@ -262,6 +262,39 @@ def make_archive(path, files):
                     archive.addfile(info, io.BytesIO(content))
 
 
+def release_environment(target, deployment_target="", environ=None):
+    environment = dict(os.environ if environ is None else environ)
+    environment["FAI_BUILD_PROFILE"] = "release"
+    if environment.get("CARGO_BUILD_TARGET", target) != target:
+        raise ReleaseError("CARGO_BUILD_TARGET disagrees with release host")
+    if deployment_target:
+        environment["MACOSX_DEPLOYMENT_TARGET"] = deployment_target
+    if "windows" in target:
+        tools = environment.get("VCToolsInstallDir")
+        if not tools:
+            raise ReleaseError("Windows releases require an MSVC developer environment (VCToolsInstallDir is missing)")
+        architecture = {"x86_64": "x64", "aarch64": "arm64"}.get(target.split("-", 1)[0])
+        if architecture is None:
+            raise ReleaseError(f"unsupported MSVC release target: {target}")
+        host = environment.get("VSCMD_ARG_HOST_ARCH", architecture).lower()
+        host = {"amd64": "x64", "aarch64": "arm64"}.get(host, host)
+        candidates = [Path(tools) / "bin" / f"Host{candidate}" / architecture / "link.exe"
+                      for candidate in dict.fromkeys((host, architecture, "x64", "arm64"))]
+        linker = next((path for path in candidates if path.is_file()), None)
+        if linker is None:
+            raise ReleaseError(f"cannot find the {architecture} MSVC linker under {tools}")
+        # Git Bash prepends its own link.exe. Host build scripts and target code
+        # must both use the developer toolchain, including nested Cargo builds.
+        environment["PATH"] = str(linker.parent) + os.pathsep + environment.get("PATH", "")
+        environment.setdefault(f"CARGO_TARGET_{target.upper().replace('-', '_')}_LINKER", str(linker))
+        if "CARGO_ENCODED_RUSTFLAGS" in environment:
+            flags = environment["CARGO_ENCODED_RUSTFLAGS"]
+            environment["CARGO_ENCODED_RUSTFLAGS"] = (flags + "\x1f" if flags else "") + "-C\x1ftarget-feature=+crt-static"
+        else:
+            environment["RUSTFLAGS"] = environment.get("RUSTFLAGS", "") + " -C target-feature=+crt-static"
+    return environment
+
+
 def pack(target, output, root=ROOT, build=True):
     version = workspace(root)["package"]["version"]
     version_key(version)
@@ -271,16 +304,7 @@ def pack(target, output, root=ROOT, build=True):
     rust_host = re.search(r"^host: (.+)$", run("rustc", "-vV", root=root), re.MULTILINE).group(1)
     if rust_host != target:
         raise ReleaseError(f"release build requires native {target}; rustc host is {rust_host}")
-    environment = {**os.environ, "FAI_BUILD_PROFILE": "release"}
-    if environment.get("CARGO_BUILD_TARGET", target) != target:
-        raise ReleaseError("CARGO_BUILD_TARGET disagrees with release host")
-    if spec["deploymentTarget"]:
-        environment["MACOSX_DEPLOYMENT_TARGET"] = spec["deploymentTarget"]
-    if "windows" in target:
-        if "CARGO_ENCODED_RUSTFLAGS" in environment:
-            environment["CARGO_ENCODED_RUSTFLAGS"] += "\x1f-C\x1ftarget-feature=+crt-static"
-        else:
-            environment["RUSTFLAGS"] = environment.get("RUSTFLAGS", "") + " -C target-feature=+crt-static"
+    environment = release_environment(target, spec["deploymentTarget"])
     if build:
         subprocess.run(["cargo", "build", "--release", "--locked", "--target", target, "-p", "fai-cli", "-p", "fai-installer"],
                        cwd=root, env=environment, stdout=sys.stderr, check=True)
