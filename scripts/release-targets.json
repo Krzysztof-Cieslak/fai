@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "repository": "Krzysztof-Cieslak/fai",
+  "minimumInstaller": "0.1.0-0",
+  "releaseBranches": ["main"],
+  "targets": [
+    {"target": "x86_64-unknown-linux-gnu", "runner": "ubuntu-22.04", "minimumSystem": "glibc 2.35", "deploymentTarget": ""},
+    {"target": "aarch64-unknown-linux-gnu", "runner": "ubuntu-22.04-arm", "minimumSystem": "glibc 2.35", "deploymentTarget": ""},
+    {"target": "x86_64-apple-darwin", "runner": "macos-15-intel", "minimumSystem": "macOS 15", "deploymentTarget": "15.0"},
+    {"target": "aarch64-apple-darwin", "runner": "macos-15", "minimumSystem": "macOS 15", "deploymentTarget": "15.0"},
+    {"target": "x86_64-pc-windows-msvc", "runner": "windows-2022", "minimumSystem": "Windows build 20348", "deploymentTarget": ""},
+    {"target": "aarch64-pc-windows-msvc", "runner": "windows-11-arm", "minimumSystem": "Windows build 22000", "deploymentTarget": ""}
+  ]
+}

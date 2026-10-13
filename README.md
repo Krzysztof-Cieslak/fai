@@ -7,6 +7,26 @@ Fai is built around one idea: **code should be easy to reason about and verify**
 — for humans and for AI agents alike. Every design choice serves that goal, from
 effects you can see in a type to specifications the compiler checks for you.
 
+## Install
+
+Linux and macOS:
+
+```sh
+curl -fsSL https://github.com/Krzysztof-Cieslak/fai/releases/latest/download/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://github.com/Krzysztof-Cieslak/fai/releases/latest/download/install.ps1 | iex
+```
+
+Use `fai upgrade` for the compiler, `fai installer upgrade` for the launcher,
+and `fai update` for project dependencies. `fai toolchain` installs and selects
+side-by-side compiler versions; projects pin one in `fai.toml`.
+See [installation and platform prerequisites](docs/INSTALLATION.md),
+[release notes](changelog.md), and the [release runbook](docs/RELEASING.md).
+
 ## Hello, Fai
 
 ```fai

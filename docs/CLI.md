@@ -310,6 +310,36 @@ alongside the versioned success envelope.
 
 ### Installed compilers
 
+The installed `fai` entry point is a native launcher. It selects an exact compiler
+before interpreting compiler-specific arguments. See [INSTALLATION.md](INSTALLATION.md)
+for bootstrap commands, platforms, and native build prerequisites.
+
+```sh
+fai upgrade                       # install stable and select it globally
+fai installer upgrade             # upgrade the native launcher
+fai installer --version
+fai toolchain install 0.2.0        # preserve the current default
+fai toolchain default 0.2.0
+fai toolchain pin 0.2.0            # update the active root's fai.toml
+fai toolchain which --message-format=json
+fai toolchain list --available
+fai toolchain uninstall 0.1.0
+fai toolchain doctor
+fai +0.2.0 check
+```
+
+`fai update` remains the dependency-update command. Compiler upgrades change the
+global default; project pins remain exact. `+VERSION` precedes `FAI_TOOLCHAIN`,
+then the project pin and global default supply selection. A conflicting explicit
+selection and project pin fails. Missing compilers produce installation
+instructions; ordinary compiler commands never download them. Management commands
+work without an installed compiler and support `--message-format=json`.
+
+Installer JSON results have `schemaVersion`, `ok`, `command`, and `result`;
+failures have `schemaVersion`, `ok: false`, and `error`. `which` returns `compiler`
+and `reason` (argument, environment, project, or default) in `result`. Local `list`
+retains its original `schemaVersion`/`toolchains` envelope.
+
 ```sh
 fai toolchain register /path/to/fai
 fai toolchain list --message-format=json

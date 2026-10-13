@@ -217,6 +217,11 @@ integration therefore requires no workflow edit.
 
 ## Cached compilers for source packages
 
+Public compiler distribution uses the native launcher and optimized `release`
+archives described in [INSTALLATION.md](INSTALLATION.md) and
+[RELEASING.md](RELEASING.md). The content-addressed development bundles below
+retain their assertion-enabled profile and are not public release artifacts.
+
 `scripts/compiler.py` manages an immutable, content-addressed compiler cache.
 It requires Python 3.11+. A cache hit needs no Rust toolchain:
 

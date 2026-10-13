@@ -33,6 +33,7 @@ fn main() {
     let runtime_manifest = runtime_dir.join("Cargo.toml");
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let target = std::env::var("TARGET").expect("Cargo target");
     let build_id = compiler_build_id(&Path::new(&manifest).join("../.."));
     println!("cargo:rustc-env=FAI_COMPILER_BUILD_ID={build_id}");
     tool_metadata(&Path::new(&manifest).join("../.."));
@@ -49,7 +50,7 @@ fn main() {
     let debug_assertions = std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
 
     let mut cmd = Command::new(&cargo);
-    cmd.arg("rustc");
+    cmd.arg("rustc").arg("--locked").arg("--target").arg(&target);
     if std::env::var_os("CARGO_FEATURE_ALLOCATION_STATS").is_some() {
         cmd.args(["--features", "allocation-stats"]);
     }
@@ -89,7 +90,7 @@ fn main() {
     } else {
         "libfai_runtime.a"
     };
-    let archive = nested_target.join("release").join(archive_name);
+    let archive = nested_target.join(&target).join("release").join(archive_name);
     assert!(
         archive.exists(),
         "the runtime archive was not produced at {}\n{stderr}",
@@ -113,7 +114,7 @@ fn main() {
     // names unresolvable to the driver's own link step. Collect the
     // `rustc-link-search=native=` directories the dependency build scripts emitted
     // (recorded in cargo's per-crate `output` files) so the driver can pass them.
-    let lib_dirs = collect_native_link_dirs(&nested_target);
+    let lib_dirs = collect_native_link_dirs(&nested_target.join(&target));
     let libraries = tool_identity::native_libraries(&native_libs, &lib_dirs);
     let mut embedded = String::from("const RUNTIME_LIBRARIES: &[(&str, &[u8])] = &[\n");
     for (name, path) in libraries {

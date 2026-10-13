@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   LanguageClient,
   type LanguageClientOptions,
@@ -12,6 +14,46 @@ import {
 // document to the client whose folder contains it.
 const clients = new Map<string, LanguageClient>();
 const packageStatus = new Map<string, vscode.StatusBarItem>();
+const compilerSelections = new Map<string, string | undefined>();
+const selectionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const selectionChecks = new Map<string, Promise<void>>();
+const executeFile = promisify(execFile);
+let deactivating = false;
+
+async function compilerSelection(folder: vscode.WorkspaceFolder): Promise<string | undefined> {
+  const command = vscode.workspace.getConfiguration("fai", folder.uri).get<string>("server.path", "fai");
+  try {
+    const { stdout } = await executeFile(command, ["toolchain", "which", "--message-format=json", "--project", folder.uri.fsPath],
+      { cwd: folder.uri.fsPath, timeout: 15000, maxBuffer: 1024 * 1024 });
+    const result = JSON.parse(stdout);
+    const compiler = result.result?.compiler;
+    if (result.schemaVersion === 1 && compiler) {
+      return JSON.stringify([compiler.version, compiler.executable, compiler.buildId]);
+    }
+  } catch {
+    // Direct development compilers may not implement the launcher's selection query.
+  }
+  return undefined;
+}
+
+function scheduleSelectionCheck(folder: vscode.WorkspaceFolder): void {
+  const key = folder.uri.toString();
+  clearTimeout(selectionTimers.get(key));
+  selectionTimers.set(key, setTimeout(() => {
+    selectionTimers.delete(key);
+    const previous = selectionChecks.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(async () => {
+      if (deactivating || !vscode.workspace.workspaceFolders?.some(item => item.uri.toString() === key)) return;
+      const selection = await compilerSelection(folder);
+      if (deactivating) return;
+      if (selection === undefined || selection !== compilerSelections.get(key)) {
+        await stopClient(key);
+        await startClient(folder);
+      }
+    }).catch(error => outputChannel?.appendLine(`Compiler selection: ${String(error)}`));
+    selectionChecks.set(key, next);
+  }, 300));
+}
 
 // All clients share one output channel (and use it for tracing too), so a
 // multi-root window has a single "Fai Language Server" view.
@@ -79,6 +121,9 @@ async function startClient(folder: vscode.WorkspaceFolder): Promise<void> {
     }
   });
   try {
+    const selection = await compilerSelection(folder);
+    if (deactivating || clients.get(key) !== client) return;
+    compilerSelections.set(key, selection);
     await client.start();
   } catch (error) {
     clients.delete(key);
@@ -87,7 +132,7 @@ async function startClient(folder: vscode.WorkspaceFolder): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     const openSettings = "Open Settings";
     const choice = await vscode.window.showErrorMessage(
-      `Fai: failed to start the language server (${message}). Check the 'fai.server.path' setting.`,
+      `Fai: failed to start the language server (${message}). Run 'fai toolchain which' in this project to check its compiler, or check 'fai.server.path'.`,
       openSettings,
     );
     if (choice === openSettings) {
@@ -97,6 +142,9 @@ async function startClient(folder: vscode.WorkspaceFolder): Promise<void> {
 }
 
 async function stopClient(key: string): Promise<void> {
+  clearTimeout(selectionTimers.get(key));
+  selectionTimers.delete(key);
+  compilerSelections.delete(key);
   const client = clients.get(key);
   if (!client) {
     return;
@@ -115,8 +163,14 @@ async function restartAll(): Promise<void> {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  deactivating = false;
   outputChannel = vscode.window.createOutputChannel("Fai Language Server");
   context.subscriptions.push(outputChannel);
+  const manifests = vscode.workspace.createFileSystemWatcher("**/fai.toml");
+  const changed = () => {
+    for (const folder of vscode.workspace.workspaceFolders ?? []) scheduleSelectionCheck(folder);
+  };
+  context.subscriptions.push(manifests, manifests.onDidChange(changed), manifests.onDidCreate(changed), manifests.onDidDelete(changed));
 
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     await startClient(folder);
@@ -146,5 +200,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export async function deactivate(): Promise<void> {
+  deactivating = true;
+  for (const timer of selectionTimers.values()) clearTimeout(timer);
+  selectionTimers.clear();
+  await Promise.all(selectionChecks.values());
+  selectionChecks.clear();
   await Promise.all([...clients.keys()].map(stopClient));
 }

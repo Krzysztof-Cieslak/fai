@@ -12,6 +12,7 @@ name = "fai"
 path = "src/main.rs"
 
 [dependencies]
+fai-toolchain.workspace = true
 fai-span.workspace = true
 fai-driver.workspace = true
 fai-package.workspace = true

@@ -763,9 +763,13 @@ A valid lock incompatible with the selected compiler fails ordinary commands.
 An explicit update/resolve can construct another graph. A compatible compiler
 change alone does not upgrade a valid dependency selection.
 
-Installation inventory details are a completion choice. They must distinguish
-release, host, executable, and build identity; selection cannot depend on arbitrary
-directory iteration. The invoked binary can be retained when it already matches.
+The installed inventory records release, host, executable, and build identity;
+selection cannot depend on arbitrary directory iteration. The native `fai`
+launcher provides `toolchain install/default/pin/list/which/uninstall/register`,
+`fai upgrade` for the global compiler default, and `fai installer upgrade` for
+the launcher. `fai update` updates package dependencies. Exact root pins remain
+hard constraints and downloads remain explicit. The invoked compiler can be
+retained when it already matches. See `docs/INSTALLATION.md`.
 
 ### 9.2 Platforms
 

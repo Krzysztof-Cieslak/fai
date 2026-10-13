@@ -11,6 +11,7 @@ license.workspace = true
 allocation-stats = ["fai-runtime/allocation-stats", "fai-codegen/allocation-stats"]
 
 [dependencies]
+fai-toolchain.workspace = true
 fai-span.workspace = true
 fai-diagnostics.workspace = true
 fai-package.workspace = true

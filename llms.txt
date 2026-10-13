@@ -16,6 +16,13 @@ program (`fai fmt` enforces it), so prefer the shapes shown here verbatim.
 
 ## Table of contents
 
+Install the compiler with the platform-specific one-liner in
+`docs/INSTALLATION.md`. `fai upgrade` upgrades the compiler; `fai installer upgrade`
+upgrades the native launcher. **`fai update` updates project dependencies.**
+Use `fai toolchain install VERSION` and `fai toolchain pin VERSION` for an exact
+project compiler, and `fai toolchain which` to explain selection. Missing compilers
+are installed explicitly; ordinary compilation never downloads a toolchain.
+
 1. What Fai is
 2. Rules you must internalize first
 3. Your first programs and the inner loop

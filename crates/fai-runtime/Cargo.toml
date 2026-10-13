@@ -17,8 +17,6 @@ license.workspace = true
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-# The M:N green-thread scheduler that runs a compiled program's concurrent tasks.
-corosensei.workspace = true
 crossbeam-deque.workspace = true
 # Cross-platform non-blocking I/O readiness for the network reactor (TCP/UDP).
 mio.workspace = true
@@ -41,7 +39,10 @@ regex-automata.workspace = true
 regex-syntax.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Globalization"] }
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Globalization"] }
+
+[target.'cfg(not(windows))'.dependencies]
+corosensei.workspace = true
 
 # Exposes the allocator fuzz harness (`run_ops`) for the out-of-workspace
 # cargo-fuzz target. Off by default and dependency-free, so the staticlib/rlib and

@@ -1,0 +1,149 @@
+name: Release
+run-name: Release ${{ inputs.version }} (${{ inputs.request_id || github.run_id }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact prepared compiler version, without the v prefix
+        required: true
+        type: string
+      source_ref:
+        description: Prepared release commit or branch
+        required: true
+        default: main
+        type: string
+      request_id:
+        description: Optional correlation ID supplied by the release helper
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate prepared release
+    runs-on: ubuntu-22.04
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      version: ${{ steps.release.outputs.version }}
+      matrix: ${{ steps.release.outputs.matrix }}
+      rust: ${{ steps.release.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: release
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: python scripts/release.py validate --version "$RELEASE_VERSION" --source-ref "$SOURCE_REF" --ancestry --github-output
+
+  verify:
+    name: Full source verification
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    with:
+      source_sha: ${{ needs.validate.outputs.commit }}
+      force_full: true
+
+  build:
+    name: Qualify ${{ matrix.target }}
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      FAI_BUILD_PROFILE: release
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deploymentTarget }}
+      RUSTUP_TOOLCHAIN: ${{ needs.validate.outputs.rust }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ startsWith(matrix.target, 'aarch64') && 'arm64' || 'amd64' }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - name: Installer and native runtime tests
+        run: cargo test --locked -p fai-toolchain -p fai-installer -p fai-runtime --lib --tests
+      - name: Build and package release executables
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: python scripts/release.py pack --target "$RELEASE_TARGET" --output dist
+      - name: Relocated compiler, JIT, contracts, AOT, and daemon
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: python scripts/tests/smoke_compiler.py --fai "target/$RELEASE_TARGET/release/fai"
+      - name: Install and qualify the exact packaged bytes
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: python scripts/tests/release_smoke.py --directory dist --target "$RELEASE_TARGET" --previous-stable
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish complete immutable release
+    needs: [validate, verify, build]
+    runs-on: ubuntu-22.04
+    concurrency:
+      group: release-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist/inputs
+      - name: Assemble and verify the complete platform matrix
+        run: python scripts/release.py assemble --version "$RELEASE_VERSION" --input dist/inputs --output dist/release
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release/*
+      - name: Tag and publish verified bytes with changelog release notes
+        run: python scripts/release.py publish --version "$RELEASE_VERSION" --directory dist/release

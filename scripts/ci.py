@@ -52,7 +52,7 @@ def catalog_at(root, revision):
 
 
 def documentation(path):
-    return (path in {"AGENTS.md", "README.md", "llms.txt", "LICENSE", "CODE_OF_CONDUCT.md"}
+    return (path in {"AGENTS.md", "README.md", "llms.txt", "LICENSE", "CODE_OF_CONDUCT.md", "changelog.md"}
             or (path.startswith("docs/") and path.endswith((".md", ".txt"))))
 
 
@@ -176,6 +176,7 @@ def main():
     classify_parser.add_argument("--base", default=os.environ.get("CHANGE_BASE"))
     classify_parser.add_argument("--head", default="HEAD")
     classify_parser.add_argument("--github-output", action="store_true")
+    classify_parser.add_argument("--force-full", action="store_true")
     validation = sub.add_parser("validate-packages")
     validation.add_argument("--fai", default="fai")
     gate = sub.add_parser("require")
@@ -186,7 +187,9 @@ def main():
             validate_package_workspace(compiler=args.fai)
             return
         if args.action == "scope":
-            result = scope(packages.ROOT, args.base, args.head)
+            result = ({"compiler": True, "reporting": True, "packages": packages.validate(packages.discover()),
+                       "mode": "compiler", "reasons": ["full release verification"]}
+                      if args.force_full else scope(packages.ROOT, args.base, args.head))
             print(json.dumps(result, sort_keys=True))
             if args.github_output:
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:

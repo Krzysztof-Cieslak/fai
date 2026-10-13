@@ -1,6 +1,6 @@
 //! The M:N green-thread scheduler that runs a Fai program's concurrent tasks.
 //!
-//! A **task** is a stackful coroutine ([`corosensei`]) whose body runs arbitrary
+//! A **task** is a stackful coroutine whose body runs arbitrary
 //! compiled Fai code. A fixed pool of **worker** OS threads runs tasks, pulling
 //! from lock-free Chase-Lev work-stealing deques ([`crossbeam_deque`]) so a task
 //! may migrate between workers. Suspension points (awaiting a task, or a blocked
@@ -29,8 +29,14 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
 
+#[cfg(not(windows))]
 use corosensei::{Coroutine, CoroutineResult, Yielder};
+#[cfg(windows)]
+#[path = "windows_coroutine.rs"]
+mod windows_coroutine;
 use crossbeam_deque::{Injector, Steal, Stealer, Worker as Deque};
+#[cfg(windows)]
+use windows_coroutine::{Coroutine, CoroutineResult, Yielder};
 
 use crate::{Value, fai_dup};
 

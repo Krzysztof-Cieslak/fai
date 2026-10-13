@@ -85,6 +85,20 @@ retired; IDs are not reused).
   and explicit module imports;
   the embedded HTTP helper is checked for matching standard Base64 output.
 
+- Compiler releases are manually dispatched and identify one immutable annotated
+  tag, source commit, Cargo version, and changelog section. All six native
+  Linux/glibc, macOS, and Windows/MSVC x86-64/ARM64 targets qualify before release
+  publication. Compiler and installer archives retain final-byte checksums and
+  build identities. `changelog.md` covers every compiler/runtime/tooling/std
+  change; source packages under `packages/` retain independent histories.
+- The public `fai` executable is a native selector over side-by-side compilers.
+  `update` manages dependencies, `upgrade` selects the stable compiler globally,
+  and `installer upgrade` upgrades the selector. Exact project pins remain hard
+  constraints, downloads are explicit, and the existing inventory format remains
+  readable by older compilers. Managed ownership receipts and in-use leases govern
+  atomic installation and removal. Windows uses native fibers for its migratable
+  scheduler stacks, including ARM64, with explicit unwind-on-drop behavior.
+
 - SQL UUIDs use the standalone Uuid.Uuid value through a transparent SqlUuid.Uuid
   compatibility alias. Legacy canonical parsing and String errors are preserved.
   SQLite UUID storage remains canonical text; PostgreSQL binary UUID results
