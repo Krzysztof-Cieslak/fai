@@ -164,6 +164,9 @@ jobs:
             fai check --no-examples --locked -C packages --package "$package"
             fai test --locked -C packages --package "$package" --seed 42 --count 128
           done
+      - name: Build launcher for relocation fixture
+        if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
+        run: cargo build --locked -p fai-installer --bin fai-installer
       - name: Compiler relocation and execution fixtures
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: |
@@ -289,6 +292,9 @@ jobs:
             fai test --locked -C packages --package $package --seed 42 --count 128
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: Build launcher for relocation fixture
+        if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
+        run: cargo build --locked -p fai-installer --bin fai-installer
       - name: Compiler relocation fixture
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}' --launcher target/debug/fai-installer
