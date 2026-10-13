@@ -131,6 +131,8 @@ def clean(root=ROOT):
 
 def validate(version, source_ref="HEAD", root=ROOT, ancestry=False):
     version_key(version)
+    if version_key(config(root)["minimumInstaller"]) > version_key(version):
+        raise ReleaseError("release version is older than the configured minimum installer")
     clean(root)
     commit = git("rev-parse", "--verify", "--end-of-options", f"{source_ref}^{{commit}}", root=root)
     if commit != git("rev-parse", "HEAD", root=root):

@@ -138,6 +138,13 @@ class RepositoryTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "Cargo.toml"):
             release.validate("0.3.0", root=self.root)
 
+    def test_validate_rejects_a_release_older_than_its_installer_floor(self):
+        catalog = release.config(self.root)
+        catalog["minimumInstaller"] = "0.2.0"
+        self.write("scripts/release-targets.json", json.dumps(catalog))
+        with self.assertRaisesRegex(release.ReleaseError, "minimum installer"):
+            release.validate("0.0.1", root=self.root)
+
     def test_validate_rejects_an_existing_tag_on_another_commit(self):
         self.git("tag", "-a", "v0.2.0", "-m", "Other release")
         release.prepare("0.2.0", self.root)
