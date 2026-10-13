@@ -7,18 +7,18 @@
 
 use std::sync::Arc;
 
-use cranelift_codegen::ir::{AbiParam, InstBuilder, types};
+use cranelift_codegen::ir::{AbiParam, GlobalValueData, InstBuilder, types};
 use cranelift_codegen::isa::{self, TargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{Linkage, Module, default_libcall_names};
+use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use fai_core::ir::{FnAbi, LoweredDef};
 use fai_resolve::DefId;
 
-use crate::emit::{Bce, closure_symbol, compile_def};
+use crate::emit::{Bce, build_def, closure_symbol};
 
-/// Builds a position-independent ISA for the host target's object files.
+/// Builds an ISA for the host target's object files.
 ///
 /// Objects are emitted for the host triple via `isa::lookup` (a baseline host
 /// ISA; the JIT keeps native CPU features). On macOS the detected host OS is
@@ -27,9 +27,22 @@ use crate::emit::{Bce, closure_symbol, compile_def};
 /// platform"). Normalizing it to `MacOSX` makes the objects declare the macOS
 /// platform and a minimum version. On other hosts the triple is used as-is.
 fn host_isa() -> Arc<dyn TargetIsa> {
+    target_isa(target_lexicon::Triple::host())
+}
+
+fn absolute_coff_symbols(triple: &target_lexicon::Triple) -> bool {
+    matches!(triple.architecture, target_lexicon::Architecture::Aarch64(_))
+        && triple.binary_format == target_lexicon::BinaryFormat::Coff
+}
+
+fn target_isa(mut triple: target_lexicon::Triple) -> Arc<dyn TargetIsa> {
     let mut flags = settings::builder();
     flags.set("use_colocated_libcalls", "false").expect("flag");
-    flags.set("is_pic", "true").expect("flag");
+    // ARM64 COFF has no Cranelift GOT/page relocation encoding. Absolute symbol
+    // slots use COFF ADDR64 relocations, which the PE linker and loader relocate.
+    flags
+        .set("is_pic", if absolute_coff_symbols(&triple) { "false" } else { "true" })
+        .expect("flag");
     // Optimize generated code (inlining, better register allocation, redundant
     // load/store elimination) at a modest compile-time cost. Cranelift's
     // optimizations are value-preserving, so this stays correctness-neutral.
@@ -38,7 +51,6 @@ fn host_isa() -> Arc<dyn TargetIsa> {
     // unrelated preceding functions determine their byte alignment.
     flags.set("log2_min_function_alignment", "6").expect("flag");
 
-    let mut triple = target_lexicon::Triple::host();
     if let target_lexicon::OperatingSystem::Darwin(version) = triple.operating_system {
         let version =
             version.or(Some(target_lexicon::DeploymentTarget { major: 11, minor: 0, patch: 0 }));
@@ -47,6 +59,26 @@ fn host_isa() -> Arc<dyn TargetIsa> {
 
     let isa_builder = isa::lookup(triple).expect("host target is supported");
     isa_builder.finish(settings::Flags::new(flags)).expect("isa")
+}
+
+fn define_object_function(
+    module: &mut ObjectModule,
+    id: FuncId,
+    ctx: &mut cranelift_codegen::Context,
+) {
+    if absolute_coff_symbols(module.isa().triple()) {
+        // Non-PIC near symbols still request unsupported page relocations. Keep
+        // both local data and function addresses on the absolute/far path.
+        for global in ctx.func.global_values.values_mut() {
+            if let GlobalValueData::Symbol { colocated, .. } = global {
+                *colocated = false;
+            }
+        }
+        for function in ctx.func.dfg.ext_funcs.values_mut() {
+            function.colocated = false;
+        }
+    }
+    module.define_function(id, ctx).expect("define object function");
 }
 
 fn object_module(name: &str) -> ObjectModule {
@@ -66,7 +98,11 @@ pub fn object_for_def(
     bce: &Bce,
 ) -> Vec<u8> {
     let mut module = object_module("fai");
-    compile_def(&mut module, lowered, namer, arity_of, signature_of, borrows_of, bce);
+    let mut jobs = Vec::new();
+    build_def(&mut module, lowered, namer, arity_of, signature_of, borrows_of, bce, &mut jobs);
+    for (id, mut ctx) in jobs {
+        define_object_function(&mut module, id, &mut ctx);
+    }
     module.finish().emit().expect("emit object")
 }
 
@@ -95,7 +131,7 @@ pub fn reuse_object_for_def(
         &mut jobs,
     );
     for (id, mut ctx) in jobs {
-        module.define_function(id, &mut ctx).expect("define reuse entry");
+        define_object_function(&mut module, id, &mut ctx);
     }
     module.finish().emit().expect("emit reuse object")
 }
@@ -179,6 +215,84 @@ pub fn main_object(
         builder.ins().return_(&[code]);
         builder.finalize();
     }
-    module.define_function(main_id, &mut ctx).expect("define main");
+    define_object_function(&mut module, main_id, &mut ctx);
     module.finish().emit().expect("emit main object")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cranelift_module::DataDescription;
+    use object::{Object, ObjectSection};
+
+    #[test]
+    fn arm64_coff_emits_imported_and_local_symbol_addresses() {
+        let isa = target_isa("aarch64-pc-windows-msvc".parse().unwrap());
+        let mut module = ObjectModule::new(
+            ObjectBuilder::new(isa, "coff-addresses", default_libcall_names()).unwrap(),
+        );
+        let local_data = module.declare_data("local_data", Linkage::Local, false, false).unwrap();
+        let mut data = DataDescription::new();
+        data.define(vec![0; 8].into_boxed_slice());
+        module.define_data(local_data, &data).unwrap();
+        let external_data =
+            module.declare_data("external_data", Linkage::Import, false, false).unwrap();
+        let mut signature = module.make_signature();
+        signature.returns.push(AbiParam::new(types::I64));
+        let local_function =
+            module.declare_function("local_function", Linkage::Local, &signature).unwrap();
+        let mut local_context = module.make_context();
+        local_context.func.signature = signature.clone();
+        {
+            let mut function_context = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut local_context.func, &mut function_context);
+            let block = builder.create_block();
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let value = builder.ins().iconst(types::I64, 7);
+            builder.ins().return_(&[value]);
+            builder.finalize();
+        }
+        define_object_function(&mut module, local_function, &mut local_context);
+        let entry = module.declare_function("entry", Linkage::Export, &signature).unwrap();
+        let mut context = module.make_context();
+        context.func.signature = signature;
+        {
+            let mut function_context = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut function_context);
+            let block = builder.create_block();
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let local = module.declare_data_in_func(local_data, builder.func);
+            let local = builder.ins().symbol_value(types::I64, local);
+            let external = module.declare_data_in_func(external_data, builder.func);
+            let external = builder.ins().symbol_value(types::I64, external);
+            let function = module.declare_func_in_func(local_function, builder.func);
+            let address = builder.ins().func_addr(types::I64, function);
+            let call = builder.ins().call(function, &[]);
+            let result = builder.inst_results(call)[0];
+            let sum = builder.ins().iadd(local, external);
+            let sum = builder.ins().iadd(sum, address);
+            let sum = builder.ins().iadd(sum, result);
+            builder.ins().return_(&[sum]);
+            builder.finalize();
+        }
+        define_object_function(&mut module, entry, &mut context);
+        let bytes = module.finish().emit().unwrap();
+        let object = object::File::parse(bytes.as_slice()).unwrap();
+        assert_eq!(object.format(), object::BinaryFormat::Coff);
+        assert_eq!(object.architecture(), object::Architecture::Aarch64);
+        let relocations: Vec<_> = object
+            .sections()
+            .flat_map(|section| section.relocations().map(|(_, relocation)| relocation))
+            .collect();
+        assert!(
+            relocations
+                .iter()
+                .filter(|relocation| relocation.kind() == object::RelocationKind::Absolute
+                    && relocation.size() == 64)
+                .count()
+                >= 3
+        );
+    }
 }

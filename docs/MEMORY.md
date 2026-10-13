@@ -51,6 +51,12 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- ARM64 Windows AOT objects use absolute symbol slots with COFF address
+  relocations. Imported and local data/function addresses take the far-address
+  path because the object backend does not encode ARM64 GOT/page relocations for
+  COFF. PE linking and loader relocation retain normal executable relocation;
+  ELF and Mach-O keep position-independent symbol addressing.
+
 - Semantic versions retain canonical unbounded decimal components and exact
   prerelease/build identifiers. Parsing is strict, with lowercase-v tags handled
   explicitly. Complete identity includes build metadata; semantic precedence does

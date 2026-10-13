@@ -29,6 +29,8 @@ rustc-hash.workspace = true
 rayon.workspace = true
 
 [dev-dependencies]
+cranelift-codegen = { workspace = true, features = ["arm64"] }
+object.workspace = true
 fai-db.workspace = true
 fai-rc.workspace = true
 fai-span.workspace = true

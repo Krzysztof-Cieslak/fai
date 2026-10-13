@@ -115,29 +115,6 @@ impl Bce<'static> {
     }
 }
 
-/// Compiles one lowered definition into `module`: its functions, its static
-/// closure value, and its string literals.
-///
-/// `arity_of` reports any referenced definition's parameter count, so a
-/// reference to a zero-arity binding (a value, not a function) is forced;
-/// `signature_of` reports any definition's unboxed-float calling convention, so a
-/// direct call marshals float arguments and the result as raw bits.
-pub fn compile_def<M: Module>(
-    module: &mut M,
-    lowered: &LoweredDef,
-    namer: &dyn Fn(DefId) -> String,
-    arity_of: &dyn Fn(DefId) -> usize,
-    signature_of: &dyn Fn(DefId) -> FnAbi,
-    borrows_of: &dyn Fn(DefId) -> Vec<bool>,
-    bce: &Bce,
-) {
-    let mut jobs = Vec::new();
-    build_def(module, lowered, namer, arity_of, signature_of, borrows_of, bce, &mut jobs);
-    for (id, mut ctx) in jobs {
-        module.define_function(id, &mut ctx).expect("define function");
-    }
-}
-
 /// Declares one lowered definition's functions and static closure, defines the
 /// closure data, and **builds** (but does not compile or define) each function
 /// body, pushing a `(FuncId, Context)` job per body onto `jobs`. The IR building
