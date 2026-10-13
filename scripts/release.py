@@ -270,7 +270,7 @@ def release_environment(target, deployment_target="", environ=None):
     if deployment_target:
         environment["MACOSX_DEPLOYMENT_TARGET"] = deployment_target
     if "windows" in target:
-        tools = environment.get("VCToolsInstallDir")
+        tools = environment.get("VCTOOLSINSTALLDIR") or environment.get("VCToolsInstallDir")
         if not tools:
             raise ReleaseError("Windows releases require an MSVC developer environment (VCToolsInstallDir is missing)")
         architecture = {"x86_64": "x64", "aarch64": "arm64"}.get(target.split("-", 1)[0])
