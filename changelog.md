@@ -13,7 +13,7 @@ Source packages under `packages/` have independent release histories.
 - Manually dispatched, all-platform GitHub releases with immutable version tags,
   verified archives, POSIX and PowerShell installers, and agent-driven release helpers.
 - Native Windows fibers for scheduler stacks on x86-64 and ARM64, including
-  migration of suspended tasks between worker threads.
+  migration of suspended tasks between worker threads and nested stack cleanup.
 
 ### Changed
 - Compiler, tooling, and embedded standard-library changes require changelog entries;
