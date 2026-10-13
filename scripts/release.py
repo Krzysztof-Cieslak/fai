@@ -34,9 +34,12 @@ def version_key(value):
     if not match:
         raise ReleaseError(f"invalid exact compiler version: {value}")
     parts = match.group(4).split(".") if match.group(4) else []
+    core = tuple(map(int, match.group(1, 2, 3)))
+    if any(component > 2**64 - 1 for component in core):
+        raise ReleaseError("compiler version components must fit unsigned 64-bit integers")
     if any(part.isdigit() and len(part) > 1 and part.startswith("0") for part in parts):
         raise ReleaseError(f"noncanonical prerelease version: {value}")
-    return (*map(int, match.group(1, 2, 3)), not parts,
+    return (*core, not parts,
             tuple((0, int(part)) if part.isdigit() else (1, part) for part in parts))
 
 

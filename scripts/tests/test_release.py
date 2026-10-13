@@ -55,6 +55,10 @@ class ChangelogTests(unittest.TestCase):
         with self.assertRaises(release.ReleaseError):
             release.version_key("1.0.0+rebuilt")
 
+    def test_oversized_version_components_are_rejected_before_preparation(self):
+        with self.assertRaises(release.ReleaseError):
+            release.version_key("18446744073709551616.0.0")
+
     def test_prerelease_numeric_identifiers_are_canonical(self):
         with self.assertRaises(release.ReleaseError):
             release.version_key("1.0.0-rc.01")
