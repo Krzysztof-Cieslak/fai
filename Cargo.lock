@@ -855,6 +855,7 @@ dependencies = [
  "fai-syntax",
  "fai-types",
  "indoc",
+ "object",
  "proptest",
  "rayon",
  "rustc-hash",
