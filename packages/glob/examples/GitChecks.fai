@@ -177,6 +177,16 @@ let classify rules name =
   else
     FileSystem.RegularFile))
 
+let exitText exit =
+  match exit with
+  | None -> "missing exit"
+  | Some (ProcessHost.Exited code) -> "exit " ++ Int.toString code
+  | Some (ProcessHost.Signaled signal _) -> "signal " ++ Int.toString signal
+
+let processDiagnostic output =
+  String.join ", " (List.map exitText output.exits) ++ ": " ++ String.join "" (List.map (fun bytes ->
+    Option.withDefault "<binary output>" (Bytes.toString bytes)) (output.stdout :: output.stderr))
+
 compareOne : Services -> Path -> Bool -> Ignore.Rules -> String -> Result Unit String / { Concurrency, FileSystem, ProcessHost.Process }
 let compareOne env root insensitive nested text =
   let wrote = env.fs.writeBytes (Path.join root (path ".gitignore")) (Bytes.fromString text)
@@ -208,8 +218,7 @@ let compareOne env root insensitive nested text =
         if output.exits <> [
           Some (ProcessHost.Exited 0)
         ] && output.exits <> [Some (ProcessHost.Exited 1)] then
-          Err ("git check-ignore failed: " ++ String.join "" (List.map (fun bytes ->
-            Option.withDefault "binary error" (Bytes.toString bytes)) output.stderr))
+          Err ("git check-ignore failed: " ++ processDiagnostic output)
         else
           let ignored = String.split "\u{0}" (Option.withDefault "" (Bytes.toString output.stdout))
           let mismatches =
@@ -266,7 +275,7 @@ let checks env temporary =
   ] "", makeDirectories env.fs root directories) with
   | (Ok _, Ok initialized, Ok _) ->
     if initialized.exits <> [Some (ProcessHost.Exited 0)] then
-      Err "git init failed"
+      Err ("git init failed: " ++ processDiagnostic initialized)
     else
       match compareAll env root false (List.append patterns edgePatterns) with
       | Err error -> Err error
