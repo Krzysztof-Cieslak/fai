@@ -1,0 +1,89 @@
+module GlobProperties
+
+let token value =
+  match Int.and value 7 with
+  | 0 -> [97]
+  | 1 -> [98]
+  | 2 -> [63]
+  | 3 -> [42, 97]
+  | 4 -> [47]
+  | _ -> [99]
+
+let pattern values = List.concat (List.map token (List.take 6 values))
+
+let text values =
+  97 :: List.map (fun value ->
+    if Int.and value 3 = 3 then 47 else 97 + Int.and value 3) (List.take 8 values)
+
+// Small exhaustive-style reference for the nonrecursive wildcard language.
+let reference pattern input =
+  match pattern with
+  | [] -> List.isEmpty input
+  | 42 :: rest ->
+    reference rest input || (match input with
+    | byte :: tail -> byte <> 47 && reference pattern tail
+    | [] -> false)
+  | byte :: rest ->
+    match input with
+    | found :: tail -> (byte = found || (byte = 63 && found <> 47)) && reference rest tail
+    | [] -> false
+
+let agrees values input =
+  let source = pattern values
+  match (Glob.compileBytes (Bytes.fromList source), Glob.candidateBytes (Bytes.fromList (text input))) with
+  | (Ok compiled, Ok candidate) ->
+    Glob.isMatch compiled candidate = reference source (Bytes.toList (Glob.candidateSpelling candidate))
+  | _ -> false
+forall values input: agrees values input
+
+let normalized input =
+  match Glob.candidateBytes (Bytes.fromList input) with
+  | Err _ -> true
+  | Ok candidate -> Glob.candidateBytes (Glob.candidateSpelling candidate) = Ok candidate
+forall input: normalized input
+
+let total input =
+  match Glob.compileBytes (Bytes.fromList input) with
+  | Ok compiled -> Glob.patternBytes compiled = Bytes.fromList input
+  | Err error ->
+    match error.offset with
+    | None -> true
+    | Some offset -> offset >= 0 && offset <= List.length input
+forall input: total input
+
+let setExpected patterns candidate index output =
+  match patterns with
+  | [] -> List.reverse output
+  | pattern :: rest ->
+    setExpected rest candidate (index + 1) (if Glob.isMatch pattern candidate then
+      index :: output
+    else
+      output)
+
+let setAgrees first second input =
+  match (Glob.compileBytes (Bytes.fromList (pattern first)), Glob.compileBytes (Bytes.fromList (pattern second)), Glob.candidateBytes (Bytes.fromList (text input))) with
+  | (Ok first, Ok second, Ok candidate) ->
+    let patterns = [first, second, first]
+    match GlobSet.ofPatterns 1000 patterns with
+    | Err _ -> false
+    | Ok set -> GlobSet.matches set candidate = setExpected patterns candidate 0 []
+  | _ -> false
+forall first second input: setAgrees first second input
+
+let ignoreTotal text =
+  let bytes = Bytes.fromString text
+  match Ignore.parse { base = Glob.root, name = "generated" } bytes with
+  | Ok file -> Ignore.fileRuleCount file >= 0
+  | Err error ->
+    match error.offset with
+    | None -> true
+    | Some offset -> offset >= 0 && offset <= Bytes.length bytes
+forall text: ignoreTotal text
+
+let matches pattern input =
+  match (Glob.compile pattern, Glob.candidateBytes (Bytes.fromString input)) with
+  | (Ok pattern, Ok input) -> Glob.isMatch pattern input
+  | _ -> false
+example: not (matches (String.joinArray "" (Array.repeat 100 "*a") ++ "b") (String.joinArray "" (Array.repeat 200 "a")))
+example: matches (String.joinArray "" (Array.repeat 100 "{a,b}")) (String.joinArray "" (Array.repeat 100 "a"))
+example: not (matches (String.joinArray "" (Array.repeat 100 "{a,b}")) (String.joinArray "" (Array.repeat 99 "a") ++ "c"))

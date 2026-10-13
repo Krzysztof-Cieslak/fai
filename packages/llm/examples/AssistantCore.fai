@@ -1,5 +1,8 @@
 module LlmAssistantCore
 
+import glob.Glob
+import glob.GlobSet
+import glob.GlobWalk
 import json.Json
 import json.JsonEncode
 import llm.Llm
@@ -36,6 +39,8 @@ public type Observation =
   | ToolFinished String String
 
 type RunInput = { arguments : List String, directory : Option String, executable : String }
+
+type FindInput = { limit : Int, pattern : String }
 
 path : Settings -> String -> Result Path String
 let path settings name =
@@ -93,6 +98,45 @@ let runCommand env settings input =
       ("success", Json.Boolean (Result.isOk (Process.expectSuccess output)))
     ])
 
+discoveredPath : GlobWalk.Entry -> Json.Value
+let discoveredPath entry = LlmJson.object [
+  ("path", match Path.toString entry.relative with
+  | Ok text -> Json.String text
+  | Err _ -> Json.Null),
+  ("display", Json.String (Path.display entry.relative))
+]
+
+findFiles : Services -> Settings -> FindInput -> Result Json.Value String / { Concurrency, FileSystem }
+let findFiles env settings input =
+  if input.limit < 1 || input.limit > 10000 then
+    Err "file result limit must be between 1 and 10000"
+  else
+    match (path settings ".", GlobSet.compile [input.pattern]) with
+    | (Err error, _) -> Err error
+    | (_, Err error) -> Err (Glob.errorToString error)
+    | (Ok root, Ok patterns) ->
+      let found =
+        GlobWalk.collect env { GlobWalk.defaults with
+          entries = GlobWalk.FilesOnly
+        } input.limit root patterns
+      let status =
+        match found.outcome with
+        | Ok _ -> Ok false
+        | Err GlobWalk.ResultLimit -> Ok true
+        | Err error -> Err (GlobWalk.errorToString (fun _ -> "file callback failed") error)
+      match (status, found.cleanupError) with
+      | (_, Some error) -> Err (FileSystem.errorToString error)
+      | (Err error, _) -> Err error
+      | (Ok truncated, None) ->
+        let result = LlmJson.object [
+          ("paths", LlmJson.array (List.map discoveredPath found.value)),
+          ("truncated", Json.Boolean truncated)
+        ]
+        if Bytes.length (Bytes.fromString (Json.toString result)) > settings.toolBytes then
+          Err "file discovery exceeds tool output limit"
+        else
+          Ok result
+
 public registry : Services -> Settings -> LlmTool.Registry { Concurrency, FileSystem, ProcessHost.Process }
 let registry env settings =
   let read =
@@ -110,7 +154,14 @@ let registry env settings =
     }) |> LlmSchema.andMap (LlmSchema.field "executable" LlmSchema.string) |> LlmSchema.andMap (LlmSchema.field "arguments" (LlmSchema.list LlmSchema.string)) |> LlmSchema.andMap (LlmSchema.field "directory" (LlmSchema.nullable LlmSchema.string))
   let run =
     LlmTool.singleton (LlmTool.define "run_command" "Run an executable with an argv list" runSchema JsonEncode.value (runCommand env settings))
-  LlmTool.combine (LlmTool.combine read write) run
+  let findSchema =
+    LlmSchema.map2 (fun pattern limit -> {
+      limit = limit,
+      pattern = pattern
+    }) (LlmSchema.field "pattern" LlmSchema.string) (LlmSchema.field "limit" LlmSchema.int)
+  let find =
+    LlmTool.singleton (LlmTool.define "find_files" "Find workspace files with root-relative globs and Git ignore rules; use ** for recursion" findSchema JsonEncode.value (findFiles env settings))
+  LlmTool.combine (LlmTool.combine read write) (LlmTool.combine run find)
 
 let localError message = LlmTypes.error LlmTypes.ConsumerError message
 

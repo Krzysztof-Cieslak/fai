@@ -15,6 +15,12 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Glob contracts run with `fai test -C packages --package glob`. The nested
+`glob-examples` package declares native traversal and Git-oracle fixtures in its
+`ci.json`; run them with `python3 scripts/package_integrations.py glob-examples
+--no-dependents --fai /path/to/fai`. The Git fixture uses installed Git with
+isolated configuration and compares both explicit case policies.
+
 Encoding contracts run with `fai test -C packages --package encoding`. Its package-local
 `RuntimeChecks` integration covers all RFC 4648 codecs on large buffers and long
 fixed-chunk streams through JIT and AOT. Run it with

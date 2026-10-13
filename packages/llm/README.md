@@ -22,6 +22,11 @@ application operation with the FileSystem capability. Native continuation items
 are tagged by provider. `LlmMessage.continueWith` appends the complete response and
 exactly one result for each tool call, preserving the provider's item order.
 
+The coding-assistant example's `find_files` tool uses the glob package. It accepts
+a root-relative pattern and a result limit, respects nested Git ignore rules,
+and returns sorted file paths with an explicit truncation flag. Non-Unicode
+filenames retain a display label and a null text path rather than a lossy I/O path.
+
 Model identifiers are strings. Limits are explicit, and nonpositive token limits,
 duplicate tool names, invalid image types and cross-provider continuation fail
 validation. `Llm.Model 'e` is an effect-carrying generation port; scripted models

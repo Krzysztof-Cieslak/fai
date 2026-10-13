@@ -1181,6 +1181,18 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/glob` library provides pure byte-oriented `Glob`,
+`GlobSet` and Git-compatible `Ignore` matching, plus capability-based `GlobWalk`
+discovery. Compiled immutable automata avoid recursive backtracking; recursive
+stars and brace alternatives retain bounded state. Native relative paths use
+lossless matching bytes (Unix bytes, Windows UTF-8/WTF-8), with explicit ASCII
+case policy. Ignore decisions retain source locations and excluded-parent reasons.
+Discovery defaults to sorted depth-first traversal, ordinary dotfiles included,
+`.git` skipped, scoped `.gitignore` loading and no symlink following. It preserves
+callback state and cleanup failures under early exit and cancellation. Native
+fixtures compare Git decisions and exercise traversal through JIT/AOT; the coding
+assistant's `find_files` tool uses the package.
+
 The optional `packages/encoding` source library supplies pure RFC 4648 `Hex`,
 `Base64`, `Base64Url`, `Base32` and `Base32Hex` codecs. Standard Base64 and both
 Base32 variants default to padded output; URL-safe Base64 defaults to unpadded.
