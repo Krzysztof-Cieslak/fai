@@ -12,12 +12,12 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_fai"))
-            .args(["test", "--color=never", "-C"])
-            .arg(self.0.path())
-            .args(args)
-            .output()
-            .unwrap()
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fai"));
+        command.args(["test", "-C"]).arg(self.0.path());
+        if !args.iter().any(|arg| arg.starts_with("--color")) {
+            command.arg("--color=never");
+        }
+        command.args(args).output().unwrap()
     }
 
     fn report(&self, path: &str) -> String {
