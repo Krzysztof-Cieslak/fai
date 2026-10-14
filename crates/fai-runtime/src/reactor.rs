@@ -11,11 +11,12 @@
 //! marshalled between threads.
 //!
 //! A socket operation runs as a retry loop: attempt the syscall; on `WouldBlock`,
-//! [`wait_readable`]/[`wait_writable`] parks the task until the reactor signals
+//! [`try_io`] parks the task until the reactor signals
 //! readiness, then the loop retries. A per-direction readiness latch closes the
 //! lost-wake race — the reactor records readiness even when no task is waiting
 //! yet, so a readiness edge that arrives between the failed syscall and the park
-//! is observed (the task retries instead of parking forever).
+//! is observed. The readiness lock spans the syscall and waiter registration, so
+//! another operation cannot consume that edge in between them.
 //!
 //! The reactor starts lazily on the first socket registration, so a program that
 //! does no networking never spawns it.
@@ -24,7 +25,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use mio::event::Source;
@@ -297,23 +298,40 @@ pub fn deregister<S: Source>(io: &Arc<IoSource>, source: &mut S) {
 /// never as a bare wait. An edge-triggered poll need not report readiness that
 /// predates registration, so a wait that has not first confirmed the operation
 /// would block (e.g. by a `WouldBlock` or a `NotConnected` probe) can park forever.
-pub fn wait_readable(io: &Arc<IoSource>) {
+#[cfg(test)]
+fn wait_readable(io: &Arc<IoSource>) {
     wait(&io.read);
 }
 
 /// Parks the current task until `io` is writable (e.g. a connect completes or send
 /// buffer space frees). Must be called inside a task, and only after the operation
 /// has been attempted and would block (see [`wait_readable`]).
-pub fn wait_writable(io: &Arc<IoSource>) {
+#[cfg(test)]
+fn wait_writable(io: &Arc<IoSource>) {
     wait(&io.write);
 }
 
 /// The shared wait for one direction: consume a pending readiness edge if one
 /// already arrived, else register this operation and park until the reactor wakes
 /// us. The waiter's lock is released before parking, so a racing wake is not lost.
+#[cfg(test)]
 fn wait(dir: &Mutex<Readiness>) {
+    wait_locked(dir, dir.lock().expect("reactor readiness"));
+}
+
+/// Keeps a failed nonblocking syscall and its waiter registration atomic with
+/// respect to readiness delivery and other operations on the same direction.
+fn try_io<T>(dir: &Mutex<Readiness>, attempt: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let readiness = dir.lock().expect("reactor readiness");
+    let result = attempt();
+    if result.as_ref().is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock) {
+        wait_locked(dir, readiness);
+    }
+    result
+}
+
+fn wait_locked(dir: &Mutex<Readiness>, mut r: MutexGuard<'_, Readiness>) {
     let registration = {
-        let mut r = dir.lock().expect("reactor readiness");
         if r.ready {
             // A readiness edge already arrived (possibly between the caller's
             // failed syscall and now): consume it and let the caller retry.
@@ -327,6 +345,7 @@ fn wait(dir: &Mutex<Readiness>) {
         });
         registration
     };
+    drop(r);
     scheduler::park();
     // A cancellation/spurious wake can leave our registration queued. Remove it
     // before returning. Do not clear the latch: a newer edge may have arrived
@@ -536,13 +555,13 @@ fn accept_loop(sock: &Mutex<TcpListener>, src: &Arc<IoSource>) -> Result<NetObje
         if scheduler::is_cancelled() {
             return Err(scheduler::CANCELLED_MESSAGE.to_owned());
         }
-        let accepted = sock.lock().expect("listener lock").accept();
+        let accepted = try_io(&src.read, || sock.lock().expect("listener lock").accept());
         match accepted {
             Ok((mut stream, _)) => {
                 let csrc = register(&mut stream).map_err(|e| e.to_string())?;
                 return Ok(NetObject::Conn { sock: Mutex::new(stream), src: csrc });
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_readable(src),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e.to_string()),
         }
@@ -620,12 +639,13 @@ fn finish_connect(stream: &mut TcpStream, src: &Arc<IoSource>) -> Result<(), Str
         if scheduler::is_cancelled() {
             return Err(scheduler::CANCELLED_MESSAGE.to_owned());
         }
+        let readiness = src.write.lock().expect("reactor readiness");
         if let Some(error) = stream.take_error().map_err(|e| e.to_string())? {
             return Err(error.to_string());
         }
         match stream.peer_addr() {
             Ok(_) => return Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotConnected => wait_writable(src),
+            Err(e) if e.kind() == io::ErrorKind::NotConnected => wait_locked(&src.write, readiness),
             Err(e) => return Err(e.to_string()),
         }
     }
@@ -663,11 +683,12 @@ fn send_loop(sock: &Mutex<TcpStream>, src: &Arc<IoSource>, data: &[u8]) -> Resul
         if scheduler::is_cancelled() {
             return Err(scheduler::CANCELLED_MESSAGE.to_owned());
         }
-        let res = sock.lock().expect("connection lock").write(&data[written..]);
+        let res =
+            try_io(&src.write, || sock.lock().expect("connection lock").write(&data[written..]));
         match res {
             Ok(0) => return Err("send: connection closed".to_owned()),
             Ok(n) => written += n,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_writable(src),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e.to_string()),
         }
@@ -704,13 +725,13 @@ fn recv_loop(sock: &Mutex<TcpStream>, src: &Arc<IoSource>, cap: usize) -> Result
         if scheduler::is_cancelled() {
             return Err(scheduler::CANCELLED_MESSAGE.to_owned());
         }
-        let res = sock.lock().expect("connection lock").read(&mut buf);
+        let res = try_io(&src.read, || sock.lock().expect("connection lock").read(&mut buf));
         match res {
             Ok(n) => {
                 buf.truncate(n);
                 return Ok(buf);
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_readable(src),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e.to_string()),
         }
@@ -841,11 +862,11 @@ fn udp_send_loop(
         if scheduler::is_cancelled() {
             return Err(scheduler::CANCELLED_MESSAGE.to_owned());
         }
-        let res = sock.lock().expect("udp lock").send_to(data, dest);
+        let res = try_io(&src.write, || sock.lock().expect("udp lock").send_to(data, dest));
         match res {
             // A datagram is sent whole; a short count should not happen for UDP.
             Ok(_) => return Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_writable(src),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e.to_string()),
         }
@@ -894,13 +915,13 @@ fn udp_recv_loop(
         if scheduler::is_cancelled() {
             return Err(scheduler::CANCELLED_MESSAGE.to_owned());
         }
-        let res = sock.lock().expect("udp lock").recv_from(&mut buf);
+        let res = try_io(&src.read, || sock.lock().expect("udp lock").recv_from(&mut buf));
         match res {
             Ok((n, from)) => {
                 buf.truncate(n);
                 return Ok((buf, from));
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_readable(src),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e.to_string()),
         }
@@ -985,6 +1006,67 @@ mod tests {
             read: Mutex::new(Readiness::default()),
             write: Mutex::new(Readiness::default()),
         })
+    }
+
+    #[track_caller]
+    fn assert_io_registration_is_atomic(read: bool) {
+        let source = unregistered_source();
+        let direction = if read { &source.read } else { &source.write };
+        let (attempted, receive_attempt) = std::sync::mpsc::channel();
+        let wake_source = Arc::clone(&source);
+        let waker = std::thread::spawn(move || {
+            if receive_attempt.recv().is_ok() {
+                let direction = if read { &wake_source.read } else { &wake_source.write };
+                wake_direction(direction);
+            }
+        });
+        let task_source = Arc::clone(&source);
+        let result = block_on(Box::new(move || {
+            let direction = if read { &task_source.read } else { &task_source.write };
+            let mut protected = false;
+            let result: io::Result<()> = try_io(direction, || {
+                // Another operation must not consume the readiness latch after
+                // this failed probe but before its waiter has been registered.
+                protected = direction.try_lock().is_err();
+                attempted.send(()).unwrap();
+                Err(io::ErrorKind::WouldBlock.into())
+            });
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+            assert_eq!(pending_waiters(direction), 0);
+            imm(i64::from(protected))
+        }));
+        assert_eq!(result, imm(1));
+        waker.join().unwrap();
+        assert_eq!(pending_waiters(direction), 0);
+    }
+
+    #[test]
+    fn failed_read_probe_registers_before_another_reader_can_consume_readiness() {
+        assert_io_registration_is_atomic(true);
+    }
+
+    #[test]
+    fn failed_write_probe_registers_before_another_writer_can_consume_readiness() {
+        assert_io_registration_is_atomic(false);
+    }
+
+    #[test]
+    fn successful_io_does_not_consume_a_pending_readiness_edge() {
+        let source = unregistered_source();
+        wake_direction(&source.read);
+        assert_eq!(try_io(&source.read, || Ok(7)).unwrap(), 7);
+        assert!(source.read.lock().unwrap().ready);
+        assert_eq!(pending_waiters(&source.read), 0);
+    }
+
+    #[test]
+    fn failed_io_releases_readiness_without_parking() {
+        let source = unregistered_source();
+        let error: io::Result<()> =
+            try_io(&source.read, || Err(io::ErrorKind::ConnectionReset.into()));
+        assert_eq!(error.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
+        assert!(source.read.try_lock().is_ok());
+        assert_eq!(pending_waiters(&source.read), 0);
     }
 
     #[track_caller]

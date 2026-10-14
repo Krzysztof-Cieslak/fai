@@ -128,3 +128,9 @@ class CiBuildConfigurationTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         self.assertIn("cargo test --workspace --locked --profile ci --doc", workflow)
         self.assertIn("./scripts/check-nextest-partition.sh ci", workflow)
+
+    def test_network_waits_fail_within_a_bounded_timeout(self):
+        config = tomllib.loads((ROOT / ".config/nextest.toml").read_text())
+        rule = next(rule for rule in config["profile"]["default"]["overrides"]
+                    if rule["filter"] == "binary(net) | (package(fai-runtime) & test(reactor::tests::))")
+        self.assertEqual(rule["slow-timeout"], {"period": "10s", "terminate-after": 3})

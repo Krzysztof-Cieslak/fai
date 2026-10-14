@@ -1943,6 +1943,11 @@ snapshot, type golden, and/or e2e) in the same change.
 
 ## 12. Definition of Done / CI
 
+Socket I/O attempts hold their direction's readiness lock through a failed
+nonblocking probe and waiter registration, then release it before parking.
+Concurrent operations cannot consume the notification in that interval. Network
+and reactor tests have bounded CI timeouts so a stalled wait fails promptly.
+
 Rust CI tests use the optimized Cargo `ci` profile while retaining debug
 assertions, overflow checks, runtime counters and leak guards. Nextest's existing
 test filters are unchanged. The separate release-mode task-migration regression

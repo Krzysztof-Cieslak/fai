@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- Keep socket readiness delivery atomic with failed I/O probes and waiter
+  registration, preventing concurrent operations from losing an edge and hanging.
 - Restore usable Rust dependency caches in CI instead of reusing empty legacy
   entries, and report compiled cache contents separately from cache-key hits.
 - Optimize CI test builds while retaining debug assertions, overflow checks,
