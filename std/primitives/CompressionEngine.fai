@@ -16,7 +16,17 @@ public type Step = State * Bytes * Array Int * Option Error
 /// output chunk bytes, gzip header bytes and gzip member limit.
 public create : Array Int -> Result State Error
 let create options = Prim.compressionCreate options
+example: Result.isOk (create [| 1, 2, 6, 1024, 1024, 64, 1024, 16 |])
+example: Result.isErr (create [||])
 
 /// Request: input start offset and action (feed/sync flush/finish).
 public step : State -> Bytes -> Array Int -> Step
 let step state input request = Prim.compressionStep state input request
+example: checkStep step
+
+let checkStep run =
+  match create [| 1, 2, 6, 1024, 1024, 64, 1024, 16 |] with
+  | Err _ -> false
+  | Ok state ->
+    let (_, bytes, progress, error) = run state Bytes.empty [| 0, 2 |]
+    Bytes.length bytes = 20 && Array.unsafeGet 1 progress = 4 && Option.isNone error
