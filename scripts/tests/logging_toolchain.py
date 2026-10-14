@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check logging effects, record integrity, queue bounds and scoped shutdown."""
+"""Complement native logging suites with AOT, console-wire and compiler checks."""
 
 import argparse
 import json
@@ -56,7 +56,6 @@ def main():
         ]
         for name, expected in cases:
             source = f"logging/examples/{name}.fai"
-            assert run([compiler, "run", "--no-daemon", "-C", "packages", source]).stdout == expected, name
             binary = root / f"{name}.exe"
             run([compiler, "build", "--no-daemon", "-C", "packages", source, "--out", str(binary)])
             result = run([str(binary)])
@@ -67,7 +66,7 @@ def main():
         assert record["fields"] == {"request_id": "request-1", "status": 200}, record
         assert record["level"] == "info" and record["timestamp"].endswith("Z"), record
         negative_checks(compiler, root / "negative")
-    print("Logging JIT/AOT, effects, file integrity, capture and queue lifecycle passed")
+    print("Logging AOT, console-wire and compiler-effect checks passed")
 
 
 if __name__ == "__main__":

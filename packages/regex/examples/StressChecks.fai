@@ -1,21 +1,34 @@
 module RegexStressChecks
 
-public main : Runtime -> Unit / { Console }
-let main env =
+checks : Unit -> Test.Check
+let checks _ =
   let input = String.joinArray "" (Array.repeat 20000 "é")
   match (Regex.compile ".", RegexBytes.compile "\\xC3\\xA9") with
   | (Ok text, Ok binary) ->
     let folded = Regex.fold text input 0 (fun count found -> Ok (count + 1, RegexTypes.Continue))
     let bytes = RegexBytes.replaceAll binary (Bytes.fromString "bb") (Bytes.fromString input)
     let split = Regex.splitN 2 text input
-    let good =
-      folded.state = 20000 && folded.outcome = Ok () && (match bytes with
-      | Ok bytes -> Bytes.length bytes = 40000
-      | _ -> false) && (match split with
-      | Ok pieces -> Array.length pieces = 2 && String.length (Array.unsafeGet 1 pieces) = 19999
-      | _ -> false)
-    env.console.writeLine (if good then
-      "regex stress checks passed"
-    else
-      "regex stress checks FAILED")
-  | _ -> env.console.writeLine "regex compilation FAILED"
+    Expect.all [
+      Expect.equal Int.toString 20000 folded.state,
+      Expect.isTrue "Unicode fold completes" (folded.outcome = Ok ()),
+      Expect.ok Regex.errorToString (fun bytes ->
+        Expect.equal Int.toString 40000 (Bytes.length bytes)) bytes,
+      Expect.ok Regex.errorToString (fun pieces ->
+        if Array.length pieces <> 2 then
+          Expect.equal Int.toString 2 (Array.length pieces)
+        else
+          Expect.equal Int.toString 19999 (String.length (Array.unsafeGet 1 pieces))) split
+    ]
+  | _ -> Test.error "regex compilation failed"
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  env.console.writeLine (if checks () = Test.pass then
+    "regex stress checks passed"
+  else
+    "regex stress checks FAILED")
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "large regex input" [
+  Test.test "Unicode fold, binary replace and bounded splitting" (fun _ -> checks ())
+]

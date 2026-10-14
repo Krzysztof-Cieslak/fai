@@ -1,10 +1,22 @@
 module RegexUnicodeScan
 
-public main : Runtime -> Unit / { Console }
-let main env =
+words : Unit -> Result String RegexTypes.Error
+let words _ =
   match Regex.compile "(?<word>\\p{L}+)" with
-  | Err error -> env.console.writeLine (Regex.errorToString error)
+  | Err error -> Err error
   | Ok regex ->
     match Regex.findAll regex "123 héllo 世界" with
-    | Err error -> env.console.writeLine (Regex.errorToString error)
-    | Ok matches -> env.console.writeLine (String.joinArray ", " (Array.map Regex.text matches))
+    | Err error -> Err error
+    | Ok matches -> Ok (String.joinArray ", " (Array.map Regex.text matches))
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  match words () with
+  | Err error -> env.console.writeLine (Regex.errorToString error)
+  | Ok words -> env.console.writeLine words
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "Unicode regex" [
+  Test.test "letter classes preserve multilingual words" (fun _ ->
+    Expect.ok Regex.errorToString (Expect.equal identity "héllo, 世界") (words ()))
+]

@@ -140,53 +140,119 @@ let cancelSession env listener nursery =
     | None -> false)
   | _ -> false
 
-public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
-let main env =
+retryCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let retryCheck env =
   let (retried, attempts) = run env { basic with mode = "retry", retry = 2 }
-  let retryGood =
-    attempts = 2 && (match retried with
+  Expect.all [
+    Expect.equal Int.toString 2 attempts,
+    Expect.isTrue "retry response and attempt count" (match retried with
     | Ok (LlmTypes.Finished response) ->
       response.attempts = 2 && Llm.text response = "tools completed"
     | _ -> false)
+  ]
+
+statusCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let statusCheck env =
   let (status, statusCount) = run env { basic with mode = "status" }
-  let statusGood =
-    statusCount = 1 && (match status with
+  Expect.all [
+    Expect.equal Int.toString 1 statusCount,
+    Expect.isTrue "provider code, request ID and message survive" (match status with
     | Err error ->
       error.providerCode = Some "rate_limit" && error.requestId = Some "failure-request" && error.message = "retry later"
     | _ -> false)
-  let eof = isError LlmTypes.ProtocolError (run env { basic with mode = "eof" })
-  let inband = isError LlmTypes.ProviderError (run env { basic with mode = "inband", retry = 2 })
+  ]
+
+eofCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let eofCheck env =
+  Expect.isTrue "premature EOF is a protocol error" (isError LlmTypes.ProtocolError (run env { basic with
+    mode = "eof"
+  }))
+
+inbandCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let inbandCheck env =
+  Expect.isTrue "in-band provider errors are not retried" (isError LlmTypes.ProviderError (run env { basic with
+    mode = "inband",
+    retry = 2
+  }))
+
+consumerCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let consumerCheck env =
   let (consumer, count) = run env { basic with mode = "consumer", retry = 2 }
-  let consumerGood =
-    count = 1 && (match consumer with
+  Expect.all [
+    Expect.equal Int.toString 1 count,
+    Expect.isTrue "consumer failure retains delivered progress" (match consumer with
     | Err error -> error.message = "consumer failed" && error.eventsDelivered > 0
     | _ -> false)
+  ]
+
+idleCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let idleCheck env =
   let idleResult = run env { basic with mode = "idle" }
-  let idle =
-    isError LlmTypes.DeadlineExceeded idleResult && (match idleResult with
-    | (Err error, _) ->
-      (match error.partial with
-      | Some response -> response.id = "partial"
-      | None -> false)
-    | _ -> false)
-  let deadline =
-    isError LlmTypes.DeadlineExceeded (run env { basic with mode = "deadline", total = Some 50 })
-  let backoff =
-    isError LlmTypes.DeadlineExceeded (run env { basic with
-      mode = "retry-timeout",
-      retry = 2,
-      total = Some 50
-    })
+  Expect.isTrue "idle timeout retains the partial response" (isError LlmTypes.DeadlineExceeded idleResult && (match idleResult with
+  | (Err error, _) ->
+    (match error.partial with
+    | Some response -> response.id = "partial"
+    | None -> false)
+  | _ -> false))
+
+deadlineCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let deadlineCheck env =
+  Expect.isTrue "overall deadline includes consumer execution" (isError LlmTypes.DeadlineExceeded (run env { basic with
+    mode = "deadline",
+    total = Some 50
+  }))
+
+backoffCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let backoffCheck env =
+  Expect.isTrue "overall deadline includes retry backoff" (isError LlmTypes.DeadlineExceeded (run env { basic with
+    mode = "retry-timeout",
+    retry = 2,
+    total = Some 50
+  }))
+
+stopCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let stopCheck env =
   let (stopped, _) = run env { basic with mode = "stop" }
-  let stopGood =
-    match stopped with
-    | Ok (LlmTypes.Stopped _) -> true
-    | _ -> false
-  let cancelled =
-    match env.net.listen 0 with
-    | Err _ -> false
-    | Ok listener -> env.concurrency.scope (cancelSession env listener)
-  env.console.writeLine (if retryGood && statusGood && eof && inband && consumerGood && idle && deadline && backoff && stopGood && cancelled then
+  Expect.isTrue "consumer stop is successful" (match stopped with
+  | Ok (LlmTypes.Stopped _) -> true
+  | _ -> false)
+
+cancelCheck : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let cancelCheck env =
+  match env.net.listen 0 with
+  | Err error -> Test.error error
+  | Ok listener ->
+    Expect.isTrue "cancellation retains the partial response" (env.concurrency.scope (cancelSession env listener))
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
+let main env =
+  let result = Expect.all [
+    retryCheck env,
+    statusCheck env,
+    eofCheck env,
+    inbandCheck env,
+    consumerCheck env,
+    idleCheck env,
+    deadlineCheck env,
+    backoffCheck env,
+    stopCheck env,
+    cancelCheck env
+  ]
+  env.console.writeLine (if result = Test.pass then
     "LLM failure checks passed"
   else
     "LLM failure checks FAILED")
+
+public tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "LLM failure lifecycle" [
+  Test.test "retry" (fun ctx -> retryCheck ctx.runtime),
+  Test.test "status metadata" (fun ctx -> statusCheck ctx.runtime),
+  Test.test "premature EOF" (fun ctx -> eofCheck ctx.runtime),
+  Test.test "in-band error" (fun ctx -> inbandCheck ctx.runtime),
+  Test.test "consumer error" (fun ctx -> consumerCheck ctx.runtime),
+  Test.test "read idle timeout" (fun ctx -> idleCheck ctx.runtime),
+  Test.test "consumer deadline" (fun ctx -> deadlineCheck ctx.runtime),
+  Test.test "backoff deadline" (fun ctx -> backoffCheck ctx.runtime),
+  Test.test "consumer stop" (fun ctx -> stopCheck ctx.runtime),
+  Test.test "cancellation" (fun ctx -> cancelCheck ctx.runtime)
+]

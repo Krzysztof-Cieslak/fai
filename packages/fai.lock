@@ -37,17 +37,6 @@ path = "uuid"
 path = "uuid"
 
 [[packages]]
-id = "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1"
-version = "0.1.0"
-manifest-fingerprint = "blake3:2a0e6d6ad48a561e7cad30a91a7e4283120f3e428e8af727c5cb909fbb983a2c"
-
-[packages.logical]
-path = "logging"
-
-[packages.source]
-path = "logging"
-
-[[packages]]
 id = "p-142643f7d2c212ebc797b3e85eb03db53e9d918c3ef7a537ee4cab97aed036d0"
 version = "0.1.0"
 manifest-fingerprint = "blake3:29828d1078071db41a9b4e53f9ebf7b96d1e39a346b845fc849f558ab28d995f"
@@ -220,6 +209,17 @@ path = "decimal-codecs"
 path = "decimal-codecs"
 
 [[packages]]
+id = "p-46fc662f1af10222040ed337494e48625f8edb9e10bfdb594310857155cbdb12"
+version = "0.1.0"
+manifest-fingerprint = "blake3:213c95215fe416349c23d9f344c114fdea0ff6472a0fbe7eaf727834f7fe7478"
+
+[packages.logical]
+path = "regex"
+
+[packages.source]
+path = "regex"
+
+[[packages]]
 id = "p-4d7b28bca3e16a08ac80a8495aea0bfc705285116a958ed1d91e048bd23e334d"
 version = "0.1.0"
 manifest-fingerprint = "blake3:ab1da27b9ec7df9dec1e5f8cda3a2e50aa02cfcfa48627a1f4aeb43e4398cc15"
@@ -322,17 +322,6 @@ path = "llm/examples"
 
 [packages.source]
 path = "llm/examples"
-
-[[packages]]
-id = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
-version = "0.1.0"
-manifest-fingerprint = "blake3:d21bac1da15c3636800d07cf68eecff888b382f4f270f17e8a8cb053a90f09d1"
-
-[packages.logical]
-path = "web"
-
-[packages.source]
-path = "web"
 
 [[packages]]
 id = "p-834550b683a44178449240d58df9b3f98c03a7ad20d3a6884ab59db17115d800"
@@ -460,6 +449,17 @@ path = "config"
 path = "config"
 
 [[packages]]
+id = "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c"
+version = "0.1.0"
+manifest-fingerprint = "blake3:a8c34d3710f8fe8e94fa62462212eadb2517947836cb24d1deeca51d0907715c"
+
+[packages.logical]
+path = "logging"
+
+[packages.source]
+path = "logging"
+
+[[packages]]
 id = "p-b1faf26774164a1fad217878e7aa719c7ef4dd4a451202461f590791a402bc3f"
 version = "0.1.0"
 manifest-fingerprint = "blake3:29828d1078071db41a9b4e53f9ebf7b96d1e39a346b845fc849f558ab28d995f"
@@ -518,15 +518,15 @@ path = "sqlite"
 path = "sqlite"
 
 [[packages]]
-id = "p-cfb22b373922c249cf05165bb5e8168c3b89c851540c77a714e76dfb9e531cdd"
+id = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
 version = "0.1.0"
-manifest-fingerprint = "blake3:19eb29ad6b6e826432e18ad5493e7ef05aa9cc7d3c891bc9830c0401e320520b"
+manifest-fingerprint = "blake3:70eeff34c28bf3e559bcdf721529bbcefd89bfa873db9f95185d78be362a4c9a"
 
 [packages.logical]
-path = "regex"
+path = "web"
 
 [packages.source]
-path = "regex"
+path = "web"
 
 [[packages]]
 id = "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a"
@@ -2404,17 +2404,17 @@ to = "p-1b25d13cd2f4cce7904de4c3e3a1d843c0a5ffac3ab1642362fdf8a6e1c6ea48"
 id = "g-8706d81bc0279594eef875a67e0fa1287cb13239400f318b6db6d9f831b9d4d1"
 root = "logging"
 target = "aarch64-apple-darwin"
-root-package = "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1"
-input-fingerprint = "blake3:747e3db84df292cf5061f775e176bbc03d27bdbd333d34160ab39f2b54e036ad"
+root-package = "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c"
+input-fingerprint = "blake3:8512dec235719dfb30c17108afe60c2c6b05f8b28bc1d9e0c4e7a3ef70429be0"
 packages = [
-    "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1",
     "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53",
+    "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c",
 ]
 branches = []
 resolved-with = "0.0.1"
 
 [[graphs.edges]]
-from = "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1"
+from = "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c"
 alias = "json"
 kind = "normal"
 to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
@@ -2423,17 +2423,17 @@ to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
 id = "g-b7d65bfe0b05c92f63bc709d814fb28a4b0b74ebf4db3fb947f8ac77d301adb5"
 root = "logging"
 target = "x86_64-pc-windows-msvc"
-root-package = "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1"
-input-fingerprint = "blake3:e255d784b95afd14855b85c71df058d7a1a52d0244b7fba1738cd6c893ff8eee"
+root-package = "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c"
+input-fingerprint = "blake3:3fe1d72953ff567608a951df6c29f57cd3790f58f94a7be65ad581e24f4ef7e4"
 packages = [
-    "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1",
     "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53",
+    "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c",
 ]
 branches = []
 resolved-with = "0.0.1"
 
 [[graphs.edges]]
-from = "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1"
+from = "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c"
 alias = "json"
 kind = "normal"
 to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
@@ -2442,17 +2442,17 @@ to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
 id = "g-10e438fb5fb9b41595d2f2efceac325557b83b3de9693635628514b8d14d729c"
 root = "logging"
 target = "x86_64-unknown-linux-gnu"
-root-package = "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1"
-input-fingerprint = "blake3:dc0055c8f9752aba037cf786fc7306b7f9c31d0d56307e65b32996ee18d1cbe5"
+root-package = "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c"
+input-fingerprint = "blake3:cc70a54825b260fad0af6cad5287d4f7325e3f95338902b64e6bad5b7be79e92"
 packages = [
-    "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1",
     "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53",
+    "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c",
 ]
 branches = []
 resolved-with = "0.0.1"
 
 [[graphs.edges]]
-from = "p-11e42011f741bbe4d0961dbd5abd20a3a3472668b8a8b9cb9523a2ec891734c1"
+from = "p-aff4ca9e181ee3e53d60c982b902343dd84f91e55aeac7b52cc6ee968650439c"
 alias = "json"
 kind = "normal"
 to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
@@ -2890,9 +2890,9 @@ to = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
 id = "g-02969ff9b21da401d6b66e75298328bbcfcfabc8d925567d9b15561502054861"
 root = "regex"
 target = "aarch64-apple-darwin"
-root-package = "p-cfb22b373922c249cf05165bb5e8168c3b89c851540c77a714e76dfb9e531cdd"
-input-fingerprint = "blake3:3c3f6aeb7e4767dead18bbcdc4b0eff2a332e58a3572503d589a2a8f021ac524"
-packages = ["p-cfb22b373922c249cf05165bb5e8168c3b89c851540c77a714e76dfb9e531cdd"]
+root-package = "p-46fc662f1af10222040ed337494e48625f8edb9e10bfdb594310857155cbdb12"
+input-fingerprint = "blake3:14e178cb08f1e580c914c21e5eef4105a0f1abb3dbaf6309bee787f271448ed3"
+packages = ["p-46fc662f1af10222040ed337494e48625f8edb9e10bfdb594310857155cbdb12"]
 edges = []
 branches = []
 resolved-with = "0.0.1"
@@ -2901,9 +2901,9 @@ resolved-with = "0.0.1"
 id = "g-2fe49911af378ab5f94fde316bce9dad6e0fd4981a342f96e8cfa81c63973792"
 root = "regex"
 target = "x86_64-pc-windows-msvc"
-root-package = "p-cfb22b373922c249cf05165bb5e8168c3b89c851540c77a714e76dfb9e531cdd"
-input-fingerprint = "blake3:62c30c030443f8921aa1cfe19260566ea6d8a3941ba4743da1736c93516874aa"
-packages = ["p-cfb22b373922c249cf05165bb5e8168c3b89c851540c77a714e76dfb9e531cdd"]
+root-package = "p-46fc662f1af10222040ed337494e48625f8edb9e10bfdb594310857155cbdb12"
+input-fingerprint = "blake3:d24d47bc4bc1e37e856d8498f93f27ebdc7541470abf0cc125c013b6376f52cf"
+packages = ["p-46fc662f1af10222040ed337494e48625f8edb9e10bfdb594310857155cbdb12"]
 edges = []
 branches = []
 resolved-with = "0.0.1"
@@ -2912,9 +2912,9 @@ resolved-with = "0.0.1"
 id = "g-6ccfc334d0b660f6f8eb94a0b00991ec102090554dfcf44e872451113c57e6a2"
 root = "regex"
 target = "x86_64-unknown-linux-gnu"
-root-package = "p-cfb22b373922c249cf05165bb5e8168c3b89c851540c77a714e76dfb9e531cdd"
-input-fingerprint = "blake3:9440d4c5e56188e37e9f51affe7c507dc69970b674664bdc6ac4bc35199e6d3c"
-packages = ["p-cfb22b373922c249cf05165bb5e8168c3b89c851540c77a714e76dfb9e531cdd"]
+root-package = "p-46fc662f1af10222040ed337494e48625f8edb9e10bfdb594310857155cbdb12"
+input-fingerprint = "blake3:eb40a313596ba0f31384969134c6e0fb07324e21345fd5d4dfb99f3e46965615"
+packages = ["p-46fc662f1af10222040ed337494e48625f8edb9e10bfdb594310857155cbdb12"]
 edges = []
 branches = []
 resolved-with = "0.0.1"
@@ -3289,24 +3289,24 @@ resolved-with = "0.0.1"
 id = "g-10ac2369f317b24c70c544c4aea5621141ef0de900b5677f75978614e8d8ff67"
 root = "web"
 target = "aarch64-apple-darwin"
-root-package = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
-input-fingerprint = "blake3:f3d82d1f682b93f86d8d1bb305ee150cf6a652d958d7f67bc83cba49830ac2d0"
+root-package = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
+input-fingerprint = "blake3:7df58b8e735b611a69988fc16674e28a8f0b0b125ac803b710a5ebe617f9f3a8"
 packages = [
     "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53",
-    "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2",
+    "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5",
     "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a",
 ]
 branches = []
 resolved-with = "0.0.1"
 
 [[graphs.edges]]
-from = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
+from = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
 alias = "json"
 kind = "normal"
 to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
 
 [[graphs.edges]]
-from = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
+from = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
 alias = "sse"
 kind = "normal"
 to = "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a"
@@ -3315,24 +3315,24 @@ to = "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a"
 id = "g-5af2df765f7a97c9716191afc16c914bb7ee565b1cff1a6202232da060ad3477"
 root = "web"
 target = "x86_64-pc-windows-msvc"
-root-package = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
-input-fingerprint = "blake3:0fa16937df7fda1e0851ab0739cacbb6d51b6642233d4a91131974162b07baf2"
+root-package = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
+input-fingerprint = "blake3:9d7d441f932a2fe978557c84a1de988ba75ee382f1c9ba16a5e469d505ab6c39"
 packages = [
     "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53",
-    "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2",
+    "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5",
     "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a",
 ]
 branches = []
 resolved-with = "0.0.1"
 
 [[graphs.edges]]
-from = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
+from = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
 alias = "json"
 kind = "normal"
 to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
 
 [[graphs.edges]]
-from = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
+from = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
 alias = "sse"
 kind = "normal"
 to = "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a"
@@ -3341,24 +3341,24 @@ to = "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a"
 id = "g-a3fc21caaed9b10572d9356cb3d69a3e5135253b97ddcd17f17747b9faaa3a33"
 root = "web"
 target = "x86_64-unknown-linux-gnu"
-root-package = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
-input-fingerprint = "blake3:23a730a8a632c3498710bb556d8fb5bf723aa05a9a276117e71aa130bbd8d8ba"
+root-package = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
+input-fingerprint = "blake3:594ba7c08f4a92360bf91ccc41bf9186b89a6b5c1ef151a35aea3d80ed39c11f"
 packages = [
     "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53",
-    "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2",
+    "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5",
     "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a",
 ]
 branches = []
 resolved-with = "0.0.1"
 
 [[graphs.edges]]
-from = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
+from = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
 alias = "json"
 kind = "normal"
 to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
 
 [[graphs.edges]]
-from = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
+from = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
 alias = "sse"
 kind = "normal"
 to = "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a"

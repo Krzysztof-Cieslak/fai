@@ -58,3 +58,11 @@ let main env =
     "queued logging checks passed"
   else
     "queued logging checks FAILED")
+
+tests : Test.Suite Test.Context { Clock, Concurrency }
+let tests = Test.describe "logging queue" [
+  Test.test "bounded queue delivers each accepted record exactly once" (fun ctx ->
+    Expect.isTrue "delivery, bounds and expired aliases" (normal ctx.runtime)),
+  Test.test "sink failure retains the failed delivery receipt" (fun ctx ->
+    Expect.isTrue "sink failure receipt" (failed ctx.runtime))
+]

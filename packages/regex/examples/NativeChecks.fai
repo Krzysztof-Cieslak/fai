@@ -49,19 +49,47 @@ let binaryCheck unit =
         2
       ]) = Ok (Bytes.fromList [1, 0, 255, 2])
 
+let programsEqual first second =
+  first = second && compare first second = 0 && HashSet.size (HashSet.fromList [first, second]) = 1
+
 public main : Runtime -> Unit / { Concurrency, Console }
 let main env =
   match (Regex.compile ".", Regex.compile ".") with
   | (Ok first, Ok second) ->
     let results = Async.mapConcurrent env.concurrency (search first) (List.range 0 100)
-    let equal =
-      first = second && compare first second = 0 && HashSet.size (HashSet.fromList [
-        first,
-        second
-      ]) = 1
+    let equal = programsEqual first second
     let good = List.all identity results && equal && cursorCheck first && binaryCheck ()
     env.console.writeLine (if good then
       "regex native checks passed"
     else
       "regex native checks FAILED")
   | _ -> env.console.writeLine "regex compilation FAILED"
+
+concurrentSearch : Test.Context -> Test.Check / { Concurrency }
+let concurrentSearch ctx =
+  match Regex.compile "." with
+  | Err error -> Test.error (Regex.errorToString error)
+  | Ok regex ->
+    Expect.isTrue "shared compiled program preserves Unicode spans" (List.all identity (Async.mapConcurrent ctx.runtime.concurrency (search regex) (List.range 0 100)))
+
+programIdentity : Test.Context -> Test.Check
+let programIdentity _ =
+  match (Regex.compile ".", Regex.compile ".") with
+  | (Ok first, Ok second) ->
+    Expect.isTrue "program equality, ordering and hashing agree" (programsEqual first second)
+  | _ -> Test.error "regex compilation failed"
+
+cursorIdentity : Test.Context -> Test.Check
+let cursorIdentity _ =
+  match Regex.compile "." with
+  | Err error -> Test.error (Regex.errorToString error)
+  | Ok regex -> Expect.isTrue "cursor snapshots retain their Unicode positions" (cursorCheck regex)
+
+tests : Test.Suite Test.Context { Concurrency }
+let tests = Test.describe "native regex" [
+  Test.test "shared program concurrency" concurrentSearch,
+  Test.test "program identity" programIdentity,
+  Test.test "cursor snapshots" cursorIdentity,
+  Test.test "binary replacement" (fun _ ->
+    Expect.isTrue "binary templates preserve NUL and arbitrary bytes" (binaryCheck ()))
+]

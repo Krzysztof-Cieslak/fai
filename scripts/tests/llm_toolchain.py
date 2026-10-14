@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check model protocols, explicit tools, persistence and UI through JIT and AOT."""
+"""Complement native LLM suites with AOT, compiler, executable and PTY checks."""
 
 import argparse
 import json
@@ -58,8 +58,6 @@ def main():
         ]
         for name, marker, arguments in cases:
             source = f"llm/examples/{name}.fai"
-            output = run([compiler, "run", "--no-daemon", "-C", "packages", source, "--", *arguments])
-            assert marker in output and b"FAILED" not in output, output
             binary = directory / f"{name}.exe"
             run([compiler, "build", "--no-daemon", "-C", "packages", source, "--out", str(binary)])
             output = run([str(binary), *arguments])
@@ -91,7 +89,7 @@ def main():
             except subprocess.TimeoutExpired:
                 mock.kill()
                 mock.communicate(timeout=10)
-    print("LLM JIT/AOT, tools, persistence, effects and UI checks passed")
+    print("LLM AOT, compiler-effect, executable and UI checks passed")
 
 
 if __name__ == "__main__":

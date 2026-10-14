@@ -5,19 +5,3 @@ name = "regex"
 version = "0.1.0"
 fai-version = "0.0.1 || ^0.1.0"
 test-dir = "."
-
-[[bin]]
-name = "examples-callback-checks"
-path = "examples/CallbackChecks.fai"
-
-[[bin]]
-name = "examples-native-checks"
-path = "examples/NativeChecks.fai"
-
-[[bin]]
-name = "examples-stress-checks"
-path = "examples/StressChecks.fai"
-
-[[bin]]
-name = "examples-unicode-scan"
-path = "examples/UnicodeScan.fai"

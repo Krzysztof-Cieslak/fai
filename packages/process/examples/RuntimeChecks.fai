@@ -27,28 +27,6 @@ let command python fixture mode args = Process.command python (fixture :: mode :
 
 let good output = Process.expectSuccess output |> Result.isOk
 
-describeNative : ProcessHost.Error -> String
-let describeNative native =
-  Int.toString native.kind ++ ":" ++ Int.toString native.code ++ ":" ++ native.message
-
-describeExit : Option ProcessHost.Exit -> String
-let describeExit exit =
-  match exit with
-  | None -> "pending"
-  | Some (ProcessHost.Exited code) -> "exit " ++ Int.toString code
-  | Some (ProcessHost.Signaled signal core) -> "signal " ++ Int.toString signal
-
-debugResult : Console -> Result Process.Output Process.Error -> Unit / { Console }
-let debugResult console result =
-  match result with
-  | Ok output ->
-    console.writeLine ("process result: " ++ String.join "," (List.map describeExit output.exits) ++ " stdout=" ++ Option.withDefault "<binary>" (Bytes.toString output.stdout))
-  | Err failure ->
-    console.writeLine ("process error: " ++ failure.message ++ " native=" ++ (match failure.native with
-    | None -> "none"
-    | Some native ->
-      describeNative native) ++ " cleanup=" ++ String.join "," (List.map describeNative failure.cleanup) ++ " exits=" ++ String.join "," (List.map describeExit failure.partial.exits))
-
 let outputIs bytes result =
   match result with
   | Ok output -> good output && output.stdout = bytes
@@ -99,126 +77,175 @@ let slowOutput clock chunk =
   let waited = clock.sleep 600
   Ok Process.Continue
 
-checks : R -> String -> String -> Bool / { Clock, Concurrency, Console, ProcessHost.Process }
-let checks env python fixture =
+let showBytes bytes = String.join "," (List.map Int.toString (Bytes.toList bytes))
+
+let expectOutput expected result =
+  Expect.ok Process.errorToString (fun output -> Expect.all [
+    Expect.isTrue "child exited successfully" (good output),
+    Expect.equal showBytes expected output.stdout
+  ]) result
+
+let scenarioNames = [
+  "binary echo",
+  "argv",
+  "environment",
+  "unset environment",
+  "exit status",
+  "full duplex",
+  "deadline",
+  "capture limit",
+  "consumer stop",
+  "consumer error",
+  "expired alias",
+  "streaming input",
+  "pipeline",
+  "partial pipeline startup",
+  "early stop cancels producer",
+  "task cancellation",
+  "descendant pipe cleanup",
+  "deadline includes consumer",
+  "discard output",
+  "discard input",
+  "inherit output"
+]
+
+scenario : R -> String -> String -> String -> Test.Check / { Clock, Concurrency, ProcessHost.Process }
+let scenario env python fixture name =
   let binary = Bytes.fromList (List.range 0 256)
-  let echoed =
-    Process.run env settings (command python fixture "echo" [] |> Process.stdinBytes binary)
-  let debug = debugResult env.console echoed
-  let a = report env.console "binary echo" (outputIs binary echoed)
-  let args = ["", "a b", "a\"b", "trailing\\", "hé😀"]
-  let b =
-    report env.console "argv" (outputIs (Bytes.fromString (String.join "\n" args)) (Process.run env settings (command python fixture "args" args)))
-  let c =
-    report env.console "environment" (outputIs (Bytes.fromString "value") (Process.run env settings (command python fixture "env" [] |> Process.setEnvironment "FAI_PROCESS_VALUE" "value")))
-  let d =
-    report env.console "unset environment" (outputIs (Bytes.fromString "<absent>") (Process.run env settings (command python fixture "env" [] |> Process.setEnvironment "FAI_PROCESS_VALUE" "value" |> Process.unsetEnvironment "FAI_PROCESS_VALUE")))
-  let exit = Process.run env settings (command python fixture "exit" ["37"])
-  let e =
-    report env.console "exit status" (match exit with
-    | Ok output -> output.exits = [Some (ProcessHost.Exited 37)]
-    | Err _ -> false)
-  let input = Bytes.fromList (List.map (fun _ -> 105) (List.range 0 131072))
-  let exchange =
-    Process.run env settings (command python fixture "flood" [] |> Process.stdinBytes input)
-  let f =
-    report env.console "full duplex" (match exchange with
-    | Ok output ->
-      good output && Bytes.length output.stdout = 131072 && List.map Bytes.length output.stderr = [
+  match name with
+  | "binary echo" ->
+    expectOutput binary (Process.run env settings (command python fixture "echo" [] |> Process.stdinBytes binary))
+  | "argv" ->
+    let args = ["", "a b", "a\"b", "trailing\\", "hé😀"]
+    expectOutput (Bytes.fromString (String.join "\n" args)) (Process.run env settings (command python fixture "args" args))
+  | "environment" ->
+    expectOutput (Bytes.fromString "value") (Process.run env settings (command python fixture "env" [] |> Process.setEnvironment "FAI_PROCESS_VALUE" "value"))
+  | "unset environment" ->
+    expectOutput (Bytes.fromString "<absent>") (Process.run env settings (command python fixture "env" [] |> Process.setEnvironment "FAI_PROCESS_VALUE" "value" |> Process.unsetEnvironment "FAI_PROCESS_VALUE"))
+  | "exit status" ->
+    let result = Process.run env settings (command python fixture "exit" ["37"])
+    Expect.ok Process.errorToString (fun output ->
+      Expect.isTrue "exit code is retained" (output.exits = [Some (ProcessHost.Exited 37)])) result
+  | "full duplex" ->
+    let input = Bytes.fromList (List.map (fun _ -> 105) (List.range 0 131072))
+    let result =
+      Process.run env settings (command python fixture "flood" [] |> Process.stdinBytes input)
+    Expect.ok Process.errorToString (fun output -> Expect.all [
+      Expect.isTrue "child exited successfully" (good output),
+      Expect.equal Int.toString 131072 (Bytes.length output.stdout),
+      Expect.isTrue "stderr was drained concurrently" (List.map Bytes.length output.stderr = [
         131072
-      ]
-    | Err _ -> false)
-  let timeout =
-    Process.run env { settings with timeoutMs = Some 100 } (command python fixture "hold" [])
-  let g =
-    report env.console "deadline" (match timeout with
+      ])
+    ]) result
+  | "deadline" ->
+    let result =
+      Process.run env { settings with timeoutMs = Some 100 } (command python fixture "hold" [])
+    Expect.isTrue "operation deadline terminates the child" (match result with
     | Err failure -> failure.kind = Process.DeadlineExceeded
     | Ok _ -> false)
-  let limited =
-    Process.run env { settings with maxCaptureBytes = 16 } (command python fixture "flood" [])
-  let h =
-    report env.console "capture limit" (match limited with
+  | "capture limit" ->
+    let result =
+      Process.run env { settings with maxCaptureBytes = 16 } (command python fixture "flood" [])
+    Expect.isTrue "capture limit retains truncated output" (match result with
     | Err failure -> failure.kind = Process.CaptureLimitExceeded && failure.partial.truncated
     | Ok _ -> false)
-  let stopped = Process.withOutput env settings (command python fixture "hold" []) stopOutput
-  let i =
-    report env.console "consumer stop" (match stopped with
-    | Ok output -> output.stopped
-    | Err _ -> false)
-  let failed = Process.withOutput env settings (command python fixture "hold" []) failOutput
-  let j =
-    report env.console "consumer error" (match failed with
+  | "consumer stop" ->
+    Expect.ok Process.errorToString (fun output ->
+      Expect.isTrue "consumer stopped the child" output.stopped) (Process.withOutput env settings (command python fixture "hold" []) stopOutput)
+  | "consumer error" ->
+    let result = Process.withOutput env settings (command python fixture "hold" []) failOutput
+    Expect.isTrue "consumer failure is retained" (match result with
     | Err failure -> failure.message = "consumer failed"
     | Ok _ -> false)
-  let retained = Process.withChild env settings (command python fixture "hold" []) escaped
-  let k =
-    report env.console "expired alias" (match retained with
-    | Err _ -> false
+  | "expired alias" ->
+    let result = Process.withChild env settings (command python fixture "hold" []) escaped
+    match result with
+    | Err error -> Test.error (Process.errorToString error)
     | Ok result ->
-      (match Process.next result.value with
+      Expect.isTrue "retained child is closed" (match Process.next result.value with
       | Err failure -> failure.kind = Process.Closed
-      | Ok _ -> false))
-  let streaming =
-    Process.communicate env settings (command python fixture "echo" []) (writeInput binary) continueOutput
-  let l = report env.console "streaming input" (outputIs binary streaming)
-  let pipeline = Process.pipeline [
-    command python fixture "echo" [] |> Process.stdinText "pipeline",
-    command python fixture "upper" [],
-    command python fixture "count" []
-  ]
-  let piped = Process.runPipeline env settings pipeline
-  let m =
-    report env.console "pipeline" (outputIs (Bytes.fromString "8") piped && (match piped with
-    | Ok output -> List.length output.exits = 3
-    | Err _ -> false))
-  let partial =
-    Process.runPipeline env settings (Process.pipeline [
-      Process.command "/fai-does-not-exist/program" [],
-      command python fixture "hold" []
-    ])
-  let n =
-    report env.console "partial pipeline startup" (match partial with
+      | Ok _ -> false)
+  | "streaming input" ->
+    expectOutput binary (Process.communicate env settings (command python fixture "echo" []) (writeInput binary) continueOutput)
+  | "pipeline" ->
+    let pipeline = Process.pipeline [
+      command python fixture "echo" [] |> Process.stdinText "pipeline",
+      command python fixture "upper" [],
+      command python fixture "count" []
+    ]
+    let result = Process.runPipeline env settings pipeline
+    Expect.andThen (fun _ ->
+      Expect.ok Process.errorToString (fun output ->
+        Expect.equal Int.toString 3 (List.length output.exits)) result) (expectOutput (Bytes.fromString "8") result)
+  | "partial pipeline startup" ->
+    let result =
+      Process.runPipeline env settings (Process.pipeline [
+        Process.command "/fai-does-not-exist/program" [],
+        command python fixture "hold" []
+      ])
+    Expect.isTrue "partial startup fails without leaving a child" (match result with
     | Err failure -> failure.kind = Process.SpawnFailure
     | Ok _ -> false)
-  let gate = env.concurrency.channel 1
-  let early =
-    Process.communicate env settings (command python fixture "hold" []) (waitInput env.concurrency gate) stopOutput
-  let o =
-    report env.console "early stop cancels producer" (match early with
-    | Ok output -> output.stopped
-    | Err _ -> false)
-  let p =
-    report env.console "task cancellation" (env.concurrency.scope (cancelInScope env python fixture))
-  let inherited =
-    Process.run env { settings with
-      drainTimeoutMs = Some 100
-    } (command python fixture "descendant" [])
-  let q =
-    report env.console "descendant pipe cleanup" (match inherited with
+  | "early stop cancels producer" ->
+    let gate = env.concurrency.channel 1
+    Expect.ok Process.errorToString (fun output ->
+      Expect.isTrue "producer was cancelled" output.stopped) (Process.communicate env settings (command python fixture "hold" []) (waitInput env.concurrency gate) stopOutput)
+  | "task cancellation" ->
+    Expect.isTrue "task cancellation terminates the session" (env.concurrency.scope (cancelInScope env python fixture))
+  | "descendant pipe cleanup" ->
+    let result =
+      Process.run env { settings with
+        drainTimeoutMs = Some 100
+      } (command python fixture "descendant" [])
+    Expect.isTrue "descendant pipes are bounded" (match result with
     | Err failure -> failure.kind = Process.DrainDeadlineExceeded
     | Ok _ -> false)
-  let slow =
-    Process.withOutput env { settings with
-      timeoutMs = Some 500
-    } (command python fixture "args" ["ready"]) (slowOutput env.clock)
-  let r =
-    report env.console "deadline includes consumer" (match slow with
+  | "deadline includes consumer" ->
+    let result =
+      Process.withOutput env { settings with
+        timeoutMs = Some 500
+      } (command python fixture "args" ["ready"]) (slowOutput env.clock)
+    Expect.isTrue "consumer time counts toward the deadline" (match result with
     | Err failure -> failure.kind = Process.DeadlineExceeded
     | Ok _ -> false)
-  let discarded =
-    Process.run env settings (command python fixture "args" [
+  | "discard output" ->
+    expectOutput Bytes.empty (Process.run env settings (command python fixture "args" [
       "discarded"
-    ] |> Process.stdout Process.Discard)
-  let s = report env.console "discard output" (outputIs Bytes.empty discarded)
-  let nullInput =
-    Process.run env settings (command python fixture "echo" [] |> Process.stdin Process.Discard)
-  let t = report env.console "discard input" (outputIs Bytes.empty nullInput)
-  let inherited =
-    Process.run env settings (command python fixture "args" [
+    ] |> Process.stdout Process.Discard))
+  | "discard input" ->
+    expectOutput Bytes.empty (Process.run env settings (command python fixture "echo" [] |> Process.stdin Process.Discard))
+  | "inherit output" ->
+    expectOutput Bytes.empty (Process.run env settings (command python fixture "args" [
       "inherited-marker\n"
-    ] |> Process.stdout Process.Inherit)
-  let u = report env.console "inherit output" (outputIs Bytes.empty inherited)
-  a && b && c && d && e && f && g && h && i && j && k && l && m && n && o && p && q && r && s && t && u
+    ] |> Process.stdout Process.Inherit))
+  | _ -> Test.error ("unknown process scenario: " ++ name)
+
+checkedScenario : R -> String -> String -> String -> Bool / { Clock, Concurrency, Console, ProcessHost.Process }
+let checkedScenario env python fixture name =
+  report env.console name (scenario env python fixture name = Test.pass)
+
+checks : R -> String -> String -> Bool / { Clock, Concurrency, Console, ProcessHost.Process }
+let checks env python fixture =
+  List.all identity (List.map (checkedScenario env python fixture) scenarioNames)
+
+namedScenario : String -> Test.Context -> Test.Check / { Clock, Concurrency, Env, ProcessHost.Process }
+let namedScenario name ctx =
+  match (ctx.runtime.env.get "FAI_TEST_PYTHON", ctx.runtime.env.get "FAI_TEST_PROCESS_FIXTURE") with
+  | (Some python, Some fixture) ->
+    let env = {
+      clock = ctx.runtime.clock,
+      concurrency = ctx.runtime.concurrency,
+      console = ctx.runtime.console,
+      env = ctx.runtime.env,
+      process = ProcessHost.native
+    }
+    scenario env python fixture name
+  | _ -> Test.error "process integration requires FAI_TEST_PYTHON and FAI_TEST_PROCESS_FIXTURE"
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Env, ProcessHost.Process }
+let tests =
+  Test.describe "native process sessions" (List.map (fun name ->
+    Test.test name (namedScenario name)) scenarioNames)
 
 public main : R -> Unit / { Clock, Concurrency, Console, Env, ProcessHost.Process }
 let main env =

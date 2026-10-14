@@ -205,3 +205,42 @@ let normalClose env nursery =
     | Ok result ->
       result.summary.accepted = 2 && result.summary.completed = 2 && Result.isErr rejected
     | _ -> false
+
+recordPressure : Test.Context -> Test.Check / { Clock, Concurrency }
+let recordPressure ctx =
+  Expect.isTrue "record budget blocks and resumes admission" (pressure ctx.runtime false false)
+
+bytePressure : Test.Context -> Test.Check / { Clock, Concurrency }
+let bytePressure ctx =
+  Expect.isTrue "byte budget blocks and resumes admission" (pressure ctx.runtime true false)
+
+failedPressure : Test.Context -> Test.Check / { Clock, Concurrency }
+let failedPressure ctx =
+  Expect.isTrue "blocked admission observes sink failure" (pressure ctx.runtime true true)
+
+drainDeadline : Test.Context -> Test.Check / { Clock, Concurrency }
+let drainDeadline ctx =
+  Expect.isTrue "drain deadline preserves completed and abandoned counts" (ctx.runtime.concurrency.scope (closingScope ctx.runtime false))
+
+cancelledDrain : Test.Context -> Test.Check / { Clock, Concurrency }
+let cancelledDrain ctx =
+  Expect.isTrue "cancellation releases queued work" (ctx.runtime.concurrency.scope (closingScope ctx.runtime true))
+
+cancelledWrite : Test.Context -> Test.Check / { Clock, Concurrency }
+let cancelledWrite ctx =
+  Expect.isTrue "cancelled admission is not accepted" (cancelledAdmission ctx.runtime)
+
+normalDrain : Test.Context -> Test.Check / { Clock, Concurrency }
+let normalDrain ctx =
+  Expect.isTrue "normal close drains accepted records" (ctx.runtime.concurrency.scope (normalClose ctx.runtime))
+
+tests : Test.Suite Test.Context { Clock, Concurrency }
+let tests = Test.describe "logging backpressure" [
+  Test.test "record limit" recordPressure,
+  Test.test "byte limit" bytePressure,
+  Test.test "sink failure" failedPressure,
+  Test.test "drain deadline" drainDeadline,
+  Test.test "cancelled drain" cancelledDrain,
+  Test.test "cancelled admission" cancelledWrite,
+  Test.test "normal close" normalDrain
+]
