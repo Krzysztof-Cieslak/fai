@@ -11,6 +11,7 @@ Usage: junit-summary.py [path-to-junit.xml]
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -18,17 +19,25 @@ import xml.etree.ElementTree as ET
 
 def main() -> int:
     path = sys.argv[1] if len(sys.argv) > 1 else "target/nextest/ci/junit.xml"
-    lines: list[str] = []
-
     if not os.path.exists(path):
         emit(["## Test results", "", "No JUnit report was produced (tests may not have run)."])
         return 0
 
     try:
         root = ET.parse(path).getroot()
-    except ET.ParseError as err:
+        lines = render(root)
+    except (ET.ParseError, OSError, ValueError) as err:
         emit(["## Test results", "", f"Could not parse the JUnit report: `{err}`."])
         return 0
+
+    emit(lines)
+    return 0
+
+
+def render(root: ET.Element) -> list[str]:
+    if root.tag not in {"testsuite", "testsuites"}:
+        raise ValueError("expected a JUnit testsuite or testsuites root")
+    lines: list[str] = []
 
     total = failed = skipped = 0
     rows: list[tuple[str, int, int, int, int, float]] = []
@@ -42,7 +51,10 @@ def main() -> int:
         seconds = 0.0
         for case in suite.iter("testcase"):
             tests += 1
-            seconds += float(case.get("time", "0") or "0")
+            duration = float(case.get("time", "0") or "0")
+            if not math.isfinite(duration) or duration < 0:
+                raise ValueError("invalid test duration")
+            seconds += duration
             if case.find("failure") is not None or case.find("error") is not None:
                 fails += 1
                 failures.append(f'{name} :: {case.get("name", "?")}')
@@ -70,8 +82,7 @@ def main() -> int:
         lines.append("")
         lines.extend(f"- `{name}`" for name in failures)
 
-    emit(lines)
-    return 0
+    return lines
 
 
 def emit(lines: list[str]) -> None:

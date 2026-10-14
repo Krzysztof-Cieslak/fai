@@ -148,7 +148,7 @@ class EditorWorkflowTests(unittest.TestCase):
 
     def test_isolated_editor_wrappers_do_not_require_native_platform_runners(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        self.assertIn("runs-on: ${{ needs.changes.outputs.mode == 'vscode' && 'ubuntu-latest' || matrix.os }}", workflow)
+        self.assertIn("runs-on: ${{ (needs.changes.outputs.mode == 'vscode' || needs.changes.outputs.mode == 'docs') && 'ubuntu-latest' || matrix.os }}", workflow)
 
     def test_manual_workflow_reuses_the_same_editor_checks(self):
         workflow = (ROOT / ".github/workflows/editors.yml").read_text()

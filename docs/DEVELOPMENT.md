@@ -370,6 +370,7 @@ predecessor, not unconditionally with `main`.
 | `packages/fai.toml` or `packages/fai.lock` | Affected members, override consumers and changed lock-graph roots plus dependents; whole-workspace locked validation; no Rust suite on a cache hit |
 | `scripts/performance_report/**` | Python syntax and two presentation fixtures; no Cargo or compiler bundle |
 | `editors/vscode/**` only | TypeScript checks, grammar tests and VSIX packaging; no Rust or compiler bundle |
+| Explicit Python-tooling files | Selected unit tests; release tooling also runs cached-compiler archive/relocation checks, without the Rust workspace suite |
 | Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures and VS Code checks |
 | Root documentation and `docs/*.md` / `docs/*.txt` only | Change/catalog validation |
 
@@ -402,9 +403,33 @@ Mixed editor/package/reporting changes run all relevant checks without promoting
 an otherwise isolated change to a Rust build. Full compiler checks include the
 editor lane because grammar tests read the source samples. The manual Editors
 workflow reuses the same action rather than keeping a separate check sequence.
-For a VS Code-only diff, the otherwise-idle platform-check wrappers run on Ubuntu,
+For a VS Code-only or docs-only diff, the otherwise-idle platform-check wrappers run on Ubuntu,
 retaining their required names without waiting for native macOS/Windows capacity.
 Mixed changes that need platform checks retain their usual native runners.
+
+Python-tooling selection is an exact file allowlist in `scripts/ci_tooling.py`,
+not a blanket `scripts/` exemption:
+
+| Group | Files and checks |
+|---|---|
+| `release` | `scripts/release.py`, the two `scripts/install/install.*` templates, their unit tests and the PowerShell archive harness; release/installer unit tests and native archive/relocation smoke checks |
+| `performance` | `scripts/performance.py`, `scripts/performance_publish.py`, and `scripts/tests/test_performance.py`; publication/orchestration unit tests plus existing presentation fixtures |
+| `junit` | `scripts/junit-summary.py` and `scripts/tests/test_junit_summary.py`; valid, missing and malformed JUnit fixtures |
+
+The release lane checks both Windows PowerShell and PowerShell 7 on Windows and
+shell syntax on Unix. Its native fixture uses the existing `ci` compiler: release
+archive creation preserves its exact bytes and original build metadata, then the
+relocated compiler runs contracts, JIT, AOT and daemon checks with empty Rust
+homes. It never relabels a CI binary as an official release. Actual publication
+still requires the complete release qualification workflow. On a compiler-cache
+miss, only the usual CLI bootstrap may build; no Rust workspace test suite is
+selected by these tooling edits.
+
+Missing test files, unknown groups and inconsistent selector outputs fail closed.
+Compiler/bootstrap scripts, the shared tooling runner, source-selection code,
+release target definitions and other unknown paths keep full validation. Mixed
+tooling/package/editor/presentation changes retain every relevant check. Run a
+tooling group locally with `python scripts/ci_tooling.py --groups '["junit"]'`.
 
 Workspace metadata is compared structurally against the same base. Literal member
 additions/removals select their packages. Changed in-tree overrides select the
