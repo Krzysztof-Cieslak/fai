@@ -1,0 +1,78 @@
+module CompressionStreamSpec
+
+let input = Bytes.fromString "hello streaming world"
+
+let packed = Result.withDefault Bytes.empty (Gzip.compress input)
+
+let chunks = List.map (fun byte -> Bytes.fromList [byte]) (Bytes.toList packed)
+
+let collect reader =
+  CompressionStream.fold reader Bytes.empty (fun state bytes ->
+    Ok (Bytes.concat state bytes, CompressionStream.Continue))
+
+let decoded =
+  match CompressionStream.decoder Compression.Gzip Compression.decodeOptions (Stream.fromList chunks) with
+  | Err _ -> None
+  | Ok reader ->
+    let result = collect reader
+    Some (result.state, result.complete, Result.isOk result.outcome)
+example: decoded = Some (input, true, true)
+
+let stopped =
+  match CompressionStream.decoder Compression.Gzip Compression.decodeOptions (Stream.fromList chunks) with
+  | Err _ -> true
+  | Ok reader ->
+    (CompressionStream.fold reader () (fun _ _ -> Ok ((), CompressionStream.Stop))).complete
+example: not stopped
+
+let sourceError state = if state = 0 then Ok (Some (Bytes.empty, 1)) else Err 42
+
+let sourceFailure _ =
+  match CompressionStream.decoderFromPull Compression.Gzip Compression.decodeOptions sourceError 0 with
+  | Err _ -> false
+  | Ok reader ->
+    match CompressionStream.next reader with
+    | Err (CompressionStream.SourceError 42) -> true
+    | _ -> false
+example: sourceFailure ()
+
+let snapshot = Gzip.decoder Compression.decodeOptions
+example: snapshot = Gzip.decoder Compression.decodeOptions
+
+let branched _ =
+  match snapshot with
+  | Err _ -> false
+  | Ok decoder ->
+    let a = Compression.feedDecoder decoder packed 0
+    let b = Compression.feedDecoder decoder packed 0
+    a = b && decoder = Result.withDefault decoder snapshot
+example: branched ()
+
+let tiny = { Compression.decodeOptions with limits = { Compression.limits with chunkBytes = 1 } }
+example: Gzip.decompressWith tiny packed = Ok input
+
+let emptyChunks = Stream.fromList [Bytes.empty, packed, Bytes.empty]
+
+let withEmptyChunks _ =
+  match CompressionStream.decoder Compression.Gzip Compression.decodeOptions emptyChunks with
+  | Err _ -> false
+  | Ok reader ->
+    let result = collect reader
+    result.state = input && result.complete
+example: withEmptyChunks ()
+
+let callbackFailure _ =
+  match CompressionStream.decoder Compression.Gzip Compression.decodeOptions (Stream.singleton packed) with
+  | Err _ -> false
+  | Ok reader ->
+    let result = CompressionStream.fold reader 7 (fun _ _ -> Err "callback stopped")
+    result.state = 7 && not result.complete && result.deliveredBytes = 0 && result.outcome = Err (CompressionStream.CallbackFailure "callback stopped")
+example: callbackFailure ()
+
+let truncated _ =
+  match CompressionStream.decoder Compression.Gzip Compression.decodeOptions (Stream.singleton (Bytes.slice 0 (Bytes.length packed - 1) packed)) with
+  | Err _ -> false
+  | Ok reader ->
+    let result = collect reader
+    result.state = input && not result.complete && Result.isErr result.outcome
+example: truncated ()

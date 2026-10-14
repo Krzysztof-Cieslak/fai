@@ -795,6 +795,10 @@ pub enum Prim {
     RegexSlice,
     /// Escape regex pattern metacharacters.
     RegexEscape,
+    /// Construct an immutable native compression snapshot.
+    CompressionCreate,
+    /// Advance a compression snapshot with bounded input and output.
+    CompressionStep,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -973,6 +977,8 @@ impl Prim {
             Prim::RegexByteIndex => "fai_regex_byte_index",
             Prim::RegexSlice => "fai_regex_slice",
             Prim::RegexEscape => "fai_regex_escape",
+            Prim::CompressionCreate => "fai_compression_create",
+            Prim::CompressionStep => "fai_compression_step",
             Prim::BytesSlice => "fai_bytes_slice",
             Prim::BytesFromList => "fai_bytes_from_list",
             Prim::BytesToList => "fai_bytes_to_list",
@@ -1020,6 +1026,7 @@ impl Prim {
             | Prim::PathComponents
             | Prim::RegexNames
             | Prim::RegexEscape
+            | Prim::CompressionCreate
             | Prim::CryptoScramPassword => 1,
             Prim::RecordUpdate
             | Prim::ArraySet
@@ -1032,6 +1039,7 @@ impl Prim {
             | Prim::RegexTestText
             | Prim::RegexTestBytes
             | Prim::RegexSlice
+            | Prim::CompressionStep
             | Prim::CryptoPbkdf2Sha256 => 3,
             _ => 2,
         }
@@ -1104,6 +1112,8 @@ impl Prim {
             "regexByteIndex" => Prim::RegexByteIndex,
             "regexSlice" => Prim::RegexSlice,
             "regexEscape" => Prim::RegexEscape,
+            "compressionCreate" => Prim::CompressionCreate,
+            "compressionStep" => Prim::CompressionStep,
             "bytesSlice" => Prim::BytesSlice,
             "bytesFromList" => Prim::BytesFromList,
             "bytesToList" => Prim::BytesToList,

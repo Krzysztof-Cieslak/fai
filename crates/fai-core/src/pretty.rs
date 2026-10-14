@@ -123,6 +123,8 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::RegexByteIndex => "regexByteIndex",
         Prim::RegexSlice => "regexSlice",
         Prim::RegexEscape => "regexEscape",
+        Prim::CompressionCreate => "compressionCreate",
+        Prim::CompressionStep => "compressionStep",
         Prim::BytesSlice => "bytesSlice",
         Prim::BytesFromList => "bytesFromList",
         Prim::BytesToList => "bytesToList",

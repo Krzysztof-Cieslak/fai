@@ -245,6 +245,15 @@ retired; IDs are not reused).
   The typed RegexEngine bridge separates text and binary calls; whole-input mode
   anchors the parsed expression. Private scratch leases have bounded retention.
 
+- Compression is an optional source package over a minimal embedded native
+  bridge, not a new effectful foreign boundary. Snapshots compare/hash by content
+  and update only under exclusive ownership. Canonical independent-history 64 KiB
+  encoder blocks keep comparable state bounded without replaying prior input;
+  caller chunking does not alter encoded output. The decoder retains its fixed
+  DEFLATE history and validates each gzip member. Limits are cumulative across
+  members; streaming bytes are provisional until successful EOF validation.
+  Typed source/callback failures and committed fold state remain separate.
+
 - Logging capture is a bounded effectful collector, while preparation and
   formatting stay pure. Failure kinds and per-sink receipts distinguish filtering,
   completed calls, acknowledged queue admission and uncertain output. Queue

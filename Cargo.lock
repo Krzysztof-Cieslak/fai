@@ -1107,10 +1107,13 @@ name = "fai-runtime"
 version = "0.0.1"
 dependencies = [
  "corosensei",
+ "crc32fast",
  "crossbeam-deque",
  "crossterm",
+ "flate2",
  "libc",
  "libsqlite3-sys",
+ "miniz_oxide",
  "mio",
  "proptest",
  "rcgen",
@@ -1120,6 +1123,8 @@ dependencies = [
  "ring",
  "rustls",
  "rustls-pemfile",
+ "serde",
+ "serde_json",
  "stringprep",
  "subtle",
  "tempfile",
@@ -1792,6 +1797,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
+ "serde",
  "simd-adler32",
 ]
 

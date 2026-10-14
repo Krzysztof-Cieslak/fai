@@ -227,6 +227,8 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::RegexByteIndex
         | Prim::RegexSlice
         | Prim::RegexEscape
+        | Prim::CompressionCreate
+        | Prim::CompressionStep
         | Prim::BytesSlice
         | Prim::BytesFromList
         | Prim::BytesToList

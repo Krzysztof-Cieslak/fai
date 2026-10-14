@@ -1,0 +1,19 @@
+module Zlib
+
+public compress : Bytes -> Result Bytes Compression.Error
+let compress input = Compression.compress Compression.Zlib input
+
+public compressWith : Compression.EncodeOptions -> Bytes -> Result Bytes Compression.Error
+let compressWith options input = Compression.compressWith Compression.Zlib options input
+
+public decompress : Bytes -> Result Bytes Compression.Error
+let decompress input = Compression.decompress Compression.Zlib input
+
+public decompressWith : Compression.DecodeOptions -> Bytes -> Result Bytes Compression.Error
+let decompressWith options input = Compression.decompressWith Compression.Zlib options input
+
+public encoder : Compression.EncodeOptions -> Result Compression.Encoder Compression.Error
+let encoder options = Compression.encoder Compression.Zlib options
+
+public decoder : Compression.DecodeOptions -> Result Compression.Decoder Compression.Error
+let decoder options = Compression.decoder Compression.Zlib options

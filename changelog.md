@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+- Add the pure `CompressionEngine` native bridge for bounded gzip, zlib and raw
+  DEFLATE snapshots, backing the optional `compression` source package.
+
 ### Changed
 - Add `fai test --junit <path>` for atomic JUnit XML artifacts alongside human or
   JSON output, including diagnostics and preparation errors. Native package CI

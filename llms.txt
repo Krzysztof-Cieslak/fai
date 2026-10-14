@@ -642,6 +642,11 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+Compression needs no capability: `Gzip`, `Zlib`, and `Deflate` transform `Bytes`
+purely, and incremental states are immutable snapshots. `CompressionStream`
+forwards its source and callback effects; file and network access remain explicit.
+Only complete consumption validates a compressed stream's final checksum.
+
 `Decimal` arithmetic and `decimal-codecs` conversions are entirely pure.
 Arithmetic uses explicit resource budgets and rounding modes, with no global
 precision context or implicit conversion through binary Float.
@@ -1218,6 +1223,14 @@ forall xs: mirror (mirror xs) = xs
 ---
 
 ## 13. Standard library reference
+
+### CompressionEngine — pure native codec bridge
+
+The optional `compression` source package wraps this low-level bridge. `create`
+validates native codec options; `step` advances an immutable snapshot with bounded
+input/output and exact consumed-byte accounting. Native states compare/hash by
+content and release their retained buffers at final drop. Prefer the package's
+`Gzip`, `Zlib`, `Deflate`, and `CompressionStream` modules over the wire interface.
 
 ### RegexEngine — typed native regex support
 
@@ -2029,6 +2042,18 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 ---
 
 ### Optional source packages
+
+`packages/compression` provides pure `Gzip.compress`/`decompress`, `Zlib` and raw
+`Deflate` equivalents, plus explicit options and immutable incremental codecs.
+Default limits are 64 MiB total input/output, 64 KiB chunks and gzip headers, and
+1,024 members. Gzip accepts concatenated validated members; whole-buffer decoding
+rejects trailing bytes and never returns partial success. Encoders use canonical
+64 KiB independent-history blocks with deterministic metadata. Typed
+`CompressionStream` readers/folds retain source and callback errors and committed
+progress. Only complete consumption validates checksums: early output is
+provisional. Its convenience Stream adapter renders errors into String. Import
+modules explicitly, for example `import compression.Gzip`. Requires a compiler
+with the new `CompressionEngine` bridge; see `packages/compression/README.md`.
 
 `packages/decimal` supplies `Decimal`; import it with `import decimal.Decimal`.
 `parse` and `fromParts` construct normalized exact values; `fromInt` preserves
