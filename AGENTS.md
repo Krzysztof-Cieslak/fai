@@ -1950,7 +1950,11 @@ and reactor tests have bounded CI timeouts so a stalled wait fails promptly.
 
 Rust CI tests use the optimized Cargo `ci` profile while retaining debug
 assertions, overflow checks, runtime counters and leak guards. Nextest's existing
-test filters are unchanged. The separate release-mode task-migration regression
+test filters are unchanged. The test compilation packages its `ci` compiler for
+subsequent native package checks and relocation fixtures, without a second
+compiler build. Package-only jobs restore that exact profile; `package-dev`
+remains a distinct, explicitly selectable local-development bundle.
+The separate release-mode task-migration regression
 still checks the fully optimized runtime. The shared Rust cache action uses a
 populated-cache namespace and reports compiled artifacts, not just key hits;
 package-only compiler-bundle hits do not restore or publish Rust dependency caches.

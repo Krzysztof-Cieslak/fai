@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- Reuse the compiler produced by CI's Rust test build for package and relocation
+  checks, with profile-specific bundle identities instead of a second compiler build.
 - Keep socket readiness delivery atomic with failed I/O probes and waiter
   registration, preventing concurrent operations from losing an edge and hanging.
 - Restore usable Rust dependency caches in CI instead of reusing empty legacy

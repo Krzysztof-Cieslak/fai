@@ -107,13 +107,13 @@ closed examples. `fai test -C packages` tests all source packages.
 Activate a cached compiler once in the shell when working from a checkout:
 
 ```sh
-export PATH="$(dirname "$(python3 scripts/compiler.py ensure)"):$PATH"
+export PATH="$(dirname "$(python3 scripts/compiler.py ensure --profile ci)"):$PATH"
 ```
 
 PowerShell:
 
 ```powershell
-$compiler = python scripts/compiler.py ensure
+$compiler = python scripts/compiler.py ensure --profile ci
 $env:Path = "$(Split-Path $compiler);$env:Path"
 ```
 
@@ -237,9 +237,9 @@ retain their assertion-enabled profile and are not public release artifacts.
 It requires Python 3.11+. A cache hit needs no Rust toolchain:
 
 ```sh
-python3 scripts/compiler.py ensure
-python3 scripts/compiler.py ensure --offline --no-build
-python3 scripts/compiler.py key
+python3 scripts/compiler.py ensure --profile ci
+python3 scripts/compiler.py ensure --profile ci --offline --no-build
+python3 scripts/compiler.py key --profile ci
 ```
 
 The default cache is `$XDG_CACHE_HOME/fai/compilers` (falling back to
@@ -250,8 +250,18 @@ bundle, then looks for a matching successful GitHub CI artifact with `gh`, then
 builds `fai-cli` if necessary. `--offline` skips remote lookup; `--no-build`
 reports a missing bundle instead of invoking Cargo.
 
-The `package-dev` profile is optimized but retains assertions and runtime leak
-checks. The cache key covers the named inputs in `scripts/compiler-inputs.json`,
+CI publishes the optimized, assertion-enabled `ci` compiler already produced by
+its Rust test build. Full compiler jobs package that binary once and reuse it for
+native package checks and relocation fixtures; they do not build a second
+`package-dev` compiler. Package-only jobs restore the exact `ci` bundle or build
+only `fai-cli` with that profile on a miss. A full job missing its prepared bundle
+fails instead of silently rebuilding or substituting another artifact.
+
+`--profile package-dev` retains the more highly optimized local-development
+profile and remains the script's default for compatibility. Both profiles keep
+assertions and runtime leak checks, but have distinct cache keys and provenance;
+an archive from one cannot be restored as the other. Use the same explicit profile
+with `key`, `ensure`, `pack`, and `restore`. The cache key covers the named inputs in `scripts/compiler-inputs.json`,
 the native target and host compatibility, build environment and bundle schema.
 It is independent of branch names, commits, timestamps and checkout paths.
 Package sources and documentation under `packages/`, and the Python presentation
@@ -263,8 +273,8 @@ executable identity through `fai build-info`.
 Bundles are checksum-verified ZIPs containing a manifest and the executable:
 
 ```sh
-python3 scripts/compiler.py pack --output compiler.zip
-python3 scripts/compiler.py restore --archive compiler.zip
+python3 scripts/compiler.py pack --profile ci --output compiler.zip
+python3 scripts/compiler.py restore --profile ci --archive compiler.zip
 ```
 
 The executable embeds the standard library, runtime archive and non-system
@@ -310,6 +320,13 @@ are unchanged. Build and test execution are separate workflow steps so their
 times remain visible; doctests, test-partition validation, and the relocation
 launcher reuse the same Cargo profile. The task-migration regression still runs
 separately with `--release` to check the fully optimized runtime.
+
+The build steps run `scripts/compiler.py build-tests --test-profile unit` (or
+`cross-os`), which invokes the same nextest compilation command and records its
+`fai` executable as a `ci` bundle. The source identity is checked before and after
+compilation; native target, profile and enabled assertions are verified before
+installation. Later nextest execution uses the same build environment, avoiding a
+profile/provenance change that would invalidate the compiler's Cargo artifacts.
 
 Required Rust jobs and cold compiler builds share `.github/actions/rust-cache`.
 Its `fai-rust-v1` namespace does not restore the historical empty dependency
@@ -390,7 +407,7 @@ fai test --locked -C packages --package PACKAGE --seed 42 --count 128
 Linux, macOS, and Windows each restore an exact compiler bundle and put its
 directory on PATH. On a valid cache hit there are no Cargo, rustup, nextest,
 Rust tests, Clippy, or compiler-fixture invocations. A miss first tries a published
-matching bundle, then builds only `fai-cli`. Source/package tests still run on a
+matching `ci` bundle, then builds only `fai-cli`. Source/package tests still run on a
 miss; it does not trigger the full Rust suite.
 
 Compiler/default-branch runs (and successful cold-cache package runs) publish `compiler.zip`
@@ -398,4 +415,5 @@ artifacts named by the compiler fingerprint, with 30-day retention. The local
 bootstrap and later stacked PRs can reuse them. Exact Actions caches provide the
 faster common path; there is no loose restore-key fallback to an older compiler.
 Workflow summaries record the selected lane, affected packages, compiler key,
-target, and whether the bundle came from cache, an artifact, or a new build.
+target, profile, and whether the bundle came from the test build, cache, an artifact,
+or a new standalone build.

@@ -121,8 +121,22 @@ class CiBuildConfigurationTests(unittest.TestCase):
     def test_nextest_build_and_run_commands_use_the_same_cargo_profile(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         commands = [line.strip() for line in workflow.splitlines() if "run: cargo nextest run" in line]
-        self.assertEqual(len(commands), 5)
+        self.assertEqual(len(commands), 3)
         self.assertTrue(all("--cargo-profile ci" in command for command in commands))
+        self.assertIn("compiler.py build-tests --test-profile unit", workflow)
+        self.assertIn("compiler.py build-tests --test-profile cross-os", workflow)
+
+    def test_full_ci_requires_its_prepared_compiler_without_restoring_over_it(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        action = (ROOT / ".github/actions/compiler/action.yml").read_text()
+        self.assertEqual(workflow.count("prepared: ${{ needs.changes.outputs.compiler == 'true' }}"), 2)
+        self.assertIn("if: inputs.prepared != 'true'", action)
+        self.assertIn('compiler.validate(compiler.cache_root() / expected["key"], expected)', action)
+
+    def test_ci_bundle_packaging_uses_the_ci_profile(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("compiler.py pack --profile ci", workflow)
+        self.assertIn('"pack", "--profile", "ci"', workflow)
 
     def test_doctests_and_partition_reuse_the_ci_build(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
