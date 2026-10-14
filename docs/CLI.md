@@ -27,7 +27,7 @@
 > `FAI6002`); it takes `[path]`/`--match`/`--seed`/`--count`/`--max-size`, and
 > generates values for built-in types, records, and (recursive) ADTs. The daemon
 > serves `fai test`, streaming per-contract results as `$/testEvent`; warm output
-> is byte-identical to `--no-daemon`. `fai daemon tap` streams a live JSON decode
+> matches `--no-daemon` apart from elapsed time. `fai daemon tap` streams a live JSON decode
 > of the workspace daemon's traffic for debugging. The daemon and worker run on
 > Linux, macOS, and Windows — each covered in CI, including the named-pipe
 > transport and the daemon end-to-end suite — and the worker's resource limits are
@@ -510,19 +510,57 @@ in a supervised isolated worker, so a body that traps on a generated input fails
 
 - **Options:** `--match <pat>` (run only contracts whose subject/module matches),
   `--seed <n>`, `--count <n>` (trials per property), `--max-size <n>`.
+- **Output (human):** a selection header, one live line per completed contract,
+  detailed failures and an end-of-run summary. For example:
+
+  ```text
+  running 2 contracts (1 example, 1 property)
+  seed: 0; trials per property: 100; max size: 100
+
+  test Lists.reverse [example, Lists.fai:10:1] ... ok
+  test Lists.reverse [forall, Lists.fai:11:1] ... ok
+
+  test result: ok. 2 passed; 0 failed; 0 crashed; 0 timed out; 0 not run; 0 filtered out; finished in 0.12s
+  ```
+
+  Labels include the kind and source location even when several contracts share
+  a subject. Statuses are `ok`, `FAILED`, `CRASHED`, `TIMED OUT`, and `NOT RUN`;
+  the existing `--color` policy applies to live lines and the summary. Failure
+  diagnostics retain their codes, locations and shrunk counterexamples. Failed,
+  crashed or timed-out properties also show the seed/count/size options to reuse
+  with the same path and filter. No-match and empty selections are explicit.
+  Contracts blocked before execution are counted separately, not as failed
+  assertions. Unavailable generators are `not run`, not ignored successes.
 - **Streaming:** each validated per-contract pass/fail event is delivered as soon
   as its worker frame arrives (`$/testEvent`, from the daemon), before later
   contracts finish. An acknowledged result is emitted once, including when a
   later contract crashes or times out and the worker resumes after it.
-- **Output (json):** `{ "schemaVersion": 1, "total": int, "passed": int, "notRun": int, "seed": int, "events": [TestEvent], "diagnostics": [Diagnostic], "ok": bool }`, where a `TestEvent` is `{ "source": { "file": string, "origin": "user"|"standardLibrary" }, "ordinal": int, "symbol": string?, "kind": "example"|"forall", "status": "passed"|"failed"|"crashed"|"timedOut"|"notRun", "counterexample": string?, "seed": int, "trials": int, "maxSize": int }`.
+- **Output (json):** `{ "schemaVersion": 1, "total": int, "passed": int, "notRun": int, "seed": int, "config": TestConfig, "summary": TestSummary, "events": [TestEvent], "diagnostics": [Diagnostic], "ok": bool }`, where a `TestEvent` is `{ "source": { "file": string, "origin": "user"|"standardLibrary" }, "ordinal": int, "location": { "line": int, "column": int }?, "symbol": string?, "kind": "example"|"forall", "status": "passed"|"failed"|"crashed"|"timedOut"|"notRun", "counterexample": string?, "seed": int, "trials": int, "maxSize": int }`.
+  `TestConfig` is `{ "seed": int, "trials": int, "maxSize": int }`. Trials are
+  the configured limit per property, not an observed count of predicate calls
+  (a property may fail early, and shrinking also calls its predicate).
+  `TestSummary` contains integer fields `total`, `examples`, `properties`,
+  `passed`, `failed`, `crashed`, `timedOut`, `notRun`, `blocked`, `filteredOut`,
+  and `elapsedMs`. The six outcome counts sum to `total`; `examples + properties`
+  also equals `total`. `filteredOut` counts only contracts excluded by `--match`
+  within the selected files and is outside `total`. `blocked` counts selected
+  runnable contracts that were not executed; these have no completed event.
+  `elapsedMs` is monotonic wall time from plan preparation through execution,
+  including synthesis/JIT compilation and worker restarts, excluding project
+  loading. It varies between equivalent runs. JSON mode emits only the final
+  envelope on stdout, without human progress text.
   The contract key is `(source, ordinal)`: `file` is the logical source path
   (workspace-relative for user files, with `/` separators), `origin` distinguishes
   embedded sources from same-spelled user paths, and `ordinal` is zero-based within
   that file. Filtering and worker restarts preserve the key. `symbol` is only an
   optional human label. Final events are sorted by file, origin, and ordinal;
   streaming events arrive when known, including `notRun` before worker execution.
-  Subjectless human progress labels include the file. The `source` field is an
-  additive schema-version-1 extension; clients must tolerate unknown JSON fields.
+  Locations are one-based, with Unicode-scalar columns, and refer to the compiled
+  source revision. Human labels without coordinates fall back to the file and a
+  one-based ordinal; JSON identity always retains its zero-based ordinal.
+  `source`, `location`, `config`, and `summary` are additive schema-version-1
+  extensions; clients must tolerate unknown JSON fields. Existing top-level
+  `total`, `passed`, `notRun`, and `seed` retain their meanings.
 - **Exit:** `0` if all pass; `1` otherwise.
 
 Test diagnostic coordinates refer to the source revision compiled for that run,
@@ -722,8 +760,8 @@ deferred; the request shape reserves room for them.
 |---|---|---|
 | `$/progress` | `{ id, message, done?, total? }` | build/check/test progress |
 | `$/diagnostic` | `{ id, diagnostic: Diagnostic }` | streamed diagnostics |
-| `$/testEvent` | `TestEvent` (per the `fai test` schema: `source`, `ordinal`, `symbol?`, `kind`, `status`, `counterexample?`, `seed`, `trials`, `maxSize`) | `test` |
-| `$/output` | `{ id, stream: "stdout"\|"stderr", chunk: bytes }` | `run` worker output |
+| `$/testEvent` | `TestEvent` (per the `fai test` schema: `source`, `ordinal`, `location?`, `symbol?`, `kind`, `status`, `counterexample?`, `seed`, `trials`, `maxSize`) | `test` |
+| `$/output` | `{ id, stream: "stdout"\|"stderr", chunk: bytes }` | `run` worker output; `test` human header and package notices |
 | `inputReady` | one credit for up to 8192 stdin bytes | server → run client |
 | `input` / `inputEof` | one credited byte chunk / terminal EOF | run client → server |
 | `$/log` | `{ level, message }` | daemon logs |

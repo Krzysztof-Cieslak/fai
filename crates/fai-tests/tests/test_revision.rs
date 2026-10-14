@@ -23,6 +23,10 @@ fn edited_inputs_do_not_reinterpret_prepared_test_spans() {
         "module M\n// 🌍 changed layout\n\n\nexample: true\nexample: false\n".into(),
     );
     assert_eq!(plan.render_spans.resolve(span), Some(before.clone()));
+    assert_eq!(
+        plan.runnable_meta[1].location,
+        Some(fai_driver::ContractLocation { line: 3, column: 1 })
+    );
     assert_ne!(DbSpanResolver::new(&db).resolve(span), Some(before));
 }
 

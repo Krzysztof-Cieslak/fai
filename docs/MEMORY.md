@@ -1390,7 +1390,13 @@ Contracts (examples & properties):
   binder with no generator. Each contract associates with the nearest preceding
   top-level binding (its "subject"), which powers the `Contract` lists in
   `fai query docs`/`api` and the nullable `symbol` in the `TestOutput` JSON
-  envelope (`{ total, passed, notRun, diagnostics, ok }`).
+  envelope. Its additive `config` and `summary` fields expose generator settings,
+  disjoint outcome counts, filtered-out contracts and elapsed preparation/run
+  time; existing envelope fields retain their meanings. Human output streams
+  kind/location-labelled results, groups detailed failures, and ends with the
+  same counts. A contract blocked before execution is not an assertion failure;
+  an unavailable generator is not an ignored success. Daemon and direct reports
+  agree apart from elapsed time. See `docs/CLI.md` for the current wire schema.
 - **D85 Bitwise `Int` intrinsics + float bit-reinterpretation.** splitmix64 needs
   bitwise ops, which Fai lacked. They are **functions** in the `Int` module
   (`and`/`or`/`xor`/`complement`/`shiftLeft`/`shiftRight`/`shiftRightLogical`),

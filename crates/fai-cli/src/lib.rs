@@ -699,21 +699,25 @@ fn run_test_in_process(
         Err(error) => return emit_error(&error, format, color, out, err),
     };
     let plan = fai_driver::build_test_plan(session.db(), &files, args.r#match.as_deref(), config);
+    if matches!(format, MessageFormat::Human) {
+        let _ = out.write_all(plan.render_header().as_bytes());
+        let _ = out.flush();
+    }
     let results = if plan.blocked {
         Vec::new()
     } else {
         let mut on_event = |event: &fai_driver::ContractEvent| {
             if matches!(format, MessageFormat::Human) {
-                let _ = out.write_all(fai_driver::render_test_event_line(event).as_bytes());
+                let _ = out.write_all(fai_driver::render_test_event_line(event, color).as_bytes());
                 let _ = out.flush();
             }
         };
         fai_driver::run_test_workers(&plan, &mut on_event)
     };
     let outcome = fai_driver::assemble_outcome(&plan, &results);
-    let resolver = session.resolver();
+    let resolver = &plan.render_spans;
     match format {
-        MessageFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(&resolver)) {
+        MessageFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(resolver)) {
             Ok(json) => {
                 let _ = writeln!(out, "{json}");
             }
@@ -723,7 +727,7 @@ fn run_test_in_process(
             }
         },
         MessageFormat::Human => {
-            let _ = write!(out, "{}", outcome.render_human(&resolver, color));
+            let _ = write!(out, "{}", outcome.render_human(resolver, color));
         }
     }
     if outcome.ok { EXIT_OK } else { EXIT_FAILURES }

@@ -172,7 +172,9 @@
 > body into a runtime trap (e.g. division by zero) fails *that* contract as a
 > located **`FAI6003`** and the run resumes after it instead of aborting; the
 > **daemon serves `fai test`**, streaming per-contract `$/testEvent`s (warm output
-> equals `--no-daemon`). A failure is a located **`FAI6001`** with a shrunk
+> matches `--no-daemon` apart from elapsed time). Human output identifies each
+> contract by kind and location, then summarizes passes, failures, crashes,
+> timeouts and contracts not run or blocked before execution. A failure is a located **`FAI6001`** with a shrunk
 > counterexample (an ungeneratable binder is **`FAI6002`**). User **records and
 > ADTs** (including
 > recursive ones like `Dict`/`Set`/`Tree`) generate too, via a synthesized

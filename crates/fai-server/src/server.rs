@@ -605,6 +605,12 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
         })?;
     }
 
+    if matches!(request.opts.format, OutputFormat::Human) {
+        conn.send(&ServerMessage::Output {
+            stream: OutputStream::Stdout,
+            chunk: plan.render_header().into_bytes(),
+        })?;
+    }
     let results = if plan.blocked {
         Vec::new()
     } else {

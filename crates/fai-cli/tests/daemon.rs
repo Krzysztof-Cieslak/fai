@@ -445,7 +445,7 @@ mod package_projects {
         let warm = project.run(&["test", "--message-format=json"], &[]);
         assert!(direct.status.success(), "{direct:?}");
         assert!(warm.status.success(), "{warm:?}");
-        assert_eq!(direct.stdout, warm.stdout);
+        assert_eq!(test_report(&direct), test_report(&warm));
     }
 
     #[test]
@@ -565,7 +565,7 @@ fn empty_selection(command: &str) {
         String::from_utf8_lossy(&cold.stderr)
     );
     assert_eq!(warm.status.code(), cold.status.code());
-    assert_eq!(warm.stdout, cold.stdout);
+    assert_eq!(test_report(&warm), test_report(&cold));
     assert_eq!(warm.stderr, cold.stderr);
 }
 
@@ -589,7 +589,7 @@ fn dot_prefixed_test_selection_executes_the_contract() {
     let warm = daemon.run(&["test"], &["./Main.fai"]);
     assert_eq!(cold.status.code(), Some(1));
     assert_eq!(warm.status.code(), cold.status.code());
-    assert_eq!(warm.stdout, cold.stdout);
+    assert_eq!(test_report(&warm), test_report(&cold));
     assert!(String::from_utf8_lossy(&cold.stdout).contains("FAI6001"));
 }
 
@@ -622,6 +622,25 @@ fn dot_prefixed_fmt_selection_reports_and_formats_the_file() {
 
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Only elapsed time is nondeterministic between equivalent test runs.
+fn test_report(output: &Output) -> String {
+    if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+        if let Some(summary) = value.get_mut("summary").and_then(serde_json::Value::as_object_mut) {
+            assert!(summary.remove("elapsedMs").unwrap().is_u64());
+        }
+        return serde_json::to_string(&value).unwrap();
+    }
+    stdout(output)
+        .lines()
+        .map(|line| line.split_once("; finished in ").map_or(line, |(prefix, _)| prefix))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_contract_progress(line: &str) -> bool {
+    line.starts_with("test ") && !line.starts_with("test result:")
 }
 
 /// Parses the pid from `daemon status` output, or `None` if no daemon is running.
@@ -713,7 +732,11 @@ fn a_test_batch_outlives_the_daemon_idle_timeout() {
         stdout(&output),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout(&output).contains("1 passed, 1 failed"), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("1 passed; 0 failed; 0 crashed; 1 timed out"),
+        "{}",
+        stdout(&output)
+    );
     assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(status_pid(&daemon).is_some());
 }
@@ -789,7 +812,7 @@ fn warm_test_matches_no_daemon() {
     let daemon = Daemon::new("testparity", &[("Crash.fai", CRASH)]);
 
     // The daemon supervises isolated workers and streams per-contract events;
-    // its rendered report must equal the one-shot --no-daemon run byte-for-byte,
+    // Its semantic report must equal the one-shot run, apart from elapsed time,
     // for both JSON and human output, even with a contract that aborts.
     let warm_json = daemon.run(&["test"], &["--message-format=json", "Crash.fai"]);
     let cold_json = daemon.run(&["test", "--no-daemon"], &["--message-format=json", "Crash.fai"]);
@@ -799,11 +822,19 @@ fn warm_test_matches_no_daemon() {
         "stderr: {}",
         String::from_utf8_lossy(&warm_json.stderr)
     );
-    assert_eq!(stdout(&warm_json), stdout(&cold_json), "warm JSON must equal --no-daemon");
+    assert_eq!(
+        test_report(&warm_json),
+        test_report(&cold_json),
+        "warm JSON must equal --no-daemon"
+    );
 
     let warm_human = daemon.run(&["test"], &["Crash.fai"]);
     let cold_human = daemon.run(&["test", "--no-daemon"], &["Crash.fai"]);
-    assert_eq!(stdout(&warm_human), stdout(&cold_human), "warm human must equal --no-daemon");
+    assert_eq!(
+        test_report(&warm_human),
+        test_report(&cold_human),
+        "warm human must equal --no-daemon"
+    );
 }
 
 #[test]
@@ -822,7 +853,7 @@ fn subjectless_test_sources_survive_streaming_and_worker_resume() {
     let warm = daemon.run(&["test"], &["--message-format=json"]);
     let cold = daemon.run(&["test", "--no-daemon"], &["--message-format=json"]);
     assert_eq!(warm.status.code(), Some(1));
-    assert_eq!(stdout(&warm), stdout(&cold));
+    assert_eq!(test_report(&warm), test_report(&cold));
     let report: serde_json::Value = serde_json::from_slice(&warm.stdout).unwrap();
     let events = report["events"].as_array().unwrap();
     assert_eq!(
@@ -856,10 +887,10 @@ fn subjectless_test_sources_survive_streaming_and_worker_resume() {
     let warm = daemon.run(&["test"], &[]);
     let cold = daemon.run(&["test", "--no-daemon"], &[]);
     let text = stdout(&warm);
-    assert_eq!(text, stdout(&cold));
-    assert!(text.contains("ok    A.fai: example #0"), "{text}");
-    assert!(text.contains("ABORT B.fai: forall #0"), "{text}");
-    assert!(text.contains("skip  C.fai: forall #0"), "{text}");
+    assert_eq!(test_report(&warm), test_report(&cold));
+    assert!(text.contains("test example [A.fai:2:1] ... ok"), "{text}");
+    assert!(text.contains("test forall [B.fai:2:1] ... CRASHED"), "{text}");
+    assert!(text.contains("test forall [C.fai:2:1] ... NOT RUN"), "{text}");
 }
 
 #[cfg(debug_assertions)]
@@ -891,8 +922,15 @@ fn live_contract_progress(no_daemon: bool, tag: &str) {
     }
     let mut child = KillOnDrop(command.spawn().unwrap());
     let lines = read_lines(child.0.stdout.take().unwrap());
-    let first = lines.recv_timeout(Duration::from_secs(20)).expect("first live contract event");
-    assert!(first.starts_with("ok    "), "{first}");
+    let header = lines.recv_timeout(Duration::from_secs(20)).expect("selection header");
+    assert!(header.starts_with("running 3 contracts"), "{header}");
+    let first = loop {
+        let line = lines.recv_timeout(Duration::from_secs(20)).expect("first live contract event");
+        if is_contract_progress(&line) {
+            break line;
+        }
+    };
+    assert!(first.ends_with("... ok"), "{first}");
     assert!(child.0.try_wait().unwrap().is_none(), "the worker is still gated");
     std::fs::write(&gate.0, "release").unwrap();
     let status = child.0.wait_timeout(Duration::from_secs(20)).unwrap().expect("test run ends");
@@ -901,14 +939,11 @@ fn live_contract_progress(no_daemon: bool, tag: &str) {
     while let Ok(line) = lines.recv_timeout(Duration::from_secs(5)) {
         output.push(line);
     }
-    let events: Vec<_> = output
-        .iter()
-        .filter(|line| line.starts_with("ok    ") || line.starts_with("ABORT "))
-        .collect();
+    let events: Vec<_> = output.iter().filter(|line| is_contract_progress(line)).collect();
     assert_eq!(events.len(), 3, "{output:?}");
-    assert!(events[1].starts_with("ABORT "), "{output:?}");
-    assert!(events[2].starts_with("ok    "), "{output:?}");
-    assert!(output.iter().any(|line| line.contains("2 passed, 1 failed")), "{output:?}");
+    assert!(events[1].ends_with("... CRASHED"), "{output:?}");
+    assert!(events[2].ends_with("... ok"), "{output:?}");
+    assert!(output.iter().any(|line| line.contains("2 passed; 0 failed; 1 crashed")), "{output:?}");
 }
 
 #[cfg(debug_assertions)]
@@ -951,7 +986,13 @@ fn test_report_keeps_the_source_revision_that_ran() {
             .unwrap(),
     );
     let lines = read_lines(child.0.stdout.take().unwrap());
-    assert!(lines.recv_timeout(Duration::from_secs(20)).unwrap().starts_with("ok    "));
+    loop {
+        let line = lines.recv_timeout(Duration::from_secs(20)).unwrap();
+        if is_contract_progress(&line) {
+            assert!(line.ends_with("... ok"), "{line}");
+            break;
+        }
+    }
     std::fs::write(daemon.workspace.join("M.fai"), format!("// 🌍 inserted\n\n\n{source}"))
         .unwrap();
     assert!(daemon.run(&["check", "--no-examples"], &["M.fai"]).status.success());

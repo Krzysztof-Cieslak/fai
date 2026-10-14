@@ -25,7 +25,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+mod report;
+pub use report::{TestSummary, render_test_event_line};
 
 use fai_codegen::JitProgram;
 use fai_contracts::{
@@ -36,7 +39,7 @@ use fai_core::wire::def_to_wire;
 use fai_core::{RebuiltTest, TestWireBundle, WireContract, WireDefId, from_wire_test};
 use fai_db::{Db, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
-use fai_diagnostics::{Diagnostic, DiagnosticCode, SCHEMA_VERSION, Severity, render_human};
+use fai_diagnostics::{Diagnostic, DiagnosticCode, SCHEMA_VERSION, Severity};
 use fai_rc::{BorrowSig, entry_bounds, rc, rc_lowered, result_facts};
 use fai_resolve::{DefId, ModuleName, module_name};
 use fai_span::{Span, SpanResolver};
@@ -60,11 +63,12 @@ const DEFAULT_TEST_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_CHECK_TIMEOUT_MS: u64 = 10_000;
 
 /// Generator configuration for a `fai test` run (fixed defaults are deterministic).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TestConfig {
     /// The initial PRNG seed.
     pub seed: i64,
-    /// The number of random trials per `forall`.
+    /// The configured random-trial limit per `forall` (failures stop early).
     pub trials: i64,
     /// The maximum generation size.
     pub max_size: i64,
@@ -121,6 +125,9 @@ pub struct ContractEvent {
     pub source: ContractSource,
     /// The contract's position among its file's contracts.
     pub ordinal: usize,
+    /// One-based coordinates in the source revision compiled for this run.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub location: Option<ContractLocation>,
     /// The subject binding the contract describes (module-qualified), if any.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub symbol: Option<String>,
@@ -133,10 +140,19 @@ pub struct ContractEvent {
     pub counterexample: Option<String>,
     /// The PRNG seed the contract ran with.
     pub seed: i64,
-    /// The number of trials the contract ran with.
+    /// The configured trial limit, not the number of predicate evaluations.
     pub trials: i64,
     /// The maximum generation size the contract ran with.
     pub max_size: i64,
+}
+
+/// One-based source coordinates for a contract (Unicode-scalar columns).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractLocation {
+    /// Line containing the contract declaration.
+    pub line: u32,
+    /// Column containing the contract declaration.
+    pub column: u32,
 }
 
 /// The render-side metadata for one contract: everything needed to build its
@@ -155,9 +171,11 @@ pub struct ContractMeta {
     pub symbol: Option<String>,
     /// The contract's source span.
     pub span: Span,
+    /// Coordinates captured from the same source revision as the harness.
+    pub location: Option<ContractLocation>,
     /// The PRNG seed the contract runs with.
     pub seed: i64,
-    /// The number of trials the contract runs with.
+    /// The configured trial limit for this contract.
     pub trials: i64,
     /// The maximum generation size the contract runs with.
     pub max_size: i64,
@@ -182,8 +200,12 @@ pub struct TestPlan {
     pub pre_diagnostics: Vec<Diagnostic>,
     /// Total contracts considered (runnable + not-runnable).
     pub total: usize,
-    /// The PRNG seed for the run.
-    pub seed: i64,
+    /// Generator settings for the run.
+    pub config: TestConfig,
+    /// Contracts excluded by the match filter within the selected files.
+    pub filtered_out: usize,
+    /// Monotonic start of preparation, before synthesis and worker execution.
+    pub started: Instant,
     /// Whether an error in `pre_diagnostics` blocks execution.
     pub blocked: bool,
 }
@@ -302,6 +324,10 @@ pub struct TestOutcome {
     pub leaked: i64,
     /// The PRNG seed the run used.
     pub seed: i64,
+    /// Generator settings, including the configured trial limit.
+    pub config: TestConfig,
+    /// Disjoint outcome counts and elapsed preparation/execution time.
+    pub summary: TestSummary,
     /// Whether the run succeeded (no errors, nothing failed, no leak).
     pub ok: bool,
 }
@@ -320,6 +346,10 @@ pub struct TestOutput {
     pub not_run: usize,
     /// The PRNG seed the run used.
     pub seed: i64,
+    /// Generator settings; trials are a configured limit, not observed executions.
+    pub config: TestConfig,
+    /// Disjoint counts and elapsed time for the run.
+    pub summary: TestSummary,
     /// Per-contract results, in source order.
     pub events: Vec<ContractEvent>,
     /// The run's diagnostics, in wire form.
@@ -338,24 +368,12 @@ impl TestOutcome {
             passed: self.passed,
             not_run: self.not_run,
             seed: self.seed,
+            config: self.config,
+            summary: self.summary.clone(),
             events: self.events.clone(),
             diagnostics: to_wire(&self.diagnostics, resolver),
             ok: self.ok,
         }
-    }
-
-    /// Renders the outcome for humans (diagnostics, then a summary line).
-    #[must_use]
-    pub fn render_human(&self, resolver: &dyn SpanResolver, color: bool) -> String {
-        use std::fmt::Write as _;
-        let mut out = render_human(&self.diagnostics, resolver, color);
-        let failed = self.total - self.passed - self.not_run;
-        let _ = writeln!(
-            out,
-            "{} passed, {failed} failed, {} could not run (of {})",
-            self.passed, self.not_run, self.total
-        );
-        out
     }
 }
 
@@ -461,12 +479,18 @@ fn build_plan(
     config: TestConfig,
     accept: impl Fn(ContractKind) -> bool,
 ) -> TestPlan {
+    let started = Instant::now();
     // Collect contracts, keeping each with its file.
     let mut items: Vec<(SourceFile, ContractInfo)> = Vec::new();
+    let mut filtered_out = 0;
     for &file in files {
         for info in fai_contracts::contracts(db, file) {
-            if accept(info.kind) && matches_filter(db, file, &info, match_pat) {
-                items.push((file, info));
+            if accept(info.kind) {
+                if matches_filter(db, file, &info, match_pat) {
+                    items.push((file, info));
+                } else {
+                    filtered_out += 1;
+                }
             }
         }
     }
@@ -599,7 +623,9 @@ fn build_plan(
         not_runnable,
         pre_diagnostics,
         total,
-        seed: config.seed,
+        config,
+        filtered_out,
+        started,
         blocked,
     };
     plan.render_spans = TestSpans::capture(db, &plan);
@@ -644,7 +670,10 @@ pub fn assemble_outcome(plan: &TestPlan, results: &[ContractResult]) -> TestOutc
     diagnostics.sort_by(|a, b| {
         (a.primary.start().raw(), a.code.as_str()).cmp(&(b.primary.start().raw(), b.code.as_str()))
     });
-    let ok = leaked == 0 && !diagnostics.iter().any(|d| d.severity == Severity::Error);
+    let summary = TestSummary::from_run(plan, &events);
+    let ok = summary.blocked == 0
+        && leaked == 0
+        && !diagnostics.iter().any(|d| d.severity == Severity::Error);
     TestOutcome {
         total: plan.total,
         passed,
@@ -652,7 +681,9 @@ pub fn assemble_outcome(plan: &TestPlan, results: &[ContractResult]) -> TestOutc
         diagnostics,
         events,
         leaked,
-        seed: plan.seed,
+        seed: plan.config.seed,
+        config: plan.config,
+        summary,
         ok,
     }
 }
@@ -954,6 +985,11 @@ fn contract_meta(
     info: &ContractInfo,
     config: TestConfig,
 ) -> ContractMeta {
+    let span = Span::new(file.source(db), info.span);
+    let location = fai_db::DbSpanResolver::new(db).resolve(span).map(|resolved| ContractLocation {
+        line: resolved.start.line,
+        column: resolved.start.column,
+    });
     let symbol = info.subject.map(|subject| match module_name(db, file) {
         Some(ModuleName(m)) => format!("{}.{}", m.as_str(), subject.as_str()),
         None => subject.as_str().to_owned(),
@@ -972,7 +1008,8 @@ fn contract_meta(
         kind: info.kind,
         binders: info.binders.iter().map(|s| s.as_str().to_owned()).collect(),
         symbol,
-        span: Span::new(file.source(db), info.span),
+        span,
+        location,
         seed: config.seed,
         trials: config.trials,
         max_size: config.max_size,
@@ -990,6 +1027,7 @@ fn resolve_event(meta: &ContractMeta, result: &ContractResult) -> ContractEvent 
     ContractEvent {
         source: meta.source.clone(),
         ordinal: meta.ordinal,
+        location: meta.location,
         symbol: meta.symbol.clone(),
         kind: meta.kind.keyword().to_owned(),
         status,
@@ -1000,35 +1038,12 @@ fn resolve_event(meta: &ContractMeta, result: &ContractResult) -> ContractEvent 
     }
 }
 
-/// Renders one streamed contract event as a single human-readable progress line
-/// (with a trailing newline). Shared by the in-process and daemon CLI paths so a
-/// warm `fai test` prints the same live lines as `--no-daemon`.
-#[must_use]
-pub fn render_test_event_line(event: &ContractEvent) -> String {
-    let label = event.symbol.clone().unwrap_or_else(|| {
-        let origin = match event.source.origin {
-            ContractSourceOrigin::User => "",
-            ContractSourceOrigin::StandardLibrary => "std:",
-        };
-        format!("{origin}{}: {} #{}", event.source.file, event.kind, event.ordinal)
-    });
-    match event.status {
-        ContractStatus::Passed => format!("ok    {label}\n"),
-        ContractStatus::Failed => match &event.counterexample {
-            Some(ce) => format!("FAIL  {label}: {ce}\n"),
-            None => format!("FAIL  {label}\n"),
-        },
-        ContractStatus::Crashed => format!("ABORT {label}: runtime error\n"),
-        ContractStatus::TimedOut => format!("ABORT {label}: timed out\n"),
-        ContractStatus::NotRun => format!("skip  {label}\n"),
-    }
-}
-
 /// The event for a contract that could not be run (an ungeneratable binder).
 fn not_run_event(meta: &ContractMeta) -> ContractEvent {
     ContractEvent {
         source: meta.source.clone(),
         ordinal: meta.ordinal,
+        location: meta.location,
         symbol: meta.symbol.clone(),
         kind: meta.kind.keyword().to_owned(),
         status: ContractStatus::NotRun,
@@ -1137,6 +1152,7 @@ mod tests {
             binders: vec!["n".to_owned()],
             symbol: Some(format!("M.f{ordinal}")),
             span: Span::new(SourceId::new(0), TextRange::empty(ByteOffset::ZERO)),
+            location: Some(ContractLocation { line: 3, column: 1 }),
             seed: 0,
             trials: 100,
             max_size: 100,
@@ -1162,7 +1178,9 @@ mod tests {
             not_runnable: Vec::new(),
             pre_diagnostics: Vec::new(),
             total: n,
-            seed: 0,
+            config: TestConfig::default(),
+            filtered_out: 0,
+            started: Instant::now(),
             blocked: false,
         }
     }
@@ -1493,5 +1511,244 @@ mod tests {
         assert_eq!(outcome.passed, 2);
         assert_eq!(outcome.seed, 0);
         assert_eq!(outcome.events.len(), 2);
+    }
+
+    fn result(position: usize, status: ResultStatus) -> ContractResult {
+        ContractResult { position, status, counterexample: None, live_delta: 0 }
+    }
+
+    #[test]
+    fn summary_partitions_every_selected_contract() {
+        let mut p = plan(5);
+        p.runnable_meta[0].kind = ContractKind::Example;
+        p.total = 6;
+        p.filtered_out = 2;
+        p.not_runnable.push((
+            meta(5),
+            "no generator".to_owned(),
+            fai_contracts::CONTRACT_NOT_RUNNABLE,
+        ));
+        let results = [
+            result(0, ResultStatus::Passed),
+            result(1, ResultStatus::Failed),
+            result(2, ResultStatus::Crashed),
+            result(3, ResultStatus::TimedOut),
+        ];
+        let mut outcome = assemble_outcome(&p, &results);
+        outcome.summary.elapsed_ms = 125;
+        assert_eq!(
+            serde_json::to_value(&outcome.summary).unwrap(),
+            serde_json::json!({
+                "total": 6, "examples": 1, "properties": 5,
+                "passed": 1, "failed": 1, "crashed": 1, "timedOut": 1,
+                "notRun": 1, "blocked": 1, "filteredOut": 2, "elapsedMs": 125
+            })
+        );
+    }
+
+    #[test]
+    fn compilation_blocked_contracts_are_not_assertion_failures() {
+        let mut p = plan(2);
+        p.blocked = true;
+        p.pre_diagnostics.push(Diagnostic::error(
+            WORKSPACE_ERROR,
+            "cannot compile".to_owned(),
+            p.runnable_meta[0].span,
+        ));
+        let outcome = assemble_outcome(&p, &[]);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.summary.blocked, 2);
+        assert_eq!(outcome.summary.failed, 0);
+        let report = outcome.render_human(&p.render_spans, false);
+        assert!(report.contains("2 contracts blocked before execution"), "{report}");
+        assert!(report.contains("0 passed; 0 failed"), "{report}");
+    }
+
+    #[test]
+    fn an_incomplete_run_cannot_report_success() {
+        let p = plan(1);
+        assert!(!assemble_outcome(&p, &[]).ok);
+    }
+
+    #[test]
+    fn report_header_distinguishes_examples_and_properties() {
+        let mut p = plan(2);
+        p.runnable_meta[0].kind = ContractKind::Example;
+        p.config = TestConfig { seed: -17, trials: 50, max_size: 20 };
+        assert_eq!(
+            p.render_header(),
+            "running 2 contracts (1 example, 1 property)\nseed: -17; trials per property: 50; max size: 20\n\n"
+        );
+    }
+
+    #[test]
+    fn empty_selection_is_explicit_and_successful() {
+        let p = plan(0);
+        assert!(p.render_header().contains("no contracts found in the selected files"));
+        let outcome = assemble_outcome(&p, &[]);
+        assert!(outcome.ok);
+        assert_eq!(outcome.summary.total, 0);
+    }
+
+    #[test]
+    fn unmatched_filter_is_distinct_from_no_contracts() {
+        let mut p = plan(0);
+        p.filtered_out = 3;
+        assert!(p.render_header().contains("no contracts matched the filter"));
+        let outcome = assemble_outcome(&p, &[]);
+        assert_eq!(outcome.summary.filtered_out, 3);
+        assert_eq!(outcome.summary.total, 0);
+        assert!(outcome.ok);
+    }
+
+    #[test]
+    fn passing_report_has_a_fixed_time_and_no_failure_sections() {
+        let p = plan(1);
+        let mut outcome = assemble_outcome(&p, &[result(0, ResultStatus::Passed)]);
+        outcome.summary.elapsed_ms = 1234;
+        assert_eq!(
+            outcome.render_human(&p.render_spans, false),
+            "\ntest result: ok. 1 passed; 0 failed; 0 crashed; 0 timed out; 0 not run; 0 filtered out; finished in 1.23s\n"
+        );
+    }
+
+    #[test]
+    fn property_failure_has_one_counterexample_and_reproduction_settings() {
+        let mut p = plan(1);
+        p.config = TestConfig { seed: -9, trials: 23, max_size: 42 };
+        let outcome = assemble_outcome(
+            &p,
+            &[ContractResult {
+                counterexample: Some("0".to_owned()),
+                ..result(0, ResultStatus::Failed)
+            }],
+        );
+        let report = outcome.render_human(&p.render_spans, false);
+        assert!(report.contains("failures:\n"), "{report}");
+        assert_eq!(report.matches("counterexample: n = 0").count(), 1, "{report}");
+        assert!(report.contains("--seed -9 --count 23 --max-size 42"), "{report}");
+        assert!(report.contains("test result: FAILED."), "{report}");
+    }
+
+    #[test]
+    fn event_labels_disambiguate_the_same_subject() {
+        let first = resolve_event(&meta(0), &result(0, ResultStatus::Passed));
+        let mut second = first.clone();
+        second.ordinal = 1;
+        second.location = Some(ContractLocation { line: 4, column: 1 });
+        assert_eq!(render_test_event_line(&first, false), "test M.f0 [forall, M.fai:3:1] ... ok\n");
+        assert_ne!(render_test_event_line(&first, false), render_test_event_line(&second, false));
+    }
+
+    #[test]
+    fn subjectless_event_retains_unicode_source_location() {
+        let mut event = resolve_event(&meta(0), &result(0, ResultStatus::Crashed));
+        event.symbol = None;
+        event.source.file = "λ.fai".to_owned();
+        assert_eq!(render_test_event_line(&event, false), "test forall [λ.fai:3:1] ... CRASHED\n");
+    }
+
+    #[test]
+    fn event_without_coordinates_uses_one_based_ordinal() {
+        let mut event = resolve_event(&meta(7), &result(0, ResultStatus::Passed));
+        event.location = None;
+        event.source.origin = ContractSourceOrigin::StandardLibrary;
+        assert_eq!(
+            render_test_event_line(&event, false),
+            "test M.f7 [forall, std:M.fai: #8] ... ok\n"
+        );
+    }
+
+    #[test]
+    fn events_without_the_additive_location_field_still_decode() {
+        let event = resolve_event(&meta(0), &result(0, ResultStatus::Passed));
+        let mut json = serde_json::to_value(&event).unwrap();
+        json.as_object_mut().unwrap().remove("location");
+        let decoded: ContractEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.location, None);
+        assert_eq!(decoded.source, event.source);
+        assert_eq!(decoded.ordinal, event.ordinal);
+    }
+
+    #[test]
+    fn live_report_escapes_control_characters_in_paths() {
+        let mut event = resolve_event(&meta(0), &result(0, ResultStatus::Passed));
+        event.source.file = "bad\n\x1b.fai".to_owned();
+        let line = render_test_event_line(&event, false);
+        assert!(line.contains("bad\\n\\u{1b}.fai"), "{line:?}");
+        assert_eq!(line.lines().count(), 1);
+        assert!(!line.contains('\x1b'));
+    }
+
+    #[test]
+    fn timed_out_event_is_distinct_from_a_crash() {
+        let event = resolve_event(&meta(0), &result(0, ResultStatus::TimedOut));
+        assert_eq!(
+            render_test_event_line(&event, false),
+            "test M.f0 [forall, M.fai:3:1] ... TIMED OUT\n"
+        );
+    }
+
+    #[test]
+    fn not_runnable_event_is_not_an_ignored_success() {
+        assert!(render_test_event_line(&not_run_event(&meta(0)), false).ends_with("... NOT RUN\n"));
+    }
+
+    #[test]
+    fn color_is_opt_in_for_live_status_and_final_result() {
+        let p = plan(1);
+        let outcome = assemble_outcome(&p, &[result(0, ResultStatus::Passed)]);
+        assert!(render_test_event_line(&outcome.events[0], true).contains("\x1b[32mok\x1b[0m"));
+        assert!(outcome.render_human(&p.render_spans, true).contains("\x1b[32mok\x1b[0m"));
+        assert!(!outcome.render_human(&p.render_spans, false).contains('\x1b'));
+    }
+
+    #[test]
+    fn leak_failure_does_not_invent_an_assertion_failure() {
+        let p = plan(1);
+        let outcome = assemble_outcome(
+            &p,
+            &[ContractResult { live_delta: 1, ..result(0, ResultStatus::Passed) }],
+        );
+        let report = outcome.render_human(&p.render_spans, false);
+        assert!(report.contains("test result: FAILED. 1 passed; 0 failed"), "{report}");
+        assert!(report.contains("leaked"), "{report}");
+    }
+
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn summary_outcomes_partition_selection(
+                statuses in prop::collection::vec(0u8..4, 0..50),
+                blocked in 0usize..10,
+                not_run in 0usize..10,
+                filtered in 0usize..10,
+            ) {
+                let mut p = plan(statuses.len() + blocked);
+                p.total += not_run;
+                p.filtered_out = filtered;
+                for ordinal in 0..not_run {
+                    p.not_runnable.push((meta(ordinal + p.runnable_meta.len()), "no generator".to_owned(), fai_contracts::CONTRACT_NOT_RUNNABLE));
+                }
+                let results = statuses.iter().enumerate().map(|(position, status)| {
+                    result(position, match status {
+                        0 => ResultStatus::Passed,
+                        1 => ResultStatus::Failed,
+                        2 => ResultStatus::Crashed,
+                        _ => ResultStatus::TimedOut,
+                    })
+                }).collect::<Vec<_>>();
+                let summary = assemble_outcome(&p, &results).summary;
+                prop_assert_eq!(summary.passed + summary.failed + summary.crashed + summary.timed_out + summary.not_run + summary.blocked, summary.total);
+                prop_assert_eq!(summary.examples + summary.properties, summary.total);
+                prop_assert_eq!(summary.blocked, blocked);
+                prop_assert_eq!(summary.not_run, not_run);
+                prop_assert_eq!(summary.filtered_out, filtered);
+            }
+        }
     }
 }

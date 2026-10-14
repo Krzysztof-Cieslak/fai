@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+- Give `fai test` Rust-style live results with source locations, grouped failure
+  details, reproduction settings and timed summaries. Distinguish assertion
+  failures, crashes, timeouts and blocked execution; add compatible JSON summary,
+  configuration and location fields while preserving existing event identities.
+
 ### Fixed
 - Scope independent release, performance and JUnit tooling changes to their
   validation lanes, and avoid native-runner queues for documentation-only CI.

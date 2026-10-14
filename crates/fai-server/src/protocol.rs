@@ -365,6 +365,7 @@ mod tests {
         });
         round_trip(&ServerMessage::Output { stream: OutputStream::Stderr, chunk: Vec::new() });
         round_trip(&ServerMessage::TestEvent(ContractEvent {
+            location: Some(fai_driver::ContractLocation { line: 3, column: 1 }),
             source: fai_driver::ContractSource {
                 file: "M.fai".to_owned(),
                 origin: fai_driver::ContractSourceOrigin::User,
@@ -379,7 +380,7 @@ mod tests {
             max_size: 100,
         }));
         round_trip(&ServerMessage::Result(Response::Test(Rendered {
-            stdout: "1 passed, 0 failed, 0 could not run (of 1)\n".to_owned(),
+            stdout: "test result: ok. 1 passed; 0 failed; 0 crashed; 0 timed out; 0 not run; 0 filtered out; finished in 0.12s\n".to_owned(),
             stderr: String::new(),
             exit: 0,
         })));
