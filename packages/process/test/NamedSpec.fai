@@ -4,11 +4,21 @@ capture : Test.Context -> Test.Check / { Concurrency, ProcessHost.Process }
 let capture ctx =
   let command =
     if Path.nativeEncoding = "windows" then
-      Process.command "cmd" ["/C", "echo named-process"]
+      Process.command "powershell" [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Write-Output named-process"
+      ]
     else
       Process.command "sh" ["-c", "printf named-process"]
   let runtime = { concurrency = ctx.runtime.concurrency, process = ProcessHost.native }
-  match Process.run runtime Process.defaults command with
+  let result =
+    match Process.run runtime Process.defaults command with
+    | Err error -> Err error
+    | Ok output -> Process.expectSuccess output
+  match result with
   | Err error -> Test.error (Process.errorToString error)
   | Ok output ->
     let text = Option.withDefault "" (Bytes.toString output.stdout)
