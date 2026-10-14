@@ -1,0 +1,41 @@
+module YamlNumberSpec
+
+let integer text expected =
+  Option.map YamlNumber.integerToString (YamlNumber.parseInteger text) = Some expected
+example: integer "+00123" "123"
+example: integer "-000" "0"
+example: integer "0o777" "511"
+example: integer "0xdeadBEEF" "3735928559"
+example: integer "0xffffffffffffffff" "18446744073709551615"
+example: integer "999999999999999999999999999999999999999999" "999999999999999999999999999999999999999999"
+example: YamlNumber.parseInteger "1_000" = None
+example: YamlNumber.parseInteger "0b111" = None
+example: YamlNumber.parseInteger "-0x10" = None
+example: YamlNumber.parseInteger "0o8" = None
+example: YamlNumber.parseInteger "" = None
+example: Option.map YamlNumber.integerToInt (YamlNumber.parseInteger "-9223372036854775808") = Some (Ok (-9223372036854775808))
+example: (match YamlNumber.parseInteger "9223372036854775808" with
+| Some number -> Result.isErr (YamlNumber.integerToInt number)
+| _ -> false)
+example: Option.map YamlNumber.floatToString (YamlNumber.parseFloat "+.5") = Some "0.5"
+example: Option.map YamlNumber.floatToString (YamlNumber.parseFloat "-01.") = Some "-1.0"
+example: Option.map YamlNumber.floatToString (YamlNumber.parseFloat "012e+4") = Some "12e+4"
+example: YamlNumber.parseFloat "." = None
+example: YamlNumber.parseFloat "1e" = None
+example: YamlNumber.parseFloat "1e+" = None
+example: YamlNumber.parseFloat "1_0.0" = None
+example: YamlNumber.parseFloat "1:20" = None
+example: YamlNumber.parseFloat "-.nan" = None
+example: YamlNumber.parseFloat "+.NaN" = None
+example: YamlNumber.parseFloat ".NAN" = Some YamlNumber.NaN
+example: YamlNumber.parseFloat "-.INF" = Some YamlNumber.NegativeInfinity
+example: YamlNumber.parseFloat "+.Inf" = Some YamlNumber.PositiveInfinity
+example: (match YamlNumber.parseFloat "1e99999999999" with
+| Some number -> Result.isErr (YamlNumber.floatToFloat number)
+| _ -> false)
+example: (match YamlNumber.parseFloat "-0.0" with
+| Some number ->
+  Result.map Float.toBits (YamlNumber.floatToFloat number) = Ok (-9223372036854775808)
+| _ -> false)
+example: Yaml.load "0b10" = Ok (YamlData.String "0b10")
+example: Yaml.load "1_000" = Ok (YamlData.String "1_000")

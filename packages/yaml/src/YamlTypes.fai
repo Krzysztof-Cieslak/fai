@@ -1,0 +1,87 @@
+module YamlTypes
+
+/// Original-input byte offset and one-based Unicode-scalar line and column.
+public type Position = { byte : Int, column : Int, line : Int }
+
+/// Half-open source range in original bytes.
+public type Span = { finish : Position, start : Position }
+
+/// A field, sequence index, or complex mapping-key position.
+public type Segment =
+  | Field String
+  | Index Int
+  | Key Int
+
+/// Stable categories across parsing, projection, rendering and typed conversion.
+public type ErrorKind =
+  | Syntax
+  | InvalidEncoding
+  | UnsupportedVersion
+  | UnknownAnchor
+  | DuplicateKey
+  | NonStringKey
+  | CyclicAlias
+  | UnknownTag
+  | InvalidScalar
+  | InvalidMerge
+  | InvalidOptions
+  | LimitExceeded
+  | WrongType
+  | Missing
+  | Conversion
+
+/// A document index is zero-based. Secondary spans retain definitions such as
+/// duplicate keys and cyclic anchor targets. Paths address application values.
+public type Error = {
+  document : Int,
+  kind : ErrorKind,
+  message : String,
+  path : List Segment,
+  primary : Option Span,
+  secondary : Option Span
+}
+
+/// Original input bytes, stream documents, per-document nodes and decoded scalar
+/// bytes. Grammar nesting is configurable up to the implementation ceiling 128.
+public type Options = {
+  maxBytes : Int,
+  maxDepth : Int,
+  maxDocuments : Int,
+  maxNodes : Int,
+  maxScalarBytes : Int
+}
+
+/// Bounded whole-input defaults, with 4 MiB input and 1 MiB decoded scalars.
+public defaults : Options
+let defaults = {
+  maxBytes = 4194304,
+  maxDepth = 128,
+  maxDocuments = 1024,
+  maxNodes = 100000,
+  maxScalarBytes = 1048576
+}
+
+internal error : ErrorKind -> String -> Error
+let error kind message = {
+  document = 0,
+  kind = kind,
+  message = message,
+  path = [],
+  primary = None,
+  secondary = None
+}
+
+/// Render the message, source position, and zero-based document index.
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.primary with
+  | None -> ""
+  | Some span ->
+    " at " ++ Int.toString span.start.line ++ ":" ++ Int.toString span.start.column) ++ " (document " ++ Int.toString error.document ++ ")"
+
+internal validate : Options -> Result Unit Error
+let validate options =
+  if options.maxBytes < 0 || options.maxDepth < 0 || options.maxDepth > 128 || options.maxDocuments < 0 || options.maxNodes < 0 || options.maxScalarBytes < 0 then
+    Err (error InvalidOptions "invalid YAML limits (parser depth must be in 0..128)")
+  else
+    Ok ()

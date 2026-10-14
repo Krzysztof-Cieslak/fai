@@ -1,0 +1,163 @@
+module YamlNumber
+
+import json.JsonNumber
+
+/// Exact normalized decimal integer; radix and sign spellings live in Document.
+public opaque type Integer = JsonNumber.Number
+
+/// Finite numbers retain exact decimal digits and exponents before conversion.
+public type Floating =
+  | Finite JsonNumber.Number
+  | PositiveInfinity
+  | NegativeInfinity
+  | NaN
+
+let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+let digit byte = byte >= 48 && byte <= 57
+
+let digits bytes index = if digit (at bytes index) then digits bytes (index + 1) else index
+
+let hex byte =
+  if digit byte then
+    byte - 48
+  else if byte >= 65 && byte <= 70 then
+    byte - 55
+  else if byte >= 97 && byte <= 102 then byte - 87 else -1
+
+let zeros text =
+  if String.length text > 1 && String.take 1 text = "0" then zeros (String.drop 1 text) else text
+
+let multiply radix carry reversed output =
+  match reversed with
+  | [] -> if carry = 0 then output else multiply radix (carry / 10) [] ((carry % 10 + 48) :: output)
+  | byte :: rest ->
+    let value = (byte - 48) * radix + carry
+    multiply radix (value / 10) rest ((value % 10 + 48) :: output)
+
+let radixFrom bytes index radix value =
+  if index = Bytes.length bytes then
+    Some value
+  else
+    let n = hex (at bytes index)
+    if n < 0 || n >= radix then
+      None
+    else
+      radixFrom bytes (index + 1) radix (multiply radix n (List.reverse value) [])
+
+/// Parse the YAML 1.2 Core integer grammar, preserving arbitrary precision.
+public parseInteger : String -> Option Integer
+let parseInteger text =
+  let bytes = Bytes.fromString text
+  let sign = at bytes 0 = 43 || at bytes 0 = 45
+  let start = if sign then 1 else 0
+  let decimal = start < Bytes.length bytes && digits bytes start = Bytes.length bytes
+  if decimal then
+    let normalized = zeros (String.drop start text)
+    Result.toOption (JsonNumber.fromString ((if at bytes 0 = 45 && normalized <> "0" then
+      "-"
+    else
+      "") ++ normalized))
+  else if not sign && at bytes 0 = 48 && (at bytes 1 = 111 || at bytes 1 = 120) && Bytes.length bytes > 2 then
+    match radixFrom bytes 2 (if at bytes 1 = 111 then 8 else 16) [48] with
+    | None -> None
+    | Some value ->
+      Result.toOption (JsonNumber.fromString (zeros (Option.withDefault "0" (Bytes.toString (Bytes.fromList value)))))
+  else
+    None
+
+/// Canonical base-ten spelling of an exact integer.
+public integerToString : Integer -> String
+let integerToString number = JsonNumber.toString number
+
+/// Construct an exact integer from all signed 64-bit values.
+public integerFromInt : Int -> Integer
+let integerFromInt number = JsonNumber.fromInt number
+
+/// Narrow exactly, rejecting signed 64-bit overflow.
+public integerToInt : Integer -> Result Int String
+let integerToInt number = JsonNumber.toInt number
+
+/// Round to finite binary64 with ties to even; overflow is an error.
+public integerToFloat : Integer -> Result Float String
+let integerToFloat number = JsonNumber.toFloat number
+
+internal integerNumber : Integer -> JsonNumber.Number
+let integerNumber number = number
+
+/// Parse Core floating syntax, not YAML 1.1 sexagesimal or underscore forms.
+public parseFloat : String -> Option Floating
+let parseFloat text =
+  if List.member text [".inf", ".Inf", ".INF", "+.inf", "+.Inf", "+.INF"] then
+    Some PositiveInfinity
+  else if List.member text ["-.inf", "-.Inf", "-.INF"] then
+    Some NegativeInfinity
+  else if List.member text [".nan", ".NaN", ".NAN"] then
+    Some NaN
+  else
+    let bytes = Bytes.fromString text
+    let start = if at bytes 0 = 43 || at bytes 0 = 45 then 1 else 0
+    let wholeEnd = digits bytes start
+    let point = at bytes wholeEnd = 46
+    let fractionStart = if point then wholeEnd + 1 else wholeEnd
+    let fractionEnd = if point then digits bytes fractionStart else wholeEnd
+    let exponent = at bytes fractionEnd = 101 || at bytes fractionEnd = 69
+    let exponentStart = fractionEnd + 1
+    let exponentDigits =
+      exponentStart + (if at bytes exponentStart = 43 || at bytes exponentStart = 45 then 1 else 0)
+    let finish = if exponent then digits bytes exponentDigits else fractionEnd
+    if (wholeEnd = start && fractionEnd = fractionStart) || not (point || exponent) || (exponent && finish = exponentDigits) || finish <> Bytes.length bytes then
+      None
+    else
+      let whole =
+        if wholeEnd = start then "0" else zeros (String.substring start (wholeEnd - start) text)
+      let fraction =
+        if point then
+          "." ++ (if fractionEnd = fractionStart then
+            "0"
+          else
+            String.substring fractionStart (fractionEnd - fractionStart) text)
+        else
+          ""
+      let exponent = if exponent then "e" ++ String.drop exponentStart text else ""
+      Option.map Finite (Result.toOption (JsonNumber.fromString ((if at bytes 0 = 45 then
+        "-"
+      else
+        "") ++ whole ++ fraction ++ exponent)))
+
+/// Render normalized Core floating spelling without narrowing finite precision.
+public floatToString : Floating -> String
+let floatToString number =
+  match number with
+  | Finite number ->
+    let text = JsonNumber.toString number
+    if String.contains text "." || String.contains text "e" || String.contains text "E" then
+      text
+    else
+      text ++ ".0"
+  | PositiveInfinity -> ".inf"
+  | NegativeInfinity -> "-.inf"
+  | NaN -> ".nan"
+
+/// Convert a Float value to native binary64. Finite overflow returns Err;
+/// explicit infinities and NaN map to their IEEE-754 representations.
+public floatToFloat : Floating -> Result Float String
+let floatToFloat value =
+  match value with
+  | Finite number -> JsonNumber.toFloat number
+  | PositiveInfinity -> Ok (Float.fromBits 0x7ff0000000000000)
+  | NegativeInfinity -> Ok (Float.fromBits 0xfff0000000000000)
+  | NaN -> Ok (Float.fromBits 0x7ff8000000000000)
+
+/// Preserve a native finite Float exactly, or classify its infinity/NaN value.
+public floatFromFloat : Float -> Floating
+let floatFromFloat value =
+  let bits = Float.toBits value
+  if Int.and bits 0x7fffffffffffffff > 0x7ff0000000000000 then
+    NaN
+  else if bits = 0x7ff0000000000000 then
+    PositiveInfinity
+  else if bits = 0xfff0000000000000 then
+    NegativeInfinity
+  else
+    Finite (Result.withDefault (JsonNumber.fromInt 0) (JsonNumber.fromFloat value))

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "yaml-test-suite",
+      "repository": "https://github.com/yaml/yaml-test-suite.git",
+      "revision": "6e6c296ae9c9d2d5c4134b4b64d01b29ac19ff6f"
+    }
+  ],
+  "integrations": [
+    {
+      "name": "runtime",
+      "entry": "examples/RuntimeChecks.fai",
+      "stdoutLines": ["YAML runtime checks passed"]
+    },
+    {
+      "name": "conformance",
+      "entry": "examples/Conformance.fai",
+      "args": ["${fixture:yaml-test-suite}"],
+      "stdoutLines": ["cases: 402", "failures: 0", "YAML conformance passed"]
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+module YamlDecodeSpec
+
+let user =
+  YamlDecode.map2 (fun name age -> {
+    age = age,
+    name = name
+  }) (YamlDecode.field "name" YamlDecode.string) (YamlDecode.field "age" YamlDecode.int)
+example: YamlDecode.fromString user "name: Ada\nage: 37" = Ok { age = 37, name = "Ada" }
+example: YamlDecode.fromString (YamlDecode.list YamlDecode.int) "[1, 2, 3]" = Ok [1, 2, 3]
+example: YamlDecode.fromString (YamlDecode.optionalField "name" YamlDecode.string) "{}" = Ok None
+example: YamlDecode.fromString (YamlDecode.optionalField "name" YamlDecode.string) "name: null" |> Result.isErr
+example: YamlDecode.fromString (YamlDecode.optionalField "name" (YamlDecode.nullable YamlDecode.string)) "name: null" = Ok (Some None)
+example: YamlDecode.fromString YamlDecode.string "!!str false" = Ok "false"
+example: YamlDecode.fromString YamlDecode.int "9223372036854775808" |> Result.isErr
+example: (match YamlDecode.fromString user "name: Ada\nage: nope" with
+| Err (YamlDecode.Data (YamlDecode.Failure error)) ->
+  error.path = [
+    YamlTypes.Field "age"
+  ] && Option.map (fun span -> span.start) error.primary = Some { byte = 15, column = 6, line = 2 }
+| _ -> false)
+example: (match YamlDecode.fromString (YamlDecode.field "name" YamlDecode.string) "name: A\nname: B" with
+| Err (YamlDecode.Load error) -> error.kind = YamlTypes.DuplicateKey
+| _ -> false)
+example: YamlDecode.decode (YamlDecode.succeed 1) (YamlData.Mapping [|
+  ("ignored", YamlData.Null),
+  ("ignored", YamlData.Null)
+|]) |> Result.isErr
+example: YamlDecode.fromString (YamlDecode.oneOf [
+  YamlDecode.map Int.toString YamlDecode.int,
+  YamlDecode.string
+]) "42" = Ok "42"
+example: YamlDecode.fromString (YamlDecode.keyValuePairs YamlDecode.int) "{b: 2, a: 1}" = Ok [
+  ("b", 2),
+  ("a", 1)
+]
+example: YamlEncode.object [("x", YamlEncode.int 1), ("x", YamlEncode.int 2)] |> Result.isErr
+example: YamlEncode.toString (YamlEncode.list YamlEncode.int) [1, 2] = Ok "- 1\n- 2\n"

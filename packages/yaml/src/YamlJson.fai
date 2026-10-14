@@ -1,0 +1,87 @@
+module YamlJson
+
+import json.Json
+import json.JsonNumber
+
+let convert value depth path =
+  if depth > 128 then
+    Err { (YamlTypes.error YamlTypes.LimitExceeded "JSON conversion exceeds depth limit") with
+      path = List.reverse path
+    }
+  else
+    match value with
+    | YamlData.Null -> Ok Json.Null
+    | YamlData.Boolean value -> Ok (Json.Boolean value)
+    | YamlData.String value -> Ok (Json.String value)
+    | YamlData.Integer value -> Ok (Json.Number (YamlNumber.integerNumber value))
+    | YamlData.Float (YamlNumber.Finite value) -> Ok (Json.Number value)
+    | YamlData.Float _ -> Err { (YamlTypes.error YamlTypes.Conversion "JSON cannot represent infinity or NaN") with
+      path = List.reverse path
+    }
+    | YamlData.Sequence values -> Result.map Json.Array (items values 0 depth path Array.empty)
+    | YamlData.Mapping fields ->
+      Result.map Json.Object (fieldsToJson fields 0 depth path Array.empty)
+
+let items values index depth path output =
+  if index = Array.length values then
+    Ok output
+  else
+    match convert (Array.unsafeGet index values) (depth + 1) (YamlTypes.Index index :: path) with
+    | Err error -> Err error
+    | Ok value -> items values (index + 1) depth path (Array.push value output)
+
+let fieldsToJson fields index depth path output =
+  if index = Array.length fields then
+    Ok output
+  else
+    let (key, value) = Array.unsafeGet index fields
+    match convert value (depth + 1) (YamlTypes.Field key :: path) with
+    | Err error -> Err error
+    | Ok value -> fieldsToJson fields (index + 1) depth path (Array.push (key, value) output)
+
+/// Convert exact finite values and ordered mappings; infinity and NaN fail.
+public toJson : YamlData.Value -> Result Json.Value YamlTypes.Error
+let toJson value =
+  match YamlData.validate YamlData.limits value with
+  | Err error -> Err error
+  | Ok _ -> convert value 0 []
+
+let from value depth =
+  if depth > 128 then
+    Err (YamlTypes.error YamlTypes.LimitExceeded "JSON conversion exceeds depth limit")
+  else
+    match value with
+    | Json.Null -> Ok YamlData.Null
+    | Json.Boolean value -> Ok (YamlData.Boolean value)
+    | Json.String value -> Ok (YamlData.String value)
+    | Json.Number number ->
+      let spelling = JsonNumber.toString number
+      match YamlNumber.parseInteger spelling with
+      | Some number -> Ok (YamlData.Integer number)
+      | None -> Ok (YamlData.Float (YamlNumber.Finite number))
+    | Json.Array values -> Result.map YamlData.Sequence (fromItems values 0 depth Array.empty)
+    | Json.Object fields -> Result.map YamlData.Mapping (fromFields fields 0 depth Array.empty)
+
+let fromItems values index depth output =
+  if index = Array.length values then
+    Ok output
+  else
+    match from (Array.unsafeGet index values) (depth + 1) with
+    | Err error -> Err error
+    | Ok value -> fromItems values (index + 1) depth (Array.push value output)
+
+let fromFields fields index depth output =
+  if index = Array.length fields then
+    Ok output
+  else
+    let (key, value) = Array.unsafeGet index fields
+    match from value (depth + 1) with
+    | Err error -> Err error
+    | Ok value -> fromFields fields (index + 1) depth (Array.push (key, value) output)
+
+/// Convert JSON data without rounding numeric spellings; duplicate names fail.
+public fromJson : Json.Value -> Result YamlData.Value YamlTypes.Error
+let fromJson value =
+  match from value 0 with
+  | Err error -> Err error
+  | Ok value -> Result.map (fun _ -> value) (YamlData.validate YamlData.limits value)

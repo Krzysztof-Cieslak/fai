@@ -1,0 +1,81 @@
+module YamlRuntimeChecks
+
+let kind expected result =
+  match result with
+  | Err error -> error.kind = expected
+  | _ -> false
+
+let depth = 96
+
+let nested =
+  String.joinArray "" (Array.repeat depth "[") ++ "null" ++ String.joinArray "" (Array.repeat depth "]")
+
+let deep =
+  match Yaml.load nested with
+  | Err _ -> false
+  | Ok value ->
+    match Yaml.toString value with
+    | Err _ -> false
+    | Ok text -> Yaml.load text = Ok value
+
+let largeScalar =
+  let source = String.joinArray "" (Array.repeat 10000 "abcé")
+  match Yaml.toString (YamlData.String source) with
+  | Err _ -> false
+  | Ok text -> Yaml.load text = Ok (YamlData.String source)
+
+let repeated index =
+  if index = 1000 then
+    true
+  else
+    let text = "{key: " ++ Int.toString index ++ ", list: [true, null, 'yes']}"
+    match Yaml.load text with
+    | Err _ -> false
+    | Ok value ->
+      match Yaml.toString value with
+      | Err _ -> false
+      | Ok rendered -> Yaml.load rendered = Ok value && repeated (index + 1)
+
+let aliasLimit =
+  let source = "a: &a [1,2,3,4,5]\nb: &b [*a,*a,*a,*a]\nc: [*b,*b,*b,*b]"
+  kind YamlTypes.LimitExceeded (Yaml.loadWith Yaml.defaults { YamlProject.defaults with
+    limits = { maxDepth = 128, maxNodes = 30 }
+  } source)
+
+let cycle =
+  match Yaml.parse "&loop {self: *loop}" with
+  | Err _ -> false
+  | Ok document ->
+    kind YamlTypes.CyclicAlias (Yaml.value document) && (match Yaml.documentToString document with
+    | Err _ -> false
+    | Ok text -> Result.isOk (Yaml.parse text))
+
+let failed pair =
+  let (_, value) = pair
+  not value
+
+report : Console -> List (String * Bool) -> Unit / { Console }
+let report console failures =
+  match failures with
+  | [] -> ()
+  | (name, _) :: rest ->
+    let shown = console.writeLine ("FAIL " ++ name)
+    report console rest
+
+public main : Runtime -> Unit / { Concurrency, Console }
+let main env =
+  let sharedParsing = Async.parallel env.concurrency [fun _ -> repeated 0, fun _ -> repeated 0]
+  let failures = List.filter failed [
+    ("deep block rendering", deep),
+    ("large Unicode scalar", largeScalar),
+    ("repeated parse/render", repeated 0),
+    ("bounded alias expansion", aliasLimit),
+    ("cyclic graph", cycle)
+  ]
+  let failures =
+    if sharedParsing = [true, true] then failures else ("parallel pure parsing", false) :: failures
+  let shown = report env.console failures
+  env.console.writeLine (if List.isEmpty failures then
+    "YAML runtime checks passed"
+  else
+    "YAML runtime checks FAILED")

@@ -1,0 +1,340 @@
+module YamlProject
+
+/// Scalar spelling/style or already converted collection children for a tag handler.
+public type Content =
+  | Scalar YamlDocument.Style String
+  | Sequence (Array YamlData.Value)
+  | Mapping (Array (YamlData.Value * YamlData.Value))
+
+/// Pure explicit handlers receive converted child values, never ambient authority.
+public type Handler = { run : Content -> Result YamlData.Value String, tag : String }
+
+/// Explicit conversion policy; handlers and merge resolution never run implicitly.
+public type Options = { handlers : List Handler, limits : YamlData.Limits, mergeKeys : Bool }
+
+/// Core-schema conversion with no custom tags and no merge-key extension.
+public defaults : Options
+let defaults = { handlers = [], limits = YamlData.limits, mergeKeys = false }
+
+/// Located application tree used by typed decoders. An alias use has its own
+/// span while its converted children retain their definition locations.
+public opaque type Tree =
+  | Tree YamlData.Value (Option YamlTypes.Span) (Array (String * Tree)) (Array Tree)
+
+/// Converted application data at a located tree node.
+public treeValue : Tree -> YamlData.Value
+let treeValue tree =
+  match tree with
+  | Tree value _ _ _ -> value
+
+/// Source location, absent for application-constructed or handler-produced children.
+public treeSpan : Tree -> Option YamlTypes.Span
+let treeSpan tree =
+  match tree with
+  | Tree _ span _ _ -> span
+
+/// Ordered mapping children, empty for non-mapping nodes.
+public treeFields : Tree -> Array (String * Tree)
+let treeFields tree =
+  match tree with
+  | Tree _ _ fields _ -> fields
+
+/// Ordered sequence children, empty for non-sequences.
+public treeItems : Tree -> Array Tree
+let treeItems tree =
+  match tree with
+  | Tree _ _ _ items -> items
+
+type State = { document : YamlDocument.Document, options : Options, remaining : Int }
+
+let leaf span value = Tree value span Array.empty Array.empty
+
+let problem state node path kind message = { (YamlTypes.error kind message) with
+  document = YamlDocument.index state.document,
+  path = List.reverse path,
+  primary = Some node.span
+}
+
+let valueOf tree = treeValue tree
+
+let fieldValue pair =
+  let (name, tree) = pair
+  (name, treeValue tree)
+
+let fromValue value span =
+  match value with
+  | YamlData.Sequence values ->
+    Tree value span Array.empty (Array.map (fun value -> fromValue value None) values)
+  | YamlData.Mapping fields -> Tree value span (Array.map treeField fields) Array.empty
+  | _ -> leaf span value
+
+let treeField pair =
+  let (name, value) = pair
+  (name, fromValue value None)
+
+internal unlocated : YamlData.Value -> Tree
+let unlocated value = fromValue value None
+
+let coreTag short = "tag:yaml.org,2002:" ++ short
+
+let scalarTag state node path tag style text =
+  if tag = coreTag "str" || tag = "!" then
+    Ok (YamlData.String text)
+  else if tag = coreTag "null" && List.member text ["", "~", "null", "Null", "NULL"] then
+    Ok YamlData.Null
+  else if tag = coreTag "bool" && List.member text [
+    "true",
+    "True",
+    "TRUE",
+    "false",
+    "False",
+    "FALSE"
+  ] then
+    Ok (YamlData.Boolean (List.member text ["true", "True", "TRUE"]))
+  else if tag = coreTag "int" then
+    match YamlNumber.parseInteger text with
+    | Some value -> Ok (YamlData.Integer value)
+    | None ->
+      Err (problem state node path YamlTypes.InvalidScalar "invalid explicitly tagged integer")
+  else if tag = coreTag "float" then
+    match YamlNumber.parseFloat text with
+    | Some value -> Ok (YamlData.Float value)
+    | None ->
+      match YamlNumber.parseInteger text with
+      | Some value -> Ok (YamlData.Float (YamlNumber.Finite (YamlNumber.integerNumber value)))
+      | None ->
+        Err (problem state node path YamlTypes.InvalidScalar "invalid explicitly tagged float")
+  else
+    Err (problem state node path YamlTypes.InvalidScalar "invalid explicitly tagged scalar")
+
+let custom state node path tag content =
+  match List.find (fun handler -> handler.tag = tag) state.options.handlers with
+  | None -> Err (problem state node path YamlTypes.UnknownTag ("unregistered tag " ++ tag))
+  | Some handler ->
+    match handler.run content with
+    | Err message -> Err (problem state node path YamlTypes.Conversion message)
+    | Ok value ->
+      match YamlData.validate state.options.limits value with
+      | Err error -> Err { error with
+        document = YamlDocument.index state.document,
+        primary = Some node.span
+      }
+      | Ok _ -> Ok (fromValue value (Some node.span))
+
+let isCustom node expected =
+  match node.tag with
+  | None -> false
+  | Some tag -> tag <> "!" && tag <> coreTag expected
+
+project : State -> Int -> Int -> List YamlTypes.Segment -> Set Int -> Result (State * Tree) YamlTypes.Error
+let project state id depth path active =
+  match YamlDocument.node state.document id with
+  | None -> Err (YamlTypes.error YamlTypes.Conversion "invalid document node reference")
+  | Some node ->
+    if state.remaining <= 0 || depth > state.options.limits.maxDepth then
+      Err (problem state node path YamlTypes.LimitExceeded "alias expansion exceeds value limits")
+    else if Set.member id active then
+      Err { (problem state node path YamlTypes.CyclicAlias "cyclic alias cannot become application data") with
+        secondary = Some node.span
+      }
+    else
+      let state = { state with remaining = state.remaining - 1 }
+      let active = Set.insert id active
+      match node.body with
+      | YamlDocument.Alias _ target ->
+        if Set.member target active then
+          Err { (problem state node path YamlTypes.CyclicAlias "cyclic alias cannot become application data") with
+            secondary = Option.map (fun node -> node.span) (YamlDocument.node state.document target)
+          }
+        else
+          Result.map (fun pair ->
+            aliasResult node pair) (project state target (depth + 1) path active)
+      | YamlDocument.Scalar style text ->
+        let converted =
+          match node.tag with
+          | None -> Ok (leaf (Some node.span) (YamlData.coreScalar style text))
+          | Some tag ->
+            if List.member tag [
+              "!",
+              coreTag "str",
+              coreTag "null",
+              coreTag "bool",
+              coreTag "int",
+              coreTag "float"
+            ] then
+              Result.map (leaf (Some node.span)) (scalarTag state node path tag style text)
+            else
+              custom state node path tag (Scalar style text)
+        Result.map (fun tree -> (state, tree)) converted
+      | YamlDocument.Sequence items ->
+        match sequence state items 0 depth path active Array.empty with
+        | Err error -> Err error
+        | Ok (state, items) ->
+          let values = Array.map valueOf items
+          if isCustom node "seq" then
+            Result.map (fun tree ->
+              (state, tree)) (custom state node path (Option.withDefault "" node.tag) (Sequence values))
+          else
+            Ok (state, Tree (YamlData.Sequence values) (Some node.span) Array.empty items)
+      | YamlDocument.Mapping fields ->
+        if isCustom node "map" then
+          match customFields state fields 0 depth path active Array.empty with
+          | Err error -> Err error
+          | Ok (state, values) ->
+            Result.map (fun tree ->
+              (state, tree)) (custom state node path (Option.withDefault "" node.tag) (Mapping values))
+        else
+          mapping state node fields 0 depth path active HashDict.empty Array.empty Array.empty
+
+let aliasResult node pair =
+  let (state, tree) = pair
+  (state, Tree (treeValue tree) (Some node.span) (treeFields tree) (treeItems tree))
+
+let sequence state items index depth path active output =
+  if index = Array.length items then
+    Ok (state, output)
+  else
+    match project state (Array.unsafeGet index items) (depth + 1) (YamlTypes.Index index :: path) active with
+    | Err error -> Err error
+    | Ok (state, tree) ->
+      sequence state items (index + 1) depth path active (Array.push tree output)
+
+let customFields state fields index depth path active output =
+  if index = Array.length fields then
+    Ok (state, output)
+  else
+    let (key, value) = Array.unsafeGet index fields
+    match project state key (depth + 1) (YamlTypes.Key index :: path) active with
+    | Err error -> Err error
+    | Ok (state, key) ->
+      match project state value (depth + 1) (YamlTypes.Index index :: path) active with
+      | Err error -> Err error
+      | Ok (state, value) ->
+        customFields state fields (index + 1) depth path active (Array.push (treeValue key, treeValue value) output)
+
+let mergeKey document id =
+  match YamlDocument.node document id with
+  | Some node ->
+    (node.tag = Some (coreTag "merge") && (match node.body with
+    | YamlDocument.Scalar _ "<<" -> true
+    | _ -> false)) || (node.tag = None && (match node.body with
+    | YamlDocument.Scalar YamlDocument.Plain "<<" -> true
+    | _ -> false))
+  | None -> false
+
+let inherited tree =
+  match treeValue tree with
+  | YamlData.Mapping _ -> Some (treeFields tree)
+  | _ -> None
+
+let mergeTrees items index output =
+  if index = Array.length items then
+    Some output
+  else
+    match inherited (Array.unsafeGet index items) with
+    | None -> None
+    | Some fields -> mergeTrees items (index + 1) (Array.append output fields)
+
+let merged tree =
+  match treeValue tree with
+  | YamlData.Mapping _ -> Some (treeFields tree)
+  | YamlData.Sequence _ -> mergeTrees (treeItems tree) 0 Array.empty
+  | _ -> None
+
+let addInherited inherited index seen fields =
+  if index = Array.length inherited then
+    fields
+  else
+    let (name, tree) = Array.unsafeGet index inherited
+    if Set.member name seen then
+      addInherited inherited (index + 1) seen fields
+    else
+      addInherited inherited (index + 1) (Set.insert name seen) (Array.push (name, tree) fields)
+
+let mapping state node fields index depth path active seen output inherited =
+  if index = Array.length fields then
+    let fields = addInherited inherited 0 (Set.fromList (HashDict.keys seen)) output
+    Ok (state, Tree (YamlData.Mapping (Array.map fieldValue fields)) (Some node.span) fields Array.empty)
+  else
+    let (keyId, valueId) = Array.unsafeGet index fields
+    if state.options.mergeKeys && mergeKey state.document keyId then
+      match project state valueId (depth + 1) (YamlTypes.Field "<<" :: path) active with
+      | Err error -> Err error
+      | Ok (state, tree) ->
+        match merged tree with
+        | None ->
+          Err (problem state node path YamlTypes.InvalidMerge "merge operand must be a mapping or sequence of mappings")
+        | Some entries ->
+          mapping state node fields (index + 1) depth path active seen output (Array.append inherited entries)
+    else
+      match project state keyId (depth + 1) (YamlTypes.Key index :: path) active with
+      | Err error -> Err error
+      | Ok (state, key) ->
+        match treeValue key with
+        | YamlData.String name ->
+          if HashDict.member name seen then
+            Err { (problem state node (YamlTypes.Field name :: path) YamlTypes.DuplicateKey "duplicate explicit mapping key") with
+              primary = treeSpan key,
+              secondary = HashDict.get name seen
+            }
+          else
+            match project state valueId (depth + 1) (YamlTypes.Field name :: path) active with
+            | Err error -> Err error
+            | Ok (state, value) ->
+              mapping state node fields (index + 1) depth path active (HashDict.insert name (Option.withDefault node.span (treeSpan key)) seen) (Array.push (name, value) output) inherited
+        | _ -> Err { (problem state node path YamlTypes.NonStringKey "application mappings require string keys") with
+          primary = treeSpan key
+        }
+
+let handlersValid handlers seen =
+  match handlers with
+  | [] -> Ok ()
+  | handler :: rest ->
+    if handler.tag = "" || handler.tag = "!" || List.member handler.tag [
+      coreTag "str",
+      coreTag "null",
+      coreTag "bool",
+      coreTag "int",
+      coreTag "float",
+      coreTag "seq",
+      coreTag "map"
+    ] then
+      Err (YamlTypes.error YamlTypes.InvalidOptions "custom handlers require a non-Core tag")
+    else if Set.member handler.tag seen then
+      Err (YamlTypes.error YamlTypes.InvalidOptions "duplicate custom tag handler")
+    else
+      handlersValid rest (Set.insert handler.tag seen)
+
+/// Convert a graph to a tree with original locations and bounded alias expansion.
+public treeWith : Options -> YamlDocument.Document -> Result Tree YamlTypes.Error
+let treeWith options document =
+  match YamlData.validateLimits options.limits with
+  | Err error -> Err error
+  | Ok _ ->
+    if options.limits.maxDepth > 128 then
+      Err (YamlTypes.error YamlTypes.InvalidOptions "projection depth must be in 0..128")
+    else
+      let ready = handlersValid options.handlers Set.empty
+      match ready with
+      | Err error -> Err error
+      | Ok _ ->
+        match project {
+          document = document,
+          options = options,
+          remaining = options.limits.maxNodes
+        } (YamlDocument.root document) 0 [] Set.empty with
+        | Err error -> Err error
+        | Ok (_, tree) ->
+          Result.map (fun _ -> tree) (YamlData.validate options.limits (treeValue tree))
+
+/// Located Core conversion under default policies.
+public tree : YamlDocument.Document -> Result Tree YamlTypes.Error
+let tree document = treeWith defaults document
+
+/// Project only the application data with explicit policies.
+public valueWith : Options -> YamlDocument.Document -> Result YamlData.Value YamlTypes.Error
+let valueWith options document = Result.map valueOf (treeWith options document)
+
+/// Project only application data under default Core policies.
+public value : YamlDocument.Document -> Result YamlData.Value YamlTypes.Error
+let value document = valueWith defaults document

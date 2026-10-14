@@ -1,0 +1,89 @@
+module YamlEncode
+
+/// Ordinary pure functions that construct application values or located errors.
+public type Encoder 'a = 'a -> Result YamlData.Value YamlTypes.Error
+
+/// Validate an existing value, including duplicate names and structural limits.
+public value : Encoder YamlData.Value
+let value value = Result.map (fun _ -> value) (YamlData.validate YamlData.limits value)
+
+/// Encode a string without implicit scalar resolution.
+public string : Encoder String
+let string text = Ok (YamlData.String text)
+
+/// Encode a boolean.
+public bool : Encoder Bool
+let bool value = Ok (YamlData.Boolean value)
+
+/// Encode every signed 64-bit integer exactly.
+public int : Encoder Int
+let int value = Ok (YamlData.Integer (YamlNumber.integerFromInt value))
+
+/// Preserve finite binary64 values and classify infinities/NaN explicitly.
+public float : Encoder Float
+let float value = Ok (YamlData.Float (YamlNumber.floatFromFloat value))
+
+/// Encode Unit as null.
+public null : Encoder Unit
+let null _ = Ok YamlData.Null
+
+/// Encode None as null and Some through the supplied encoder.
+public nullable : Encoder 'a -> Encoder (Option 'a)
+let nullable encode value =
+  match value with
+  | None -> null ()
+  | Some value -> encode value
+
+/// Adapt an encoder with a pure projection.
+public contramap : ('a -> 'b) -> Encoder 'b -> Encoder 'a
+let contramap project encode value = encode (project value)
+
+let listFrom encode values index output =
+  match values with
+  | [] -> Ok (YamlData.Sequence (Array.fromList (List.reverse output)))
+  | value :: rest ->
+    match encode value with
+    | Err error -> Err { error with path = YamlTypes.Index index :: error.path }
+    | Ok value -> listFrom encode rest (index + 1) (value :: output)
+
+/// Encode list items in order and attach failing indices.
+public list : Encoder 'a -> Encoder (List 'a)
+let list encode values = listFrom encode values 0 []
+
+/// Encode array items in order.
+public array : Encoder 'a -> Encoder (Array 'a)
+let array encode values = list encode (Array.toList values)
+
+let objectFrom fields output =
+  match fields with
+  | [] -> value (YamlData.Mapping (Array.fromList (List.reverse output)))
+  | (name, result) :: rest ->
+    match result with
+    | Err error -> Err { error with path = YamlTypes.Field name :: error.path }
+    | Ok value -> objectFrom rest ((name, value) :: output)
+
+/// Build an ordered mapping, rejecting duplicate field names.
+public object : List (String * Result YamlData.Value YamlTypes.Error) -> Result YamlData.Value YamlTypes.Error
+let object fields = objectFrom fields []
+
+/// Encode dictionary keys in sorted order for deterministic output.
+public dict : Encoder 'a -> Encoder (HashDict String 'a)
+let dict encode values =
+  object (List.map (fun pair ->
+    encodePair encode pair) (List.sortBy pairOrder (HashDict.toList values)))
+
+let pairOrder a b =
+  let (a, _) = a
+  let (b, _) = b
+  compare a b
+
+let encodePair encode pair =
+  let (name, value) = pair
+  (name, encode value)
+
+/// Encode and render an application value using default limits.
+public toString : Encoder 'a -> 'a -> Result String YamlTypes.Error
+let toString encode value =
+  match encode value with
+  | Err error -> Err error
+  | Ok value -> Yaml.toString value

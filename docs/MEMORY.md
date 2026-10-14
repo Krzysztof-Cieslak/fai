@@ -51,6 +51,19 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- YAML documents use an ID-addressed node arena so aliases, cycles, tags and
+  arbitrary mapping keys remain finite syntax data. Core-schema projection is a
+  separate checked operation: it enforces string keys and unique explicit names,
+  rejects cycles and budgets expanded visits. Custom tags use explicit pure
+  handlers, never native object construction; merge keys are an opt-in extension.
+
+- YAML decoding preserves original UTF-8/16/32 byte locations while normalizing
+  source line breaks for parsing. Numeric values remain exact until native
+  conversion. Normalized application output preserves map insertion order and
+  quotes strings; graph output preserves tag/alias semantics without promising
+  comment or presentation round trips. Conformance pins a published upstream
+  data release and accounts for every case through JIT and AOT.
+
 - ARM64 Windows AOT objects use absolute symbol slots with COFF address
   relocations. Imported and local data/function addresses take the far-address
   path because the object backend does not encode ARM64 GOT/page relocations for

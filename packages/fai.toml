@@ -2,9 +2,13 @@ manifest-version = 1
 lock-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
 
 [workspace]
-members = ["cli", "config", "config/examples", "csv", "csv/examples", "dotenv", "encoding", "glob", "glob/examples", "http-client", "json", "llm", "llm/examples", "logging", "postgres", "postgres/examples", "process", "regex", "semver", "sql", "sqlite", "sse", "toml", "tui", "uuid", "web"]
+members = ["cli", "config", "config/examples", "csv", "csv/examples", "dotenv", "encoding", "glob", "glob/examples", "http-client", "json", "llm", "llm/examples", "logging", "postgres", "postgres/examples", "process", "regex", "semver", "sql", "sqlite", "sse", "toml", "tui", "uuid", "web", "yaml"]
 
 # Portable declarations use this checkout explicitly during workspace development.
+
+[[overrides]]
+replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/yaml" }
+with = { path = "yaml" }
 
 [[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/semver" }

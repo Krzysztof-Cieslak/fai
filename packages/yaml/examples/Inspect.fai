@@ -1,0 +1,18 @@
+module YamlInspect
+
+public main : Runtime -> Unit / { Console, Env, FileSystem }
+let main env =
+  let args = env.env.args ()
+  match args with
+  | [name] ->
+    match Path.fromString name with
+    | Err _ -> env.console.writeLine "invalid path"
+    | Ok path ->
+      match File.readBytes env.fs 4194304 path with
+      | Err error -> env.console.writeLine (FileSystem.errorToString error)
+      | Ok bytes ->
+        match Yaml.parseAllBytes bytes with
+        | Err error -> env.console.writeLine ("ERROR " ++ Yaml.errorToString error)
+        | Ok documents ->
+          env.console.writeLine ("+STR\n" ++ String.join "\n" (List.map YamlEvents.toString documents) ++ "\n-STR")
+  | _ -> env.console.writeLine "supply YAML file"

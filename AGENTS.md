@@ -1183,6 +1183,17 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/yaml` library supplies whole-input YAML 1.2 parsing with
+UTF-8/16/32 detection and original-byte locations. Its finite document arena
+retains tags, complex mapping keys and alias edges, including cycles; Core-schema
+application projection instead enforces string keys, unique explicit fields and
+bounded acyclic expansion. Numbers retain exact values before checked native
+conversion. Merge keys and pure custom tag handlers are explicit options. Typed
+codecs and JSON conversion preserve located failures; normalized rendering keeps
+mapping order and graph alias semantics. Native JIT/AOT fixtures account for all
+402 cases in the pinned YAML test-suite data release and exercise parser, render,
+numeric and expansion limits.
+
 The optional `packages/semver` library provides pure SemVer 2.0 values with
 unbounded decimal core components, strict parsing and an explicit lowercase-v
 tag parser. Equality preserves build metadata; `Semver.compare` implements

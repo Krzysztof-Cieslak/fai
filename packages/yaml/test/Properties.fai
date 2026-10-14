@@ -1,0 +1,62 @@
+module YamlProperties
+
+import json.Json
+import json.JsonNumber
+
+let quoteRoundtrip text =
+  match Yaml.toString (YamlData.String text) with
+  | Err _ -> false
+  | Ok rendered -> Yaml.load rendered = Ok (YamlData.String text)
+forall text: quoteRoundtrip text
+
+let intRoundtrip integer =
+  let value = YamlData.Integer (YamlNumber.integerFromInt integer)
+  match Yaml.toString value with
+  | Err _ -> false
+  | Ok rendered -> Yaml.load rendered = Ok value
+forall integer: intRoundtrip integer
+
+let finiteFloat value =
+  let number = YamlNumber.floatFromFloat value
+  match YamlNumber.floatToFloat number with
+  | Err _ -> false
+  | Ok back -> Float.toBits back = Float.toBits value || (number = YamlNumber.NaN)
+forall value: finiteFloat value
+
+let total text =
+  match Yaml.parse text with
+  | Ok _ -> true
+  | Err error ->
+    match error.primary with
+    | None -> error.kind = YamlTypes.LimitExceeded || error.kind = YamlTypes.InvalidOptions
+    | Some span ->
+      span.start.byte >= 0 && span.start.byte <= Bytes.length (Bytes.fromString text) && span.finish.byte >= span.start.byte && span.finish.byte <= Bytes.length (Bytes.fromString text)
+forall text: total text
+
+let jsonRoundtrip text integer =
+  let json = Json.Object [|
+    ("text", Json.String text),
+    ("value", Json.Number (JsonNumber.fromInt integer))
+  |]
+  match YamlJson.fromJson json with
+  | Err _ -> false
+  | Ok value -> YamlJson.toJson value = Ok json
+forall text integer: jsonRoundtrip text integer
+example: YamlJson.toJson (YamlData.Float YamlNumber.NaN) |> Result.isErr
+example: Yaml.toStringAll [] = Ok ""
+example: (match Yaml.toStringAll [YamlData.Null, YamlData.String "hello"] with
+| Err _ -> false
+| Ok text -> Result.map List.length (Yaml.parseAll text) = Ok 2)
+example: Yaml.parse "key: \t[1, 2]" |> Result.isOk
+example: Yaml.parse "key: [1,\n2]" |> Result.isErr
+example: Yaml.parse "a: 'b': c" |> Result.isErr
+example: Yaml.parse "---\na: b\n... invalid" |> Result.isErr
+example: Yaml.parse "[a,b,#comment\n]" |> Result.isErr
+example: Yaml.parse "a: &x\n!!map\n  b: c" |> Result.isErr
+example: Yaml.parse "a: &x\n  !!map\n  b: c" |> Result.isOk
+example: Yaml.parse "a: 'hello\nworld'" |> Result.isErr
+example: Yaml.parse "a: |\n   \n  text" |> Result.isErr
+example: Yaml.parse "?\n- a\n- b\n:\n- c" |> Result.isOk
+example: Yaml.parse "[a: 1, {b: 2}]" |> Result.isOk
+example: Yaml.load "%YAML 1.1\n---\non" = Ok (YamlData.String "on")
+example: Yaml.parse "%YAML 2.0\n---\na" |> Result.isErr

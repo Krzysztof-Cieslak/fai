@@ -1,0 +1,143 @@
+module Yaml
+
+/// Finite located graph retaining tags, anchors and complex mapping keys.
+public type Document = YamlDocument.Document
+
+/// Shared structured error across parser, projection and rendering operations.
+public type Error = YamlTypes.Error
+
+/// Input and parser resource budgets.
+public type Options = YamlTypes.Options
+
+/// Default whole-input parser limits.
+public defaults : Options
+let defaults = YamlTypes.defaults
+
+/// Parse a complete YAML stream with encoding detection and explicit limits.
+public parseAllBytesWith : Options -> Bytes -> Result (List Document) Error
+let parseAllBytesWith options bytes = YamlParser.parse options bytes
+
+/// Parse all documents from UTF-8/16/32 bytes using default limits.
+public parseAllBytes : Bytes -> Result (List Document) Error
+let parseAllBytes bytes = parseAllBytesWith defaults bytes
+
+/// Parse all documents from a UTF-8 String with explicit limits.
+public parseAllWith : Options -> String -> Result (List Document) Error
+let parseAllWith options text = parseAllBytesWith options (Bytes.fromString text)
+
+/// Parse a complete stream; empty/comment-only streams return no documents.
+public parseAll : String -> Result (List Document) Error
+let parseAll text = parseAllWith defaults text
+
+/// Require one document; empty input becomes a located null root, and a second
+/// document is a located error. Byte encodings are detected before parsing.
+public parseBytesWith : Options -> Bytes -> Result Document Error
+let parseBytesWith options bytes =
+  match parseAllBytesWith options bytes with
+  | Err error -> Err error
+  | Ok [document] -> Ok document
+  | Ok [] ->
+    // An empty single-document load has the null representation.
+    if options.maxDocuments = 0 || options.maxNodes = 0 then
+      Err (YamlTypes.error YamlTypes.LimitExceeded "single-document load exceeds document/node limit")
+    else
+      match YamlSource.read options bytes with
+      | Err error -> Err error
+      | Ok input ->
+        let position = YamlSource.position input (Bytes.length input.bytes)
+        let span = { finish = position, start = position }
+        Ok (YamlDocument.create 0 [|
+          {
+            anchor = None,
+            body = YamlDocument.Scalar YamlDocument.Plain "",
+            span = span,
+            tag = None
+          }
+        |] 0 [] span bytes)
+  | Ok (_ :: second :: _) -> Err { (YamlTypes.error YamlTypes.Syntax "expected one YAML document") with
+    document = 1,
+    primary = Some (YamlDocument.span second)
+  }
+
+/// Parse one document with the default limits and encoding detection.
+public parseBytes : Bytes -> Result Document Error
+let parseBytes bytes = parseBytesWith defaults bytes
+
+/// Parse one UTF-8 document with explicit limits.
+public parseWith : Options -> String -> Result Document Error
+let parseWith options text = parseBytesWith options (Bytes.fromString text)
+
+/// Parse one UTF-8 document with default limits.
+public parse : String -> Result Document Error
+let parse text = parseWith defaults text
+
+/// Render a structured error for display.
+public errorToString : Error -> String
+let errorToString error = YamlTypes.errorToString error
+
+/// Ordered, string-keyed application data with exact numeric values.
+public type Value = YamlData.Value
+
+/// Project a document using Core schema, rejecting cycles and non-string keys.
+public value : Document -> Result Value Error
+let value document = YamlProject.value document
+
+/// Project with explicit merge handling, pure tag handlers and expansion limits.
+public valueWith : YamlProject.Options -> Document -> Result Value Error
+let valueWith options document = YamlProject.valueWith options document
+
+/// Parse and project a single UTF-8 document using default policies.
+public load : String -> Result Value Error
+let load text =
+  match parse text with
+  | Err error -> Err error
+  | Ok document -> value document
+
+/// Parse and project one encoding-detected document using default policies.
+public loadBytes : Bytes -> Result Value Error
+let loadBytes bytes =
+  match parseBytes bytes with
+  | Err error -> Err error
+  | Ok document -> value document
+
+/// Parse and project a String with explicit input and projection limits.
+public loadWith : Options -> YamlProject.Options -> String -> Result Value Error
+let loadWith options projection text =
+  match parseWith options text with
+  | Err error -> Err error
+  | Ok document -> valueWith projection document
+
+/// Parse and project bytes with explicit input and projection policies.
+public loadBytesWith : Options -> YamlProject.Options -> Bytes -> Result Value Error
+let loadBytesWith options projection bytes =
+  match parseBytesWith options bytes with
+  | Err error -> Err error
+  | Ok document -> valueWith projection document
+
+/// Render ordered application data as normalized two-space block YAML.
+public toString : Value -> Result String Error
+let toString value = YamlRender.toString value
+
+/// Render with explicit output/depth limits and optional key sorting.
+public toStringWith : YamlRender.Options -> Value -> Result String Error
+let toStringWith options value = YamlRender.toStringWith options value
+
+/// Render the graph in normalized flow form, retaining tag/alias semantics.
+public documentToString : Document -> Result String Error
+let documentToString document = YamlRender.document document
+
+/// Render application values as a stream with explicit document boundaries.
+public toStringAllWith : YamlRender.Options -> List Value -> Result String Error
+let toStringAllWith options values = YamlRender.values options values
+
+/// Render a value stream using default output limits.
+public toStringAll : List Value -> Result String Error
+let toStringAll values = toStringAllWith YamlRender.defaults values
+
+/// Render all document graphs under one cumulative output budget.
+public documentsToStringWith : YamlRender.Options -> List Document -> Result String Error
+let documentsToStringWith options documents = YamlRender.documents options documents
+
+/// Render graph streams with explicit boundaries and default limits.
+public documentsToString : List Document -> Result String Error
+let documentsToString documents = documentsToStringWith YamlRender.defaults documents
