@@ -1961,8 +1961,12 @@ shared-workflow edit. Metadata-only changes stay in the package lane; shared
 runner/classifier/workflow changes retain full checks. See `docs/DEVELOPMENT.md`
 for the schema and local command. Protected check names remain the same across
 lanes; the job summary identifies which Rust steps were selected or skipped.
-Changes to `packages/fai.toml` or `packages/fai.lock` select all source packages
-through the cached-compiler lane. Before native package checks, the prepared
+Changes to `packages/fai.toml` or `packages/fai.lock` select changed workspace
+members, affected override consumers, and roots whose platform lock graphs or
+referenced source records changed, plus their dependents. Registering an isolated
+new package does not retest unrelated packages. Global configuration, unsupported
+metadata, and unscoped external overrides conservatively select all packages.
+Before native package checks, the prepared
 compiler validates every declared root/platform graph with `fai resolve --locked`;
 stale or malformed metadata fails without repair. Empty package selections still
 validate workspace metadata. Ordinary package edits retain dependency-aware

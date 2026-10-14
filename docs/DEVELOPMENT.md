@@ -313,7 +313,7 @@ predecessor, not unconditionally with `main`.
 | `packages/sql/**` | SQL and SQLite formatting, type checks, and Fai contracts |
 | `packages/sqlite/**` | SQLite formatting, type checks, and Fai contracts |
 | Package-local `ci.json` integrations or Fai entrypoints | Affected packages' native contracts and declared JIT/AOT programs, using the prepared compiler |
-| `packages/fai.toml` or `packages/fai.lock` | All source packages through the cached-compiler lane, including locked graph validation; no Rust suite on a cache hit |
+| `packages/fai.toml` or `packages/fai.lock` | Affected members, override consumers and changed lock-graph roots plus dependents; whole-workspace locked validation; no Rust suite on a cache hit |
 | `scripts/performance_report/**` | Python syntax and two presentation fixtures; no Cargo or compiler bundle |
 | Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures |
 | Root documentation and `docs/*.md` / `docs/*.txt` only | Change/catalog validation |
@@ -326,11 +326,23 @@ selects the full lane conservatively.
 Mixed package/presentation changes run both relevant lanes. Changes to the Rust
 report-data exporter or CI infrastructure retain the full compiler checks.
 
-Workspace-level membership, replacements and lock graphs can affect any package,
-so those two metadata files conservatively select every current package. Adding a
-new library and updating its workspace registration therefore stays in the package
-lane. Mixed changes to Rust, embedded std, CI scripts or workflows still select
-the full compiler lane.
+Workspace metadata is compared structurally against the same base. Literal member
+additions/removals select their packages. Changed in-tree overrides select the
+replaced package and its consumers; member-scoped overrides select their named
+roots. Each root/platform lock graph is compared together with all its referenced
+source descriptors, so a shared or external dependency update selects every
+affected root. Selection then includes base/head transitive dependents. Adding an
+isolated package, its local override, and its platform graphs therefore tests only
+that package, not its unchanged dependencies or unrelated libraries.
+
+Member/record reordering, comments, and the lock's informational `resolved-with`
+field do not select package tests. Global settings such as compiler pins or lock
+targets, unscoped external overrides, nonliteral/unknown paths, unsupported
+metadata and metadata creation/removal conservatively select all packages.
+Malformed compared structures fail selection. Compiler-owned validation remains
+authoritative even for metadata-only diffs with no selected tests. Selection
+reasons appear in the workflow summary. Mixed changes to Rust, embedded std,
+CI scripts or workflows still select the full compiler lane.
 
 The prepared compiler runs `fai resolve --locked -C packages` before native package
 operations. This validates all declared root/platform graphs, including non-host

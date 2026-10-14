@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tomllib
 
+import ci_workspace
 import packages
 
 
@@ -56,7 +57,7 @@ def documentation(path):
             or (path.startswith("docs/") and path.endswith((".md", ".txt"))))
 
 
-def classify(paths, current, previous, root=packages.ROOT):
+def classify(paths, current, previous, root=packages.ROOT, workspace_impact=None):
     full = False
     reporting = False
     workspace_changed = False
@@ -65,7 +66,7 @@ def classify(paths, current, previous, root=packages.ROOT):
     for path in paths:
         if path in PACKAGE_WORKSPACE_METADATA:
             workspace_changed = True
-            selected.update(current)
+            selected.update(current if workspace_impact is None else workspace_impact[0])
             reasons.append(f"package workspace: {path}")
             continue
         owners = set()
@@ -89,6 +90,8 @@ def classify(paths, current, previous, root=packages.ROOT):
         else:
             full = True
             reasons.append(f"compiler/infrastructure: {path}")
+    if workspace_changed and workspace_impact is not None:
+        reasons.extend(workspace_impact[1])
     package_change = workspace_changed or bool(selected)
     if full:
         selected = set(current)
@@ -119,7 +122,16 @@ def scope(root, base, head="HEAD"):
     except (subprocess.CalledProcessError, ValueError) as error:
         return {"compiler": True, "reporting": True, "packages": packages.validate(current), "mode": "compiler",
                 "reasons": [f"conservative full check: {type(error).__name__}"]}
-    result = classify(paths, current, previous, root)
+    impact = None
+    if PACKAGE_WORKSPACE_METADATA.intersection(paths):
+        def documents(revision):
+            result = {}
+            for path in sorted(PACKAGE_WORKSPACE_METADATA):
+                exists = git(root, "ls-tree", "--name-only", revision, "--", path)
+                result[path] = tomllib.loads(git(root, "show", f"{revision}:{path}").decode()) if exists else None
+            return result
+        impact = ci_workspace.affected(documents(baseline), documents(head), current, previous, root)
+    result = classify(paths, current, previous, root, impact)
     result["base"] = baseline
     return result
 
@@ -198,7 +210,8 @@ def main():
                     print(f"packages={json.dumps(result['packages'], separators=(',', ':'))}", file=stream)
                     print(f"package_names={' '.join(result['packages'])}", file=stream)
                     print(f"mode={result['mode']}", file=stream)
-                summary(lane_summary("Selected CI lane", result["mode"], result["compiler"], result["packages"]))
+                details = "\n\nSelection reasons:\n" + "\n".join(f"- {reason}" for reason in result["reasons"])
+                summary(lane_summary("Selected CI lane", result["mode"], result["compiler"], result["packages"]) + details)
             return
         require(args.result, os.environ.get("CI_MODE"), os.environ.get("CI_COMPILER"), os.environ.get("CI_REPORTING"))
         selected = selected_packages(os.environ.get("CI_PACKAGES", "null"), os.environ.get("PACKAGE_NAMES", ""))
