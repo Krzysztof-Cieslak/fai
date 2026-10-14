@@ -15,7 +15,8 @@
   includes named failures, operation errors and intentional skips. `Expect` is
   now a reserved standard module name; rename any user module with that name.
   Imported cases report their declaration's file and line while keeping the
-  selected root suite's stable identity.
+  selected root suite's stable identity, without duplicating JUnit diagnostics
+  when native path separators differ from report paths.
 - Add `fai test --junit <path>` for atomic JUnit XML artifacts alongside human or
   JSON output, including diagnostics and preparation errors. Native package CI
   publishes these reports and summaries on success or failure.
