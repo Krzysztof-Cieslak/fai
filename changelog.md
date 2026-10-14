@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- Scope independent release, performance and JUnit tooling changes to their
+  validation lanes, and avoid native-runner queues for documentation-only CI.
+- Keep malformed JUnit timings and invalid report roots from crashing the CI
+  summary renderer.
 - Validate isolated VS Code extension changes with TypeScript, grammar and VSIX
   checks instead of the Rust suite; retain editor checks for full compiler changes.
 - Reserve daemon-test fixture directories atomically so reused Windows process

@@ -10,10 +10,12 @@ import sys
 import tomllib
 
 import ci_workspace
+import ci_tooling
 import packages
 
 
 PACKAGE_WORKSPACE_METADATA = {"packages/fai.toml", "packages/fai.lock"}
+TOOLING_PATHS = {path: group for group, paths in ci_tooling.PATHS.items() for path in paths}
 
 
 def git(root, *arguments):
@@ -98,6 +100,7 @@ def classify(paths, current, previous, root=packages.ROOT, workspace_impact=None
     full = False
     reporting = False
     vscode = False
+    tooling = set()
     workspace_changed = False
     production = set()
     local = set()
@@ -130,6 +133,10 @@ def classify(paths, current, previous, root=packages.ROOT, workspace_impact=None
                     integrations.add(name)
                 if kind != "docs":
                     reasons.append(f"package: {name}" if kind == "production" else f"package {kind}: {name}")
+        elif path in TOOLING_PATHS:
+            group = TOOLING_PATHS[path]
+            tooling.add(group)
+            reasons.append(f"Python tooling: {group}")
         elif path.startswith("editors/vscode/"):
             vscode = True
             reasons.append("VS Code extension")
@@ -152,11 +159,12 @@ def classify(paths, current, previous, root=packages.ROOT, workspace_impact=None
     ordered = packages.validate(current)
     return {
         "compiler": full,
-        "reporting": reporting or full,
+        "reporting": reporting or full or "performance" in tooling,
         "vscode": vscode or full,
+        "tooling": sorted(ci_tooling.TESTS if full else tooling),
         "packages": [name for name in ordered if name in selected],
         "package_checks": [name for name in ordered if name in checks],
-        "mode": "compiler" if full else "packages" if package_changed else "reporting" if reporting else "vscode" if vscode else "docs",
+        "mode": "compiler" if full else "packages" if package_changed else "tooling" if tooling else "reporting" if reporting else "vscode" if vscode else "docs",
         "reasons": sorted(set(reasons)),
     }
 
@@ -171,7 +179,8 @@ def scope(root, base, head="HEAD"):
         paths = diff_paths(git(root, "diff", "--name-status", "-z", "--find-renames", baseline, head))
     except (subprocess.CalledProcessError, ValueError) as error:
         names = packages.validate(current)
-        return {"compiler": True, "reporting": True, "vscode": True, "packages": names, "package_checks": names, "mode": "compiler",
+        return {"compiler": True, "reporting": True, "vscode": True, "tooling": sorted(ci_tooling.TESTS),
+                "packages": names, "package_checks": names, "mode": "compiler",
                 "reasons": [f"conservative full check: {type(error).__name__}"]}
     impact = None
     if PACKAGE_WORKSPACE_METADATA.intersection(paths):
@@ -194,11 +203,12 @@ def summary(text):
             stream.write(text + "\n")
 
 
-def lane_summary(title, mode, compiler_checks, names, checks=None, vscode=False):
+def lane_summary(title, mode, compiler_checks, names, checks=None, vscode=False, tooling=()):
     rust = "enabled" if compiler_checks else "skipped"
     return (f"### {title}: {mode}\n"
             f"Rust compiler checks: **{rust}**\n\n"
             f"VS Code checks: **{'enabled' if vscode else 'skipped'}**\n\n"
+            f"Python tooling: {', '.join(tooling) or '(none)'}\n\n"
             f"Affected packages: {', '.join(names) or '(none)'}\n"
             f"Native package checks: {', '.join(names if checks is None else checks) or '(none)'}\n"
             "Package checks and declared integrations use the prepared compiler bundle.")
@@ -214,10 +224,10 @@ def validate_package_workspace(root=packages.ROOT, compiler="fai"):
     subprocess.run([compiler, "resolve", "--locked", "-C", str(workspace)], check=True)
 
 
-def require(result, mode, compiler_flag, reporting_flag="false", vscode_flag="false"):
+def require(result, mode, compiler_flag, reporting_flag="false", vscode_flag="false", tooling_flag="[]"):
     if result != "success":
         raise ValueError(f"change classification did not succeed: {result}")
-    if mode not in {"compiler", "packages", "reporting", "vscode", "docs"} or compiler_flag != str(mode == "compiler").lower():
+    if mode not in {"compiler", "packages", "tooling", "reporting", "vscode", "docs"} or compiler_flag != str(mode == "compiler").lower():
         raise ValueError("missing or inconsistent change classification outputs")
     if (reporting_flag not in {"true", "false"}
             or (mode in {"compiler", "reporting"} and reporting_flag != "true")
@@ -227,6 +237,12 @@ def require(result, mode, compiler_flag, reporting_flag="false", vscode_flag="fa
             or (mode in {"compiler", "vscode"} and vscode_flag != "true")
             or (mode == "docs" and vscode_flag != "false")):
         raise ValueError("missing or inconsistent VS Code selection")
+    tooling = ci_tooling.selection(tooling_flag)
+    if ((mode == "tooling" and not tooling) or (mode in {"docs", "vscode", "reporting"} and tooling)
+            or (mode == "compiler" and tooling != sorted(ci_tooling.TESTS))):
+        raise ValueError("inconsistent Python-tooling selection")
+    if "performance" in tooling and reporting_flag != "true":
+        raise ValueError("performance tooling requires presentation checks")
 
 
 def selected_packages(encoded, names):
@@ -242,7 +258,7 @@ def selected_checks(encoded, names, selected, mode):
     checks = selected_packages(encoded, names)
     if not set(checks) <= set(selected) or (mode == "compiler" and checks != selected):
         raise ValueError("inconsistent native package check selection")
-    if mode in {"docs", "reporting", "vscode"} and (checks or selected):
+    if mode in {"docs", "reporting", "vscode", "tooling"} and (checks or selected):
         raise ValueError("non-package lane cannot select packages")
     return checks
 
@@ -267,7 +283,8 @@ def main():
         if args.action == "scope":
             if args.force_full:
                 names = packages.validate(packages.discover())
-                result = {"compiler": True, "reporting": True, "vscode": True, "packages": names, "package_checks": names,
+                result = {"compiler": True, "reporting": True, "vscode": True, "tooling": sorted(ci_tooling.TESTS),
+                          "packages": names, "package_checks": names,
                           "mode": "compiler", "reasons": ["full release verification"]}
             else:
                 result = scope(packages.ROOT, args.base, args.head)
@@ -277,20 +294,21 @@ def main():
                     print(f"compiler={str(result['compiler']).lower()}", file=stream)
                     print(f"reporting={str(result['reporting']).lower()}", file=stream)
                     print(f"vscode={str(result['vscode']).lower()}", file=stream)
+                    print(f"tooling={json.dumps(result['tooling'], separators=(',', ':'))}", file=stream)
                     print(f"packages={json.dumps(result['packages'], separators=(',', ':'))}", file=stream)
                     print(f"package_names={' '.join(result['packages'])}", file=stream)
                     print(f"package_checks={json.dumps(result['package_checks'], separators=(',', ':'))}", file=stream)
                     print(f"package_check_names={' '.join(result['package_checks'])}", file=stream)
                     print(f"mode={result['mode']}", file=stream)
                 details = "\n\nSelection reasons:\n" + "\n".join(f"- {reason}" for reason in result["reasons"])
-                summary(lane_summary("Selected CI lane", result["mode"], result["compiler"], result["packages"], result["package_checks"], result["vscode"]) + details)
+                summary(lane_summary("Selected CI lane", result["mode"], result["compiler"], result["packages"], result["package_checks"], result["vscode"], result["tooling"]) + details)
             return
-        require(args.result, os.environ.get("CI_MODE"), os.environ.get("CI_COMPILER"), os.environ.get("CI_REPORTING"), os.environ.get("CI_VSCODE"))
+        require(args.result, os.environ.get("CI_MODE"), os.environ.get("CI_COMPILER"), os.environ.get("CI_REPORTING"), os.environ.get("CI_VSCODE"), os.environ.get("CI_TOOLING"))
         selected = selected_packages(os.environ.get("CI_PACKAGES", "null"), os.environ.get("PACKAGE_NAMES", ""))
         checks = selected_checks(os.environ.get("CI_PACKAGE_CHECKS", "null"), os.environ.get("PACKAGE_CHECK_NAMES", ""),
                                  selected, os.environ["CI_MODE"])
         packages.affected(packages.discover(), selected, False)
-        summary(lane_summary("CI lane", os.environ["CI_MODE"], os.environ["CI_COMPILER"] == "true", selected, checks, os.environ["CI_VSCODE"] == "true"))
+        summary(lane_summary("CI lane", os.environ["CI_MODE"], os.environ["CI_COMPILER"] == "true", selected, checks, os.environ["CI_VSCODE"] == "true", ci_tooling.selection(os.environ["CI_TOOLING"])))
     except (packages.PackageError, ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"CI: {error}\n")
 

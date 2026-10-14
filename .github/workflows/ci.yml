@@ -33,6 +33,7 @@ jobs:
       compiler: ${{ steps.scope.outputs.compiler }}
       reporting: ${{ steps.scope.outputs.reporting }}
       vscode: ${{ steps.scope.outputs.vscode }}
+      tooling: ${{ steps.scope.outputs.tooling }}
       packages: ${{ steps.scope.outputs.packages }}
       package_names: ${{ steps.scope.outputs.package_names }}
       package_checks: ${{ steps.scope.outputs.package_checks }}
@@ -70,6 +71,7 @@ jobs:
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
       CI_REPORTING: ${{ needs.changes.outputs.reporting }}
       CI_VSCODE: ${{ needs.changes.outputs.vscode }}
+      CI_TOOLING: ${{ needs.changes.outputs.tooling }}
       CI_PACKAGES: ${{ needs.changes.outputs.packages }}
       PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
       CI_PACKAGE_CHECKS: ${{ needs.changes.outputs.package_checks }}
@@ -90,6 +92,9 @@ jobs:
       - name: Tooling tests
         if: needs.changes.outputs.compiler == 'true'
         run: python -m unittest discover -s scripts/tests -v
+      - name: Independent Python tooling tests
+        if: needs.changes.outputs.compiler != 'true' && needs.changes.outputs.tooling != '[]'
+        run: python scripts/ci_tooling.py
       - name: Report presentation syntax
         if: needs.changes.outputs.reporting == 'true'
         run: python -m compileall -q scripts/performance_report
@@ -130,6 +135,7 @@ jobs:
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
       CI_REPORTING: ${{ needs.changes.outputs.reporting }}
       CI_VSCODE: ${{ needs.changes.outputs.vscode }}
+      CI_TOOLING: ${{ needs.changes.outputs.tooling }}
       CI_PACKAGES: ${{ needs.changes.outputs.packages }}
       PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
       CI_PACKAGE_CHECKS: ${{ needs.changes.outputs.package_checks }}
@@ -144,6 +150,9 @@ jobs:
           python-version: '3.x'
       - name: Require successful change classification
         run: python scripts/ci.py require
+      - name: Independent Python tooling tests
+        if: needs.changes.outputs.compiler != 'true' && needs.changes.outputs.tooling != '[]'
+        run: python scripts/ci_tooling.py
       - name: Report presentation fixtures
         if: needs.changes.outputs.reporting == 'true'
         run: python -m unittest discover -s scripts/performance_report/tests -v
@@ -179,9 +188,12 @@ jobs:
         run: python scripts/cross_os.py verify
       - uses: ./.github/actions/compiler
         id: compiler
-        if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
+        if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages' || contains(fromJSON(needs.changes.outputs.tooling), 'release')
         with:
           prepared: ${{ needs.changes.outputs.compiler == 'true' }}
+      - name: Release tooling packaging smoke
+        if: contains(fromJSON(needs.changes.outputs.tooling), 'release')
+        run: python scripts/tests/tooling_packaging.py --fai '${{ steps.compiler.outputs.binary }}'
       - name: Validate locked package workspace
         if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
         run: python scripts/ci.py validate-packages
@@ -257,7 +269,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-    runs-on: ${{ needs.changes.outputs.mode == 'vscode' && 'ubuntu-latest' || matrix.os }}
+    runs-on: ${{ (needs.changes.outputs.mode == 'vscode' || needs.changes.outputs.mode == 'docs') && 'ubuntu-latest' || matrix.os }}
     env:
       FAI_BUILD_PROFILE: ci
       SCOPE_RESULT: ${{ needs.changes.result }}
@@ -265,6 +277,7 @@ jobs:
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
       CI_REPORTING: ${{ needs.changes.outputs.reporting }}
       CI_VSCODE: ${{ needs.changes.outputs.vscode }}
+      CI_TOOLING: ${{ needs.changes.outputs.tooling }}
       CI_PACKAGES: ${{ needs.changes.outputs.packages }}
       PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
       CI_PACKAGE_CHECKS: ${{ needs.changes.outputs.package_checks }}
@@ -279,15 +292,15 @@ jobs:
           python-version: '3.x'
       - name: Require successful change classification
         run: python scripts/ci.py require
+      - name: Independent Python tooling tests
+        if: needs.changes.outputs.tooling != '[]'
+        run: python scripts/ci_tooling.py
       - name: Report presentation fixtures
         if: needs.changes.outputs.reporting == 'true'
         run: python -m unittest discover -s scripts/performance_report/tests -v
       - name: Set up native Windows linker
-        if: runner.os == 'Windows' && (needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages')
+        if: runner.os == 'Windows' && (needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages' || contains(fromJSON(needs.changes.outputs.tooling), 'release'))
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Windows installer archive validation
-        if: runner.os == 'Windows' && needs.changes.outputs.compiler == 'true'
-        run: python -m unittest discover -s scripts/tests -p test_install_ps1.py -v
       - uses: ./.github/actions/rust-cache
         if: needs.changes.outputs.compiler == 'true'
         with:
@@ -310,9 +323,12 @@ jobs:
         run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
       - uses: ./.github/actions/compiler
         id: compiler
-        if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
+        if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages' || contains(fromJSON(needs.changes.outputs.tooling), 'release')
         with:
           prepared: ${{ needs.changes.outputs.compiler == 'true' }}
+      - name: Release tooling packaging smoke
+        if: contains(fromJSON(needs.changes.outputs.tooling), 'release')
+        run: python scripts/tests/tooling_packaging.py --fai '${{ steps.compiler.outputs.binary }}'
       - name: Validate locked package workspace
         if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
         run: python scripts/ci.py validate-packages

@@ -1978,6 +1978,15 @@ from the editor. Mixed editor/package/reporting changes retain each relevant
 lane. The other required check names remain present and validate the selection;
 missing or inconsistent editor outputs fail rather than skipping the editor gate.
 
+Explicit release/installer, performance-orchestration, and JUnit-renderer files
+have independent Python-tooling lanes. They run their selected unit tests without
+the Rust workspace suite; release tooling additionally validates installer
+archives and round-trips the cached compiler through release archive formats and
+relocated JIT/AOT checks. Compiler bootstrap, CI selectors/runners, build inputs,
+workflows and unknown scripts retain full validation. Mixed changes keep all
+selected lanes. Docs-only required-check wrappers use Ubuntu rather than waiting
+for native macOS/Windows hosts; checks requiring those hosts retain them.
+
 Those four check names have dependency-aware lanes. Package-only diffs restore
 an exact cached compiler and run native `fai fmt`/`check`/`test` for changed
 packages and transitive dependents, plus their declared Fai integration programs,
