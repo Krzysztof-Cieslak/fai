@@ -12,19 +12,15 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use indoc::indoc;
 
 fn unique(tag: &str) -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "fai-daemon-{tag}-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
+    // Reserve the directory atomically: separate test processes can reuse a PID
+    // while an earlier process's fixture directories still exist.
+    tempfile::Builder::new().prefix(&format!("fai-daemon-{tag}-")).tempdir().unwrap().keep()
 }
 
 /// A short base directory for the daemon's Unix socket. macOS caps socket paths
@@ -33,9 +29,26 @@ fn unique(tag: &str) -> PathBuf {
 /// socket directory uses a short, fixed base instead of [`unique`]. (On Windows
 /// the endpoint is a namespaced pipe, so the path length is irrelevant.)
 fn unique_socket_dir() -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let base = if cfg!(unix) { PathBuf::from("/tmp") } else { std::env::temp_dir() };
-    base.join(format!("fai-rt-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)))
+    tempfile::Builder::new().prefix("fai-rt-").tempdir_in(base).unwrap().keep()
+}
+
+#[test]
+fn fixture_directory_is_reserved_before_use() {
+    let first = unique("reserved");
+    let second = unique("reserved");
+    assert!(first.is_dir());
+    assert!(second.is_dir());
+    assert_ne!(first, second);
+    std::fs::remove_dir(first).unwrap();
+    std::fs::remove_dir(second).unwrap();
+}
+
+#[test]
+fn socket_directory_is_reserved_before_use() {
+    let directory = unique_socket_dir();
+    assert!(directory.is_dir());
+    std::fs::remove_dir(directory).unwrap();
 }
 
 /// An isolated workspace with its own daemon endpoint and cache.
