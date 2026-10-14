@@ -131,7 +131,8 @@ pub struct ContractSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractEvent {
-    /// The contract's source key; identity is `(source, ordinal)`, not `symbol`.
+    /// The declaration's source. Contracts use `(source, ordinal)` for identity;
+    /// named tests instead use `id`, rooted in their selected suite binding.
     pub source: ContractSource,
     /// The contract's position among its file's contracts.
     pub ordinal: usize,
@@ -534,7 +535,15 @@ pub fn execute_tests(plan: &TestPlan, on_event: &mut dyn FnMut(&ContractEvent)) 
                 };
             }
             let suite = &plan.suites[case.suite];
-            let (_, location) = named::location(plan, case, &case.metadata.source);
+            let (declaration, location) = named::location(plan, case, &case.metadata.source);
+            let source = ContractSource {
+                file: plan
+                    .render_spans
+                    .resolve(declaration)
+                    .map(|span| span.path.as_str().replace(std::path::MAIN_SEPARATOR, "/"))
+                    .unwrap_or_else(|| suite.source.file.clone()),
+                origin: suite.source.origin,
+            };
             let mut failures = Vec::new();
             let mut diagnostics = Vec::new();
             for issue in issues.drain(..) {
@@ -542,7 +551,7 @@ pub fn execute_tests(plan: &TestPlan, on_event: &mut dyn FnMut(&ContractEvent)) 
                 let file = plan
                     .render_spans
                     .resolve(span)
-                    .map(|s| s.path.to_string())
+                    .map(|s| s.path.as_str().replace(std::path::MAIN_SEPARATOR, "/"))
                     .unwrap_or_else(|| suite.source.file.clone());
                 let code = if issue.kind == "assertion" {
                     fai_contracts::NAMED_TEST_FAILED
@@ -572,7 +581,7 @@ pub fn execute_tests(plan: &TestPlan, on_event: &mut dyn FnMut(&ContractEvent)) 
                 });
             }
             let event = ContractEvent {
-                source: suite.source.clone(),
+                source,
                 ordinal: 0,
                 location,
                 symbol: Some(case.metadata.path.join("::")),

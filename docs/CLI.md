@@ -548,6 +548,9 @@ in a supervised isolated worker, so a body that traps on a generated input fails
   `path` name components, structured
   `failures` (`kind`, `message`, `expected`, `actual`, `context`, `file`,
   `location`), optional skip `reason`, and bounded captured `output`.
+  A named event's `source` and `location` identify its `Test.test` declaration,
+  including declarations in imported helpers; its `id` remains rooted in the
+  selected private `tests` binding, not that helper's file or line number.
   `TestConfig` is `{ "seed": int, "trials": int, "maxSize": int }`. Trials are
   the configured limit per property, not an observed count of predicate calls
   (a property may fail early, and shrinking also calls its predicate).

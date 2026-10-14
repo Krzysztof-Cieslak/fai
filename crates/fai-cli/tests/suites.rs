@@ -32,6 +32,45 @@ impl Drop for Workspace {
     }
 }
 
+fn imported_suite_workspace() -> Workspace {
+    let workspace = Workspace::new(
+        "module Suite\ntests : Test.Suite Test.Context {}\nlet tests = Shared.cases\n",
+    );
+    std::fs::write(
+        workspace.0.path().join("tests/Shared.fai"),
+        "module Shared\npublic cases : Test.Suite Test.Context {}\nlet cases = Test.test \"shared\" (fun _ -> Expect.equal Int.toString 1 2)\n",
+    )
+    .unwrap();
+    workspace
+}
+
+fn assert_imported_suite_location(report: &serde_json::Value) {
+    assert_eq!(report["summary"]["failed"], 1, "{report}");
+    let event = &report["events"][0];
+    assert_eq!(event["source"]["file"], "tests/Shared.fai");
+    assert_eq!(event["location"]["line"], 3);
+    assert_eq!(event["failures"][0]["file"], "tests/Shared.fai");
+    assert_eq!(event["failures"][0]["location"]["line"], 3);
+    let identity: serde_json::Value = serde_json::from_str(event["id"].as_str().unwrap()).unwrap();
+    assert_eq!(identity[0]["file"], "tests/Suite.fai");
+}
+
+#[test]
+fn imported_suites_report_declarations_without_changing_root_identity() {
+    let workspace = imported_suite_workspace();
+    let junit = workspace.0.path().join("report.xml");
+    let report = workspace.json(&["--no-daemon", "--junit", junit.to_str().unwrap()]);
+    assert_imported_suite_location(&report);
+    let xml = std::fs::read_to_string(junit).unwrap();
+    assert!(xml.contains("file=\"tests/Shared.fai\" line=\"3\""), "{xml}");
+}
+
+#[test]
+fn daemon_imported_suites_report_their_declaration_source() {
+    let workspace = imported_suite_workspace();
+    assert_imported_suite_location(&workspace.json(&[]));
+}
+
 #[test]
 fn named_tests_return_structured_failures_and_source_locations() {
     let workspace = Workspace::new(

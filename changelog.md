@@ -14,6 +14,8 @@
   existing contract identities and generator behavior are unchanged. JUnit now
   includes named failures, operation errors and intentional skips. `Expect` is
   now a reserved standard module name; rename any user module with that name.
+  Imported cases report their declaration's file and line while keeping the
+  selected root suite's stable identity.
 - Add `fai test --junit <path>` for atomic JUnit XML artifacts alongside human or
   JSON output, including diagnostics and preparation errors. Native package CI
   publishes these reports and summaries on success or failure.
