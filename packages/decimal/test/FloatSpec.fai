@@ -1,0 +1,33 @@
+module DecimalFloatSpec
+
+let decimal text = Result.withDefault Decimal.nan (Decimal.parse text)
+example: Result.map Decimal.toString (Decimal.fromFloatShortest 0.1) = Ok "0.1"
+example: Result.map Decimal.toString (Decimal.fromFloatExact 0.1) = Ok "0.1000000000000000055511151231257827021181583404541015625"
+example: Decimal.fromFloatExact (-0.0) = Ok Decimal.zero
+example: Decimal.fromFloatShortest (-0.0) = Ok Decimal.zero
+example: Decimal.fromFloatExact (Float.fromBits 0x7ff0000000000000) = Ok Decimal.positiveInfinity
+example: Decimal.fromFloatExact (Float.fromBits 0xfff0000000000000) = Ok Decimal.negativeInfinity
+example: Decimal.fromFloatExact (Float.fromBits 0xfff0000000000001) = Ok Decimal.nan
+example: Result.map Float.toBits (Decimal.toFloat (decimal "0.1")) = Ok 0x3fb999999999999a
+example: Result.map Float.toBits (Decimal.toFloat (decimal "0.1000000000000000055511151231257827021181583404541015625")) = Ok 0x3fb999999999999a
+example: Result.map Float.toBits (Decimal.toFloat (decimal "-1e-1000000")) = Ok (-9223372036854775808)
+example: Decimal.toFloat (decimal "1e1000000") |> Result.isErr
+example: Result.map Float.toBits (Decimal.toFloat Decimal.positiveInfinity) = Ok 0x7ff0000000000000
+example: Result.map Float.toBits (Decimal.toFloat Decimal.nan) = Ok 0x7ff8000000000000
+example: Result.map Float.toBits (Decimal.toFloat (decimal "1.00000000000000011102230246251565404236316680908203125")) = Ok 0x3ff0000000000000
+example: Result.map Float.toBits (Decimal.toFloat (decimal "1.00000000000000033306690738754696212708950042724609375")) = Ok 0x3ff0000000000002
+example: (match Decimal.fromFloatExact (Float.fromBits 1) with
+| Err _ -> false
+| Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 1)
+example: (match Decimal.fromFloatExact (Float.fromBits 0x7fefffffffffffff) with
+| Err _ -> false
+| Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 0x7fefffffffffffff)
+
+let bitsRoundtrip bits =
+  match Decimal.fromFloatExact (Float.fromBits bits) with
+  | Err _ -> false
+  | Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok bits
+example: bitsRoundtrip 0x0010000000000000
+example: bitsRoundtrip 0x000fffffffffffff
+example: bitsRoundtrip 0x8000000000000001
+example: bitsRoundtrip 0xffefffffffffffff

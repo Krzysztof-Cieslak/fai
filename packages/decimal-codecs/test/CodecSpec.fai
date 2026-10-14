@@ -1,0 +1,60 @@
+module DecimalCodecSpec
+
+import decimal.Decimal
+import json.JsonNumber
+import json.JsonDecode
+import json.JsonEncode
+import yaml.Yaml
+import yaml.YamlDecode
+import yaml.YamlData
+import yaml.YamlNumber
+import sql.SqlDecimal
+import sql.Sql
+import sql.SqlDecode
+
+let decimal text = Result.withDefault Decimal.nan (Decimal.parse text)
+
+let json text = Result.withDefault (JsonNumber.fromInt 0) (JsonNumber.fromString text)
+example: DecimalJson.fromNumber (json "1.2300") = Ok (decimal "1.23")
+example: DecimalJson.fromNumber (json "9007199254740993") = Ok (decimal "9007199254740993")
+example: Result.map JsonNumber.toString (DecimalJson.toNumber (decimal "1.2300")) = Ok "1.23"
+example: DecimalJson.toNumber Decimal.nan |> Result.isErr
+example: DecimalJson.toNumber Decimal.positiveInfinity |> Result.isErr
+example: JsonDecode.fromString DecimalJson.decoder "123.4500" = Ok (decimal "123.45")
+example: JsonEncode.toString DecimalJson.encoder (decimal "123.45") = Ok "123.45"
+example: JsonDecode.fromString DecimalJson.decoder "\"123\"" |> Result.isErr
+example: JsonEncode.toString DecimalJson.encoder Decimal.nan |> Result.isErr
+example: YamlDecode.fromString DecimalYaml.decoder "1.2300" = Ok (decimal "1.23")
+example: YamlDecode.fromString DecimalYaml.decoder "9007199254740993" = Ok (decimal "9007199254740993")
+example: YamlDecode.fromString DecimalYaml.decoder ".inf" = Ok Decimal.positiveInfinity
+example: YamlDecode.fromString DecimalYaml.decoder ".nan" = Ok Decimal.nan
+example: DecimalYaml.fromValue (YamlData.Float YamlNumber.NegativeInfinity) = Ok Decimal.negativeInfinity
+example: DecimalYaml.fromValue (YamlData.String "1") |> Result.isErr
+example: (match DecimalYaml.toValue (decimal "1.234") with
+| Err _ -> false
+| Ok value -> DecimalYaml.fromValue value = Ok (decimal "1.234"))
+example: (match DecimalYaml.toValue Decimal.nan with
+| Err _ -> false
+| Ok value -> DecimalYaml.fromValue value = Ok Decimal.nan)
+example: (match SqlDecimal.parse "001.2300" with
+| Err _ -> false
+| Ok value -> DecimalSql.fromSql value = Ok (decimal "1.23"))
+example: Result.map SqlDecimal.toString (DecimalSql.toSql (decimal "001.2300")) = Ok "1.23"
+example: Result.map SqlDecimal.toString (DecimalSql.toSql Decimal.nan) = Ok "NaN"
+example: Result.map SqlDecimal.toString (DecimalSql.toSql Decimal.negativeInfinity) = Ok "-Infinity"
+example: (match DecimalSql.toSql (decimal "99999999999999999999") with
+| Err _ -> false
+| Ok value -> DecimalSql.fromSql value = Ok (decimal "99999999999999999999"))
+forall value: DecimalJson.fromNumber (JsonNumber.fromInt value) = Ok (Decimal.fromInt value)
+example: SqlDecode.decodeValue DecimalSql.decoder (Sql.Integer 12) = Ok (decimal "12")
+example: SqlDecode.decodeValue DecimalSql.decoder (Sql.Text "12.30") = Ok (decimal "12.3")
+example: SqlDecode.decodeValue DecimalSql.decoder (Sql.Real 0.1) |> Result.isErr
+example: SqlDecode.decodeValue (DecimalSql.decoderWith { Decimal.defaults with
+  maxDigits = 1
+}) (Sql.Integer 12) |> Result.isErr
+example: DecimalJson.fromNumberWith { Decimal.defaults with
+  maxDigits = 1
+} (json "12") |> Result.isErr
+example: YamlDecode.fromString (DecimalYaml.decoderWith { Decimal.defaults with
+  maxDigits = 1
+}) "12" |> Result.isErr

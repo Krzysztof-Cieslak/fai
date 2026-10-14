@@ -1,0 +1,946 @@
+module Decimal
+
+/// Normalized decimal values. Finite coefficients have no decimal trailing
+/// zeros; all zero spellings share the positive zero value. NaN is canonical.
+public opaque type Decimal =
+  | Finite Bool DecimalNatural.Natural Int
+  | MinusInfinity
+  | PlusInfinity
+  | NotANumber
+
+/// Observable special-value category; all finite values share FiniteValue.
+public type Classification =
+  | FiniteValue
+  | NegativeInfinity
+  | PositiveInfinity
+  | NaN
+
+/// Stable syntax, arithmetic and resource failure categories.
+public type ErrorKind =
+  | InvalidSyntax
+  | InvalidOptions
+  | DivisionByZero
+  | InvalidOperation
+  | NonTerminating
+  | Inexact
+  | OutOfRange
+  | ResourceLimit
+
+/// Parse offsets count original UTF-8 bytes; arithmetic errors have no offset.
+public type Error = { kind : ErrorKind, message : String, offset : Option Int }
+
+/// Limits bound exact arithmetic without silently rounding it. Work is a
+/// conservative count of limb operations, checked before costly work.
+public type Limits = {
+  maxDigits : Int,
+  maxExponent : Int,
+  maxInputBytes : Int,
+  maxIntermediateDigits : Int,
+  maxOutputBytes : Int,
+  maxWork : Int
+}
+
+/// Default resource budgets, independent of rounding precision.
+public defaults : Limits
+let defaults = {
+  maxDigits = 10000,
+  maxExponent = 1000000,
+  maxInputBytes = 65536,
+  maxIntermediateDigits = 20000,
+  maxOutputBytes = 1048576,
+  maxWork = 50000000
+}
+
+/// Explicit rounding direction; Exact rejects any mathematical loss of value.
+public type Rounding =
+  | HalfEven
+  | HalfAwayFromZero
+  | HalfTowardZero
+  | TowardZero
+  | AwayFromZero
+  | Floor
+  | Ceiling
+  | Exact
+
+/// Inexact is true only when nonzero information was discarded.
+public type Rounded = { inexact : Bool, value : Decimal }
+
+/// Finite sign, unsigned decimal coefficient, and power-of-ten exponent.
+public type Parts = { coefficient : String, exponent : Int, negative : Bool }
+
+/// The single canonical zero, independent of source sign or scale.
+public zero : Decimal
+let zero = Finite false DecimalNatural.zero 0
+
+/// Exact multiplicative identity.
+public one : Decimal
+let one = Finite false DecimalNatural.one 0
+
+/// Canonical reflexive NaN, with no sign or payload.
+public nan : Decimal
+let nan = NotANumber
+
+/// Positive infinity.
+public positiveInfinity : Decimal
+let positiveInfinity = PlusInfinity
+
+/// Negative infinity.
+public negativeInfinity : Decimal
+let negativeInfinity = MinusInfinity
+
+let error kind message = { kind = kind, message = message, offset = None }
+
+let syntax offset message = Err { kind = InvalidSyntax, message = message, offset = Some offset }
+
+/// Render an error message with its optional input byte offset.
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.offset with
+  | None -> ""
+  | Some offset -> " at byte " ++ Int.toString offset)
+
+let validate limits =
+  if limits.maxDigits < 1 || limits.maxExponent < 0 || limits.maxExponent > 1000000000 || limits.maxInputBytes < 0 || limits.maxIntermediateDigits < limits.maxDigits || limits.maxIntermediateDigits > 10000000 || limits.maxOutputBytes < 0 || limits.maxWork < 0 then
+    Err (error InvalidOptions "invalid decimal limits (exponents are bounded by 10^9, intermediate digits by 10^7)")
+  else
+    Ok ()
+
+let bound limits exponent = exponent >= 0 - limits.maxExponent && exponent <= limits.maxExponent
+
+let make limits negative coefficient exponent =
+  if DecimalNatural.digits coefficient > limits.maxIntermediateDigits then
+    Err (error ResourceLimit "decimal intermediate exceeds its digit limit")
+  else
+    let (coefficient, zeros) = DecimalNatural.normalize coefficient
+    if DecimalNatural.isZero coefficient then
+      Ok zero
+    else if not (bound limits (exponent + zeros)) then
+      Err (error OutOfRange "decimal exponent exceeds its limit")
+    else if DecimalNatural.digits coefficient > limits.maxDigits then
+      Err (error ResourceLimit "decimal coefficient exceeds its digit limit")
+    else
+      Ok (Finite negative coefficient (exponent + zeros))
+
+let at bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+let isDigit byte = byte >= 48 && byte <= 57
+
+let digitsEnd bytes index = if isDigit (at bytes index) then digitsEnd bytes (index + 1) else index
+
+let exponentDigits bytes index value =
+  if index = Bytes.length bytes then
+    Ok value
+  else if not (isDigit (at bytes index)) then
+    syntax index "expected decimal exponent digit"
+  else
+    let digit = at bytes index - 48
+    if value > (2000000000 - digit) / 10 then
+      Err {
+        kind = OutOfRange,
+        message = "written exponent magnitude exceeds 2*10^9",
+        offset = Some index
+      }
+    else
+      exponentDigits bytes (index + 1) (value * 10 + digit)
+
+let finiteParse limits bytes =
+  let negative = at bytes 0 = 45
+  let start = if negative || at bytes 0 = 43 then 1 else 0
+  let whole = digitsEnd bytes start
+  let point = at bytes whole = 46
+  let fractionStart = whole + (if point then 1 else 0)
+  let finish = if point then digitsEnd bytes fractionStart else whole
+  if whole = start && finish = fractionStart then
+    syntax start "expected decimal digits"
+  else
+    let parsedExponent =
+      if finish = Bytes.length bytes then
+        Ok 0
+      else if at bytes finish = 101 || at bytes finish = 69 then
+        let position = finish + 1
+        let signed = at bytes position = 43 || at bytes position = 45
+        let first = position + (if signed then 1 else 0)
+        if first = Bytes.length bytes then
+          syntax first "expected exponent digits"
+        else
+          Result.map (fun exponent ->
+            if at bytes position = 45 then
+              0 - exponent
+            else
+              exponent) (exponentDigits bytes first 0)
+      else
+        syntax finish "unexpected character after decimal"
+    match parsedExponent with
+    | Err error -> Err error
+    | Ok exponent ->
+      let digits =
+        Bytes.concat (Bytes.slice start whole bytes) (if point then
+          Bytes.slice fractionStart finish bytes
+        else
+          Bytes.empty)
+      if Bytes.length digits > limits.maxIntermediateDigits then
+        Err (error ResourceLimit "decimal input coefficient exceeds its intermediate limit")
+      else
+        make limits negative (DecimalNatural.parse digits) (exponent - (if point then
+          finish - fractionStart
+        else
+          0))
+
+/// Parse strict ASCII decimal syntax or a named special value under explicit budgets.
+public parseWith : Limits -> String -> Result Decimal Error
+let parseWith limits text =
+  match validate limits with
+  | Err error -> Err error
+  | Ok _ ->
+    let bytes = Bytes.fromString text
+    if Bytes.length bytes > limits.maxInputBytes then
+      Err (error ResourceLimit "decimal input exceeds byte limit")
+    else if text = "NaN" then
+      Ok nan
+    else if text = "Infinity" || text = "+Infinity" then
+      Ok positiveInfinity
+    else if text = "-Infinity" then Ok negativeInfinity else finiteParse limits bytes
+
+/// Parse with default budgets, normalizing coefficient zeros and presentation scale.
+public parse : String -> Result Decimal Error
+let parse text = parseWith defaults text
+
+/// Construct an exact Decimal from any signed 64-bit Int.
+public fromInt : Int -> Decimal
+let fromInt value =
+  // Text handles Int.MIN without negating it in a machine integer.
+  Result.withDefault zero (parse (Int.toString value))
+
+/// Return the value's finite or special category.
+public classify : Decimal -> Classification
+let classify value =
+  match value with
+  | Finite _ _ _ -> FiniteValue
+  | MinusInfinity -> NegativeInfinity
+  | PlusInfinity -> PositiveInfinity
+  | NotANumber -> NaN
+
+/// Whether the value is neither NaN nor infinity.
+public isFinite : Decimal -> Bool
+let isFinite value = classify value = FiniteValue
+
+/// Whether the value is canonical NaN.
+public isNaN : Decimal -> Bool
+let isNaN value = classify value = NaN
+
+/// Whether the value is either signed infinity.
+public isInfinite : Decimal -> Bool
+let isInfinite value = classify value = NegativeInfinity || classify value = PositiveInfinity
+
+/// Whether the value is canonical zero.
+public isZero : Decimal -> Bool
+let isZero value = value = zero
+
+/// Inspect finite components; specials return None.
+public parts : Decimal -> Option Parts
+let parts value =
+  match value with
+  | Finite negative coefficient exponent -> Some {
+    coefficient = DecimalNatural.toString coefficient,
+    exponent = exponent,
+    negative = negative
+  }
+  | _ -> None
+
+let sign value =
+  match value with
+  | Finite negative _ _ -> negative
+  | MinusInfinity -> true
+  | _ -> false
+
+/// Flip sign; zero and NaN retain their canonical identity.
+public negate : Decimal -> Decimal
+let negate value =
+  match value with
+  | Finite negative coefficient exponent ->
+    if DecimalNatural.isZero coefficient then zero else Finite (not negative) coefficient exponent
+  | MinusInfinity -> PlusInfinity
+  | PlusInfinity -> MinusInfinity
+  | NotANumber -> NotANumber
+
+/// Magnitude, preserving NaN and mapping either infinity to positive infinity.
+public abs : Decimal -> Decimal
+let abs value = if sign value then negate value else value
+
+let padZeroes count = String.joinArray "" (Array.repeat count "0")
+
+let renderFinite negative coefficient exponent =
+  let digits = DecimalNatural.toString coefficient
+  let length = String.length digits
+  let point = length + exponent
+  let prefix = if negative then "-" else ""
+  if exponent >= 0 && point <= 21 then
+    prefix ++ digits ++ padZeroes exponent
+  else if exponent < 0 && point > 0 then
+    prefix ++ String.take point digits ++ "." ++ String.drop point digits
+  else if point <= 0 && point >= -5 then
+    prefix ++ "0." ++ padZeroes (0 - point) ++ digits
+  else
+    prefix ++ String.take 1 digits ++ (if length = 1 then
+      ""
+    else
+      "." ++ String.drop 1 digits) ++ "e" ++ Int.toString (point - 1)
+
+/// Deterministic exact spelling, with scientific notation for distant exponents.
+public toString : Decimal -> String
+let toString value =
+  match value with
+  | Finite negative coefficient exponent -> renderFinite negative coefficient exponent
+  | MinusInfinity -> "-Infinity"
+  | PlusInfinity -> "Infinity"
+  | NotANumber -> "NaN"
+
+let coefficientAt bytes index =
+  if index < Bytes.length bytes then Bytes.unsafeGet index bytes else 48
+
+let compareDigits a b index count =
+  if index = count then
+    0
+  else
+    let x = coefficientAt a index
+    let y = coefficientAt b index
+    if x < y then -1 else if x > y then 1 else compareDigits a b (index + 1) count
+
+let magnitude a ea b eb =
+  let da = DecimalNatural.digits a
+  let db = DecimalNatural.digits b
+  let az = DecimalNatural.isZero a
+  let bz = DecimalNatural.isZero b
+  if az || bz then
+    if az && bz then 0 else if az then -1 else 1
+  else if da + ea < db + eb then
+    -1
+  else if da + ea > db + eb then
+    1
+  else
+    compareDigits (Bytes.fromString (DecimalNatural.toString a)) (Bytes.fromString (DecimalNatural.toString b)) 0 (if da > db then
+      da
+    else
+      db)
+
+/// Total numerical order, placing canonical NaN after positive infinity.
+public compare : Decimal -> Decimal -> Int
+let compare a b =
+  match (a, b) with
+  | (NotANumber, NotANumber) -> 0
+  | (NotANumber, _) -> 1
+  | (_, NotANumber) -> -1
+  | (MinusInfinity, MinusInfinity) -> 0
+  | (PlusInfinity, PlusInfinity) -> 0
+  | (MinusInfinity, _) -> -1
+  | (_, MinusInfinity) -> 1
+  | (PlusInfinity, _) -> 1
+  | (_, PlusInfinity) -> -1
+  | (Finite sa ca ea, Finite sb cb eb) ->
+    if sa <> sb then
+      if sa then -1 else 1
+    else
+      let order = magnitude ca ea cb eb
+      if sa then 0 - order else order
+
+let operand limits value =
+  match value with
+  | Finite _ coefficient exponent ->
+    if DecimalNatural.digits coefficient > limits.maxDigits || not (bound limits exponent) then
+      Err (error ResourceLimit "operand exceeds decimal limits")
+    else
+      Ok ()
+  | _ -> Ok ()
+
+let inputs limits a b =
+  match validate limits with
+  | Err error -> Err error
+  | Ok _ ->
+    match operand limits a with
+    | Err error -> Err error
+    | Ok _ -> operand limits b
+
+let work remaining units =
+  if units > remaining then
+    Err (error ResourceLimit "decimal work limit exceeded")
+  else
+    Ok (remaining - units)
+
+let productCost a b = Array.length a * Array.length b
+
+let divisionCost a b = (Array.length a + 1) * (Array.length b + 1) * 64
+
+let scale limits value amount =
+  if DecimalNatural.isZero value then
+    Ok value
+  else if amount > limits.maxIntermediateDigits - DecimalNatural.digits value then
+    Err (error ResourceLimit "alignment exceeds intermediate digit limit")
+  else
+    Ok (DecimalNatural.timesPowerTen value amount)
+
+/// Exact addition; resource limits never cause implicit rounding.
+public addWith : Limits -> Decimal -> Decimal -> Result Decimal Error
+let addWith limits a b =
+  match inputs limits a b with
+  | Err error -> Err error
+  | Ok _ ->
+    match (a, b) with
+    | (NotANumber, _) -> Ok nan
+    | (_, NotANumber) -> Ok nan
+    | (MinusInfinity, PlusInfinity) ->
+      Err (error InvalidOperation "opposite infinities cannot be added")
+    | (PlusInfinity, MinusInfinity) ->
+      Err (error InvalidOperation "opposite infinities cannot be added")
+    | (Finite sa ca ea, Finite sb cb eb) ->
+      if isZero a then
+        Ok b
+      else if isZero b then
+        Ok a
+      else
+        let exponent = if ea < eb then ea else eb
+        match (scale limits ca (ea - exponent), scale limits cb (eb - exponent)) with
+        | (Err error, _) -> Err error
+        | (_, Err error) -> Err error
+        | (Ok ca, Ok cb) ->
+          match work limits.maxWork (Array.length ca + Array.length cb) with
+          | Err error -> Err error
+          | Ok _ ->
+            if sa = sb then
+              make limits sa (DecimalNatural.add ca cb) exponent
+            else if DecimalNatural.compareMagnitude ca cb < 0 then
+              make limits sb (DecimalNatural.subtract cb ca) exponent
+            else
+              make limits sa (DecimalNatural.subtract ca cb) exponent
+    | (Finite _ _ _, _) -> Ok b
+    | _ -> Ok a
+
+/// Exact addition with default budgets.
+public add : Decimal -> Decimal -> Result Decimal Error
+let add a b = addWith defaults a b
+
+/// Exact subtraction under explicit budgets.
+public subtractWith : Limits -> Decimal -> Decimal -> Result Decimal Error
+let subtractWith limits a b = addWith limits a (negate b)
+
+/// Exact subtraction with default budgets.
+public subtract : Decimal -> Decimal -> Result Decimal Error
+let subtract a b = subtractWith defaults a b
+
+/// Exact multiplication, rejecting undefined special-value operations.
+public multiplyWith : Limits -> Decimal -> Decimal -> Result Decimal Error
+let multiplyWith limits a b =
+  match inputs limits a b with
+  | Err error -> Err error
+  | Ok _ ->
+    match (a, b) with
+    | (NotANumber, _) -> Ok nan
+    | (_, NotANumber) -> Ok nan
+    | (Finite sa ca ea, Finite sb cb eb) ->
+      if isZero a || isZero b then
+        Ok zero
+      else if DecimalNatural.digits ca + DecimalNatural.digits cb > limits.maxIntermediateDigits + 1 then
+        Err (error ResourceLimit "product exceeds intermediate digit limit")
+      else
+        match work limits.maxWork (productCost ca cb) with
+        | Err error -> Err error
+        | Ok _ -> make limits (sa <> sb) (DecimalNatural.multiply ca cb) (ea + eb)
+    | _ ->
+      if isZero a || isZero b then
+        Err (error InvalidOperation "zero times infinity is undefined")
+      else
+        Ok (if sign a <> sign b then negativeInfinity else positiveInfinity)
+
+/// Exact multiplication with default budgets.
+public multiply : Decimal -> Decimal -> Result Decimal Error
+let multiply a b = multiplyWith defaults a b
+
+let rounded limits mode negative quotient remainder half exponent =
+  let inexact = not (DecimalNatural.isZero remainder)
+  if inexact && mode = Exact then
+    Err (error Inexact "rounding would discard nonzero digits")
+  else
+    let increase =
+      inexact && (match mode with
+      | Exact -> false
+      | TowardZero -> false
+      | AwayFromZero -> true
+      | Floor -> negative
+      | Ceiling -> not negative
+      | HalfAwayFromZero -> half >= 0
+      | HalfTowardZero -> half > 0
+      | HalfEven -> half > 0 || (half = 0 && DecimalNatural.isOdd quotient))
+    let coefficient = if increase then DecimalNatural.add quotient DecimalNatural.one else quotient
+    Result.map (fun value -> {
+      inexact = inexact,
+      value = value
+    }) (make limits negative coefficient exponent)
+
+let targetScale limits scale =
+  if scale < -1000000000 || scale > 1000000000 then
+    Err (error OutOfRange "target scale must be within -10^9..10^9")
+  else
+    Ok ()
+
+/// Round to decimal places; negative scales round to tens, hundreds, and so on.
+public roundToScaleWith : Limits -> Int -> Rounding -> Decimal -> Result Rounded Error
+let roundToScaleWith limits places mode value =
+  match inputs limits value zero with
+  | Err error -> Err error
+  | Ok _ ->
+    match targetScale limits places with
+    | Err error -> Err error
+    | Ok _ ->
+      match value with
+      | Finite negative coefficient exponent ->
+        if exponent + places >= 0 || isZero value then
+          Ok { inexact = false, value = value }
+        else
+          let removed = 0 - exponent - places
+          match work limits.maxWork (Array.length coefficient * 4 + 1) with
+          | Err error -> Err error
+          | Ok _ ->
+            let (quotient, remainder) = DecimalNatural.splitPowerTen coefficient removed
+            let half =
+              magnitude (DecimalNatural.multiplySmall remainder 2) 0 DecimalNatural.one removed
+            rounded limits mode negative quotient remainder half (0 - places)
+      | _ -> Ok { inexact = false, value = value }
+
+/// Round to decimal places with default resource budgets.
+public roundToScale : Int -> Rounding -> Decimal -> Result Rounded Error
+let roundToScale places mode value = roundToScaleWith defaults places mode value
+
+/// Round to a positive number of significant digits under explicit budgets.
+public roundToPrecisionWith : Limits -> Int -> Rounding -> Decimal -> Result Rounded Error
+let roundToPrecisionWith limits precision mode value =
+  match inputs limits value zero with
+  | Err error -> Err error
+  | Ok _ ->
+    if precision < 1 || precision > limits.maxDigits then
+      Err (error InvalidOptions "precision must be positive and fit the digit limit")
+    else
+      match value with
+      | Finite _ coefficient exponent ->
+        if DecimalNatural.digits coefficient <= precision then
+          Ok { inexact = false, value = value }
+        else
+          roundToScaleWith limits (precision - DecimalNatural.digits coefficient - exponent) mode value
+      | _ -> Ok { inexact = false, value = value }
+
+/// Significant-digit rounding with default budgets.
+public roundToPrecision : Int -> Rounding -> Decimal -> Result Rounded Error
+let roundToPrecision precision mode value = roundToPrecisionWith defaults precision mode value
+
+let divisionSpecial a b =
+  if isNaN a || isNaN b then
+    Some (Ok nan)
+  else if isZero b then
+    Some (Err (error DivisionByZero "decimal division by zero"))
+  else if isInfinite a && isInfinite b then
+    Some (Err (error InvalidOperation "infinity divided by infinity is undefined"))
+  else if isInfinite a then
+    Some (Ok (if sign a <> sign b then negativeInfinity else positiveInfinity))
+  else if isInfinite b || isZero a then Some (Ok zero) else None
+
+let division limits a b =
+  match work limits.maxWork (divisionCost a b) with
+  | Err error -> Err error
+  | Ok _ -> Ok (DecimalNatural.divide a b)
+
+let finiteDivideRounded limits places mode sa ca ea sb cb eb =
+  if magnitude ca (ea + places) cb eb < 0 then
+    match work limits.maxWork (Array.length ca + Array.length cb + 2) with
+    | Err error -> Err error
+    | Ok _ ->
+      let half = magnitude (DecimalNatural.multiplySmall ca 2) (ea + places) cb eb
+      rounded limits mode (sa <> sb) DecimalNatural.zero ca half (0 - places)
+  else
+    let shift = ea - eb + places
+    let numerator = scale limits ca (if shift > 0 then shift else 0)
+    let denominator = scale limits cb (if shift < 0 then 0 - shift else 0)
+    match (numerator, denominator) with
+    | (Err error, _) -> Err error
+    | (_, Err error) -> Err error
+    | (Ok numerator, Ok denominator) ->
+      match division limits numerator denominator with
+      | Err error -> Err error
+      | Ok (quotient, remainder) ->
+        rounded limits mode (sa <> sb) quotient remainder (DecimalNatural.compareMagnitude (DecimalNatural.multiplySmall remainder 2) denominator) (0 - places)
+
+/// Divide dividend by divisor and round to the requested decimal places.
+public divideToScaleWith : Limits -> Int -> Rounding -> Decimal -> Decimal -> Result Rounded Error
+let divideToScaleWith limits places mode a b =
+  match inputs limits a b with
+  | Err error -> Err error
+  | Ok _ ->
+    match targetScale limits places with
+    | Err error -> Err error
+    | Ok _ ->
+      match divisionSpecial a b with
+      | Some result -> Result.map (fun value -> { inexact = false, value = value }) result
+      | None ->
+        match (a, b) with
+        | (Finite sa ca ea, Finite sb cb eb) ->
+          finiteDivideRounded limits places mode sa ca ea sb cb eb
+        | _ -> Err (error InvalidOperation "unsupported division operands")
+
+/// Scale-directed division with default budgets.
+public divideToScale : Int -> Rounding -> Decimal -> Decimal -> Result Rounded Error
+let divideToScale places mode a b = divideToScaleWith defaults places mode a b
+
+/// Divide and round to positive significant-digit precision.
+public divideToPrecisionWith : Limits -> Int -> Rounding -> Decimal -> Decimal -> Result Rounded Error
+let divideToPrecisionWith limits precision mode a b =
+  match inputs limits a b with
+  | Err error -> Err error
+  | Ok _ ->
+    if precision < 1 || precision > limits.maxDigits then
+      Err (error InvalidOptions "precision must be positive and fit the digit limit")
+    else
+      match divisionSpecial a b with
+      | Some result -> Result.map (fun value -> { inexact = false, value = value }) result
+      | None ->
+        match (a, b) with
+        | (Finite sa ca ea, Finite sb cb eb) ->
+          let difference = DecimalNatural.digits ca - DecimalNatural.digits cb
+          let adjust = if magnitude ca 0 cb difference < 0 then 1 else 0
+          let places = precision - 1 - (ea - eb + difference - adjust)
+          divideToScaleWith limits places mode a b
+        | _ -> Err (error InvalidOperation "unsupported division operands")
+
+/// Precision-directed division with default budgets.
+public divideToPrecision : Int -> Rounding -> Decimal -> Decimal -> Result Rounded Error
+let divideToPrecision precision mode a b = divideToPrecisionWith defaults precision mode a b
+
+let gcd a b remaining =
+  if DecimalNatural.isZero b then
+    Ok (a, remaining)
+  else
+    match work remaining (divisionCost a b) with
+    | Err error -> Err error
+    | Ok remaining ->
+      let (_, remainder) = DecimalNatural.divide a b
+      gcd b remainder remaining
+
+let factors value factor count remaining =
+  if value = DecimalNatural.one then
+    Ok (value, count, remaining)
+  else
+    match work remaining (Array.length value + 1) with
+    | Err error -> Err error
+    | Ok remaining ->
+      let (quotient, rest) = DecimalNatural.divideSmall value factor
+      if rest = 0 then
+        factors quotient factor (count + 1) remaining
+      else
+        Ok (value, count, remaining)
+
+let timesSmallState limits value factor count remaining =
+  if count = 0 then
+    Ok (value, remaining)
+  else
+    match work remaining (Array.length value + 1) with
+    | Err error -> Err error
+    | Ok remaining ->
+      let value = DecimalNatural.multiplySmall value factor
+      if DecimalNatural.digits value > limits.maxIntermediateDigits then
+        Err (error ResourceLimit "exact quotient exceeds intermediate digit limit")
+      else
+        timesSmallState limits value factor (count - 1) remaining
+
+let first pair =
+  let (value, _) = pair
+  value
+
+let timesSmall limits value factor count remaining =
+  Result.map first (timesSmallState limits value factor count remaining)
+
+let finiteDivideExact limits sa ca ea sb cb eb =
+  match gcd ca cb limits.maxWork with
+  | Err error -> Err error
+  | Ok (common, remaining) ->
+    match work remaining (divisionCost ca common + divisionCost cb common) with
+    | Err error -> Err error
+    | Ok remaining ->
+      let (numerator, _) = DecimalNatural.divide ca common
+      let (denominator, _) = DecimalNatural.divide cb common
+      match factors denominator 2 0 remaining with
+      | Err error -> Err error
+      | Ok (denominator, twos, remaining) ->
+        match factors denominator 5 0 remaining with
+        | Err error -> Err error
+        | Ok (denominator, fives, remaining) ->
+          if denominator <> DecimalNatural.one then
+            Err (error NonTerminating "exact quotient has a nonterminating decimal expansion")
+          else
+            let places = if twos > fives then twos else fives
+            let factor = if twos > fives then 5 else 2
+            let count = if twos > fives then twos - fives else fives - twos
+            match timesSmall limits numerator factor count remaining with
+            | Err error -> Err error
+            | Ok coefficient -> make limits (sa <> sb) coefficient (ea - eb - places)
+
+/// Exact terminating division. Other finite expansions report NonTerminating.
+public divideExactWith : Limits -> Decimal -> Decimal -> Result Decimal Error
+let divideExactWith limits a b =
+  match inputs limits a b with
+  | Err error -> Err error
+  | Ok _ ->
+    match divisionSpecial a b with
+    | Some result -> result
+    | None ->
+      match (a, b) with
+      | (Finite sa ca ea, Finite sb cb eb) -> finiteDivideExact limits sa ca ea sb cb eb
+      | _ -> Err (error InvalidOperation "unsupported division operands")
+
+/// Exact terminating division with default budgets.
+public divideExact : Decimal -> Decimal -> Result Decimal Error
+let divideExact a b = divideExactWith defaults a b
+
+/// Convert an integral finite value to Int, rejecting fractions and overflow.
+public toIntExact : Decimal -> Result Int Error
+let toIntExact value =
+  match value with
+  | Finite negative coefficient exponent ->
+    if DecimalNatural.isZero coefficient then
+      Ok 0
+    else if exponent < 0 then
+      Err (error Inexact "decimal is not an integer")
+    else if DecimalNatural.digits coefficient + exponent > 19 then
+      Err (error OutOfRange "decimal exceeds Int range")
+    else
+      let input = Bytes.fromString (DecimalNatural.toString coefficient ++ padZeroes exponent)
+      integerFromBytes input 0 0 (if negative then
+        -9223372036854775808
+      else
+        -9223372036854775807) negative
+  | _ -> Err (error InvalidOperation "non-finite decimal cannot be an Int")
+
+let integerFromBytes input index value limit negative =
+  if index = Bytes.length input then
+    Ok (if negative then value else 0 - value)
+  else
+    let digit = Bytes.unsafeGet index input - 48
+    if value < (limit + digit) / 10 then
+      Err (error OutOfRange "decimal exceeds Int range")
+    else
+      integerFromBytes input (index + 1) (value * 10 - digit) limit negative
+
+/// Fixed-place text and inexactness; output padding is checked before allocation.
+public toFixedWith : Limits -> Int -> Rounding -> Decimal -> Result (String * Bool) Error
+let toFixedWith limits places mode value =
+  if places < 0 then
+    Err (error InvalidOptions "fixed formatting places must be nonnegative")
+  else
+    match roundToScaleWith limits places mode value with
+    | Err error -> Err error
+    | Ok rounded ->
+      match rounded.value with
+      | Finite negative coefficient exponent ->
+        let digits = DecimalNatural.digits coefficient
+        let point = if isZero rounded.value then 1 else digits + exponent
+        let length =
+          (if point > 0 then
+            point
+          else
+            1) + (if places = 0 then 0 else places + 1) + (if negative then 1 else 0)
+        if length > limits.maxOutputBytes then
+          Err (error ResourceLimit "fixed output exceeds byte limit")
+        else
+          let coefficient = DecimalNatural.toString coefficient
+          let text =
+            if point <= 0 then
+              "0." ++ padZeroes (0 - point) ++ coefficient ++ padZeroes (places + point - digits)
+            else if point >= digits then
+              coefficient ++ padZeroes (point - digits) ++ (if places = 0 then
+                ""
+              else
+                "." ++ padZeroes places)
+            else
+              String.take point coefficient ++ "." ++ String.drop point coefficient ++ padZeroes (places - digits + point)
+          Ok ((if negative then "-" else "") ++ text, rounded.inexact)
+      | _ ->
+        let text = toString rounded.value
+        if String.length text > limits.maxOutputBytes then
+          Err (error ResourceLimit "fixed output exceeds byte limit")
+        else
+          Ok (text, false)
+
+/// Fixed-place formatting with default budgets; places must be nonnegative.
+public toFixed : Int -> Rounding -> Decimal -> Result (String * Bool) Error
+let toFixed places mode value = toFixedWith defaults places mode value
+
+let floatParts bits =
+  let field = Int.and (Int.shiftRightLogical bits 52) 2047
+  let fraction = Int.and bits 0x000fffffffffffff
+  let mantissa = if field = 0 then fraction else fraction + 0x0010000000000000
+  let exponent = if field = 0 then -1074 else field - 1075
+  (mantissa, exponent)
+
+let binaryDecimal limits negative mantissa exponent remaining =
+  let factor = if exponent < 0 then 5 else 2
+  let count = if exponent < 0 then 0 - exponent else exponent
+  match timesSmallState limits (DecimalNatural.fromInt mantissa) factor count remaining with
+  | Err error -> Err error
+  | Ok (coefficient, remaining) ->
+    let (coefficient, zeros) = DecimalNatural.normalize coefficient
+    Ok (Finite (negative && not (DecimalNatural.isZero coefficient)) coefficient ((if exponent < 0 then
+      exponent
+    else
+      0) + zeros), remaining)
+
+/// Preserve the exact binary64 value, normalizing signed zero and NaN payloads.
+public fromFloatExactWith : Limits -> Float -> Result Decimal Error
+let fromFloatExactWith limits value =
+  match validate limits with
+  | Err error -> Err error
+  | Ok _ ->
+    let bits = Float.toBits value
+    let magnitude = Int.and bits 0x7fffffffffffffff
+    if magnitude > 0x7ff0000000000000 then
+      Ok nan
+    else if magnitude = 0x7ff0000000000000 then
+      Ok (if bits < 0 then negativeInfinity else positiveInfinity)
+    else if magnitude = 0 then
+      Ok zero
+    else
+      let (mantissa, exponent) = floatParts bits
+      match binaryDecimal limits (bits < 0) mantissa exponent limits.maxWork with
+      | Err error -> Err error
+      | Ok (value, _) -> Result.map (fun _ -> value) (operand limits value)
+
+/// Exact binary64 conversion with default resource budgets.
+public fromFloatExact : Float -> Result Decimal Error
+let fromFloatExact value = fromFloatExactWith defaults value
+
+/// Parse the Float's shortest round-trip decimal spelling under explicit budgets.
+public fromFloatShortestWith : Limits -> Float -> Result Decimal Error
+let fromFloatShortestWith limits value =
+  let bits = Float.toBits value
+  let magnitude = Int.and bits 0x7fffffffffffffff
+  if magnitude >= 0x7ff0000000000000 then
+    fromFloatExactWith limits value
+  else
+    parseWith limits (Float.toString value)
+
+/// Shortest-spelling conversion, distinct from preserving the exact binary value.
+public fromFloatShortest : Float -> Result Decimal Error
+let fromFloatShortest value = fromFloatShortestWith defaults value
+
+let midpoint limits bits remaining =
+  let (mantissa, exponent) = floatParts bits
+  binaryDecimal limits false (mantissa * 2 + 1) (exponent - 1) remaining
+
+let nearestBits limits value low high remaining =
+  if low = high then
+    Ok low
+  else
+    let middle = low + (high - low) / 2
+    match midpoint limits middle remaining with
+    | Err error -> Err error
+    | Ok (boundary, remaining) ->
+      let order = compare value boundary
+      if order < 0 || (order = 0 && Int.and middle 1 = 0) then
+        nearestBits limits value low middle remaining
+      else
+        nearestBits limits value (middle + 1) high remaining
+
+/// Round to binary64 using exact midpoint comparisons; finite overflow is an error.
+public toFloatWith : Limits -> Decimal -> Result Float Error
+let toFloatWith limits value =
+  match inputs limits value zero with
+  | Err error -> Err error
+  | Ok _ ->
+    match value with
+    | NotANumber -> Ok (Float.fromBits 0x7ff8000000000000)
+    | MinusInfinity -> Ok (Float.fromBits 0xfff0000000000000)
+    | PlusInfinity -> Ok (Float.fromBits 0x7ff0000000000000)
+    | Finite negative coefficient exponent ->
+      let order = DecimalNatural.digits coefficient + exponent
+      let converted =
+        if isZero value || order < -324 then
+          Ok 0
+        else if order > 309 then
+          Ok 0x7ff0000000000000
+        else
+          nearestBits limits (abs value) 0 0x7ff0000000000000 limits.maxWork
+      match converted with
+      | Err error -> Err error
+      | Ok bits ->
+        if bits = 0x7ff0000000000000 then
+          Err (error OutOfRange "decimal exceeds finite Float range")
+        else
+          Ok (Float.fromBits (if negative then Int.or bits 0x8000000000000000 else bits))
+
+/// Binary64 conversion with default resource budgets.
+public toFloat : Decimal -> Result Float Error
+let toFloat value = toFloatWith defaults value
+
+/// Exact normalized spelling, checking operand and output budgets.
+public toStringWith : Limits -> Decimal -> Result String Error
+let toStringWith limits value =
+  match inputs limits value zero with
+  | Err error -> Err error
+  | Ok _ ->
+    let text = toString value
+    if String.length text > limits.maxOutputBytes then
+      Err (error ResourceLimit "decimal output exceeds byte limit")
+    else
+      Ok text
+
+/// Scientific text with exactly the requested significant digits and inexactness.
+public toScientificWith : Limits -> Int -> Rounding -> Decimal -> Result (String * Bool) Error
+let toScientificWith limits precision mode value =
+  match roundToPrecisionWith limits precision mode value with
+  | Err error -> Err error
+  | Ok rounded ->
+    match rounded.value with
+    | Finite negative coefficient exponent ->
+      let power =
+        if isZero rounded.value then 0 else DecimalNatural.digits coefficient + exponent - 1
+      let length =
+        precision + (if negative then
+          1
+        else
+          0) + (if precision > 1 then 1 else 0) + 1 + String.length (Int.toString power)
+      if length > limits.maxOutputBytes then
+        Err (error ResourceLimit "scientific output exceeds byte limit")
+      else
+        let digits = DecimalNatural.toString coefficient
+        let digits = digits ++ padZeroes (precision - String.length digits)
+        let text =
+          (if negative then
+            "-"
+          else
+            "") ++ String.take 1 digits ++ (if precision > 1 then
+            "." ++ String.drop 1 digits
+          else
+            "") ++ "e" ++ Int.toString power
+        if String.length text > limits.maxOutputBytes then
+          Err (error ResourceLimit "scientific output exceeds byte limit")
+        else
+          Ok (text, rounded.inexact)
+    | _ -> Result.map (fun text -> (text, false)) (toStringWith limits rounded.value)
+
+/// Scientific formatting with default budgets.
+public toScientific : Int -> Rounding -> Decimal -> Result (String * Bool) Error
+let toScientific precision mode value = toScientificWith defaults precision mode value
+
+/// Validate unsigned coefficient digits and normalize explicit finite components.
+public fromPartsWith : Limits -> Parts -> Result Decimal Error
+let fromPartsWith limits parts =
+  match validate limits with
+  | Err error -> Err error
+  | Ok _ ->
+    let bytes = Bytes.fromString parts.coefficient
+    if not (bound limits parts.exponent) then
+      Err (error OutOfRange "decimal exponent exceeds its limit")
+    else if Bytes.length bytes = 0 || digitsEnd bytes 0 <> Bytes.length bytes then
+      Err (error InvalidSyntax "coefficient must contain ASCII decimal digits")
+    else if Bytes.length bytes > limits.maxInputBytes || Bytes.length bytes > limits.maxIntermediateDigits then
+      Err (error ResourceLimit "coefficient exceeds input limits")
+    else
+      make limits parts.negative (DecimalNatural.parse bytes) parts.exponent
+
+/// Construct finite components under default budgets.
+public fromParts : Parts -> Result Decimal Error
+let fromParts parts = fromPartsWith defaults parts

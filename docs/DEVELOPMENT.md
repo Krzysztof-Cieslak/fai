@@ -15,6 +15,11 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Decimal contracts run with `fai test -C packages --package decimal` and
+`--package decimal-codecs`. Their package-local JIT/AOT integrations cover large
+coefficients, exact and rounded arithmetic, Float conversion, shared task use,
+and exact JSON/YAML/SQL adapters. Neither package requires a compiler rebuild.
+
 YAML contracts run with `fai test -C packages --package yaml`. Its `ci.json` pins
 the published upstream data release and runs all 402 syntax/event cases, graph
 rendering round trips and application-value checks under JIT and AOT. The separate

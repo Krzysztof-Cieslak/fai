@@ -1,0 +1,73 @@
+module DecimalYaml
+
+import decimal.Decimal
+import json.JsonNumber
+import yaml.YamlData
+import yaml.YamlNumber
+import yaml.YamlDecode
+import yaml.YamlEncode
+import yaml.YamlTypes
+
+public fromValueWith : Decimal.Limits -> YamlData.Value -> Result Decimal.Decimal Decimal.Error
+let fromValueWith limits value =
+  let text =
+    match value with
+    | YamlData.Integer number -> Some (YamlNumber.integerToString number)
+    | YamlData.Float (YamlNumber.Finite number) -> Some (JsonNumber.toString number)
+    | YamlData.Float YamlNumber.NaN -> Some "NaN"
+    | YamlData.Float YamlNumber.PositiveInfinity -> Some "Infinity"
+    | YamlData.Float YamlNumber.NegativeInfinity -> Some "-Infinity"
+    | _ -> None
+  match text with
+  | None -> Err {
+    kind = Decimal.InvalidOperation,
+    message = "expected a YAML numeric value",
+    offset = None
+  }
+  | Some text -> Decimal.parseWith limits text
+
+public fromValue : YamlData.Value -> Result Decimal.Decimal Decimal.Error
+let fromValue value = fromValueWith Decimal.defaults value
+
+/// Encode finite Decimal values as exact YAML floats; no spelling/scale is retained.
+public toValueWith : Decimal.Limits -> Decimal.Decimal -> Result YamlData.Value Decimal.Error
+let toValueWith limits value =
+  match Decimal.toStringWith limits value with
+  | Err error -> Err error
+  | Ok text ->
+    match Decimal.classify value with
+    | Decimal.NaN -> Ok (YamlData.Float YamlNumber.NaN)
+    | Decimal.PositiveInfinity -> Ok (YamlData.Float YamlNumber.PositiveInfinity)
+    | Decimal.NegativeInfinity -> Ok (YamlData.Float YamlNumber.NegativeInfinity)
+    | Decimal.FiniteValue ->
+      Result.map (fun number ->
+        YamlData.Float (YamlNumber.Finite number)) (Result.mapError (fun error -> {
+        kind = Decimal.InvalidSyntax,
+        message = error.message,
+        offset = Some error.offset
+      }) (JsonNumber.fromString text))
+
+public toValue : Decimal.Decimal -> Result YamlData.Value Decimal.Error
+let toValue value = toValueWith Decimal.defaults value
+
+public decoderWith : Decimal.Limits -> YamlDecode.Decoder Decimal.Decimal
+let decoderWith limits =
+  YamlDecode.fromFunction (fun value ->
+    Result.mapError Decimal.errorToString (fromValueWith limits value))
+
+public decoder : YamlDecode.Decoder Decimal.Decimal
+let decoder = decoderWith Decimal.defaults
+
+public encoderWith : Decimal.Limits -> YamlEncode.Encoder Decimal.Decimal
+let encoderWith limits value =
+  Result.mapError (fun error -> {
+    document = 0,
+    kind = YamlTypes.Conversion,
+    message = Decimal.errorToString error,
+    path = [],
+    primary = None,
+    secondary = None
+  }) (toValueWith limits value)
+
+public encoder : YamlEncode.Encoder Decimal.Decimal
+let encoder value = encoderWith Decimal.defaults value

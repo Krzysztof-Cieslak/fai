@@ -1,0 +1,30 @@
+module DecimalCodecRuntimeChecks
+
+import decimal.Decimal
+import json.JsonDecode
+import json.JsonEncode
+import yaml.YamlDecode
+import yaml.YamlEncode
+import sql.SqlDecimal
+
+let checks =
+  let exact = Result.withDefault Decimal.nan (Decimal.parse "9007199254740993.123456789")
+  let json = JsonEncode.toString DecimalJson.encoder exact
+  let yaml = YamlEncode.toString DecimalYaml.encoder exact
+  let sql = DecimalSql.toSql exact
+  (match json with
+  | Ok text -> JsonDecode.fromString DecimalJson.decoder text = Ok exact
+  | _ -> false) && (match yaml with
+  | Ok text -> YamlDecode.fromString DecimalYaml.decoder text = Ok exact
+  | _ -> false) && (match sql with
+  | Ok value -> DecimalSql.fromSql value = Ok exact
+  | _ -> false) && (match DecimalSql.toSql Decimal.nan with
+  | Ok value -> SqlDecimal.toString value = "NaN"
+  | _ -> false) && Result.isErr (JsonEncode.toString DecimalJson.encoder Decimal.nan)
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  env.console.writeLine (if checks then
+    "Decimal codec runtime checks passed"
+  else
+    "Decimal codec runtime checks FAILED")

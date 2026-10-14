@@ -1,0 +1,82 @@
+module DecimalProperties
+
+let addSubtract a b =
+  let a = Decimal.fromInt a
+  let b = Decimal.fromInt b
+  match Decimal.add a b with
+  | Err _ -> false
+  | Ok sum -> Decimal.subtract sum b = Ok a
+forall a b: addSubtract a b
+
+let multiplication a b c =
+  let a = Decimal.fromInt a
+  let b = Decimal.fromInt b
+  let c = Decimal.fromInt c
+  match (Decimal.multiply a b, Decimal.multiply b c) with
+  | (Ok ab, Ok bc) ->
+    Decimal.multiply ab c = Decimal.multiply a bc && Decimal.multiply a b = Decimal.multiply b a
+  | _ -> false
+forall a b c: multiplication a b c
+
+let quotientProduct a b =
+  if b = 0 then
+    true
+  else
+    let a = Decimal.fromInt a
+    let b = Decimal.fromInt b
+    match Decimal.multiply a b with
+    | Err _ -> false
+    | Ok product -> Decimal.divideExact product b = Ok a
+forall a b: quotientProduct a b
+
+let sign value = if value < 0 then -1 else if value > 0 then 1 else 0
+forall a b: sign (Decimal.compare (Decimal.fromInt a) (Decimal.fromInt b)) = sign (compare a b)
+forall value: Decimal.toIntExact (Decimal.fromInt value) = Ok value
+
+let floatRoundTrip value =
+  match Decimal.fromFloatExact value with
+  | Err _ -> false
+  | Ok decimal ->
+    match Decimal.toFloat decimal with
+    | Err _ -> false
+    | Ok converted -> Float.toBits value = Float.toBits converted || decimal = Decimal.zero
+forall value: floatRoundTrip value
+
+let parsed text =
+  match Decimal.parse text with
+  | Ok value -> Decimal.parse (Decimal.toString value) = Ok value
+  | Err error ->
+    match error.offset with
+    | None -> true
+    | Some offset -> offset >= 0 && offset <= Bytes.length (Bytes.fromString text)
+forall text: parsed text
+
+let roundedTwice number places =
+  let scale = Int.and places 15 - 7
+  let value =
+    Result.withDefault Decimal.nan (Decimal.fromParts {
+      coefficient = Int.toString (Int.and number 9223372036854775807),
+      exponent = -5,
+      negative = number < 0
+    })
+  match Decimal.roundToScale scale Decimal.HalfEven value with
+  | Err _ -> false
+  | Ok rounded ->
+    Decimal.roundToScale scale Decimal.HalfEven rounded.value = Ok {
+      inexact = false,
+      value = rounded.value
+    }
+forall number places: roundedTwice number places
+
+let integerDivision a b =
+  let a = (Int.and a 65535) - 32768
+  let b = Int.and b 255 + 1
+  match Decimal.divideToScale 0 Decimal.TowardZero (Decimal.fromInt a) (Decimal.fromInt b) with
+  | Err _ -> false
+  | Ok rounded -> Decimal.toIntExact rounded.value = Ok (a / b) && rounded.inexact = (a % b <> 0)
+forall a b: integerDivision a b
+example: Set.size (Set.fromList [
+  Result.withDefault Decimal.nan (Decimal.parse "1"),
+  Result.withDefault Decimal.nan (Decimal.parse "1.00")
+]) = 1
+example: HashSet.size (HashSet.fromList [Decimal.nan, Decimal.nan]) = 1

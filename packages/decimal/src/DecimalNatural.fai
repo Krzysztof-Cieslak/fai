@@ -1,0 +1,224 @@
+module DecimalNatural
+
+// Unsigned little-endian base-10^9 limbs. Zero has no limbs; every other value
+// has a nonzero final limb. Products plus carry fit a signed 64-bit word.
+internal type Natural = Array Int
+
+internal base : Int
+let base = 1000000000
+
+internal zero : Natural
+let zero = Array.empty
+
+internal one : Natural
+let one = [| 1 |]
+
+let lastNonzero value index =
+  if index < 0 || Array.unsafeGet index value <> 0 then index else lastNonzero value (index - 1)
+
+internal trim : Natural -> Natural
+let trim value = Array.take (lastNonzero value (Array.length value - 1) + 1) value
+
+internal isZero : Natural -> Bool
+let isZero value = Array.isEmpty value
+
+internal fromInt : Int -> Natural
+let fromInt value =
+  if value = 0 then zero else if value < base then [| value |] else [| value % base, value / base |]
+
+let limb value index = if index < Array.length value then Array.unsafeGet index value else 0
+
+let compareFrom a b index =
+  if index < 0 then
+    0
+  else
+    let x = Array.unsafeGet index a
+    let y = Array.unsafeGet index b
+    if x < y then -1 else if x > y then 1 else compareFrom a b (index - 1)
+
+internal compareMagnitude : Natural -> Natural -> Int
+let compareMagnitude a b =
+  if Array.length a < Array.length b then
+    -1
+  else if Array.length a > Array.length b then 1 else compareFrom a b (Array.length a - 1)
+
+let addFrom a b index count carry output =
+  if index = count then
+    if carry = 0 then output else Array.push carry output
+  else
+    let sum = limb a index + limb b index + carry
+    addFrom a b (index + 1) count (sum / base) (Array.push (sum % base) output)
+
+internal add : Natural -> Natural -> Natural
+let add a b =
+  addFrom a b 0 (if Array.length a > Array.length b then
+    Array.length a
+  else
+    Array.length b) 0 Array.empty
+
+let subFrom a b index borrow output =
+  if index = Array.length a then
+    trim output
+  else
+    let difference = Array.unsafeGet index a - limb b index - borrow
+    subFrom a b (index + 1) (if difference < 0 then
+      1
+    else
+      0) (Array.push (if difference < 0 then difference + base else difference) output)
+
+/// Subtract b from a when a >= b.
+internal subtract : Natural -> Natural -> Natural
+let subtract a b = subFrom a b 0 0 Array.empty
+
+let smallFrom a factor index carry output =
+  if index = Array.length a then
+    if carry = 0 then trim output else Array.push carry output
+  else
+    let product = Array.unsafeGet index a * factor + carry
+    smallFrom a factor (index + 1) (product / base) (Array.push (product % base) output)
+
+internal multiplySmall : Natural -> Int -> Natural
+let multiplySmall a factor = smallFrom a factor 0 0 Array.empty
+
+let productRow a b i j carry output =
+  if j = Array.length b then
+    Array.unsafeSet (i + j) carry output
+  else
+    let product = Array.unsafeGet i a * Array.unsafeGet j b + Array.unsafeGet (i + j) output + carry
+    productRow a b i (j + 1) (product / base) (Array.unsafeSet (i + j) (product % base) output)
+
+let productRows a b i output =
+  if i = Array.length a then trim output else productRows a b (i + 1) (productRow a b i 0 0 output)
+
+internal multiply : Natural -> Natural -> Natural
+let multiply a b =
+  if isZero a || isZero b then
+    zero
+  else
+    productRows a b 0 (Array.repeat (Array.length a + Array.length b) 0)
+
+let divideSmallFrom value divisor index remainder output =
+  if index < 0 then
+    (trim output, remainder)
+  else
+    let word = remainder * base + Array.unsafeGet index value
+    divideSmallFrom value divisor (index - 1) (word % divisor) (Array.unsafeSet index (word / divisor) output)
+
+internal divideSmall : Natural -> Int -> (Natural * Int)
+let divideSmall value divisor =
+  divideSmallFrom value divisor (Array.length value - 1) 0 (Array.repeat (Array.length value) 0)
+
+let chooseDigit divisor remainder low high =
+  if low = high then
+    low
+  else
+    let mid = low + (high - low + 1) / 2
+    if compareMagnitude (multiplySmall divisor mid) remainder <= 0 then
+      chooseDigit divisor remainder mid high
+    else
+      chooseDigit divisor remainder low (mid - 1)
+
+let shiftWord value word = if isZero value then fromInt word else Array.append [| word |] value
+
+let divideFrom numerator divisor index remainder quotient =
+  if index < 0 then
+    (trim quotient, remainder)
+  else
+    let remainder = shiftWord remainder (Array.unsafeGet index numerator)
+    let word = chooseDigit divisor remainder 0 (base - 1)
+    let remainder = subtract remainder (multiplySmall divisor word)
+    divideFrom numerator divisor (index - 1) remainder (Array.unsafeSet index word quotient)
+
+/// Long division with a nonzero divisor.
+internal divide : Natural -> Natural -> (Natural * Natural)
+let divide numerator divisor =
+  if compareMagnitude numerator divisor < 0 then
+    (zero, numerator)
+  else if Array.length divisor = 1 then
+    let (quotient, remainder) = divideSmall numerator (Array.unsafeGet 0 divisor)
+    (quotient, fromInt remainder)
+  else
+    divideFrom numerator divisor (Array.length numerator - 1) zero (Array.repeat (Array.length numerator) 0)
+
+let digitCount word count = if word < 10 then count + 1 else digitCount (word / 10) (count + 1)
+
+internal digits : Natural -> Int
+let digits value =
+  if isZero value then
+    1
+  else
+    (Array.length value - 1) * 9 + digitCount (Array.unsafeGet (Array.length value - 1) value) 0
+
+let render value index output =
+  if index < 0 then
+    output
+  else
+    render value (index - 1) (output ++ String.padStart 9 "0" (Int.toString (Array.unsafeGet index value)))
+
+internal toString : Natural -> String
+let toString value =
+  if isZero value then
+    "0"
+  else
+    render value (Array.length value - 2) (Int.toString (Array.unsafeGet (Array.length value - 1) value))
+
+let parseChunk bytes first last value =
+  if first = last then
+    value
+  else
+    parseChunk bytes (first + 1) last (value * 10 + Bytes.unsafeGet first bytes - 48)
+
+let parseChunks bytes finish output =
+  if finish = 0 then
+    trim output
+  else
+    let start = if finish > 9 then finish - 9 else 0
+    parseChunks bytes start (Array.push (parseChunk bytes start finish 0) output)
+
+/// Parse nonempty validated ASCII digits.
+internal parse : Bytes -> Natural
+let parse bytes = parseChunks bytes (Bytes.length bytes) Array.empty
+
+let smallPower n value = if n = 0 then value else smallPower (n - 1) (value * 10)
+
+internal timesPowerTen : Natural -> Int -> Natural
+let timesPowerTen value exponent =
+  if isZero value then
+    value
+  else
+    Array.append (Array.repeat (exponent / 9) 0) (multiplySmall value (smallPower (exponent % 9) 1))
+
+let stripWords value offset =
+  if offset < Array.length value && Array.unsafeGet offset value = 0 then
+    stripWords value (offset + 1)
+  else
+    offset
+
+let stripDigits value exponent =
+  if isZero value || Array.unsafeGet 0 value % 10 <> 0 then
+    (value, exponent)
+  else
+    let (value, _) = divideSmall value 10
+    stripDigits value (exponent + 1)
+
+internal normalize : Natural -> (Natural * Int)
+let normalize value =
+  if isZero value then
+    (zero, 0)
+  else
+    let words = stripWords value 0
+    stripDigits (Array.drop words value) (words * 9)
+
+internal isOdd : Natural -> Bool
+let isOdd value = not (isZero value) && Array.unsafeGet 0 value % 2 = 1
+
+internal splitPowerTen : Natural -> Int -> (Natural * Natural)
+let splitPowerTen value exponent =
+  if exponent >= digits value then
+    (zero, value)
+  else
+    let words = exponent / 9
+    let power = smallPower (exponent % 9) 1
+    let (quotient, remainder) = divideSmall (Array.drop words value) power
+    let low = Array.take words value
+    (quotient, trim (if remainder = 0 then low else Array.push remainder low))

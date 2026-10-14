@@ -1,0 +1,52 @@
+module DecimalDivisionSpec
+
+let decimal text = Result.withDefault Decimal.nan (Decimal.parse text)
+
+let exact a b expected =
+  Result.map Decimal.toString (Decimal.divideExact (decimal a) (decimal b)) = Ok expected
+
+let scale places mode a b expected inexact =
+  Result.map (fun result ->
+    (Decimal.toString result.value, result.inexact)) (Decimal.divideToScale places mode (decimal a) (decimal b)) = Ok (expected, inexact)
+
+let round places mode text expected inexact =
+  Result.map (fun result ->
+    (Decimal.toString result.value, result.inexact)) (Decimal.roundToScale places mode (decimal text)) = Ok (expected, inexact)
+example: exact "1" "8" "0.125"
+example: exact "1" "40" "0.025"
+example: exact "1" "2" "0.5"
+example: exact "6" "3" "2"
+example: exact "1.2" "0.3" "4"
+example: exact "-1" "2" "-0.5"
+example: exact "999999999999999999" "999999999999999999" "1"
+example: exact "999999999999999999000000000" "999999999999999999" "1000000000"
+example: Decimal.divideExact (decimal "1") (decimal "3") |> Result.isErr
+example: scale 2 Decimal.HalfEven "1" "3" "0.33" true
+example: scale 2 Decimal.HalfEven "1" "8" "0.12" true
+example: scale 2 Decimal.HalfEven "3" "8" "0.38" true
+example: scale 2 Decimal.HalfAwayFromZero "1" "8" "0.13" true
+example: scale 2 Decimal.HalfTowardZero "3" "8" "0.37" true
+example: scale 2 Decimal.Floor "-1" "3" "-0.34" true
+example: scale 2 Decimal.Ceiling "-1" "3" "-0.33" true
+example: scale 2 Decimal.AwayFromZero "1" "3" "0.34" true
+example: scale 2 Decimal.TowardZero "-1" "3" "-0.33" true
+example: scale 2 Decimal.Exact "1" "4" "0.25" false
+example: Decimal.divideToScale 2 Decimal.Exact (decimal "1") (decimal "3") |> Result.isErr
+example: round 2 Decimal.HalfEven "1.235" "1.24" true
+example: round 2 Decimal.HalfEven "1.225" "1.22" true
+example: round 2 Decimal.HalfEven "-1.225" "-1.22" true
+example: round 2 Decimal.HalfEven "1.2300" "1.23" false
+example: round (-2) Decimal.HalfEven "1250" "1200" true
+example: round (-2) Decimal.HalfEven "1350" "1400" true
+example: round 0 Decimal.Ceiling "-0.01" "0" true
+example: round 0 Decimal.Floor "-0.01" "-1" true
+example: round 0 Decimal.HalfEven "1e-1000000" "0" true
+example: Result.map (fun result ->
+  Decimal.toString result.value) (Decimal.divideToPrecision 3 Decimal.HalfEven (decimal "1234") (decimal "5")) = Ok "247"
+example: Result.map (fun result ->
+  Decimal.toString result.value) (Decimal.divideToPrecision 3 Decimal.HalfEven (decimal "1") (decimal "3000")) = Ok "0.000333"
+example: Decimal.toFixed 2 Decimal.HalfEven (decimal "1.2") = Ok ("1.20", false)
+example: Decimal.toFixed 2 Decimal.HalfEven (decimal "0.001") = Ok ("0.00", true)
+example: Decimal.toFixed 4 Decimal.HalfEven (decimal "0.001") = Ok ("0.0010", false)
+example: Decimal.toFixed 2 Decimal.HalfEven (decimal "0") = Ok ("0.00", false)
+example: Decimal.toScientific 4 Decimal.HalfEven (decimal "123.45") = Ok ("1.234e2", true)

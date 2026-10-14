@@ -1,0 +1,61 @@
+module DecimalRuntimeChecks
+
+let decimal text = Result.withDefault Decimal.nan (Decimal.parse text)
+
+let big =
+  let digits = String.joinArray "" (Array.repeat 4096 "9")
+  let value = decimal digits
+  let next = decimal ("1e4096")
+  Decimal.add value Decimal.one = Ok next && Decimal.subtract next Decimal.one = Ok value && Decimal.parse (Decimal.toString value) = Ok value && (match Decimal.multiply value (Decimal.fromInt 7) with
+  | Err _ -> false
+  | Ok product -> Decimal.divideExact product (Decimal.fromInt 7) = Ok value)
+
+let multiplyRound index =
+  if index = 1000 then
+    true
+  else
+    let value = Decimal.fromInt index
+    match Decimal.multiply value (decimal "1.07") with
+    | Err _ -> false
+    | Ok product ->
+      match Decimal.toFixed 2 Decimal.HalfEven product with
+      | Err _ -> false
+      | Ok (text, _) -> Decimal.parse text = Ok product && multiplyRound (index + 1)
+
+let nativeFloat =
+  match Decimal.fromFloatExact 0.1 with
+  | Err _ -> false
+  | Ok exact ->
+    Decimal.toFloat exact = Ok 0.1 && exact <> decimal "0.1" && Decimal.fromFloatShortest 0.1 = Ok (decimal "0.1")
+
+let exactDivision =
+  Decimal.divideExact (decimal "0.999999999999999999999999999999") (decimal "0.000000000000000000000000000003") = Ok (decimal "333333333333333333333333333333")
+
+let failed pair =
+  let (_, good) = pair
+  not good
+
+report : Console -> List (String * Bool) -> Unit / { Console }
+let report console failures =
+  match failures with
+  | [] -> ()
+  | (name, _) :: rest ->
+    let shown = console.writeLine ("FAILED: " ++ name)
+    report console rest
+
+public main : Runtime -> Unit / { Concurrency, Console }
+let main env =
+  let parallel = Async.parallel env.concurrency [fun _ -> multiplyRound 0, fun _ -> multiplyRound 0]
+  let checks = [
+    ("large carry and division", big),
+    ("repeated arithmetic", multiplyRound 0),
+    ("Float conversion", nativeFloat),
+    ("exact large quotient", exactDivision),
+    ("parallel immutable values", parallel = [true, true])
+  ]
+  let failures = List.filter failed checks
+  let shown = report env.console failures
+  env.console.writeLine (if List.isEmpty failures then
+    "Decimal runtime checks passed"
+  else
+    "Decimal runtime checks FAILED")

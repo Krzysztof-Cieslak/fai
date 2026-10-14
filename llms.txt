@@ -642,6 +642,10 @@ match Dict.get key table with
 
 ## 10. Effects and capabilities
 
+`Decimal` arithmetic and `decimal-codecs` conversions are entirely pure.
+Arithmetic uses explicit resource budgets and rounding modes, with no global
+precision context or implicit conversion through binary Float.
+
 The YAML package is pure: parsing, graph projection, custom tag handlers, typed
 codecs and rendering perform no ambient I/O. Read files explicitly with the
 filesystem capability, then call `Yaml.parseBytes` or `Yaml.loadBytes`.
@@ -2025,6 +2029,27 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 ---
 
 ### Optional source packages
+
+`packages/decimal` supplies `Decimal`; import it with `import decimal.Decimal`.
+`parse` and `fromParts` construct normalized exact values; `fromInt` preserves
+the full Int range. `zero`, `one`, `nan`, `positiveInfinity`, and `negativeInfinity`
+are available. Equality/hashing use numerical identity, including canonical NaN;
+use `Decimal.compare` for numeric total ordering, not structural ordering.
+`add`, `subtract`, `multiply`, and `divideExact` return typed Results. Exact
+division rejects nonterminating expansions. `roundToScale`/`roundToPrecision`
+and `divideToScale`/`divideToPrecision` take an explicit mode and return
+`{ value, inexact }`. Modes are HalfEven, HalfAwayFromZero, HalfTowardZero,
+TowardZero, AwayFromZero, Floor, Ceiling, and Exact. Negative scales round to
+tens/hundreds; precision counts significant digits. `toFixed`/`toScientific`
+return rendered text plus inexactness; `toIntExact` rejects fractional/overflow
+results. `fromFloatExact` preserves binary64's mathematical value, while
+`fromFloatShortest` parses its shortest spelling. `toFloat` uses nearest-even
+rounding and rejects finite overflow. Fallible operations have `With` variants
+with explicit digit/exponent/input/output/work limits. The core has no package
+dependencies. `packages/decimal-codecs` separately provides DecimalJson,
+DecimalYaml and DecimalSql conversions and typed codecs. SQL text/scale remain
+unchanged in SqlDecimal; arithmetic conversion normalizes them. JSON rejects
+special values, while YAML/SQL preserve their special categories.
 
 `packages/yaml` provides `Yaml`, `YamlDocument`, `YamlData`, `YamlNumber`,
 `YamlProject`, `YamlDecode`, `YamlEncode`, `YamlJson`, and `YamlEvents`. Declare a
