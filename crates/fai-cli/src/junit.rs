@@ -3,6 +3,14 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+pub(crate) fn preparation_error(
+    error: &fai_driver::DriverError,
+    opts: fai_driver::RenderOpts,
+) -> String {
+    let rendered = fai_driver::render_workspace_error(error, opts);
+    fai_driver::junit_error_report(&format!("{}{}", rendered.stdout, rendered.stderr))
+}
+
 pub(crate) fn write_report(path: &Path, xml: &str) -> io::Result<()> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;

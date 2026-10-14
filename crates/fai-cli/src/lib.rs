@@ -736,7 +736,10 @@ fn run_test_in_process(
         Ok(session) => session,
         Err(error) => {
             if args.junit.is_some() {
-                *junit = Some(fai_driver::junit_error_report(&error.to_string()));
+                *junit = Some(crate::junit::preparation_error(
+                    &error,
+                    RenderOpts { format: to_output_format(format), color },
+                ));
             }
             return emit_error(&error, format, color, out, err);
         }
@@ -751,7 +754,10 @@ fn run_test_in_process(
         Ok(files) => files,
         Err(error) => {
             if args.junit.is_some() {
-                *junit = Some(fai_driver::junit_error_report(&error.to_string()));
+                *junit = Some(crate::junit::preparation_error(
+                    &error,
+                    RenderOpts { format: to_output_format(format), color },
+                ));
             }
             return emit_error(&error, format, color, out, err);
         }
