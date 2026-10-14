@@ -206,10 +206,23 @@ class CompilerTests(unittest.TestCase):
     def test_platform_build_uses_the_existing_cross_os_selection(self):
         _, _, info = self.build_fixture()
         with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), \
+                patch("cross_os.cargo_args", return_value=["--package", "fai-cli", "--lib"]) as selection, \
                 patch.object(subprocess, "run") as run, \
                 patch.object(subprocess, "check_output", return_value=json.dumps(info)):
             compiler.build_tests("cross-os", self.root, self.cache)
+        selection.assert_called_once()
+        self.assertEqual(run.call_args.args[0][3:6], ["--package", "fai-cli", "--lib"])
+        self.assertNotIn("--workspace", run.call_args.args[0])
         self.assertEqual(run.call_args.args[0][-3:], ["--profile", "cross-os", "--no-run"])
+
+    def test_invalid_platform_selection_cannot_fall_back_to_skipped_tests(self):
+        import cross_os
+        self.build_fixture()
+        with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), \
+                patch("cross_os.cargo_args", side_effect=cross_os.SelectionError("unknown target")), \
+                patch.object(subprocess, "run", side_effect=AssertionError("unexpected build")):
+            with self.assertRaisesRegex(compiler.BundleError, "invalid cross-os build selection"):
+                compiler.build_tests("cross-os", self.root, self.cache)
 
     def test_package_only_ci_miss_builds_only_the_cli_in_the_requested_profile(self):
         expected, _, info = self.build_fixture()

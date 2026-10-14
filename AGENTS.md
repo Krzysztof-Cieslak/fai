@@ -1954,6 +1954,10 @@ test filters are unchanged. The test compilation packages its `ci` compiler for
 subsequent native package checks and relocation fixtures, without a second
 compiler build. Package-only jobs restore that exact profile; `package-dev`
 remains a distinct, explicitly selectable local-development bundle.
+macOS/Windows derive narrower Cargo build targets from the same `cross-os`
+nextest policy and Cargo metadata. Linux still builds the whole workspace and
+checks that full and narrowed selectors yield identical cross-platform test
+identities; unknown selector forms and missing targets fail closed.
 The separate release-mode task-migration regression
 still checks the fully optimized runtime. The shared Rust cache action uses a
 populated-cache namespace and reports compiled artifacts, not just key hits;
