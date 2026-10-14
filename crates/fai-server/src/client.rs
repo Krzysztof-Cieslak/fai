@@ -281,20 +281,26 @@ impl Client {
         err: &mut dyn Write,
     ) -> Result<i32, DaemonError> {
         let human = matches!(request.opts.format, OutputFormat::Human);
+        let color = request.opts.color;
         self.send(&Request::Test(request))?;
         loop {
             match self.next_message()? {
                 ServerMessage::TestEvent(event) => {
                     if human {
-                        let _ = out.write_all(render_test_event_line(&event).as_bytes());
+                        let _ = out.write_all(render_test_event_line(&event, color).as_bytes());
                         let _ = out.flush();
                     }
                 }
-                // `test` contracts have no capabilities, so no `$/output` is
-                // expected; ignore output and tap frames defensively.
-                ServerMessage::InputReady
-                | ServerMessage::Output { .. }
-                | ServerMessage::TapFrame(_) => {}
+                // Selection headers and package notices precede contract events.
+                ServerMessage::Output { stream, chunk } => {
+                    let writer = match stream {
+                        OutputStream::Stdout => &mut *out,
+                        OutputStream::Stderr => &mut *err,
+                    };
+                    writer.write_all(&chunk)?;
+                    writer.flush()?;
+                }
+                ServerMessage::InputReady | ServerMessage::TapFrame(_) => {}
                 ServerMessage::Result(Response::Test(rendered)) => {
                     let _ = out.write_all(rendered.stdout.as_bytes());
                     let _ = err.write_all(rendered.stderr.as_bytes());

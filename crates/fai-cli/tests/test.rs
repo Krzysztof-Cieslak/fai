@@ -82,7 +82,7 @@ fn trapping_contract_is_isolated_and_the_run_continues() {
     assert!(stdout.contains("FAI6003"), "expected FAI6003 in: {stdout}");
     assert!(stdout.contains("aborted while running"), "expected the abort message in: {stdout}");
     // The contracts on either side of the crasher still ran and passed.
-    assert!(stdout.contains("2 passed, 1 failed"), "expected the rest to run: {stdout}");
+    assert!(stdout.contains("2 passed; 0 failed; 1 crashed"), "expected the rest to run: {stdout}");
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn oversized_array_capacity_is_rejected_in_an_isolated_jit() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("FAI6003"), "{stdout}");
-    assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
+    assert!(stdout.contains("1 passed; 0 failed; 1 crashed"), "{stdout}");
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn private_reader_contract_keeps_its_array_check() {
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("FAI6003"), "{stdout}");
     assert!(stdout.contains("Main.fai:4:1"), "{stdout}");
-    assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
+    assert!(stdout.contains("1 passed; 0 failed; 1 crashed"), "{stdout}");
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn property_reader_keeps_generated_arguments_conservative() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("FAI6003"), "{stdout}");
-    assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
+    assert!(stdout.contains("1 passed; 0 failed; 1 crashed"), "{stdout}");
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn private_wrapper_propagates_contract_input_conservatism() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("FAI6003"), "{stdout}");
-    assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
+    assert!(stdout.contains("1 passed; 0 failed; 1 crashed"), "{stdout}");
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn an_unused_effectful_local_function_keeps_a_contract_pure() {
         "{stdout}{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("1 passed, 0 failed"), "{stdout}");
+    assert!(stdout.contains("1 passed; 0 failed"), "{stdout}");
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn direct_match_contracts_run_in_the_worker() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
-    assert!(stdout.contains("2 passed, 0 failed"), "{stdout}");
+    assert!(stdout.contains("2 passed; 0 failed"), "{stdout}");
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn direct_match_preserves_a_live_property_binder() {
     let output = fai().args(["test", "--no-daemon", "-C"]).arg(dir).arg("M.fai").output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
-    assert!(stdout.contains("1 passed, 0 failed"), "{stdout}");
+    assert!(stdout.contains("1 passed; 0 failed"), "{stdout}");
 }
 
 #[test]
@@ -305,10 +305,14 @@ fn trapping_contract_streams_live_lines_in_order() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     // The example passes, the divide-by-zero aborts, the last forall passes —
     // each emits a live line as it completes (human mode).
-    let abort = stdout.find("ABORT").expect("an ABORT line");
-    let oks: Vec<_> = stdout.match_indices("ok    ").map(|(i, _)| i).collect();
-    assert_eq!(oks.len(), 2, "two passing contracts each emit a line: {stdout}");
-    assert!(oks[0] < abort && abort < oks[1], "lines stream in source order: {stdout}");
+    let events: Vec<_> = stdout
+        .lines()
+        .filter(|line| line.starts_with("test ") && !line.starts_with("test result:"))
+        .collect();
+    assert_eq!(events.len(), 3, "each contract emits a live line: {stdout}");
+    assert!(events[0].ends_with("... ok"), "{stdout}");
+    assert!(events[1].ends_with("... CRASHED"), "{stdout}");
+    assert!(events[2].ends_with("... ok"), "{stdout}");
 }
 
 #[test]
@@ -328,6 +332,17 @@ fn json_output_has_per_contract_events_and_seed() {
     assert_eq!(value["passed"], 2);
     assert_eq!(value["seed"], 0);
     assert_eq!(value["ok"], false);
+    assert_eq!(value["config"], serde_json::json!({"seed": 0, "trials": 100, "maxSize": 100}));
+    let mut summary = value["summary"].clone();
+    assert!(summary.as_object_mut().unwrap().remove("elapsedMs").unwrap().is_u64());
+    assert_eq!(
+        summary,
+        serde_json::json!({
+            "total": 3, "examples": 1, "properties": 2,
+            "passed": 2, "failed": 0, "crashed": 1, "timedOut": 0,
+            "notRun": 0, "blocked": 0, "filteredOut": 0
+        })
+    );
 
     let events = value["events"].as_array().expect("events array");
     assert_eq!(events.len(), 3);
@@ -345,6 +360,7 @@ fn json_output_has_per_contract_events_and_seed() {
     // Every event reports the generator configuration it ran with.
     assert_eq!(events[0]["trials"], 100);
     assert_eq!(events[0]["maxSize"], 100);
+    assert_eq!(events[0]["location"], serde_json::json!({"line": 3, "column": 1}));
 }
 
 #[test]
@@ -364,7 +380,7 @@ fn passing_contracts_exit_zero() {
         "stdout: {stdout}\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(stdout.contains("2 passed, 0 failed"), "got: {stdout}");
+    assert!(stdout.contains("2 passed; 0 failed"), "got: {stdout}");
 }
 
 #[test]
@@ -381,4 +397,124 @@ fn false_property_reports_a_shrunk_counterexample() {
     let event = &value["events"][0];
     assert_eq!(event["status"], "failed");
     assert_eq!(event["counterexample"], "n = 0");
+}
+
+#[test]
+fn human_report_distinguishes_contracts_attached_to_the_same_binding() {
+    let source = "module Named\n// 🌍\nlet add n = n + 1\nexample: add 1 = 2\nexample: add 2 = 3\nforall n: add n = n + 1\n";
+    let dir = workspace("named-report", &[("Named.fai", source)]);
+    let output =
+        fai().args(["test", "--no-daemon", "--color=never", "-C"]).arg(dir).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{text}");
+    assert!(text.starts_with("running 3 contracts (2 examples, 1 property)\n"), "{text}");
+    assert!(text.contains("test Named.add [example, Named.fai:4:1] ... ok"), "{text}");
+    assert!(text.contains("test Named.add [example, Named.fai:5:1] ... ok"), "{text}");
+    assert!(text.contains("test Named.add [forall, Named.fai:6:1] ... ok"), "{text}");
+    assert!(text.contains("test result: ok. 3 passed; 0 failed"), "{text}");
+    assert!(!text.contains('\x1b'), "{text}");
+}
+
+#[test]
+fn human_property_failure_groups_diagnostics_and_reproduction_settings() {
+    let dir = workspace("failure-report", &[("Bad.fai", "module Bad\nforall n: n = n + 1\n")]);
+    let output = fai()
+        .args(["test", "--no-daemon", "--seed=-9", "--count=23", "--max-size=42", "-C"])
+        .arg(dir)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("seed: -9; trials per property: 23; max size: 42"), "{text}");
+    assert!(text.contains("test forall [Bad.fai:2:1] ... FAILED"), "{text}");
+    assert_eq!(text.matches("counterexample: n = 0").count(), 1, "{text}");
+    assert!(text.contains("\nfailures:\n"), "{text}");
+    assert!(text.contains("same path/filter and --seed -9 --count 23 --max-size 42"), "{text}");
+    assert!(text.contains("test result: FAILED. 0 passed; 1 failed"), "{text}");
+}
+
+#[test]
+fn compilation_errors_report_blocked_contracts_in_json() {
+    let dir = workspace(
+        "blocked-report",
+        &[("Bad.fai", "module Bad\nlet value = unknown\nexample: true\n")],
+    );
+    let output = fai()
+        .args(["test", "--no-daemon", "--message-format=json", "-C"])
+        .arg(dir)
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["summary"]["blocked"], 1);
+    assert_eq!(report["summary"]["failed"], 0);
+    assert_eq!(report["events"], serde_json::json!([]));
+}
+
+#[test]
+fn filtered_summary_counts_only_contracts_in_selected_files() {
+    let source =
+        "module Named\nlet first = 1\nexample: first = 1\nlet second = 2\nexample: second = 2\n";
+    let dir = workspace(
+        "filtered-report",
+        &[("Named.fai", source), ("Other.fai", "module Other\nexample: true\n")],
+    );
+    let output = fai()
+        .args(["test", "--no-daemon", "--message-format=json", "--match=first", "-C"])
+        .arg(dir)
+        .arg("Named.fai")
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(output.status.success(), "{report}");
+    assert_eq!(report["total"], 1);
+    assert_eq!(report["summary"]["filteredOut"], 1);
+    assert_eq!(report["events"][0]["ordinal"], 0);
+}
+
+#[test]
+fn unmatched_filter_reports_zero_selected_without_failure() {
+    let dir = workspace("unmatched-report", &[("Only.fai", "module Only\nexample: true\n")]);
+    let output =
+        fai().args(["test", "--no-daemon", "--match=missing", "-C"]).arg(dir).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("no contracts matched the filter"), "{text}");
+    assert!(text.contains("test result: ok. 0 passed; 0 failed"), "{text}");
+    assert!(text.contains("1 filtered out"), "{text}");
+}
+
+#[test]
+fn empty_file_reports_no_contracts() {
+    let dir = workspace("empty-report", &[("Empty.fai", "module Empty\n")]);
+    let output = fai().args(["test", "--no-daemon", "-C"]).arg(dir).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("no contracts found in the selected files"), "{text}");
+    assert!(text.contains("test result: ok. 0 passed; 0 failed"), "{text}");
+}
+
+#[test]
+fn ungeneratable_property_is_not_reported_as_ignored_or_passed() {
+    let source =
+        "module Missing\nforall f: call f\ncall : (Int -> Int) -> Bool\nlet call f = f 0 = 0\n";
+    let dir = workspace("not-run-report", &[("Missing.fai", source)]);
+    let output = fai().args(["test", "--no-daemon", "-C"]).arg(dir).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("test forall [Missing.fai:2:1] ... NOT RUN"), "{text}");
+    assert!(text.contains("0 passed; 0 failed; 0 crashed; 0 timed out; 1 not run"), "{text}");
+    assert!(text.contains("test result: FAILED."), "{text}");
+}
+
+#[test]
+fn forced_color_applies_to_progress_and_summary() {
+    let dir = workspace("colored-report", &[("Color.fai", "module Color\nexample: true\n")]);
+    let output =
+        fai().args(["test", "--no-daemon", "--color=always", "-C"]).arg(dir).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("... \x1b[32mok\x1b[0m"), "{text:?}");
+    assert!(text.contains("test result: \x1b[32mok\x1b[0m"), "{text:?}");
 }

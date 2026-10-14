@@ -74,6 +74,6 @@ fn contracts_generate_and_consume_nominal_opaque_alias_values() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("2 passed, 0 failed"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("2 passed; 0 failed"));
     std::fs::remove_dir_all(dir).unwrap();
 }
