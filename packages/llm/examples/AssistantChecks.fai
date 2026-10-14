@@ -166,7 +166,13 @@ let assistantScenario ctx =
   }
   let (executable, arguments) =
     if Path.nativeEncoding = "windows" then
-      ("cmd", ["/C", "echo fixture-process"])
+      ("powershell", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Write-Output fixture-process"
+      ])
     else
       ("sh", ["-c", "printf fixture-process"])
   match (Path.toString ctx.tempRoot, env.sqlite.open ":memory:" false 5000) with
