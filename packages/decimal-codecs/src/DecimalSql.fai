@@ -1,0 +1,54 @@
+module DecimalSql
+
+import decimal.Decimal
+import sql.Sql
+import sql.SqlDecimal
+import sql.SqlDecode
+
+/// Normalize SQL's retained numeric text into an arithmetic Decimal value.
+public fromSqlWith : Decimal.Limits -> SqlDecimal.Decimal -> Result Decimal.Decimal Decimal.Error
+let fromSqlWith limits value = Decimal.parseWith limits (SqlDecimal.toString value)
+
+public fromSql : SqlDecimal.Decimal -> Result Decimal.Decimal Decimal.Error
+let fromSql value = fromSqlWith Decimal.defaults value
+
+/// Produce normalized SQL text, preserving value and special-value category.
+public toSqlWith : Decimal.Limits -> Decimal.Decimal -> Result SqlDecimal.Decimal Decimal.Error
+let toSqlWith limits value =
+  match Decimal.toStringWith limits value with
+  | Err error -> Err error
+  | Ok text ->
+    Result.mapError (fun message -> {
+      kind = Decimal.InvalidSyntax,
+      message = message,
+      offset = None
+    }) (SqlDecimal.parse text)
+
+public toSql : Decimal.Decimal -> Result SqlDecimal.Decimal Decimal.Error
+let toSql value = toSqlWith Decimal.defaults value
+
+public decoderWith : Decimal.Limits -> SqlDecode.Value Decimal.Decimal
+let decoderWith limits = SqlDecode.custom (fun value -> decode limits value)
+
+let decode limits value =
+  let parsed =
+    match value with
+    | Sql.Decimal value -> fromSqlWith limits value
+    | Sql.Text text -> Decimal.parseWith limits text
+    | Sql.Integer value -> Decimal.parseWith limits (Int.toString value)
+    | _ -> Err {
+      kind = Decimal.InvalidOperation,
+      message = "expected an exact SQL decimal, integer or text",
+      offset = None
+    }
+  Result.mapError (fun error ->
+    Sql.error Sql.DecodeFailure "decimal" (Decimal.errorToString error)) parsed
+
+public decoder : SqlDecode.Value Decimal.Decimal
+let decoder = decoderWith Decimal.defaults
+
+public toValueWith : Decimal.Limits -> Decimal.Decimal -> Result Sql.Value Decimal.Error
+let toValueWith limits value = Result.map Sql.Decimal (toSqlWith limits value)
+
+public toValue : Decimal.Decimal -> Result Sql.Value Decimal.Error
+let toValue value = toValueWith Decimal.defaults value

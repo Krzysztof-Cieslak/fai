@@ -1185,6 +1185,17 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/decimal` library provides pure exact-first arithmetic
+over normalized arbitrary-precision coefficients, checked decimal exponents,
+canonical NaN and signed infinities. Numeric equality ignores presentation scale;
+`Decimal.compare` gives numerical total order. Rounding/division explicitly select
+scale or precision and a rounding mode, returning the value and an inexact flag;
+invalid arithmetic returns typed errors. Exact-binary and shortest-spelling Float
+construction are distinct, and conversion back uses exact midpoint comparisons.
+Resource budgets bound coefficients, alignment, output and arithmetic work.
+The independent `packages/decimal-codecs` package adapts JSON, YAML and SQL without
+changing their existing transport types or adding dependencies to arithmetic.
+
 The optional `packages/yaml` library supplies whole-input YAML 1.2 parsing with
 UTF-8/16/32 detection and original-byte locations. Its finite document arena
 retains tags, complex mapping keys and alias edges, including cycles; Core-schema

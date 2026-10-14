@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "integrations": [
+    {
+      "name": "runtime",
+      "entry": "examples/RuntimeChecks.fai",
+      "stdoutLines": ["Decimal runtime checks passed"]
+    }
+  ]
+}

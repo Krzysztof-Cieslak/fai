@@ -1,0 +1,42 @@
+module DecimalSpecialSpec
+
+let decimal text = Result.withDefault Decimal.nan (Decimal.parse text)
+
+let kind expected result =
+  match result with
+  | Err error -> error.kind = expected
+  | _ -> false
+example: Decimal.add Decimal.nan (decimal "1") = Ok Decimal.nan
+example: Decimal.subtract Decimal.nan Decimal.nan = Ok Decimal.nan
+example: Decimal.multiply Decimal.nan Decimal.zero = Ok Decimal.nan
+example: Decimal.divideExact Decimal.nan Decimal.zero = Ok Decimal.nan
+example: Decimal.add Decimal.positiveInfinity Decimal.positiveInfinity = Ok Decimal.positiveInfinity
+example: kind Decimal.InvalidOperation (Decimal.add Decimal.positiveInfinity Decimal.negativeInfinity)
+example: kind Decimal.InvalidOperation (Decimal.subtract Decimal.positiveInfinity Decimal.positiveInfinity)
+example: kind Decimal.InvalidOperation (Decimal.multiply Decimal.positiveInfinity Decimal.zero)
+example: Decimal.multiply Decimal.negativeInfinity (decimal "-2") = Ok Decimal.positiveInfinity
+example: Decimal.divideExact (decimal "12") Decimal.negativeInfinity = Ok Decimal.zero
+example: Decimal.divideExact Decimal.positiveInfinity (decimal "-2") = Ok Decimal.negativeInfinity
+example: kind Decimal.InvalidOperation (Decimal.divideExact Decimal.positiveInfinity Decimal.negativeInfinity)
+example: kind Decimal.DivisionByZero (Decimal.divideExact Decimal.zero Decimal.zero)
+example: kind Decimal.DivisionByZero (Decimal.divideExact Decimal.positiveInfinity Decimal.zero)
+example: kind Decimal.NonTerminating (Decimal.divideExact Decimal.one (decimal "7"))
+example: Decimal.roundToScale 2 Decimal.Exact Decimal.nan = Ok {
+  inexact = false,
+  value = Decimal.nan
+}
+example: Decimal.roundToPrecision 2 Decimal.HalfEven Decimal.positiveInfinity = Ok {
+  inexact = false,
+  value = Decimal.positiveInfinity
+}
+example: Decimal.negate Decimal.nan = Decimal.nan
+example: Decimal.abs Decimal.negativeInfinity = Decimal.positiveInfinity
+example: Decimal.isFinite Decimal.zero && Decimal.isInfinite Decimal.positiveInfinity && Decimal.isNaN Decimal.nan
+example: Decimal.parts Decimal.nan = None
+example: Decimal.fromParts {
+  coefficient = "0012300",
+  exponent = -4,
+  negative = false
+} = Decimal.parse "1.23"
+example: Decimal.fromParts { coefficient = "0", exponent = 0, negative = true } = Ok Decimal.zero
+example: Decimal.fromParts { coefficient = "-1", exponent = 0, negative = false } |> Result.isErr

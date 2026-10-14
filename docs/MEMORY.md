@@ -51,6 +51,18 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Decimal arithmetic normalizes coefficients and zero signs so numerical identity
+  agrees with equality/hashing. NaN has one reflexive identity; numerical ordering
+  explicitly places it after positive infinity. Exact-first arithmetic never
+  rounds to satisfy resource limits, and exceptional arithmetic returns typed
+  errors. Scale/significant-digit rounding reports mathematical inexactness.
+
+- Decimal Float construction distinguishes preserving the binary value from
+  preserving its shortest round-trip spelling. Native conversion compares exact
+  binary64 midpoint values, and explicit budgets bound scratch arithmetic. JSON,
+  YAML and SQL adapters live in a separate package; source spelling and SQL scale
+  remain with their existing transport values rather than arithmetic identity.
+
 - YAML documents use an ID-addressed node arena so aliases, cycles, tags and
   arbitrary mapping keys remain finite syntax data. Core-schema projection is a
   separate checked operation: it enforces string keys and unique explicit names,

@@ -1,0 +1,57 @@
+module DecimalJson
+
+import decimal.Decimal
+import json.Json
+import json.JsonNumber
+import json.JsonDecode
+import json.JsonEncode
+
+/// Normalize an exact JSON numeric spelling without passing through Float.
+public fromNumberWith : Decimal.Limits -> JsonNumber.Number -> Result Decimal.Decimal Decimal.Error
+let fromNumberWith limits number = Decimal.parseWith limits (JsonNumber.toString number)
+
+public fromNumber : JsonNumber.Number -> Result Decimal.Decimal Decimal.Error
+let fromNumber number = fromNumberWith Decimal.defaults number
+
+/// JSON numbers are finite. Non-finite Decimal values are explicitly rejected.
+public toNumberWith : Decimal.Limits -> Decimal.Decimal -> Result JsonNumber.Number Decimal.Error
+let toNumberWith limits value =
+  if not (Decimal.isFinite value) then
+    Err {
+      kind = Decimal.InvalidOperation,
+      message = "JSON cannot encode NaN or infinity",
+      offset = None
+    }
+  else
+    match Decimal.toStringWith limits value with
+    | Err error -> Err error
+    | Ok text ->
+      Result.mapError (fun error -> {
+        kind = Decimal.InvalidSyntax,
+        message = error.message,
+        offset = Some error.offset
+      }) (JsonNumber.fromString text)
+
+public toNumber : Decimal.Decimal -> Result JsonNumber.Number Decimal.Error
+let toNumber value = toNumberWith Decimal.defaults value
+
+public decoderWith : Decimal.Limits -> JsonDecode.Decoder Decimal.Decimal
+let decoderWith limits =
+  JsonDecode.andThen (fun number ->
+    match fromNumberWith limits number with
+    | Ok value -> JsonDecode.succeed value
+    | Err error -> JsonDecode.fail (Decimal.errorToString error)) JsonDecode.number
+
+public decoder : JsonDecode.Decoder Decimal.Decimal
+let decoder = decoderWith Decimal.defaults
+
+public encoderWith : Decimal.Limits -> JsonEncode.Encoder Decimal.Decimal
+let encoderWith limits value =
+  Result.map (fun number ->
+    Json.Number number) (Result.mapError (fun error -> {
+    message = Decimal.errorToString error,
+    path = []
+  }) (toNumberWith limits value))
+
+public encoder : JsonEncode.Encoder Decimal.Decimal
+let encoder value = encoderWith Decimal.defaults value
