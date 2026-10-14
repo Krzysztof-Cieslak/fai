@@ -63,6 +63,9 @@ fn imported_suites_report_declarations_without_changing_root_identity() {
     assert_imported_suite_location(&report);
     let xml = std::fs::read_to_string(junit).unwrap();
     assert!(xml.contains("file=\"tests/Shared.fai\" line=\"3\""), "{xml}");
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    assert_eq!(document.root_element().attribute("tests"), Some("1"), "{xml}");
+    assert_eq!(document.root_element().attribute("errors"), Some("0"), "{xml}");
 }
 
 #[test]

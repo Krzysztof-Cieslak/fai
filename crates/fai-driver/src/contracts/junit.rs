@@ -118,7 +118,7 @@ pub fn render_junit(plan: &TestPlan, outcome: &TestOutcome) -> String {
             .filter(|span| {
                 plan.render_spans.resolve(*span).is_some_and(|s| {
                     event.failures.iter().any(|f| {
-                        f.file == s.path.as_str()
+                        f.file == s.path.as_str().replace(std::path::MAIN_SEPARATOR, "/")
                             && f.location.is_some_and(|at| {
                                 at.line == s.start.line && at.column == s.start.column
                             })
