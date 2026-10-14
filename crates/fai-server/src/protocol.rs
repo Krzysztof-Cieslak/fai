@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol version. Bumped on any incompatible wire change.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Both the wire schema and the complete executable must match a warm daemon.
 pub(crate) fn compatible(protocol: u32, version: &str, build: &str) -> bool {
@@ -115,6 +115,12 @@ pub struct RunRequest {
 /// the client's render options, and a dirty-set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestRequest {
+    /// List without executing test bodies.
+    #[serde(default)]
+    pub list: bool,
+    /// Reject focused test definitions before filtering.
+    #[serde(default)]
+    pub deny_focused: bool,
     /// Request a JUnit artifact returned to the client, without a server-side path.
     #[serde(default)]
     pub junit: bool,
@@ -151,7 +157,7 @@ pub enum ServerMessage {
         chunk: Vec<u8>,
     },
     /// A per-contract result from a supervised `test` run (`$/testEvent`).
-    TestEvent(ContractEvent),
+    TestEvent(Box<ContractEvent>),
     /// JUnit XML for a completed or preparation-failed test run.
     JunitReport(String),
     /// A JSON decode of one frame observed on another connection, streamed to a
@@ -331,6 +337,8 @@ mod tests {
             dirty: Vec::new(),
         }));
         round_trip(&Request::Test(TestRequest {
+            list: false,
+            deny_focused: true,
             junit: true,
             project: fai_driver::ProjectOptions::default(),
             path: Some("M.fai".to_owned()),
@@ -371,7 +379,13 @@ mod tests {
             chunk: b"hello\n".to_vec(),
         });
         round_trip(&ServerMessage::Output { stream: OutputStream::Stderr, chunk: Vec::new() });
-        round_trip(&ServerMessage::TestEvent(ContractEvent {
+        round_trip(&ServerMessage::TestEvent(Box::new(ContractEvent {
+            id: None,
+            suite: None,
+            path: Vec::new(),
+            failures: Vec::new(),
+            reason: None,
+            output: None,
             location: Some(fai_driver::ContractLocation { line: 3, column: 1 }),
             source: fai_driver::ContractSource {
                 file: "M.fai".to_owned(),
@@ -385,7 +399,7 @@ mod tests {
             seed: 0,
             trials: 100,
             max_size: 100,
-        }));
+        })));
         round_trip(&ServerMessage::Result(Response::Test(Rendered {
             stdout: "test result: ok. 1 passed; 0 failed; 0 crashed; 0 timed out; 0 not run; 0 filtered out; finished in 0.12s\n".to_owned(),
             stderr: String::new(),

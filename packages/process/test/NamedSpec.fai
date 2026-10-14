@@ -1,0 +1,18 @@
+module NamedProcessSpec
+
+capture : Test.Context -> Test.Check / { Concurrency, ProcessHost.Process }
+let capture ctx =
+  let command =
+    if Path.nativeEncoding = "windows" then
+      Process.command "cmd" ["/C", "echo named-process"]
+    else
+      Process.command "sh" ["-c", "printf named-process"]
+  let runtime = { concurrency = ctx.runtime.concurrency, process = ProcessHost.native }
+  match Process.run runtime Process.defaults command with
+  | Err error -> Test.error (Process.errorToString error)
+  | Ok output ->
+    let text = Option.withDefault "" (Bytes.toString output.stdout)
+    Expect.equal identity "named-process" (String.trim text)
+
+tests : Test.Suite Test.Context { Concurrency, ProcessHost.Process }
+let tests = Test.describe "native process" [Test.test "captures a finite child process" capture]

@@ -327,7 +327,7 @@ fn json_output_has_per_contract_events_and_seed() {
     assert_eq!(out.status.code(), Some(1));
     let value: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("valid JSON envelope");
-    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["schemaVersion"], 2);
     assert_eq!(value["total"], 3);
     assert_eq!(value["passed"], 2);
     assert_eq!(value["seed"], 0);
@@ -339,6 +339,7 @@ fn json_output_has_per_contract_events_and_seed() {
         summary,
         serde_json::json!({
             "total": 3, "examples": 1, "properties": 2,
+            "named": 0, "errored": 0, "skipped": 0, "listed": 0,
             "passed": 2, "failed": 0, "crashed": 1, "timedOut": 0,
             "notRun": 0, "blocked": 0, "filteredOut": 0
         })

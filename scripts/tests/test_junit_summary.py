@@ -110,6 +110,7 @@ class JunitSummaryTests(unittest.TestCase):
         commands = [line.strip() for line in workflow.splitlines() if line.strip().startswith("fai test --locked")]
         self.assertEqual(len(commands), 3)
         self.assertTrue(all("--junit" in command and "RUNNER_TEMP/fai-junit/" in command for command in commands))
+        self.assertTrue(all("--deny-focused" in command for command in commands))
 
     def test_package_ci_publishes_reports_on_failure(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()

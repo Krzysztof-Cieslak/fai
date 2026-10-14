@@ -503,14 +503,16 @@ requests. A live daemon reaps a run worker when its client disconnects, includin
 while the program is silent.
 
 ### `fai test [path] [--match <pat>]`
-Run the `example` / `forall` contracts (JIT). Examples are evaluated; `forall`
+Run the `example` / `forall` contracts and named `Test.Suite` cases (JIT). Examples are evaluated; `forall`
 laws are checked with generated inputs and shrunk on failure. Each contract runs
 in a supervised isolated worker, so a body that traps on a generated input fails
 *that* contract (a located `FAI6003`) without aborting the run.
 
 - **Options:** `--match <pat>` (run only contracts whose subject/module matches),
   `--seed <n>`, `--count <n>` (trials per property), `--max-size <n>`,
-  `--junit <path>` (also write a JUnit XML artifact).
+  `--junit <path>` (also write a JUnit XML artifact), `--list` (discovery only;
+  incompatible with `--junit`), and `--deny-focused` (reject focus markers before
+  filtering, as enabled by repository CI).
 - **Output (human):** a selection header, one live line per completed contract,
   detailed failures and an end-of-run summary. For example:
 
@@ -536,15 +538,25 @@ in a supervised isolated worker, so a body that traps on a generated input fails
   as its worker frame arrives (`$/testEvent`, from the daemon), before later
   contracts finish. An acknowledged result is emitted once, including when a
   later contract crashes or times out and the worker resumes after it.
-- **Output (json):** `{ "schemaVersion": 1, "total": int, "passed": int, "notRun": int, "seed": int, "config": TestConfig, "summary": TestSummary, "events": [TestEvent], "diagnostics": [Diagnostic], "ok": bool }`, where a `TestEvent` is `{ "source": { "file": string, "origin": "user"|"standardLibrary" }, "ordinal": int, "location": { "line": int, "column": int }?, "symbol": string?, "kind": "example"|"forall", "status": "passed"|"failed"|"crashed"|"timedOut"|"notRun", "counterexample": string?, "seed": int, "trials": int, "maxSize": int }`.
+- **Output (json):** the test report uses **`schemaVersion: 2`** (diagnostic and
+  other command schemas remain unchanged). The envelope retains `total`,
+  `passed`, `notRun`, `seed`, `config`, `summary`, `events`, `diagnostics`, and `ok`,
+  and adds `focused`. Event `kind` is `example`, `forall`, or `test`; `status` is
+  `passed`, `failed`, `crashed`, `timedOut`, `notRun`, `errored`, `skipped`, or
+  `listed`. Existing contract event fields and identities retain their meanings.
+  Named events add a stable `id`, a package-qualified `suite` identity, exact
+  `path` name components, structured
+  `failures` (`kind`, `message`, `expected`, `actual`, `context`, `file`,
+  `location`), optional skip `reason`, and bounded captured `output`.
   `TestConfig` is `{ "seed": int, "trials": int, "maxSize": int }`. Trials are
   the configured limit per property, not an observed count of predicate calls
   (a property may fail early, and shrinking also calls its predicate).
   `TestSummary` contains integer fields `total`, `examples`, `properties`,
-  `passed`, `failed`, `crashed`, `timedOut`, `notRun`, `blocked`, `filteredOut`,
-  and `elapsedMs`. The six outcome counts sum to `total`; `examples + properties`
-  also equals `total`. `filteredOut` counts only contracts excluded by `--match`
-  within the selected files and is outside `total`. `blocked` counts selected
+  `named`, `passed`, `failed`, `crashed`, `timedOut`, `notRun`, `errored`, `skipped`,
+  `listed`, `blocked`, `filteredOut`, and `elapsedMs`. The outcome counts sum to
+  `total`; `examples + properties + named` also equals `total`. `filteredOut`
+  counts cases excluded by the name filter or active focus and is outside
+  `total`. `blocked` counts selected
   runnable contracts that were not executed; these have no completed event.
   `elapsedMs` is monotonic wall time from plan preparation through execution,
   including synthesis/JIT compilation and worker restarts, excluding project
@@ -554,18 +566,82 @@ in a supervised isolated worker, so a body that traps on a generated input fails
   (workspace-relative for user files, with `/` separators), `origin` distinguishes
   embedded sources from same-spelled user paths, and `ordinal` is zero-based within
   that file. Filtering and worker restarts preserve the key. `symbol` is only an
-  optional human label. Final events are sorted by file, origin, and ordinal;
-  streaming events arrive when known, including `notRun` before worker execution.
+  optional human label. Contract events are sorted by file, origin, and ordinal;
+  named events retain deterministic suite traversal order. Streaming events arrive
+  when known, including `notRun` before contract worker execution.
   Locations are one-based, with Unicode-scalar columns, and refer to the compiled
   source revision. Human labels without coordinates fall back to the file and a
   one-based ordinal; JSON identity always retains its zero-based ordinal.
-  `source`, `location`, `config`, and `summary` are additive schema-version-1
-  extensions; clients must tolerate unknown JSON fields. Existing top-level
-  `total`, `passed`, `notRun`, and `seed` retain their meanings.
+  Named events must be keyed by `id`, not the legacy `ordinal` field. Their ID
+  encodes source, package/suite identity, the `tests` binding, and the exact name path, so delimiters in
+  names cannot collide. Clients migrating from version 1 must handle the new
+  event kinds and states. Existing top-level `total`, `passed`, `notRun`, and
+  `seed` retain their meanings.
 - **Exit:** `0` if all pass; `1` otherwise.
 
 Test diagnostic coordinates refer to the source revision compiled for that run,
 even if another daemon request edits, replaces, or removes the file meanwhile.
+
+#### Named suites
+
+Package test sources may define a private, explicitly typed `tests` value:
+
+```fai
+tests : Test.Suite Test.Context {}
+let tests = Test.describe "arithmetic" [
+  Test.test "addition" (fun _ -> Expect.equal Int.toString 4 (2 + 2))
+]
+```
+
+Legacy directory/standalone selections also recognize this binding. Production
+and dependency package sources do not become test roots accidentally. Suite
+construction must be pure and argument-free, with a closed effect bound and the
+standard `Test.Context`. It is discovered in an isolated worker before any test
+body or runtime initialization executes. Duplicate sibling names, empty names,
+and empty skip reasons are discovery errors. Discovery can evaluate ordinary
+pure helper code, but traps and loops fail discovery rather than the daemon.
+
+`Test.Context` contains `runtime`, the run's `seed`, a stable case `id`, and an
+absolute, per-case `tempRoot`. Complex bodies use named functions with explicit
+signatures, for example `body : Test.Context -> Test.Check / { FileSystem }`.
+This supplies nominal capability types and permits ordinary multiline `let`
+layout without putting local blocks inside a parenthesized list element.
+The suite's effect row admits its cases' effects; mixed `Test.Suite` list
+elements join that bound without changing ordinary list unification.
+
+Return a `Test.Check`. `Expect.equal renderer expected actual` records values
+on failure; `Expect.isTrue`, `Expect.fail`, and `Expect.ok` handle predicates,
+explicit failures, and `Result` values. `Expect.all` combines already-evaluated
+checks, while `Expect.andThen` defers later work until success. `Test.error`
+reports operation errors separately from assertions. Obvious discarded checks
+are warnings (`FAI6011`), not thrown exceptions or linear-use enforcement.
+
+`Test.withFixture` adapts each leaf's context through a scoped callback.
+`Test.bracket acquire release suite` supplies a fresh resource per selected
+leaf; both acquisition and release return `Result _ String`. It retains body
+failures and release errors together and masks sticky cancellation during
+release. Each selected case has a fresh worker and temporary root. Parent-owned
+temporary storage is removed after the worker exits. This is not an OS sandbox:
+tests have the permissions of their explicit capabilities, and hard termination
+cannot execute user cleanup for arbitrary external resources.
+
+`Test.focus suite` selects that subtree. After name filtering, active focus
+selects the union of focused branches and filters other named cases and
+contracts. Skip wins over focus; markers inside entirely skipped subtrees do
+not activate focus. `Test.skip reason suite` is intentional, visible skipping;
+it still typechecks but does not run fixtures or bodies. `--deny-focused` checks
+all discovered markers before name filtering, including skipped branches.
+The human report prominently labels focused runs. No shorthand aliases or
+automatic retries/parallel execution are provided.
+
+Named worker preparation/discovery is bounded by `FAI_TEST_DISCOVERY_TIMEOUT_MS`
+(default 10000). Once ready, each named case uses `FAI_TEST_TIMEOUT_MS` (default
+300000); expiration requests cooperative cancellation, followed by
+`FAI_TEST_CLEANUP_TIMEOUT_MS` grace (default 5000), then hard termination.
+Test stdin is EOF; control messages use a separate channel. Output is captured,
+not mixed into the worker protocol, with up to 512 KiB retained from each output
+stream. See `samples/NamedTests.fai` and
+`packages/process/test/NamedSpec.fai` for filesystem and process examples.
 
 #### JUnit export
 
@@ -583,6 +659,8 @@ the tests passed; JSON stdout still describes the test outcome as one envelope.
 
 The XML uses a `testsuites` root with one `testsuite` for the invocation. Every
 selected contract becomes a `testcase`, grouped by source through `classname`.
+Named cases use their exact serialized name path; intentional skips become
+`skipped` elements, never execution errors. Focus-filtered cases are omitted.
 Names include the subject, kind and one-based file ordinal so contracts sharing
 a binding remain distinct. `file` and `line` identify the compiled source.
 False assertions are `failure` elements; crashes, timeouts, unavailable generators,
@@ -722,12 +800,12 @@ The first request is `initialize`:
 ```jsonc
 // → request
 { "method": "initialize",
-  "params": { "protocolVersion": 6, "compilerVersion": "0.1.0", "compilerBuildId": "…",
+  "params": { "protocolVersion": 7, "compilerVersion": "0.1.0", "compilerBuildId": "…",
               "schemaVersion": 1, "workspaceRoot": "/abs/path",
               "clientInfo": { "name": "fai-cli", "version": "0.1.0" } } }
 // ← response
 { "result": { "serverCapabilities": { "streaming": true, "query": true },
-               "compilerVersion": "0.1.0", "compilerBuildId": "…", "protocolVersion": 6, "schemaVersion": 1 } }
+               "compilerVersion": "0.1.0", "compilerBuildId": "…", "protocolVersion": 7, "schemaVersion": 1 } }
 ```
 
 Because the client and daemon are the **same binary**, a version mismatch means a

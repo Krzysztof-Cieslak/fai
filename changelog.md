@@ -7,6 +7,13 @@
   DEFLATE snapshots, backing the optional `compression` source package.
 
 ### Changed
+- Add named `Test.Suite` scenarios, structured `Expect` checks, scoped fixtures,
+  focus/skip metadata, `fai test --list`, and the `--deny-focused` CI guard. Cases
+  run in fresh supervised workers with explicit capabilities and temporary roots.
+  Test JSON uses schema version 2 for named identities and new outcome states;
+  existing contract identities and generator behavior are unchanged. JUnit now
+  includes named failures, operation errors and intentional skips. `Expect` is
+  now a reserved standard module name; rename any user module with that name.
 - Add `fai test --junit <path>` for atomic JUnit XML artifacts alongside human or
   JSON output, including diagnostics and preparation errors. Native package CI
   publishes these reports and summaries on success or failure.

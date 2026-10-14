@@ -31,6 +31,36 @@ fn fixture(mode: &str) -> Spec {
 }
 
 #[test]
+fn host_capture_read_is_nonblocking_with_an_open_writer() {
+    let (mut reader, writer) = host_output().unwrap();
+    let mut bytes = [0; 4];
+    assert_eq!(reader.try_read(&mut bytes).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+    drop(writer);
+}
+
+#[test]
+fn host_capture_delivers_bytes_and_eof() {
+    let (mut reader, mut writer) = host_output().unwrap();
+    writer.write_all(b"abc").unwrap();
+    drop(writer);
+    let mut received = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut bytes = [0; 8];
+        match reader.try_read(&mut bytes) {
+            Ok(0) => break,
+            Ok(n) => received.extend_from_slice(&bytes[..n]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "pipe did not reach EOF");
+                reader.wait(Duration::from_millis(10)).unwrap();
+            }
+            Err(error) => panic!("capture read failed: {error}"),
+        }
+    }
+    assert_eq!(received, b"abc");
+}
+
+#[test]
 fn child_fixture() {
     let Ok(mode) = std::env::var("FAI_PROCESS_FIXTURE") else { return };
     match mode.as_str() {

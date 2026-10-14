@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use fai_diagnostics::{Diagnostic, Severity, render_human};
+use fai_span::SpanResolver;
 use rustc_hash::FxHashMap;
 
 use super::{ContractSourceOrigin, ContractStatus, TestOutcome, TestPlan};
@@ -13,6 +14,7 @@ enum Status {
     Passed,
     Failure,
     Error,
+    Skipped,
 }
 
 struct Case {
@@ -43,7 +45,7 @@ pub fn render_junit(plan: &TestPlan, outcome: &TestOutcome) -> String {
         .collect::<Vec<_>>();
     metadata.sort_by_key(|m| (&m.source, m.ordinal));
     let mut cases = Vec::with_capacity(metadata.len());
-    for meta in metadata {
+    for meta in metadata.into_iter().filter(|_| !outcome.contracts_suppressed) {
         let event = events.get(&(&meta.source, meta.ordinal));
         let diagnostics = by_span.remove(&meta.span).unwrap_or_default();
         let error = diagnostics.iter().find(|d| d.severity == Severity::Error);
@@ -54,6 +56,9 @@ pub fn render_junit(plan: &TestPlan, outcome: &TestOutcome) -> String {
             Some(ContractStatus::TimedOut) => (Status::Error, "contract timed out"),
             Some(ContractStatus::NotRun) => (Status::Error, "contract could not run"),
             Some(ContractStatus::Passed) => (Status::Error, "contract runtime error"),
+            Some(ContractStatus::Errored) => (Status::Error, "test operation failed"),
+            Some(ContractStatus::Skipped) => (Status::Skipped, "test skipped"),
+            Some(ContractStatus::Listed) => (Status::Skipped, "listed without execution"),
             None => (Status::Error, "contract blocked before execution"),
         };
         let diagnostics = diagnostics.into_iter().cloned().collect::<Vec<_>>();
@@ -80,6 +85,62 @@ pub fn render_junit(plan: &TestPlan, outcome: &TestOutcome) -> String {
             status,
             code: error.map_or("contract", |d| d.code.as_str()).to_owned(),
             message: error.map_or(fallback, |d| &d.message).to_owned(),
+            details,
+        });
+    }
+    for event in outcome.events.iter().filter(|e| e.kind == "test") {
+        let status = match event.status {
+            ContractStatus::Passed => Status::Passed,
+            ContractStatus::Failed => Status::Failure,
+            ContractStatus::Skipped | ContractStatus::Listed => Status::Skipped,
+            _ => Status::Error,
+        };
+        let mut details = String::new();
+        for failure in &event.failures {
+            let _ = writeln!(details, "{}: {}", failure.kind, failure.message);
+            if let Some(at) = failure.location {
+                let _ = writeln!(details, "  --> {}:{}:{}", failure.file, at.line, at.column);
+            }
+            if !failure.expected.is_empty() || !failure.actual.is_empty() {
+                let _ =
+                    writeln!(details, "expected: {}\nactual: {}", failure.expected, failure.actual);
+            }
+            for note in &failure.context {
+                let _ = writeln!(details, "{note}");
+            }
+        }
+        if let Some(output) = &event.output {
+            details.push_str(output);
+        }
+        let keys: Vec<_> = by_span
+            .keys()
+            .copied()
+            .filter(|span| {
+                plan.render_spans.resolve(*span).is_some_and(|s| {
+                    event.failures.iter().any(|f| {
+                        f.file == s.path.as_str()
+                            && f.location.is_some_and(|at| {
+                                at.line == s.start.line && at.column == s.start.column
+                            })
+                    })
+                })
+            })
+            .collect();
+        for key in keys {
+            by_span.remove(&key);
+        }
+        cases.push(Case {
+            name: serde_json::to_string(&event.path).expect("test name paths are serializable"),
+            class: format!("{}:{}", event.suite.as_deref().unwrap_or("tests"), event.source.file),
+            file: Some(event.source.file.clone()),
+            line: event.location.map(|at| at.line),
+            status,
+            code: if status == Status::Failure { "FAI6009" } else { "FAI6010" }.to_owned(),
+            message: event
+                .reason
+                .clone()
+                .or_else(|| event.failures.first().map(|f| f.message.clone()))
+                .unwrap_or_default(),
             details,
         });
     }
@@ -146,8 +207,9 @@ fn run_error(details: &str) -> Case {
 fn document(cases: &[Case], elapsed_ms: u64, properties: &[(&str, String)]) -> String {
     let failures = cases.iter().filter(|c| c.status == Status::Failure).count();
     let errors = cases.iter().filter(|c| c.status == Status::Error).count();
+    let skipped = cases.iter().filter(|c| c.status == Status::Skipped).count();
     let counts = format!(
-        "tests=\"{}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"0\" time=\"{}.{:03}\"",
+        "tests=\"{}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\" time=\"{}.{:03}\"",
         cases.len(),
         elapsed_ms / 1000,
         elapsed_ms % 1000
@@ -185,7 +247,9 @@ fn document(cases: &[Case], elapsed_ms: u64, properties: &[(&str, String)]) -> S
             continue;
         }
         xml.push_str(">\n");
-        if case.status == Status::Passed {
+        if case.status == Status::Skipped {
+            let _ = writeln!(xml, "      <skipped message=\"{}\"/>", escape(&case.message));
+        } else if case.status == Status::Passed {
             let _ = writeln!(xml, "      <system-out>{}</system-out>", escape(&case.details));
         } else {
             let tag = if case.status == Status::Failure { "failure" } else { "error" };

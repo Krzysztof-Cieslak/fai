@@ -160,6 +160,9 @@ pub enum Command {
     /// Internal: check contracts from a bundle in this (worker) process. Hidden.
     #[command(name = "__test-worker", hide = true)]
     TestWorker(TestWorkerArgs),
+    /// Internal: discover or execute one named test suite in isolation.
+    #[command(name = "__suite-worker", hide = true)]
+    SuiteWorker { request: Utf8PathBuf, output: Utf8PathBuf },
     /// Internal: run the per-workspace daemon in this process. Hidden.
     #[command(name = "__daemon-serve", hide = true)]
     DaemonServe,
@@ -336,6 +339,12 @@ pub struct RunArgs {
 /// Arguments for `fai test`.
 #[derive(Debug, Args)]
 pub struct TestArgs {
+    /// Discover and list cases without executing bodies or fixtures.
+    #[arg(long, conflicts_with = "junit")]
+    pub list: bool,
+    /// Reject focus markers anywhere in the requested test sources.
+    #[arg(long)]
+    pub deny_focused: bool,
     /// Also write a JUnit XML report (path relative to the selected project root).
     #[arg(long, value_name = "PATH")]
     pub junit: Option<Utf8PathBuf>,

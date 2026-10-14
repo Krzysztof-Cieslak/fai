@@ -108,6 +108,7 @@ pub fn test(
         err,
         fai_driver::ProjectOptions::default(),
         None,
+        fai_driver::TestOptions::default(),
     )
 }
 
@@ -126,9 +127,12 @@ pub fn test_in_context(
     err: &mut dyn Write,
     project: fai_driver::ProjectOptions,
     junit: Option<&mut Option<String>>,
+    options: fai_driver::TestOptions,
 ) -> Result<i32, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
     let request = TestRequest {
+        list: options.list,
+        deny_focused: options.deny_focused,
         junit: junit.is_some(),
         project,
         path: path.map(|p| p.as_str().to_owned()),

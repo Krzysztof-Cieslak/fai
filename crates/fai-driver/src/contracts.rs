@@ -28,8 +28,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 mod junit;
+mod named;
 mod report;
 pub use junit::{junit_error_report, render_junit};
+pub use named::{TestOptions, worker as named_suite_worker};
 pub use report::{TestSummary, render_test_event_line};
 
 use fai_codegen::JitProgram;
@@ -41,7 +43,7 @@ use fai_core::wire::def_to_wire;
 use fai_core::{RebuiltTest, TestWireBundle, WireContract, WireDefId, from_wire_test};
 use fai_db::{Db, SourceFile};
 use fai_diagnostics::wire::{DiagnosticWire, to_wire};
-use fai_diagnostics::{Diagnostic, DiagnosticCode, SCHEMA_VERSION, Severity};
+use fai_diagnostics::{Diagnostic, DiagnosticCode, Severity};
 use fai_rc::{BorrowSig, entry_bounds, rc, rc_lowered, result_facts};
 use fai_resolve::{DefId, ModuleName, module_name};
 use fai_span::{Span, SpanResolver};
@@ -96,6 +98,12 @@ pub enum ContractStatus {
     TimedOut,
     /// The contract could not be exercised (an ungeneratable binder).
     NotRun,
+    /// A named test returned an operation or fixture error.
+    Errored,
+    /// Intentionally ignored with an explicit reason.
+    Skipped,
+    /// Discovered for --list without execution.
+    Listed,
 }
 
 /// The loader-controlled origin of a contract's source, independent of its path.
@@ -146,6 +154,43 @@ pub struct ContractEvent {
     pub trials: i64,
     /// The maximum generation size the contract ran with.
     pub max_size: i64,
+    /// Stable named-test identity (source, suite binding and exact name path).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
+    /// Stable package/suite identity, independent of database registration order.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub suite: Option<String>,
+    /// Exact group/case name components for a named test.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub path: Vec<String>,
+    /// Returned structured assertion or operation failures.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub failures: Vec<TestFailure>,
+    /// An explicit skip reason.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reason: Option<String>,
+    /// Bounded captured test stdout/stderr.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output: Option<String>,
+}
+
+/// An expectation failure or operation error reported by a named test.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestFailure {
+    /// `assertion` or `operation`.
+    pub kind: String,
+    /// Human-readable intent or error.
+    pub message: String,
+    /// Rendered expected value, if applicable.
+    pub expected: String,
+    /// Rendered actual value, if applicable.
+    pub actual: String,
+    /// Additional contextual messages.
+    pub context: Vec<String>,
+    /// Compiled source file for the assertion.
+    pub file: String,
+    /// One-based coordinates in that source.
+    pub location: Option<ContractLocation>,
 }
 
 /// One-based source coordinates for a contract (Unicode-scalar columns).
@@ -189,6 +234,12 @@ pub struct ContractMeta {
 /// must be clean before running, and the totals.
 #[derive(Debug, Clone)]
 pub struct TestPlan {
+    /// Prepared named suite roots from the selected test source scopes.
+    pub suites: Vec<named::PreparedSuite>,
+    /// Named-suite discovery and selection policy.
+    pub options: TestOptions,
+    /// Original name filter, also applied to discovered named tests.
+    pub match_pattern: Option<String>,
     /// Immutable coordinates from the revision compiled for this run.
     pub render_spans: TestSpans,
     /// The portable program (defs + contract entries) for the worker.
@@ -312,6 +363,10 @@ struct WorkerResult {
 /// The outcome of a `fai test` run.
 #[derive(Debug, Clone)]
 pub struct TestOutcome {
+    /// Whether focus filtered the whole selected invocation.
+    pub focused: bool,
+    /// Contracts excluded by an active named focus selection.
+    pub contracts_suppressed: bool,
     /// Total contracts considered.
     pub total: usize,
     /// Contracts that passed.
@@ -338,6 +393,8 @@ pub struct TestOutcome {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestOutput {
+    /// Whether this was a focused run.
+    pub focused: bool,
     /// Output schema version.
     pub schema_version: u32,
     /// Total contracts considered.
@@ -365,7 +422,8 @@ impl TestOutcome {
     #[must_use]
     pub fn to_output(&self, resolver: &dyn SpanResolver) -> TestOutput {
         TestOutput {
-            schema_version: SCHEMA_VERSION,
+            schema_version: 2,
+            focused: self.focused,
             total: self.total,
             passed: self.passed,
             not_run: self.not_run,
@@ -377,6 +435,226 @@ impl TestOutcome {
             ok: self.ok,
         }
     }
+}
+
+/// Results of one complete contract and named-suite invocation.
+pub struct TestExecution {
+    contracts: Vec<ContractResult>,
+    named: Vec<(ContractEvent, Vec<Diagnostic>)>,
+    selection: named::Selection,
+    suppressed: bool,
+    listed: bool,
+}
+
+/// Discover suites before running anything, so focus and CI policy apply to the
+/// whole invocation. Named cases execute in fresh workers, in discovery order.
+#[must_use]
+pub fn execute_tests(plan: &TestPlan, on_event: &mut dyn FnMut(&ContractEvent)) -> TestExecution {
+    let selection = if plan.blocked {
+        named::Selection::default()
+    } else {
+        named::discover(plan, plan.match_pattern.as_deref(), plan.options)
+    };
+    let blocked =
+        plan.blocked || selection.diagnostics.iter().any(|d| d.severity == Severity::Error);
+    let suppressed = selection.focused;
+    let listed = plan.options.list;
+    let contracts =
+        if blocked || suppressed || listed { Vec::new() } else { run_test_workers(plan, on_event) };
+    let mut named_results = Vec::new();
+    if !blocked {
+        if listed && !suppressed {
+            for meta in
+                plan.runnable_meta.iter().chain(plan.not_runnable.iter().map(|(meta, _, _)| meta))
+            {
+                let mut event = not_run_event(meta);
+                event.status = ContractStatus::Listed;
+                on_event(&event);
+            }
+        }
+        for case in &selection.cases {
+            let (completion, output, _) = if listed || case.metadata.skipped {
+                (named::Completion::Passed(Vec::new()), String::new(), 0)
+            } else {
+                named::run(
+                    plan,
+                    case,
+                    selection.manifests.get(&case.suite).map(Vec::as_slice).unwrap_or(&[]),
+                )
+            };
+            let mut status = if listed {
+                ContractStatus::Listed
+            } else if case.metadata.skipped {
+                ContractStatus::Skipped
+            } else {
+                ContractStatus::Passed
+            };
+            let mut issues = match completion {
+                named::Completion::Passed(issues) => issues,
+                named::Completion::Errored(message) => {
+                    status = ContractStatus::Errored;
+                    vec![named::Issue {
+                        kind: "operation".to_owned(),
+                        message,
+                        actual: String::new(),
+                        expected: String::new(),
+                        context: Vec::new(),
+                        source: case.metadata.source.clone(),
+                    }]
+                }
+                named::Completion::Crashed(message) => {
+                    status = ContractStatus::Crashed;
+                    vec![named::Issue {
+                        kind: "operation".to_owned(),
+                        message: format!("test worker crashed: {message}"),
+                        actual: String::new(),
+                        expected: String::new(),
+                        context: Vec::new(),
+                        source: case.metadata.source.clone(),
+                    }]
+                }
+                named::Completion::TimedOut(message, mut issues) => {
+                    status = ContractStatus::TimedOut;
+                    issues.push(named::Issue {
+                        kind: "operation".to_owned(),
+                        message: format!("test worker timed out: {message}"),
+                        actual: String::new(),
+                        expected: String::new(),
+                        context: Vec::new(),
+                        source: case.metadata.source.clone(),
+                    });
+                    issues
+                }
+            };
+            if status == ContractStatus::Passed && !issues.is_empty() {
+                status = if issues.iter().any(|i| i.kind != "assertion") {
+                    ContractStatus::Errored
+                } else {
+                    ContractStatus::Failed
+                };
+            }
+            let suite = &plan.suites[case.suite];
+            let (_, location) = named::location(plan, case, &case.metadata.source);
+            let mut failures = Vec::new();
+            let mut diagnostics = Vec::new();
+            for issue in issues.drain(..) {
+                let (span, at) = named::location(plan, case, &issue.source);
+                let file = plan
+                    .render_spans
+                    .resolve(span)
+                    .map(|s| s.path.to_string())
+                    .unwrap_or_else(|| suite.source.file.clone());
+                let code = if issue.kind == "assertion" {
+                    fai_contracts::NAMED_TEST_FAILED
+                } else {
+                    fai_contracts::NAMED_TEST_ERROR
+                };
+                let mut help = issue.context.join("\n");
+                if !issue.expected.is_empty() || !issue.actual.is_empty() {
+                    help.push_str(&format!(
+                        "\nexpected: {}\nactual: {}",
+                        issue.expected, issue.actual
+                    ));
+                }
+                let mut diagnostic = Diagnostic::error(code, issue.message.clone(), span);
+                if !help.is_empty() {
+                    diagnostic = diagnostic.with_help(help);
+                }
+                diagnostics.push(diagnostic);
+                failures.push(TestFailure {
+                    kind: issue.kind,
+                    message: issue.message,
+                    expected: issue.expected,
+                    actual: issue.actual,
+                    context: issue.context,
+                    file,
+                    location: at,
+                });
+            }
+            let event = ContractEvent {
+                source: suite.source.clone(),
+                ordinal: 0,
+                location,
+                symbol: Some(case.metadata.path.join("::")),
+                kind: "test".to_owned(),
+                status,
+                counterexample: None,
+                seed: plan.config.seed,
+                trials: plan.config.trials,
+                max_size: plan.config.max_size,
+                id: Some(named::identity(
+                    &suite.source,
+                    &suite.bundle.entry.module,
+                    &case.metadata.path,
+                )),
+                suite: Some(suite.bundle.entry.module.clone()),
+                path: case.metadata.path.clone(),
+                failures,
+                reason: case.metadata.skipped.then(|| case.metadata.reason.clone()),
+                output: (!output.is_empty()).then_some(output),
+            };
+            on_event(&event);
+            named_results.push((event, diagnostics));
+        }
+    }
+    TestExecution { contracts, named: named_results, selection, suppressed, listed }
+}
+
+/// Combine both test kinds into a single versioned report.
+#[must_use]
+pub fn assemble_execution(plan: &TestPlan, execution: &TestExecution) -> TestOutcome {
+    let mut outcome = assemble_outcome(plan, &execution.contracts);
+    if execution.suppressed || execution.listed {
+        outcome.events.clear();
+        outcome.diagnostics = plan.pre_diagnostics.clone();
+        if execution.suppressed {
+            outcome.total = 0;
+        } else {
+            for meta in
+                plan.runnable_meta.iter().chain(plan.not_runnable.iter().map(|(meta, _, _)| meta))
+            {
+                let mut event = not_run_event(meta);
+                event.status = ContractStatus::Listed;
+                outcome.events.push(event);
+            }
+        }
+        outcome.not_run = 0;
+        outcome.passed = 0;
+        outcome.summary.examples = if execution.suppressed { 0 } else { outcome.summary.examples };
+        outcome.summary.properties =
+            if execution.suppressed { 0 } else { outcome.summary.properties };
+    }
+    outcome.focused = execution.suppressed;
+    outcome.contracts_suppressed = execution.suppressed;
+    outcome.diagnostics.extend(execution.selection.diagnostics.clone());
+    for (event, diagnostics) in &execution.named {
+        outcome.events.push(event.clone());
+        outcome.diagnostics.extend(diagnostics.clone());
+    }
+    outcome.total += execution.named.len();
+    outcome.passed = outcome.events.iter().filter(|e| e.status == ContractStatus::Passed).count();
+    outcome.not_run = outcome.events.iter().filter(|e| e.status == ContractStatus::NotRun).count();
+    let summary = &mut outcome.summary;
+    summary.total = outcome.total;
+    summary.named = execution.named.len();
+    summary.passed = outcome.passed;
+    summary.failed = outcome.events.iter().filter(|e| e.status == ContractStatus::Failed).count();
+    summary.crashed = outcome.events.iter().filter(|e| e.status == ContractStatus::Crashed).count();
+    summary.timed_out =
+        outcome.events.iter().filter(|e| e.status == ContractStatus::TimedOut).count();
+    summary.not_run = outcome.not_run;
+    summary.errored = outcome.events.iter().filter(|e| e.status == ContractStatus::Errored).count();
+    summary.skipped = outcome.events.iter().filter(|e| e.status == ContractStatus::Skipped).count();
+    summary.listed = outcome.events.iter().filter(|e| e.status == ContractStatus::Listed).count();
+    summary.blocked = outcome.total.saturating_sub(outcome.events.len());
+    summary.filtered_out = plan.filtered_out
+        + execution.selection.filtered
+        + if execution.suppressed { plan.total } else { 0 };
+    summary.elapsed_ms = plan.started.elapsed().as_millis() as u64;
+    outcome.ok = outcome.leaked == 0
+        && !outcome.diagnostics.iter().any(|d| d.severity == Severity::Error)
+        && summary.blocked == 0;
+    outcome
 }
 
 /// Runs the contracts in `files` (filtered by `match_pat` against the subject
@@ -460,7 +738,49 @@ pub fn build_test_plan(
     match_pat: Option<&str>,
     config: TestConfig,
 ) -> TestPlan {
-    build_plan(db, files, match_pat, config, |_| true)
+    build_test_plan_with_options(db, files, match_pat, config, TestOptions::default())
+}
+
+/// Prepares contracts and pure named-suite roots without executing either.
+#[must_use]
+pub fn build_test_plan_with_options(
+    db: &dyn Db,
+    files: &[SourceFile],
+    match_pat: Option<&str>,
+    config: TestConfig,
+    options: TestOptions,
+) -> TestPlan {
+    let mut plan = build_plan(db, files, match_pat, config, |_| true);
+    // A malformed test root may not survive parsing as a binding. Validate the
+    // selected source scope even when it contains no discoverable contracts.
+    for &file in files {
+        plan.pre_diagnostics.extend(crate::semantic_diagnostics(db, file));
+    }
+    let (suites, diagnostics) = named::prepare(db, files);
+    plan.suites = suites;
+    plan.options = options;
+    plan.match_pattern = match_pat.map(str::to_owned);
+    plan.pre_diagnostics.extend(diagnostics);
+    plan.pre_diagnostics.sort_by(|a, b| {
+        (a.primary.source(), a.primary.start(), a.code.as_str(), &a.message).cmp(&(
+            b.primary.source(),
+            b.primary.start(),
+            b.code.as_str(),
+            &b.message,
+        ))
+    });
+    plan.pre_diagnostics.dedup();
+    plan.blocked = plan.pre_diagnostics.iter().any(|d| d.severity == Severity::Error);
+    plan.render_spans = TestSpans::capture(db, &plan);
+    let resolver = fai_db::DbSpanResolver::new(db);
+    for suite in &plan.suites {
+        for span in std::iter::once(&suite.span).chain(suite.locations.values()) {
+            if let Some(resolved) = resolver.resolve(*span) {
+                plan.render_spans.spans.insert(*span, resolved);
+            }
+        }
+    }
+    plan
 }
 
 /// Builds a prepared [`TestPlan`] containing only the closed `example` contracts
@@ -469,6 +789,25 @@ pub fn build_test_plan(
 #[must_use]
 pub fn build_example_plan(db: &dyn Db, files: &[SourceFile], config: TestConfig) -> TestPlan {
     build_plan(db, files, None, config, |kind| kind == ContractKind::Example)
+}
+
+/// Attach project-native dependencies and the working directory before dropping
+/// the preparation snapshot. Discovery itself never loads native libraries.
+pub fn configure_test_plan(plan: &mut TestPlan, session: &crate::Session) {
+    for suite in &mut plan.suites {
+        suite.working_directory = Some(session.root().to_string());
+        match session.native_dependencies(suite.file) {
+            Ok(native) => suite.bundle.libraries = native.dynamic_library_paths(),
+            Err(error) => {
+                plan.pre_diagnostics.push(Diagnostic::error(
+                    crate::WORKSPACE_ERROR,
+                    error.to_string(),
+                    suite.span,
+                ));
+                plan.blocked = true;
+            }
+        }
+    }
 }
 
 /// The shared body of [`build_test_plan`]/[`build_example_plan`]: collects the
@@ -619,6 +958,9 @@ fn build_plan(
     }
 
     let mut plan = TestPlan {
+        suites: Vec::new(),
+        options: TestOptions::default(),
+        match_pattern: match_pat.map(str::to_owned),
         render_spans: TestSpans::default(),
         bundle: TestWireBundle { defs, contracts },
         runnable_meta,
@@ -677,6 +1019,8 @@ pub fn assemble_outcome(plan: &TestPlan, results: &[ContractResult]) -> TestOutc
         && leaked == 0
         && !diagnostics.iter().any(|d| d.severity == Severity::Error);
     TestOutcome {
+        focused: false,
+        contracts_suppressed: false,
         total: plan.total,
         passed,
         not_run: plan.not_runnable.len(),
@@ -1037,6 +1381,12 @@ fn resolve_event(meta: &ContractMeta, result: &ContractResult) -> ContractEvent 
         seed: meta.seed,
         trials: meta.trials,
         max_size: meta.max_size,
+        id: None,
+        suite: None,
+        path: Vec::new(),
+        failures: Vec::new(),
+        reason: None,
+        output: None,
     }
 }
 
@@ -1053,6 +1403,12 @@ fn not_run_event(meta: &ContractMeta) -> ContractEvent {
         seed: meta.seed,
         trials: meta.trials,
         max_size: meta.max_size,
+        id: None,
+        suite: None,
+        path: Vec::new(),
+        failures: Vec::new(),
+        reason: None,
+        output: None,
     }
 }
 
@@ -1163,6 +1519,9 @@ mod tests {
 
     pub(super) fn plan(n: usize) -> TestPlan {
         TestPlan {
+            suites: Vec::new(),
+            options: TestOptions::default(),
+            match_pattern: None,
             render_spans: TestSpans::default(),
             bundle: TestWireBundle {
                 defs: Vec::new(),
@@ -1542,6 +1901,7 @@ mod tests {
             serde_json::to_value(&outcome.summary).unwrap(),
             serde_json::json!({
                 "total": 6, "examples": 1, "properties": 5,
+                "named": 0, "errored": 0, "skipped": 0, "listed": 0,
                 "passed": 1, "failed": 1, "crashed": 1, "timedOut": 1,
                 "notRun": 1, "blocked": 1, "filteredOut": 2, "elapsedMs": 125
             })

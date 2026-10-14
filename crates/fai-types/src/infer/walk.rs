@@ -481,10 +481,33 @@ impl<E: Env> Walker<'_, E> {
                 SolveTy::Tuple(elems.iter().map(|&e| self.infer_expr(e)).collect())
             }
             ExprKind::List(elems) => {
-                let elem_ty = self.cx.fresh();
-                for &e in elems {
+                let mut elem_ty = self.cx.fresh();
+                // Test suites store deferred consumers with a shared upper effect
+                // bound. Join that one covariant argument; ordinary list element
+                // types retain strict unification and context types stay invariant.
+                let mut joining = false;
+                for (index, &e) in elems.iter().enumerate() {
                     let t = self.infer_expr(e);
-                    self.unify_at(self.module.expr(e).span, &elem_ty, &t, "a list element");
+                    if index == 0
+                        && let Some(suite) = self.suite_upper_bound(&t)
+                    {
+                        elem_ty = suite;
+                        joining = true;
+                    }
+                    if joining {
+                        let result = self.cx.subsume_types(&t, &elem_ty, true);
+                        if result != UnifyResult::Ok {
+                            self.report_unify_failure(
+                                self.module.expr(e).span,
+                                result,
+                                &t,
+                                &elem_ty,
+                                "a list element",
+                            );
+                        }
+                    } else {
+                        self.unify_at(self.module.expr(e).span, &elem_ty, &t, "a list element");
+                    }
                 }
                 SolveTy::list(elem_ty)
             }
@@ -498,6 +521,30 @@ impl<E: Env> Walker<'_, E> {
             }
             ExprKind::Error => SolveTy::Error,
         }
+    }
+
+    fn suite_upper_bound(&mut self, ty: &SolveTy) -> Option<SolveTy> {
+        let SolveTy::App(base, effect) = self.cx.resolve_shallow(ty) else { return None };
+        if !matches!(self.cx.resolve_shallow(&effect), SolveTy::EffectArg(_)) {
+            return None;
+        }
+        let SolveTy::App(head, _) = self.cx.resolve_shallow(&base) else { return None };
+        let SolveTy::Adt(adt) = self.cx.resolve_shallow(&head) else { return None };
+        let file = self.db.source_file(adt.file)?;
+        if adt.name.as_str() != "Suite"
+            || file.origin(self.db) != fai_db::SourceOrigin::StandardLibrary
+            || fai_resolve::module_name(self.db, file)
+                != Some(fai_resolve::ModuleName(Symbol::intern("Test")))
+        {
+            return None;
+        }
+        Some(SolveTy::App(
+            base,
+            Rc::new(SolveTy::EffectArg(SolveEffect {
+                atoms: Vec::new(),
+                tail: EffTail::Open(self.cx.fresh_effect()),
+            })),
+        ))
     }
 
     /// Infers a lambda or local function body under its own effect accumulator.

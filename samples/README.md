@@ -37,6 +37,12 @@ their feature lands.
 Because there is one canonical layout, generated code is low-entropy: there is
 essentially one correct way to write a given program.
 
+## Named test suites
+
+[`NamedTests.fai`](NamedTests.fai) demonstrates pure named checks, an effectful
+temporary-file scenario, and explicit skipping. Run it with `fai test
+samples/NamedTests.fai`; use `--list` for discovery without running callbacks.
+
 ## Package imports
 
 The [`package_imports/`](package_imports/README.md) example demonstrates explicit

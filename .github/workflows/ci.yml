@@ -202,7 +202,7 @@ jobs:
         run: |
           for package in $PACKAGE_CHECK_NAMES; do
             fai fmt --check --locked -C packages --package "$package"
-            fai test --locked -C packages --package "$package" --seed 42 --count 128 --junit "$RUNNER_TEMP/fai-junit/$package.xml"
+            fai test --locked -C packages --package "$package" --seed 42 --count 128 --deny-focused --junit "$RUNNER_TEMP/fai-junit/$package.xml"
             fai check --no-examples --locked -C packages --package "$package"
           done
       - name: Build launcher for relocation fixture
@@ -346,7 +346,7 @@ jobs:
         run: |
           for package in $PACKAGE_CHECK_NAMES; do
             fai fmt --check --locked -C packages --package "$package"
-            fai test --locked -C packages --package "$package" --seed 42 --count 128 --junit "$RUNNER_TEMP/fai-junit/$package.xml"
+            fai test --locked -C packages --package "$package" --seed 42 --count 128 --deny-focused --junit "$RUNNER_TEMP/fai-junit/$package.xml"
             fai check --no-examples --locked -C packages --package "$package"
           done
       - name: Native package checks (Windows)
@@ -355,7 +355,7 @@ jobs:
           foreach ($package in $env:PACKAGE_CHECK_NAMES.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)) {
             fai fmt --check --locked -C packages --package $package
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            fai test --locked -C packages --package $package --seed 42 --count 128 --junit "$env:RUNNER_TEMP/fai-junit/$package.xml"
+            fai test --locked -C packages --package $package --seed 42 --count 128 --deny-focused --junit "$env:RUNNER_TEMP/fai-junit/$package.xml"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             fai check --no-examples --locked -C packages --package $package
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

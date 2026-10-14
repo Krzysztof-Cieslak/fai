@@ -30,6 +30,15 @@ pub use synth::{NotRunnable, SynthContract, synthesize};
 /// cannot depend on this crate) and re-exported here so the contracts layer
 /// owns every `FAI6xxx` name; its catalog entry is in [`CODES`].
 pub use fai_diagnostics::CONTRACT_IMPURE;
+pub use fai_diagnostics::DISCARDED_TEST_CHECK;
+/// Invalid named suite type or effectful discovery.
+pub const INVALID_SUITE: DiagnosticCode = DiagnosticCode::new("FAI6007");
+/// Named suite construction or selection failed.
+pub const SUITE_DISCOVERY: DiagnosticCode = DiagnosticCode::new("FAI6008");
+/// A named test returned a failed expectation.
+pub const NAMED_TEST_FAILED: DiagnosticCode = DiagnosticCode::new("FAI6009");
+/// A named test could not execute or clean up successfully.
+pub const NAMED_TEST_ERROR: DiagnosticCode = DiagnosticCode::new("FAI6010");
 
 /// A contract failed: an `example` evaluated to false, or a `forall` found a
 /// counterexample.
@@ -54,6 +63,36 @@ pub const CONTRACT_AMBIGUOUS_GENERATOR: DiagnosticCode = DiagnosticCode::new("FA
 
 /// Diagnostic codes owned by the contracts layer (the `FAI6xxx` range).
 pub const CODES: &[CodeInfo] = &[
+    CodeInfo {
+        code: INVALID_SUITE,
+        title: "invalid test suite",
+        default_severity: Severity::Error,
+        explanation: "A named tests binding must have an explicit Test.Suite Test.Context signature, with a closed effect row, no arguments, and a pure initializer. Effects belong to its deferred test bodies.",
+    },
+    CodeInfo {
+        code: SUITE_DISCOVERY,
+        title: "test suite discovery failed",
+        default_severity: Severity::Error,
+        explanation: "A named test suite could not be discovered, contains empty or duplicate sibling names, or uses focus when --deny-focused is enabled. Discovery is isolated and bounded and never runs test bodies or fixtures.",
+    },
+    CodeInfo {
+        code: NAMED_TEST_FAILED,
+        title: "test expectation failed",
+        default_severity: Severity::Error,
+        explanation: "A named test returned a failed Expect check. The diagnostic includes its source, expected and actual values, and any supplied context.",
+    },
+    CodeInfo {
+        code: NAMED_TEST_ERROR,
+        title: "test execution failed",
+        default_severity: Severity::Error,
+        explanation: "A named test reported an operation or fixture error, crashed, or exceeded its deadline. Cleanup errors are retained alongside body failures; hard termination cannot run Fai cleanup code.",
+    },
+    CodeInfo {
+        code: DISCARDED_TEST_CHECK,
+        title: "discarded test check",
+        default_severity: Severity::Warning,
+        explanation: "A Test.Check value is discarded without being returned or combined. Checks are returned values, not exceptions: use Expect.all or Expect.andThen to observe them. This warning detects obvious discards, not all aliases.",
+    },
     CodeInfo {
         code: CONTRACT_FAILED,
         title: "contract failed",

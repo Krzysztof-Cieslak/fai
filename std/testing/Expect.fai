@@ -1,0 +1,55 @@
+module Expect
+
+/// Compare values, rendering expected/actual details only when they differ.
+public equal : ('a -> String) -> 'a -> 'a -> Test.Check
+let equal show expected actual = equalAt "" show expected actual
+example: equal Int.toString 3 3 = Test.pass
+
+internal equalAt : String -> ('a -> String) -> 'a -> 'a -> Test.Check
+let equalAt source show expected actual =
+  if expected = actual then
+    Test.pass
+  else
+    Test.issueAt source "assertion" "values are not equal" (show expected) (show actual)
+
+/// Expect a condition to hold, with a description of the intent.
+public isTrue : String -> Bool -> Test.Check
+let isTrue message condition = isTrueAt "" message condition
+example: isTrue "true" true = Test.pass
+
+internal isTrueAt : String -> String -> Bool -> Test.Check
+let isTrueAt source message condition =
+  if condition then Test.pass else Test.issueAt source "assertion" message "true" "false"
+
+/// Return an explicit assertion failure.
+public fail : String -> Test.Check
+let fail message = failAt "" message
+example: not (Test.successful (fail "failed"))
+
+internal failAt : String -> String -> Test.Check
+let failAt source message = Test.issueAt source "assertion" message "" ""
+
+/// Combine already evaluated checks, preserving every failure in source order.
+/// This is not lazy: use andThen when later work must not run after failure.
+public all : List Test.Check -> Test.Check
+let all checks = List.foldl Test.combine Test.pass checks
+example: List.length (Test.issues (all [fail "first", fail "second"])) = 2
+
+/// Run deferred work only when the preceding check succeeded.
+public andThen : (Unit -> Test.Check / 'e) -> Test.Check -> Test.Check / 'e
+let andThen next previous = if Test.successful previous then next () else previous
+example: andThen (fun _ -> fail "later") (fail "first") = fail "first"
+
+/// Attach human context to each failure without changing its classification.
+public context : String -> Test.Check -> Test.Check
+let context message check = Test.addContext message check
+example: List.length (Test.issues (context "context" (fail "failed"))) = 1
+
+/// Adapt an ordinary fallible operation to a check. Successful values are passed
+/// to the continuation; operation errors remain distinct from assertions.
+public ok : ('error -> String) -> ('a -> Test.Check / 'e) -> Result 'a 'error -> Test.Check / 'e
+let ok show next result =
+  match result with
+  | Ok value -> next value
+  | Err error -> Test.error (show error)
+example: ok identity (fun _ -> Test.pass) (Ok 1) = Test.pass

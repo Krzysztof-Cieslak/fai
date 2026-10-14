@@ -713,7 +713,36 @@ pub fn await_handle(handle: &Arc<Handle>) -> Value {
 /// scheduler on first use. Waiting for quiescence — not merely the root's
 /// completion — means the caller's exit-time leak check sees a settled heap.
 pub fn block_on(body: Box<dyn FnOnce() -> Value + Send>) -> Value {
+    block_on_cancellable(body, None)
+}
+
+/// Run a host-owned root with optional external cooperative cancellation. The
+/// receiver is disconnected after normal completion; no monitor outlives it.
+pub fn block_on_cancellable(
+    body: Box<dyn FnOnce() -> Value + Send>,
+    cancellation: Option<std::sync::mpsc::Receiver<()>>,
+) -> Value {
     let handle = spawn(body);
+    let monitor = cancellation.map(|receiver| {
+        let target = Arc::downgrade(&handle);
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = done.clone();
+        let thread = std::thread::spawn(move || {
+            while !stopped.load(std::sync::atomic::Ordering::Acquire) {
+                match receiver.recv_timeout(std::time::Duration::from_millis(10)) {
+                    Ok(()) => {
+                        if let Some(handle) = target.upgrade() {
+                            cancel_handle(&handle);
+                        }
+                        break;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        });
+        (done, thread)
+    });
     let sched = scheduler();
     {
         let mut active = sched.active.lock().expect("active lock");
@@ -723,9 +752,16 @@ pub fn block_on(body: Box<dyn FnOnce() -> Value + Send>) -> Value {
     }
     // The root has finished (quiescence implies it), so its result is set; the
     // handle is still alive through `handle`, so the result is not yet released.
-    let st = handle.state.lock().expect("handle lock");
-    debug_assert!(st.done, "root not done at quiescence");
-    fai_dup(st.result)
+    let result = {
+        let st = handle.state.lock().expect("handle lock");
+        debug_assert!(st.done, "root not done at quiescence");
+        fai_dup(st.result)
+    };
+    if let Some((done, thread)) = monitor {
+        done.store(true, std::sync::atomic::Ordering::Release);
+        let _ = thread.join();
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
