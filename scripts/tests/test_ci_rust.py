@@ -130,7 +130,7 @@ class CiBuildConfigurationTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         action = (ROOT / ".github/actions/compiler/action.yml").read_text()
         self.assertEqual(workflow.count("prepared: ${{ needs.changes.outputs.compiler == 'true' }}"), 2)
-        self.assertIn("if: inputs.prepared != 'true'", action)
+        self.assertIn("lookup-only: ${{ inputs.prepared == 'true' }}", action)
         self.assertIn('compiler.validate(compiler.cache_root() / expected["key"], expected)', action)
 
     def test_ci_bundle_packaging_uses_the_ci_profile(self):

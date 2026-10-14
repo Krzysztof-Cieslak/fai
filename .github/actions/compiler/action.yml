@@ -32,13 +32,14 @@ runs:
         import os, subprocess, sys
         subprocess.run([sys.executable, "scripts/compiler.py", "key", "--profile", os.environ["BUNDLE_PROFILE"], "--github-output"], check=True)
 
-    - name: Restore exact compiler cache
+    - name: Locate exact compiler cache
       id: cache
-      if: inputs.prepared != 'true'
       uses: actions/cache@v4
       with:
         path: ${{ steps.identity.outputs.cacheDir }}
         key: fai-compiler-v1-${{ runner.os }}-${{ steps.identity.outputs.key }}
+        # Keep the just-tested compiler in place while retaining save-on-success.
+        lookup-only: ${{ inputs.prepared == 'true' }}
 
     - name: Validate cache or restore a published bundle
       id: available
