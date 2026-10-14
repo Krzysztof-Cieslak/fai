@@ -1,0 +1,73 @@
+module CompressionRuntimeChecks
+
+let payload = Bytes.fromString (String.joinArray "" (Array.repeat 20000 "abcdef🙂"))
+
+let bind f result =
+  match result with
+  | Ok value -> f value
+  | Err error -> Err error
+
+let roundTrip format =
+  bind (Compression.decompress format) (Compression.compress format payload) = Ok payload
+
+let checkStream =
+  let parts = Stream.fromArray (Array.repeat 1000 (Bytes.fromString "chunk"))
+  match CompressionStream.compress Compression.Gzip Compression.encodeOptions parts with
+  | Err _ -> false
+  | Ok compressed ->
+    match CompressionStream.decoder Compression.Gzip Compression.decodeOptions compressed with
+    | Err _ -> false
+    | Ok reader ->
+      let result =
+        CompressionStream.fold reader 0 (fun size bytes ->
+          Ok (size + Bytes.length bytes, CompressionStream.Continue))
+      result.state = 5000 && result.complete && Result.isOk result.outcome
+
+effectSource : { clock : Clock | _ } -> Bytes -> Unit -> Stream Bytes { Clock } / { Clock }
+let effectSource env packed _ =
+  let observed = env.clock.now ()
+  Stream.singleton packed
+
+effectStep : { console : Console | _ } -> Int -> Bytes -> Result (Int * CompressionStream.Decision) String / { Console }
+let effectStep env size bytes =
+  let written = env.console.writeLine "Compression effect callback"
+  Ok (size + Bytes.length bytes, CompressionStream.Continue)
+
+checkEffects : { clock : Clock, console : Console | _ } -> Bool / { Clock, Console }
+let checkEffects env =
+  match Gzip.compress (Bytes.fromString "effects") with
+  | Err _ -> false
+  | Ok packed ->
+    let source = Stream.defer (effectSource env packed)
+    match CompressionStream.decoder Compression.Gzip Compression.decodeOptions source with
+    | Err _ -> false
+    | Ok reader ->
+      let result = CompressionStream.fold reader 0 (effectStep env)
+      result.complete && result.state = 7
+
+public main : Runtime -> Unit / { Clock, Concurrency, Console }
+let main env =
+  let shared = Result.withDefault Bytes.empty (Gzip.compress payload)
+  let values = Async.parallel env.concurrency [
+    fun _ -> Gzip.decompress shared = Ok payload,
+    fun _ -> Gzip.decompress shared = Ok payload
+  ]
+  let snapshots =
+    match Gzip.decoder Compression.decodeOptions with
+    | Err _ -> false
+    | Ok decoder ->
+      match Async.parallel env.concurrency [
+        fun _ -> Compression.feedDecoder decoder shared 0,
+        fun _ -> Compression.feedDecoder decoder shared 0
+      ] with
+      | [a, b] -> a = b
+      | _ -> false
+  let ok =
+    roundTrip Compression.Gzip && roundTrip Compression.Zlib && roundTrip Compression.RawDeflate && checkStream && values = [
+      true,
+      true
+    ] && snapshots && checkEffects env
+  env.console.writeLine (if ok then
+    "Compression runtime checks passed"
+  else
+    "Compression runtime checks FAILED")

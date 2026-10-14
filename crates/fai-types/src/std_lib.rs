@@ -188,6 +188,26 @@ pub(crate) fn contextual_builtin_scheme(db: &dyn fai_db::Db, name: Symbol) -> Op
     use fai_resolve::{AdtRef, ModuleName, module_file};
     use std::sync::Arc;
     let key = name.as_str();
+    if matches!(key, "compressionCreate" | "compressionStep") {
+        let engine = module_file(db, ModuleName(Symbol::intern("CompressionEngine")))?;
+        let prelude = module_file(db, ModuleName(Symbol::intern("Prelude")))?;
+        let named = |file: fai_db::SourceFile, name: &str| {
+            Ty::Adt(AdtRef::new(file.source(db), Symbol::intern(name)))
+        };
+        let apply = |head, arg| Ty::App(Arc::new(head), Arc::new(arg));
+        let state = named(engine, "State");
+        let error = named(engine, "Error");
+        let ints = Ty::array(Ty::int());
+        let bytes = Ty::Con(Con::Bytes);
+        return Some(Scheme::mono(if key == "compressionCreate" {
+            Ty::arrow(ints, apply(apply(named(prelude, "Result"), state), error))
+        } else {
+            Ty::arrows(
+                [state.clone(), bytes.clone(), ints.clone()],
+                Ty::Tuple(vec![state, bytes, ints, apply(named(prelude, "Option"), error)]),
+            )
+        }));
+    }
     if !matches!(
         key,
         "regexCompile"

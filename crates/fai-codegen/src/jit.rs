@@ -254,6 +254,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_regex_byte_index", rt::fai_regex_byte_index);
     sym!("fai_regex_slice", rt::fai_regex_slice);
     sym!("fai_regex_escape", rt::fai_regex_escape);
+    sym!("fai_compression_create", rt::fai_compression_create);
+    sym!("fai_compression_step", rt::fai_compression_step);
     sym!("fai_cleanup", rt::fai_cleanup);
     sym!("fai_net_peer", rt::fai_net_peer);
     sym!("fai_tls_server_endpoint", rt::fai_tls_server_endpoint);

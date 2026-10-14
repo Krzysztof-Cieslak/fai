@@ -1,0 +1,190 @@
+module CompressionStream
+
+public type ReadError 'source =
+  | SourceError 'source
+  | CodecError Compression.Error
+
+type Source 'error 'e =
+  | Source (Unit -> Result (Option (Bytes * Source 'error 'e)) 'error / 'e)
+
+type Codec =
+  | Encode Compression.Encoder
+  | Decode Compression.Decoder
+
+public opaque type Reader 'source 'e = {
+  chunk : Bytes,
+  codec : Codec,
+  eof : Bool,
+  format : Compression.Format,
+  inputBytes : Int,
+  members : Int,
+  offset : Int,
+  outputBytes : Int,
+  source : Source 'source 'e,
+  status : Compression.Status
+}
+
+source : ('state -> Result (Option (Bytes * 'state)) 'error / 'e) -> 'state -> Source 'error 'e
+let source pull state =
+  Source (fun _ ->
+    match pull state with
+    | Err error -> Err error
+    | Ok None -> Ok None
+    | Ok (Some (bytes, rest)) -> Ok (Some (bytes, source pull rest)))
+
+reader : Compression.Format -> Codec -> Source 'source 'e -> Reader 'source 'e
+let reader format codec source = {
+  chunk = Bytes.empty,
+  codec = codec,
+  eof = false,
+  format = format,
+  inputBytes = 0,
+  members = 0,
+  offset = 0,
+  outputBytes = 0,
+  source = source,
+  status = Compression.NeedInput
+}
+
+public encoderFromPull : Compression.Format -> Compression.EncodeOptions -> ('state -> Result (Option (Bytes * 'state)) 'source / 'e) -> 'state -> Result (Reader 'source 'e) Compression.Error
+let encoderFromPull format options pull state =
+  Result.map (fun encoder ->
+    reader format (Encode encoder) (source pull state)) (Compression.encoder format options)
+
+public decoderFromPull : Compression.Format -> Compression.DecodeOptions -> ('state -> Result (Option (Bytes * 'state)) 'source / 'e) -> 'state -> Result (Reader 'source 'e) Compression.Error
+let decoderFromPull format options pull state =
+  Result.map (fun decoder ->
+    reader format (Decode decoder) (source pull state)) (Compression.decoder format options)
+
+public encoder : Compression.Format -> Compression.EncodeOptions -> Stream Bytes 'e -> Result (Reader String 'e) Compression.Error
+let encoder format options stream = encoderFromPull format options Stream.uncons stream
+
+public decoder : Compression.Format -> Compression.DecodeOptions -> Stream Bytes 'e -> Result (Reader String 'e) Compression.Error
+let decoder format options stream = decoderFromPull format options Stream.uncons stream
+
+let mapStep wrap result = {
+  consumed = result.consumed,
+  inputBytes = result.inputBytes,
+  members = result.members,
+  output = result.output,
+  outputBytes = result.outputBytes,
+  state = wrap result.state,
+  status = result.status
+}
+
+let advance reader =
+  match reader.codec with
+  | Encode encoder ->
+    let result =
+      if reader.eof then
+        Compression.finishEncoder encoder
+      else
+        Compression.feedEncoder encoder reader.chunk reader.offset
+    mapStep Encode result
+  | Decode decoder ->
+    let result =
+      if reader.eof then
+        Compression.finishDecoder decoder
+      else
+        Compression.feedDecoder decoder reader.chunk reader.offset
+    mapStep Decode result
+
+let readSource reader =
+  let (Source pull) = reader.source
+  match pull () with
+  | Err error -> Err (SourceError error)
+  | Ok None -> Ok { reader with chunk = Bytes.empty, eof = true, offset = 0 }
+  | Ok (Some (chunk, rest)) -> Ok { reader with chunk = chunk, offset = 0, source = rest }
+
+/// Output precedes a later checksum failure. Only Ok None means full validation.
+/// Consume I/O-backed continuations once; codec snapshots do not replay a source.
+public next : Reader 'source 'e -> Result (Option Bytes * Reader 'source 'e) (ReadError 'source) / 'e
+let next reader =
+  match reader.status with
+  | Compression.Failed error -> Err (CodecError error)
+  | Compression.Finished ->
+    if reader.offset < Bytes.length reader.chunk then
+      Err (CodecError (Compression.trailingError reader.format reader.inputBytes reader.outputBytes reader.members))
+    else if reader.eof then
+      Ok (None, reader)
+    else
+      match readSource reader with
+      | Err error -> Err error
+      | Ok reader -> next reader
+  | Compression.NeedInput ->
+    if reader.eof then
+      run reader
+    else
+      match readSource reader with
+      | Err error -> Err error
+      | Ok reader -> run reader
+  | _ -> run reader
+
+let run reader =
+  let result = advance reader
+  let reader = { reader with
+    codec = result.state,
+    inputBytes = result.inputBytes,
+    members = result.members,
+    offset = reader.offset + result.consumed,
+    outputBytes = result.outputBytes,
+    status = result.status
+  }
+  if Bytes.isEmpty result.output then next reader else Ok (Some result.output, reader)
+
+public type Decision =
+  | Continue
+  | Stop
+
+public type FoldError 'source 'callback =
+  | ReadFailure (ReadError 'source)
+  | CallbackFailure 'callback
+
+public type FoldResult 'state 'source 'callback = {
+  chunks : Int,
+  complete : Bool,
+  deliveredBytes : Int,
+  outcome : Result Unit (FoldError 'source 'callback),
+  state : 'state
+}
+
+/// Source and callback errors remain typed; stopped consumers are not validated.
+public fold : Reader 'source 'e -> 'state -> ('state -> Bytes -> Result ('state * Decision) 'callback / 'e) -> FoldResult 'state 'source 'callback / 'e
+let fold reader initial step = foldLoop reader step {
+  chunks = 0,
+  complete = false,
+  deliveredBytes = 0,
+  outcome = Ok (),
+  state = initial
+}
+
+let foldLoop reader step progress =
+  match next reader with
+  | Err error -> { progress with outcome = Err (ReadFailure error) }
+  | Ok (None, _) -> { progress with complete = true }
+  | Ok (Some bytes, rest) ->
+    match step progress.state bytes with
+    | Err error -> { progress with outcome = Err (CallbackFailure error) }
+    | Ok (state, decision) ->
+      let progress = { progress with
+        chunks = progress.chunks + 1,
+        deliveredBytes = progress.deliveredBytes + Bytes.length bytes,
+        state = state
+      }
+      if decision = Stop then progress else foldLoop rest step progress
+
+/// Convenience adapter using Stream's String error channel explicitly.
+public toStream : Reader String 'e -> Stream Bytes 'e
+let toStream reader =
+  Stream.defer (fun _ ->
+    match next reader with
+    | Err (SourceError error) -> Stream.failed error
+    | Err (CodecError error) -> Stream.failed (Compression.errorToString error)
+    | Ok (None, _) -> Stream.empty
+    | Ok (Some bytes, rest) -> Stream.cons bytes (toStream rest))
+
+public compress : Compression.Format -> Compression.EncodeOptions -> Stream Bytes 'e -> Result (Stream Bytes 'e) Compression.Error
+let compress format options stream = Result.map toStream (encoder format options stream)
+
+public decompress : Compression.Format -> Compression.DecodeOptions -> Stream Bytes 'e -> Result (Stream Bytes 'e) Compression.Error
+let decompress format options stream = Result.map toStream (decoder format options stream)

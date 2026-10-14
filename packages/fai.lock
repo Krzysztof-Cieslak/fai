@@ -438,6 +438,17 @@ subdir = "packages/llm/examples"
 path = "llm/examples"
 
 [[packages]]
+id = "p-a84d1915151942db08b1228257f042fd8a800c6158a026cc60973ef497b0d9f6"
+version = "0.1.0"
+manifest-fingerprint = "blake3:ac74761554ee62a8edd1df163a37ab8c4d5ba01f764125f96261956ae41a9d2d"
+
+[packages.logical]
+path = "compression"
+
+[packages.source]
+path = "compression"
+
+[[packages]]
 id = "p-aab906181dad2bdc783c82c0dce17c210c2f9f68007e6b70338baf84c92a5ec8"
 version = "0.1.0"
 manifest-fingerprint = "blake3:c14a4413e5b16419239e25db9cfa8cb090bf8c602c017674910c81d5d0ed51a5"
@@ -591,6 +602,39 @@ target = "x86_64-unknown-linux-gnu"
 root-package = "p-21e6e45b29bb525e670db3e358cc46af89bc3fbcb2d7a8382f3d6c716dd8412f"
 input-fingerprint = "blake3:c311e1bcb954edc10cbdabaf6582d37e387728405fd09a5c8583093d43d86602"
 packages = ["p-21e6e45b29bb525e670db3e358cc46af89bc3fbcb2d7a8382f3d6c716dd8412f"]
+edges = []
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs]]
+id = "g-139c4d74307965a91ab330e076e6c0d9f6ede8507735690ce8b8a71c29e5f428"
+root = "compression"
+target = "aarch64-apple-darwin"
+root-package = "p-a84d1915151942db08b1228257f042fd8a800c6158a026cc60973ef497b0d9f6"
+input-fingerprint = "blake3:0c61d2b86d08cfecd94badd0acf06cfd802de1eff5ec5814c0c466ed33d3fe2a"
+packages = ["p-a84d1915151942db08b1228257f042fd8a800c6158a026cc60973ef497b0d9f6"]
+edges = []
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs]]
+id = "g-5434684cda2fd5d1bfdb06299719e74a0281696d40e9f509a1bb60157a21b8bd"
+root = "compression"
+target = "x86_64-pc-windows-msvc"
+root-package = "p-a84d1915151942db08b1228257f042fd8a800c6158a026cc60973ef497b0d9f6"
+input-fingerprint = "blake3:493331307c6704d1369cda055247f512bda5005ff5e3f47ddb691eb4f5b2647b"
+packages = ["p-a84d1915151942db08b1228257f042fd8a800c6158a026cc60973ef497b0d9f6"]
+edges = []
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs]]
+id = "g-dda4810c8b60ade293edc083fc8f01193639b90ed1d2d520929a917c1cb024ee"
+root = "compression"
+target = "x86_64-unknown-linux-gnu"
+root-package = "p-a84d1915151942db08b1228257f042fd8a800c6158a026cc60973ef497b0d9f6"
+input-fingerprint = "blake3:aca92f0f9ca9fb6e55c0cbdd6f59c60432f8d06da8b3ab6285fb6dc88e035b2b"
+packages = ["p-a84d1915151942db08b1228257f042fd8a800c6158a026cc60973ef497b0d9f6"]
 edges = []
 branches = []
 resolved-with = "0.0.1"

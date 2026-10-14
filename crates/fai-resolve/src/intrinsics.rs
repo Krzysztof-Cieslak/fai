@@ -91,6 +91,8 @@ pub const INTRINSICS: &[&str] = &[
     "regexByteIndex",
     "regexSlice",
     "regexEscape",
+    "compressionCreate",
+    "compressionStep",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

@@ -1185,6 +1185,17 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/compression` library supplies pure gzip, zlib and raw
+DEFLATE codecs over the embedded `CompressionEngine` bridge. Immutable native
+snapshots have content-based equality/hashing and copy-on-share transitions.
+Canonical 64 KiB compression blocks bound encoder state independently of input
+chunking; decoders retain a fixed history window. Explicit limits cover total
+input/output, chunk size, gzip headers and members. Gzip validates concatenated
+members; strict whole-buffer decoding rejects trailing bytes. Typed streaming
+readers preserve source/callback errors and committed state; emitted bytes remain
+provisional until successful EOF validation. File/HTTP policy remains outside the
+codec package.
+
 The optional `packages/decimal` library provides pure exact-first arithmetic
 over normalized arbitrary-precision coefficients, checked decimal exponents,
 canonical NaN and signed infinities. Numeric equality ignores presentation scale;

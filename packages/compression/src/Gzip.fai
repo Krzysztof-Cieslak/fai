@@ -1,0 +1,21 @@
+module Gzip
+
+/// A single gzip member with deterministic, platform-neutral metadata.
+public compress : Bytes -> Result Bytes Compression.Error
+let compress input = Compression.compress Compression.Gzip input
+
+public compressWith : Compression.EncodeOptions -> Bytes -> Result Bytes Compression.Error
+let compressWith options input = Compression.compressWith Compression.Gzip options input
+
+/// Validate and concatenate every member; trailing junk is an error.
+public decompress : Bytes -> Result Bytes Compression.Error
+let decompress input = Compression.decompress Compression.Gzip input
+
+public decompressWith : Compression.DecodeOptions -> Bytes -> Result Bytes Compression.Error
+let decompressWith options input = Compression.decompressWith Compression.Gzip options input
+
+public encoder : Compression.EncodeOptions -> Result Compression.Encoder Compression.Error
+let encoder options = Compression.encoder Compression.Gzip options
+
+public decoder : Compression.DecodeOptions -> Result Compression.Decoder Compression.Error
+let decoder options = Compression.decoder Compression.Gzip options

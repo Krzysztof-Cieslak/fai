@@ -1,0 +1,22 @@
+module CompressionEngine
+
+/// Immutable native codec snapshot, with content-based comparison and hashing.
+public opaque type State =
+  | StateCell Int
+
+/// Code, message, detection offset, member index, total input and total output.
+public type Error =
+  | EngineError Int String Int Int Int Int
+
+/// Next state, output, progress and optional terminal failure. Progress contains
+/// consumed bytes, status, total input, total output and completed members.
+public type Step = State * Bytes * Array Int * Option Error
+
+/// Options: encode flag, format (raw/zlib/gzip), level, input/output limits,
+/// output chunk bytes, gzip header bytes and gzip member limit.
+public create : Array Int -> Result State Error
+let create options = Prim.compressionCreate options
+
+/// Request: input start offset and action (feed/sync flush/finish).
+public step : State -> Bytes -> Array Int -> Step
+let step state input request = Prim.compressionStep state input request

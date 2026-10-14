@@ -1,0 +1,13 @@
+module CompressionBridge
+
+// Applications normally use the optional compression package. This example
+// exercises the pure native bridge without a source-package dependency.
+let options = [| 1, 2, 6, 1024, 1024, 64, 1024, 16 |]
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  match CompressionEngine.create options with
+  | Err _ -> runtime.console.writeLine "codec unavailable"
+  | Ok state ->
+    let (_, bytes, _, _) = CompressionEngine.step state Bytes.empty [| 0, 2 |]
+    runtime.console.writeLine (if Bytes.length bytes > 0 then "gzip ready" else "empty")

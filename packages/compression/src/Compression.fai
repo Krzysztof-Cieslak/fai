@@ -1,0 +1,258 @@
+module Compression
+
+public type Format =
+  | RawDeflate
+  | Zlib
+  | Gzip
+
+public type Limits = {
+  chunkBytes : Int,
+  maxHeaderBytes : Int,
+  maxInputBytes : Int,
+  maxMembers : Int,
+  maxOutputBytes : Int
+}
+
+public limits : Limits
+let limits = {
+  chunkBytes = 65536,
+  maxHeaderBytes = 65536,
+  maxInputBytes = 67108864,
+  maxMembers = 1024,
+  maxOutputBytes = 67108864
+}
+
+public type EncodeOptions = { level : Int, limits : Limits }
+
+public type DecodeOptions = { limits : Limits }
+
+public encodeOptions : EncodeOptions
+let encodeOptions = { level = 6, limits = limits }
+
+public decodeOptions : DecodeOptions
+let decodeOptions = { limits = limits }
+
+public type ErrorKind =
+  | InvalidOptions
+  | InvalidHeader
+  | CorruptData
+  | TruncatedInput
+  | ChecksumMismatch
+  | TrailingData
+  | DictionaryRequired
+  | InputLimit
+  | OutputLimit
+  | HeaderLimit
+  | MemberLimit
+  | CounterOverflow
+  | InternalFailure
+
+public type Error = {
+  format : Format,
+  inputBytes : Int,
+  kind : ErrorKind,
+  member : Option Int,
+  message : String,
+  offset : Option Int,
+  outputBytes : Int
+}
+
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.offset with
+  | None -> ""
+  | Some offset -> " at input byte " ++ Int.toString offset)
+
+let nativeError format native =
+  let (CompressionEngine.EngineError code message offset member input output) = native
+  {
+    format = format,
+    inputBytes = input,
+    kind = (match code with
+    | 1 -> InvalidOptions
+    | 2 -> InvalidHeader
+    | 3 -> CorruptData
+    | 4 -> TruncatedInput
+    | 5 -> ChecksumMismatch
+    | 6 -> TrailingData
+    | 7 -> DictionaryRequired
+    | 8 -> InputLimit
+    | 9 -> OutputLimit
+    | 10 -> HeaderLimit
+    | 11 -> MemberLimit
+    | 12 -> CounterOverflow
+    | _ -> InternalFailure),
+    member = if member < 0 then None else Some member,
+    message = message,
+    offset = if offset < 0 then None else Some offset,
+    outputBytes = output
+  }
+
+public type Status =
+  | Progress
+  | NeedInput
+  | Flushed
+  | MemberEnd
+  | Finished
+  | Failed Error
+
+public opaque type Encoder =
+  | Encoder Format CompressionEngine.State
+
+public opaque type Decoder =
+  | Decoder Format CompressionEngine.State
+
+public type Step 'state = {
+  consumed : Int,
+  inputBytes : Int,
+  members : Int,
+  output : Bytes,
+  outputBytes : Int,
+  state : 'state,
+  status : Status
+}
+
+let code format =
+  match format with
+  | RawDeflate -> 0
+  | Zlib -> 1
+  | Gzip -> 2
+
+let create encode format level limits =
+  CompressionEngine.create [|
+    encode,
+    code format,
+    level,
+    limits.maxInputBytes,
+    limits.maxOutputBytes,
+    limits.chunkBytes,
+    limits.maxHeaderBytes,
+    limits.maxMembers
+  |] |> Result.mapError (nativeError format)
+
+public encoder : Format -> EncodeOptions -> Result Encoder Error
+let encoder format options =
+  Result.map (Encoder format) (create 1 format options.level options.limits)
+
+public decoder : Format -> DecodeOptions -> Result Decoder Error
+let decoder format options = Result.map (Decoder format) (create 0 format 6 options.limits)
+
+let decodedStatus format failure code =
+  match failure with
+  | Some error -> Failed (nativeError format error)
+  | None ->
+    match code with
+    | 1 -> NeedInput
+    | 2 -> Flushed
+    | 3 -> MemberEnd
+    | 4 -> Finished
+    | _ -> Progress
+
+let step format wrap native bytes offset action =
+  let (next, output, counts, failure) = CompressionEngine.step native bytes [| offset, action |]
+  {
+    consumed = Array.unsafeGet 0 counts,
+    inputBytes = Array.unsafeGet 2 counts,
+    members = Array.unsafeGet 4 counts,
+    output = output,
+    outputBytes = Array.unsafeGet 3 counts,
+    state = wrap next,
+    status = decodedStatus format failure (Array.unsafeGet 1 counts)
+  }
+
+/// Feed from an explicit byte offset. Only consumed bytes belong to this call.
+public feedEncoder : Encoder -> Bytes -> Int -> Step Encoder
+let feedEncoder encoder bytes offset =
+  let (Encoder format native) = encoder
+  step format (Encoder format) native bytes offset 0
+
+public flushEncoder : Encoder -> Step Encoder
+let flushEncoder encoder =
+  let (Encoder format native) = encoder
+  step format (Encoder format) native Bytes.empty 0 1
+
+public finishEncoder : Encoder -> Step Encoder
+let finishEncoder encoder =
+  let (Encoder format native) = encoder
+  step format (Encoder format) native Bytes.empty 0 2
+
+public feedDecoder : Decoder -> Bytes -> Int -> Step Decoder
+let feedDecoder decoder bytes offset =
+  let (Decoder format native) = decoder
+  step format (Decoder format) native bytes offset 0
+
+/// Declare EOF. Continue draining until Finished or Failed; no further input is valid.
+public finishDecoder : Decoder -> Step Decoder
+let finishDecoder decoder =
+  let (Decoder format native) = decoder
+  step format (Decoder format) native Bytes.empty 0 2
+
+// Binary carries retain only logarithmically many buffers, even for one-byte
+// native chunks. Groups preserve their original byte order.
+let carry count bytes chunks =
+  match chunks with
+  | (previousCount, previous) :: rest ->
+    if previousCount = count then
+      carry (count * 2) (Bytes.concat previous bytes) rest
+    else
+      (count, bytes) :: chunks
+  | [] -> [(count, bytes)]
+
+let joined chunks =
+  match chunks with
+  | [] -> Bytes.empty
+  | (_, bytes) :: rest -> Bytes.concat (joined rest) bytes
+
+let collect chunks output = if Bytes.isEmpty output then chunks else carry 1 output chunks
+
+let encodeLoop encoder input offset finishing chunks =
+  let result = if finishing then finishEncoder encoder else feedEncoder encoder input offset
+  let chunks = collect chunks result.output
+  match result.status with
+  | Failed error -> Err error
+  | Finished -> Ok (joined chunks)
+  | NeedInput -> encodeLoop result.state input (offset + result.consumed) true chunks
+  | _ -> encodeLoop result.state input (offset + result.consumed) finishing chunks
+
+public compressWith : Format -> EncodeOptions -> Bytes -> Result Bytes Error
+let compressWith format options input =
+  match encoder format options with
+  | Err error -> Err error
+  | Ok encoder -> encodeLoop encoder input 0 false []
+
+public compress : Format -> Bytes -> Result Bytes Error
+let compress format input = compressWith format encodeOptions input
+
+public trailingError : Format -> Int -> Int -> Int -> Error
+let trailingError format input output members = {
+  format = format,
+  inputBytes = input,
+  kind = TrailingData,
+  member = Some members,
+  message = "data follows the compressed stream",
+  offset = Some input,
+  outputBytes = output
+}
+
+let decodeLoop format decoder input offset finishing chunks =
+  let result = if finishing then finishDecoder decoder else feedDecoder decoder input offset
+  let offset = offset + result.consumed
+  let chunks = collect chunks result.output
+  match result.status with
+  | Failed error -> Err error
+  | Finished ->
+    if offset <> Bytes.length input then
+      Err (trailingError format result.inputBytes result.outputBytes result.members)
+    else
+      Ok (joined chunks)
+  | NeedInput -> decodeLoop format result.state input offset true chunks
+  | _ -> decodeLoop format result.state input offset finishing chunks
+
+public decompressWith : Format -> DecodeOptions -> Bytes -> Result Bytes Error
+let decompressWith format options input =
+  match decoder format options with
+  | Err error -> Err error
+  | Ok decoder -> decodeLoop format decoder input 0 false []
+
+public decompress : Format -> Bytes -> Result Bytes Error
+let decompress format input = decompressWith format decodeOptions input

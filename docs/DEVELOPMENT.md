@@ -15,6 +15,12 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Compression bridge changes require rebuilding the compiler/runtime. Then run
+`fai test -C packages compression` and the package-local JIT/AOT integration with
+`python3 scripts/package_integrations.py compression --no-dependents --fai /path/to/fai`.
+The native compression tests exercise an independent zlib-rs backend and bounded
+snapshot storage; run them alongside the Perceus space/storage targets.
+
 Decimal contracts run with `fai test -C packages --package decimal` and
 `--package decimal-codecs`. Their package-local JIT/AOT integrations cover large
 coefficients, exact and rounded arithmetic, Float conversion, shared task use,
