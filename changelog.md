@@ -7,6 +7,9 @@
   DEFLATE snapshots, backing the optional `compression` source package.
 
 ### Changed
+- Run logging, regex, JSON, web, LLM, filesystem and process runtime scenarios as
+  named Fai tests. Keep Python coverage for compiler diagnostics, independent
+  OS/oracle checks, executable backends, relocation and terminal behavior.
 - Add named `Test.Suite` scenarios, structured `Expect` checks, scoped fixtures,
   focus/skip metadata, `fai test --list`, and the `--deny-focused` CI guard. Cases
   run in fresh supervised workers with explicit capabilities and temporary roots.

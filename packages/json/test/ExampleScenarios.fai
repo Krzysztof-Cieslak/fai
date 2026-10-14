@@ -1,0 +1,49 @@
+module JsonExampleScenarios
+
+type User = { id : Int, name : String }
+
+decoder : JsonDecode.Decoder User
+let decoder =
+  JsonDecode.map2 (fun id name -> {
+    id = id,
+    name = name
+  }) (JsonDecode.field "id" JsonDecode.int) (JsonDecode.field "name" JsonDecode.string)
+
+encoder : JsonEncode.Encoder User
+let encoder user = JsonEncode.object [
+  ("id", JsonEncode.int user.id),
+  ("name", JsonEncode.string user.name)
+]
+
+exactNumbers : Test.Context -> Test.Check
+let exactNumbers _ =
+  let source = "{\"message\":\"Hello, JSON!\",\"large\":123456789012345678901234567890}"
+  match Json.parse source with
+  | Err error -> Test.error (Json.errorToString error)
+  | Ok value ->
+    let message = JsonDecode.decode (JsonDecode.field "message" JsonDecode.string) value
+    let number = JsonDecode.decode (JsonDecode.field "large" JsonDecode.value) value
+    Expect.all [
+      Expect.ok JsonDecode.errorToString (Expect.equal identity "Hello, JSON!") message,
+      Expect.ok JsonDecode.errorToString (fun value ->
+        Expect.equal identity "123456789012345678901234567890" (Json.toString value)) number,
+      Expect.equal identity source (Json.toString value)
+    ]
+
+typedCodec : Test.Context -> Test.Check
+let typedCodec _ =
+  match JsonDecode.fromString decoder "{\"id\":42,\"name\":\"Ada\"}" with
+  | Err error -> Test.error (JsonDecode.readErrorToString error)
+  | Ok user -> Expect.all [
+    Expect.equal Int.toString 42 user.id,
+    Expect.equal identity "Ada" user.name,
+    Expect.ok JsonEncode.errorToString (Expect.equal identity "{\"id\":42,\"name\":\"Ada Lovelace\"}") (JsonEncode.toString encoder { user with
+      name = user.name ++ " Lovelace"
+    })
+  ]
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "JSON example scenarios" [
+  Test.test "large numbers preserve exact spelling" exactNumbers,
+  Test.test "typed decoding and encoding" typedCodec
+]

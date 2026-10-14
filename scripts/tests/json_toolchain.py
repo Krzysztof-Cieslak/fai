@@ -32,22 +32,17 @@ def main():
         )
 
     example = fai("run", "examples/JsonExample.fai", capture_output=True)
-    assert json.loads(example.stdout) == {
-        "message": "Hello, JSON!", "large": 123456789012345678901234567890,
-    }, example.stdout
     codec = fai("run", "examples/CodecExample.fai", capture_output=True)
-    assert json.loads(codec.stdout) == {"id": 42, "name": "Ada Lovelace"}, codec.stdout
 
     with tempfile.TemporaryDirectory(prefix="fai-json-") as temp:
-        codec_executable = Path(temp) / "codec"
-        fai("build", "examples/CodecExample.fai", "--out", str(codec_executable))
-        if codec_executable.with_suffix(".exe").exists():
-            codec_executable = codec_executable.with_suffix(".exe")
-        codec = subprocess.run(
-            [str(codec_executable)], check=True, capture_output=True,
-            text=True, encoding="utf-8", timeout=120,
-        )
-        assert json.loads(codec.stdout) == {"id": 42, "name": "Ada Lovelace"}, codec.stdout
+        # Values are asserted by the native suite. This checks that both compiler
+        # execution paths produce exactly the same example output.
+        for name, expected in (("JsonExample", example.stdout), ("CodecExample", codec.stdout)):
+            binary = Path(temp) / f"{name}.exe"
+            fai("build", f"examples/{name}.fai", "--out", str(binary))
+            result = subprocess.run([str(binary)], check=True, capture_output=True,
+                                    text=True, encoding="utf-8", timeout=120)
+            assert result.stdout == expected, (name, result.stdout, expected)
         executable = Path(temp) / "oracle"
         fai("build", "test/Oracle.fai", "--out", str(executable))
         if executable.with_suffix(".exe").exists():

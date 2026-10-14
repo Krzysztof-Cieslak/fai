@@ -45,8 +45,8 @@ let recordValid records =
     first.target = "parent" && second.target = "child" && first.timestamp = Some (Instant.fromUnixTimeSeconds 1) && second.timestamp = Some (Instant.fromUnixTimeSeconds 2) && JsonDecode.decode (JsonDecode.field "x" JsonDecode.int) second.fields = Ok 3
   | _ -> false
 
-public main : Runtime -> Unit / { Concurrency, Console }
-let main env =
+captureChecks : Runtime -> Test.Check / { Concurrency }
+let captureChecks env =
   let times = env.concurrency.channel 1
   let errors = env.concurrency.channel 1
   let seededTime = env.concurrency.send times 0
@@ -64,7 +64,27 @@ let main env =
       let (capture, good) = result.value
       let expired = capture.snapshot ()
       good && recordValid result.records && Result.isErr expired
-  env.console.writeLine (if good && timeCount = Some 3 && errorCount = Some 1 then
+  Expect.all [
+    Expect.isTrue "records preserve fields, timestamps and lifetime" good,
+    Expect.equal (fun count ->
+      match count with
+      | None -> "none"
+      | Some n -> Int.toString n) (Some 3) timeCount,
+    Expect.equal (fun count ->
+      match count with
+      | None -> "none"
+      | Some n -> Int.toString n) (Some 1) errorCount
+  ]
+
+public main : Runtime -> Unit / { Concurrency, Console }
+let main env =
+  env.console.writeLine (if captureChecks env = Test.pass then
     "logging capture checks passed"
   else
     "logging capture checks FAILED")
+
+tests : Test.Suite Test.Context { Concurrency }
+let tests = Test.describe "logging capture" [
+  Test.test "bounded capture, lazy filtering and expired aliases" (fun ctx ->
+    captureChecks ctx.runtime)
+]

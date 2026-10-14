@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise process ownership, effects and real byte pipes through JIT and AOT."""
+"""Supply process interop fixtures to named tests and retain AOT/terminal checks."""
 
 import argparse
 import json
@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from package_fixture import prepare
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -68,10 +69,26 @@ def main():
     program = "process/examples/RuntimeChecks.fai"
     with tempfile.TemporaryDirectory(prefix="fai-process-") as temporary:
         directory = Path(temporary)
+        # The interoperability fixture remains external, but individual process
+        # assertions are ordinary Fai tests with per-case reporting.
+        suite = directory / "suite"
+        prepare(suite, ["process"])
+        (suite / "tests").mkdir()
+        source = (ROOT / "packages" / program).read_text(encoding="utf-8")
+        source = source.replace("module ProcessRuntimeChecks\n", "module ProcessRuntimeChecks\n\nimport process.Process\n", 1)
+        (suite / "tests/RuntimeChecks.fai").write_text(source, encoding="utf-8")
+        reports = Path(os.environ.get("RUNNER_TEMP", temporary)) / "fai-junit"
+        report = reports / "process-interop.xml"
+        run([compiler, "test", "--no-daemon", "--deny-focused", "-C", str(suite),
+             "--junit", str(report)],
+             env={**os.environ, "FAI_TEST_PYTHON": sys.executable, "FAI_TEST_PROCESS_FIXTURE": fixture})
+        cases = ET.parse(report).findall(".//testcase")
+        assert len(cases) == 21 and all(
+            json.loads(case.attrib["name"])[0] == "native process sessions"
+            and not any(case.find(tag) is not None for tag in ("failure", "error", "skipped"))
+            for case in cases
+        ), ET.tostring(ET.parse(report).getroot())
         executable = directory / "process-checks.exe"
-        output = run([compiler, "run", "--no-daemon", "-C", "packages", program,
-                      "--", sys.executable, fixture])
-        assert b"process checks passed" in output and b"FAIL" not in output and b"inherited-marker" in output, output
         run([compiler, "build", "--no-daemon", "-C", "packages", program,
              "--out", str(executable)])
         output = run([str(executable), sys.executable, fixture])
@@ -89,7 +106,7 @@ def main():
                      b"\x03", expected=b"completed")
             exercise([str(directory / "TaskRunner.exe"), sys.executable, fixture,
                       "hold"], b"Process task runner", b"\r", b"\x03")
-    print("Process JIT/AOT, byte-pipe, lifecycle and effect checks passed")
+    print("Process named suites, AOT, byte-pipe, lifecycle and effect checks passed")
 
 
 if __name__ == "__main__":

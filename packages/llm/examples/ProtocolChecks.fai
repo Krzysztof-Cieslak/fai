@@ -41,7 +41,7 @@ let registry =
   LlmTool.singleton (LlmTool.define "read_file" "read a named file" (LlmSchema.field "path" LlmSchema.string) JsonEncode.string (fun path ->
     Ok ("contents-" ++ path)))
 
-work : Llm.Client -> Result Bool Llm.Error / { Clock, Concurrency, Net, Tls }
+work : Llm.Client -> Result Test.Check Llm.Error / { Clock, Concurrency, Net, Tls }
 let work client =
   match Llm.generate client request with
   | Err error -> Err error
@@ -55,13 +55,16 @@ let work client =
         match Llm.generate client next with
         | Err error -> Err error
         | Ok second ->
-          Ok (List.map (fun call ->
-            call.id) first.toolCalls = [
-            "a",
-            "b"
-          ] && Llm.text second = "tools completed" && second.requestId = Some "fixture-request")
+          Ok (Expect.all [
+            Expect.equal (String.join ",") [
+              "a",
+              "b"
+            ] (List.map (fun call -> call.id) first.toolCalls),
+            Expect.equal identity "tools completed" (Llm.text second),
+            Expect.equal (Option.withDefault "<none>") (Some "fixture-request") second.requestId
+          ])
 
-session : Runtime -> LlmTypes.Provider -> Listener -> Nursery -> Result Bool Llm.Error / { Clock, Concurrency, Net, Tls }
+session : Runtime -> LlmTypes.Provider -> Listener -> Nursery -> Result Test.Check Llm.Error / { Clock, Concurrency, Net, Tls }
 let session env provider listener nursery =
   let server =
     env.concurrency.spawn nursery (fun _ -> Http.serveListener env listener (handle provider))
@@ -76,7 +79,7 @@ let session env provider listener nursery =
   let cancelled = env.concurrency.cancel server
   result
 
-run : Runtime -> LlmTypes.Provider -> Result Bool Llm.Error / { Clock, Concurrency, Net, Tls }
+run : Runtime -> LlmTypes.Provider -> Result Test.Check Llm.Error / { Clock, Concurrency, Net, Tls }
 let run env provider =
   match env.net.listen 0 with
   | Err error -> Err (LlmTypes.error LlmTypes.TransportError error)
@@ -88,10 +91,16 @@ let main env =
   let b = run env LlmTypes.Anthropic
   let first =
     env.console.writeLine (match a with
-    | Ok true -> "OpenAI tools passed"
-    | Ok false -> "OpenAI tools FAILED"
+    | Ok result -> if result = Test.pass then "OpenAI tools passed" else "OpenAI tools FAILED"
     | Err error -> Llm.errorToString error)
   env.console.writeLine (match b with
-  | Ok true -> "Anthropic tools passed"
-  | Ok false -> "Anthropic tools FAILED"
+  | Ok result -> if result = Test.pass then "Anthropic tools passed" else "Anthropic tools FAILED"
   | Err error -> Llm.errorToString error)
+
+public tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "tool continuation protocols" [
+  Test.test "OpenAI preserves ordered calls and continuation" (fun ctx ->
+    Expect.ok Llm.errorToString identity (run ctx.runtime LlmTypes.OpenAI)),
+  Test.test "Anthropic preserves ordered calls and continuation" (fun ctx ->
+    Expect.ok Llm.errorToString identity (run ctx.runtime LlmTypes.Anthropic))
+]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check pure native regex ownership, callbacks and resource boundaries via JIT/AOT."""
+"""Complement native regex suites with relocated AOT and compiler-negative checks."""
 
 import argparse
 import json
@@ -59,8 +59,6 @@ def main():
         ]
         for name, expected in cases:
             source = f"regex/examples/{name}.fai"
-            output = run([str(relocated), "run", "--no-daemon", "-C", "packages", source], environment)
-            assert output == expected, (name, output)
             binary = root / f"{name}.exe"
             run([str(relocated), "build", "--no-daemon", "-C", "packages", source, "--out", str(binary)], environment)
             output = run([str(binary)], environment)
@@ -68,7 +66,7 @@ def main():
         negatives = root / "negative"
         negatives.mkdir()
         negative_checks(compiler, negatives)
-    print("Regex relocated JIT/AOT, concurrency, callbacks, types and limits passed")
+    print("Regex relocated AOT and compiler type/effect checks passed")
 
 
 if __name__ == "__main__":

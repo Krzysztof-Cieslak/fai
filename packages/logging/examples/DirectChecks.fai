@@ -24,7 +24,7 @@ let lineValid line =
   | Ok value -> value = "kept"
   | Err _ -> false
 
-check : Runtime -> Temp.Directory -> Result Bool String / { Concurrency, FileSystem }
+check : Runtime -> Temp.Directory -> Result Test.Check String / { Concurrency, FileSystem }
 let check env directory =
   let path = Path.join directory.path (Result.withDefault Path.empty (Path.fromString "log.jsonl"))
   let result = LogSink.withFile env LogSink.fileOptions path (writeMany env)
@@ -44,7 +44,10 @@ let check env directory =
     match text with
     | Err _ -> false
     | Ok text -> contentsValid text
-  Ok (closed && good)
+  Ok (Expect.all [
+    Expect.isTrue "closed file logger rejects late writes" closed,
+    Expect.isTrue "concurrent records remain complete, unique and contextual" good
+  ])
 
 let contentsValid text =
   let lines = List.filter (fun line -> line <> "") (String.split "\n" text)
@@ -58,7 +61,16 @@ let main env =
   | Err error -> env.console.writeLine (FileSystem.errorToString error)
   | Ok parent ->
     let result = Temp.withDirectory env parent (check env)
-    env.console.writeLine (if result = Ok true then
+    env.console.writeLine (if result = Ok Test.pass then
       "direct logging checks passed"
     else
       "direct logging checks FAILED")
+
+direct : Test.Context -> Test.Check / { Concurrency, FileSystem }
+let direct ctx =
+  Expect.ok LogIntegrationSupport.scopeError identity (Temp.withDirectory ctx.runtime ctx.tempRoot (check ctx.runtime))
+
+tests : Test.Suite Test.Context { Concurrency, FileSystem }
+let tests = Test.describe "direct file logging" [
+  Test.test "concurrent records and expired logger" direct
+]

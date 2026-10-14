@@ -67,7 +67,7 @@ let handle request =
 work : Llm.Client -> Result Llm.Response Llm.Error / { Clock, Concurrency, Net, Tls }
 let work client = Llm.generate client (Llm.request "fixture" |> Llm.userText "hello")
 
-session : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+session : Runtime -> Listener -> Nursery -> Test.Check / { Clock, Concurrency, Net, Tls }
 let session env listener nursery =
   let server = env.concurrency.spawn nursery (fun _ -> Http.serveListener env listener handle)
   let config = LlmOpenAI.config "test"
@@ -79,15 +79,26 @@ let session env listener nursery =
   let result = Llm.withClient env config work
   let cancelled = env.concurrency.cancel server
   match result with
-  | Ok response -> Llm.text response = "hello" && response.requestId = Some "request-fixture"
-  | Err error -> false
+  | Ok response -> Expect.all [
+    Expect.equal identity "hello" (Llm.text response),
+    Expect.equal (Option.withDefault "<none>") (Some "request-fixture") response.requestId
+  ]
+  | Err error -> Test.error (Llm.errorToString error)
+
+check : Runtime -> Test.Check / { Clock, Concurrency, Net, Tls }
+let check env =
+  match env.net.listen 0 with
+  | Err error -> Test.error error
+  | Ok listener -> env.concurrency.scope (session env listener)
 
 public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
 let main env =
-  match env.net.listen 0 with
-  | Err error -> env.console.writeLine error
-  | Ok listener ->
-    env.console.writeLine (if env.concurrency.scope (session env listener) then
-      "OpenAI loopback passed"
-    else
-      "OpenAI loopback FAILED")
+  env.console.writeLine (if check env = Test.pass then
+    "OpenAI loopback passed"
+  else
+    "OpenAI loopback FAILED")
+
+public tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "OpenAI transport" [
+  Test.test "streamed text and request identity" (fun ctx -> check ctx.runtime)
+]

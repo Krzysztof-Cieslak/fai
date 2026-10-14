@@ -1,0 +1,6 @@
+module LlmProtocolRuntime
+
+import llm_examples.LlmProtocolChecks
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "LLM runtime" [LlmProtocolChecks.tests]

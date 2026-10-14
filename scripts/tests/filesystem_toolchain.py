@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 
 
 def main():
@@ -47,7 +48,14 @@ def main():
 
         invoke("fmt", "--check", "Main.fai", "--no-daemon")
         invoke("check", "Main.fai", "--no-examples", "--no-daemon")
-        invoke("test", "Main.fai", "--count", "128", "--seed", "42", "--no-daemon")
+        report = Path(os.environ.get("RUNNER_TEMP", root)) / "fai-junit" / "filesystem.xml"
+        invoke("test", "Main.fai", "--count", "128", "--seed", "42", "--no-daemon", "--deny-focused", "--junit", str(report))
+        cases = [case for case in ET.parse(report).findall(".//testcase")
+                 if case.attrib["name"].startswith('["filesystem integration",')]
+        assert len(cases) == 4 and all(
+            not any(case.find(tag) is not None for tag in ("failure", "error", "skipped"))
+            for case in cases
+        ), ET.tostring(ET.parse(report).getroot())
         output = invoke("run", "Main.fai", "--no-daemon", "--", str(root), str(native_error))
         assert output == b"filesystem checks passed\n", output
         binary = root / "filesystem.exe"

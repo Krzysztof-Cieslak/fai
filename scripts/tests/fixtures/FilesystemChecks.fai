@@ -188,3 +188,26 @@ let main env =
     | Err (FileSystem.CloseError error) -> FileSystem.errorToString error
     | _ -> "filesystem checks FAILED: cleanup")
   | _ -> env.console.writeLine "expected fixture directory and native name probe result"
+
+handleCase : Test.Context -> Test.Check / { FileSystem }
+let handleCase ctx =
+  Expect.isTrue "closed handles expire aliases without losing contents" (aliases ctx.runtime ctx.tempRoot)
+
+linkCase : Test.Context -> Test.Check / { Concurrency, FileSystem }
+let linkCase ctx = Expect.ok identity (fun _ -> Test.pass) (links ctx.runtime ctx.tempRoot)
+
+cancellationCase : Test.Context -> Test.Check / { Concurrency, FileSystem }
+let cancellationCase ctx =
+  Expect.isTrue "cancelled scopes remove their temporary resources" (ctx.runtime.concurrency.scope (cancelScope ctx.runtime ctx.tempRoot))
+
+atomicCase : Test.Context -> Test.Check / { Concurrency, FileSystem }
+let atomicCase ctx =
+  Expect.isTrue "atomic writes preserve rejected content and commit replacements" (atomic ctx.runtime ctx.tempRoot)
+
+tests : Test.Suite Test.Context { Concurrency, FileSystem }
+let tests = Test.describe "filesystem integration" [
+  Test.test "handle lifetime" handleCase,
+  Test.test "links and cycle detection" linkCase,
+  Test.test "cancellation cleanup" cancellationCase,
+  Test.test "atomic replacement" atomicCase
+]

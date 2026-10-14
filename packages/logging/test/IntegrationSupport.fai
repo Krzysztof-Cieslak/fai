@@ -1,0 +1,12 @@
+module LogIntegrationSupport
+
+internal scopeError : FileSystem.ScopeError String -> String
+let scopeError error =
+  match error with
+  | FileSystem.OpenError error -> FileSystem.errorToString error
+  | FileSystem.CloseError error -> FileSystem.errorToString error
+  | FileSystem.BodyError message -> message
+  | FileSystem.OpenAndCloseError first last ->
+    FileSystem.errorToString first ++ "; cleanup: " ++ FileSystem.errorToString last
+  | FileSystem.BodyAndCloseError message last ->
+    message ++ "; cleanup: " ++ FileSystem.errorToString last

@@ -15,15 +15,27 @@ let fetch runtime port =
       | Err e -> e
       | Ok bytes -> if Bytes.isEmpty bytes then "rejected" else "wrote bytes"
 
-serveThenFetch : Runtime -> Listener -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+serveThenFetch : Runtime -> Listener -> Nursery -> String / { Concurrency, Net, Tls }
 let serveThenFetch runtime listener nursery =
   let server = runtime.concurrency.spawn nursery (fun _ -> Web.serveListener runtime listener app)
   let result = fetch runtime (runtime.net.localPort listener)
   let stopped = runtime.concurrency.cancel server
-  runtime.console.writeLine result
+  result
+
+response : Runtime -> Result String String / { Concurrency, Net, Tls }
+let response runtime =
+  match runtime.net.listen 0 with
+  | Err error -> Err error
+  | Ok listener -> Ok (runtime.concurrency.scope (serveThenFetch runtime listener))
 
 public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
 let main runtime =
-  match runtime.net.listen 0 with
+  match response runtime with
   | Err e -> runtime.console.writeLine e
-  | Ok listener -> runtime.concurrency.scope (serveThenFetch runtime listener)
+  | Ok result -> runtime.console.writeLine result
+
+tests : Test.Suite Test.Context { Concurrency, Net, Tls }
+let tests = Test.describe "redirect safety" [
+  Test.test "header injection is rejected before bytes are sent" (fun ctx ->
+    Expect.ok identity (Expect.equal identity "rejected") (response ctx.runtime))
+]

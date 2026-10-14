@@ -6,12 +6,12 @@ let replace console captures =
   let logged = console.writeLine ("visit:" ++ text)
   if text = "b" then Err "stop" else Ok (String.toUpper text)
 
-public main : Runtime -> Unit / { Console }
-let main env =
+checks : Console -> Test.Check / { Console }
+let checks console =
   match Regex.compile "." with
-  | Err error -> env.console.writeLine (Regex.errorToString error)
+  | Err error -> Test.error (Regex.errorToString error)
   | Ok regex ->
-    let result = Regex.replaceWith regex (replace env.console) "abc"
+    let result = Regex.replaceWith regex (replace console) "abc"
     let failed =
       match result with
       | Err error ->
@@ -25,7 +25,21 @@ let main env =
       Regex.replaceWithLimits { Regex.limits with
         maxInputBytes = 0
       } 1 regex (fun _ -> Ok (Int.toString (1 / 0))) "a"
-    env.console.writeLine (if failed && folded.visited = 1 && folded.stopped && Result.isErr invalid then
-      "regex callback checks passed"
-    else
-      "regex callback checks FAILED")
+    Expect.all [
+      Expect.isTrue "replacement retains completed count, cause and span" failed,
+      Expect.equal Int.toString 1 folded.visited,
+      Expect.isTrue "fold stops at the requested match" folded.stopped,
+      Expect.isTrue "limit failure precedes callback execution" (Result.isErr invalid)
+    ]
+
+public main : Runtime -> Unit / { Console }
+let main env =
+  env.console.writeLine (if checks env.console = Test.pass then
+    "regex callback checks passed"
+  else
+    "regex callback checks FAILED")
+
+tests : Test.Suite Test.Context { Console }
+let tests = Test.describe "regex callbacks" [
+  Test.test "failures, early stop and input limits" (fun ctx -> checks ctx.runtime.console)
+]

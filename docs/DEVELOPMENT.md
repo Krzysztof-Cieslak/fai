@@ -70,39 +70,43 @@ pinned upstream corpus and normalized-output round trips. Their respective
 `ci.json` files declare the programs, inputs and pinned corpus. CI runs both JIT
 and AOT using the same generic runner.
 
-Regex package contracts run with `fai test -C packages regex`.
-`scripts/tests/regex_toolchain.py --fai /path/to/fai` exercises the pure native
-engine through a relocated JIT/AOT compiler, including shared programs, immutable
-cursors, binary data, callbacks and compile-negative effect/type fixtures. Native
+Regex contracts and named scenarios run with `fai test -C packages regex`, including
+shared programs, immutable cursors, binary data and callbacks.
+`scripts/tests/regex_toolchain.py --fai /path/to/fai` retains relocated AOT and
+compile-negative effect/type checks. Native
 engine changes additionally run the runtime regex tests and space/storage guards.
 
-Logging contracts run with `fai test -C packages logging`.
-`scripts/tests/logging_toolchain.py --fai /path/to/fai` checks direct and queued
-logging through JIT/AOT, complete file records, scoped capture, cancellation,
-backpressure and effect-negative fixtures. `.github/actions/logging` runs the same
+Logging contracts and named scenarios run with `fai test -C packages logging`:
+direct and queued logging, complete file records, scoped capture, cancellation
+and backpressure. `scripts/tests/logging_toolchain.py --fai /path/to/fai` retains
+AOT, console-wire and effect-negative checks. `.github/actions/logging` runs these
 checks with the cached compiler when logging or a dependency is selected.
 
-The LLM package runs its pure contracts with `fai test -C packages llm`.
-`scripts/tests/llm_toolchain.py --fai /path/to/fai` runs deterministic local-provider
-JIT/AOT checks, real file/process tools, SQLite persistence, effect-negative
-compiler fixtures and Unix terminal integration. `.github/actions/llm` uses the
+The LLM package runs pure contracts and named local-provider scenarios with
+`fai test -C packages llm`, including tools, failures and SQLite persistence.
+`scripts/tests/llm_toolchain.py --fai /path/to/fai` retains AOT,
+effect-negative compiler fixtures and Unix terminal integration. `.github/actions/llm` uses the
 same exact compiler cache and dependency-aware package selection. Live provider
 smoke tests are opt-in through the Generate example and explicit environment keys.
 
 Process package contracts run directly with `fai test -C packages process`.
-`scripts/tests/process_toolchain.py --fai /path/to/fai` runs real binary-pipe,
-full-duplex, cancellation and pipeline fixtures through JIT and AOT and verifies
-callback effects. `.github/actions/process` selects these checks for process
+`scripts/tests/process_toolchain.py --fai /path/to/fai` supplies the independent
+Python child program to named binary-pipe, full-duplex, cancellation and pipeline
+tests. It retains AOT, inherited-stdin, callback-effect and terminal checks.
+`.github/actions/process` selects these checks for process
 changes and uses the exact cached compiler. The interactive task runner is
 `fai run -C packages process/examples/TaskRunner.fai -- git status --short`.
 
-Use the compiler directly. Package tests are ordinary Fai `example` and `forall`
-declarations, including those in each package's `test/` directory:
+Use the compiler directly. Package tests combine pure `example`/`forall`
+declarations with explicitly typed private `tests : Test.Suite Test.Context { ... }`
+roots. Named cases get the same console, JSON and JUnit reporting as contracts:
 
 ```sh
 fai check -C packages --package json
 fai test -C packages --package json
 fai test -C packages --package web
+fai test -C packages --package logging --match 'logging backpressure' --junit target/logging.xml
+fai test -C packages --package llm --list
 fai test -C packages --package sql
 fai test -C packages --package sqlite
 fai test -C packages json/test/CodecSpec.fai --match treeRoundTrip
@@ -114,6 +118,14 @@ replacements of their portable Git dependencies. Each selected package retains
 a warm database for its library and dependencies. Omit `--no-daemon` for the local loop.
 `fai check --no-examples` gives type-only feedback; normal `check` also evaluates
 closed examples. `fai test -C packages` tests all source packages.
+
+JSON example values and web loopbacks are checked by their named suites; the
+Python harnesses retain JIT/AOT output comparisons and the independent JSON oracle.
+`scripts/tests/filesystem_toolchain.py` runs the filesystem fixture's named cases
+and retains the independent native-filename probe and relocated JIT/AOT checks.
+Filesystem and process interoperability reports are written below
+`$RUNNER_TEMP/fai-junit` in CI. Their temporary projects supply environment/OS
+inputs without introducing implicit requirements into ordinary package tests.
 
 Activate a cached compiler once in the shell when working from a checkout:
 

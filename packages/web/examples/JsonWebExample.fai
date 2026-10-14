@@ -44,7 +44,7 @@ let post runtime port contentType body =
   | Err e -> e
   | Ok response -> renderResponse response
 
-serveThenProbe : Runtime -> Listener -> Nursery -> Unit / { Concurrency, Console, Net, Tls }
+serveThenProbe : Runtime -> Listener -> Nursery -> List String / { Concurrency, Net, Tls }
 let serveThenProbe runtime listener nursery =
   let server = runtime.concurrency.spawn nursery (fun _ -> Web.serveListener runtime listener app)
   let port = runtime.net.localPort listener
@@ -55,10 +55,31 @@ let serveThenProbe runtime listener nursery =
     post runtime port "text/plain" "{}"
   ]
   let stopped = runtime.concurrency.cancel server
-  List.foldl (fun _ line -> runtime.console.writeLine line) () responses
+  responses
+
+responses : Runtime -> Result (List String) String / { Concurrency, Net, Tls }
+let responses runtime =
+  match runtime.net.listen 0 with
+  | Err error -> Err error
+  | Ok listener -> Ok (runtime.concurrency.scope (serveThenProbe runtime listener))
 
 public main : Runtime -> Unit / { Concurrency, Console, Net, Tls }
 let main runtime =
-  match runtime.net.listen 0 with
+  match responses runtime with
   | Err e -> runtime.console.writeLine e
-  | Ok listener -> runtime.concurrency.scope (serveThenProbe runtime listener)
+  | Ok lines -> List.foldl (fun _ line -> runtime.console.writeLine line) () lines
+
+roundTrip : Test.Context -> Test.Check / { Concurrency, Net, Tls }
+let roundTrip ctx =
+  let expected = [
+    "200 {\"id\":42,\"name\":\"Ada\"}",
+    "200 {\"id\":7,\"name\":\"Fai\"}",
+    "400 $[\"id\"]: expected integer, got boolean",
+    "415 expected application/json or application/*+json"
+  ]
+  Expect.ok identity (Expect.equal (String.join "\n") expected) (responses ctx.runtime)
+
+tests : Test.Suite Test.Context { Concurrency, Net, Tls }
+let tests = Test.describe "JSON HTTP" [
+  Test.test "typed bodies, media types and middleware headers" roundTrip
+]

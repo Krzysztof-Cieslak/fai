@@ -28,7 +28,7 @@ let queueFile env output =
   | Ok result ->
     Ok (result.summary.accepted = 1000 && result.summary.completed = 1000 && result.summary.peakBytes <= 2048 && result.summary.peakRecords <= 4)
 
-check : Runtime -> Temp.Directory -> Result Bool String / { Clock, Concurrency, FileSystem }
+check : Runtime -> Temp.Directory -> Result Test.Check String / { Clock, Concurrency, FileSystem }
 let check env directory =
   let path =
     Path.join directory.path (Result.withDefault Path.empty (Path.fromString "queued.jsonl"))
@@ -40,7 +40,10 @@ let check env directory =
     let lines = List.filter (fun line -> line <> "") (String.split "\n" text)
     let indexes =
       List.map (JsonDecode.fromString (JsonDecode.field "fields" (JsonDecode.field "index" JsonDecode.int))) lines
-    Ok (result = Ok true && indexes = List.map Ok (List.reverse (List.range 1 1001)))
+    Ok (Expect.all [
+      Expect.isTrue "all queued file records complete within queue budgets" (result = Ok true),
+      Expect.isTrue "file contains every record in FIFO order" (indexes = List.map Ok (List.reverse (List.range 1 1001)))
+    ])
 
 public main : Runtime -> Unit / { Clock, Concurrency, Console, FileSystem }
 let main env =
@@ -48,7 +51,16 @@ let main env =
   | Err error -> env.console.writeLine (FileSystem.errorToString error)
   | Ok parent ->
     let result = Temp.withDirectory env parent (check env)
-    env.console.writeLine (if result = Ok true then
+    env.console.writeLine (if result = Ok Test.pass then
       "queued file logging checks passed"
     else
       "queued file logging checks FAILED")
+
+queuedFile : Test.Context -> Test.Check / { Clock, Concurrency, FileSystem }
+let queuedFile ctx =
+  Expect.ok LogIntegrationSupport.scopeError identity (Temp.withDirectory ctx.runtime ctx.tempRoot (check ctx.runtime))
+
+tests : Test.Suite Test.Context { Clock, Concurrency, FileSystem }
+let tests = Test.describe "queued file logging" [
+  Test.test "one thousand complete FIFO records" queuedFile
+]
