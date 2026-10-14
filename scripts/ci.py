@@ -53,35 +53,82 @@ def catalog_at(root, revision):
 
 
 def documentation(path):
-    return (path in {"AGENTS.md", "README.md", "llms.txt", "LICENSE", "CODE_OF_CONDUCT.md", "changelog.md"}
+    path = path.lower()
+    return (path in {"agents.md", "readme", "readme.md", "readme.txt", "llms.txt", "llm.txt", "license",
+                     "license.md", "license.txt", "code_of_conduct.md", "contributing.md", "security.md", "changelog.md"}
             or (path.startswith("docs/") and path.endswith((".md", ".txt"))))
+
+
+def package_change(path, package, root):
+    directory = package.directory.relative_to(root) if package.directory.is_absolute() else package.directory
+    relative = Path(path).relative_to(directory)
+    name = relative.as_posix()
+    if documentation(name):
+        return "docs"
+    if name == packages.LEGACY_MANIFEST and package.source_roots is not None:
+        return "integrations"
+    if relative.suffix != ".fai" or package.source_roots is None:
+        return "production"
+    if name in package.entrypoints:
+        return "local"
+    roots = [(Path(value), kind) for kind, values in (("production", package.source_roots), ("local", package.test_roots))
+             for value in values if relative.is_relative_to(Path(value))]
+    if not roots:
+        if any(name == integration.entry for integration in package.integrations):
+            return "local"
+        return "production"
+    depth = max(len(path.parts) for path, _ in roots)
+    return "production" if any(len(path.parts) == depth and kind == "production" for path, kind in roots) else "local"
+
+
+def affected_sources(selected, current, previous):
+    """Normal edges propagate library changes; development edges affect only that root."""
+    selected = set(selected)
+    while True:
+        expanded = selected | {name for catalog in (current, previous) for name, package in catalog.items()
+                               if selected.intersection(package.dependencies)}
+        if expanded == selected:
+            break
+        selected = expanded
+    return selected | {name for catalog in (current, previous) for name, package in catalog.items()
+                       if selected.intersection(package.development)}
 
 
 def classify(paths, current, previous, root=packages.ROOT, workspace_impact=None):
     full = False
     reporting = False
     workspace_changed = False
-    selected = set()
+    production = set()
+    local = set()
+    integrations = set()
     reasons = []
     for path in paths:
         if path in PACKAGE_WORKSPACE_METADATA:
             workspace_changed = True
-            selected.update(current if workspace_impact is None else workspace_impact[0])
+            production.update(current if workspace_impact is None else workspace_impact[0])
             reasons.append(f"package workspace: {path}")
             continue
-        owners = set()
+        owners = []
         for catalog in (current, previous):
             candidates = []
             for name, package in catalog.items():
                 relative = package.directory.relative_to(root) if package.directory.is_absolute() else package.directory
                 if Path(path).is_relative_to(relative):
-                    candidates.append((len(relative.parts), name))
+                    candidates.append((len(relative.parts), name, package))
             if candidates:
-                depth = max(depth for depth, _ in candidates)
-                owners.update(name for size, name in candidates if size == depth)
+                depth = max(depth for depth, _, _ in candidates)
+                owners.extend((name, package) for size, name, package in candidates if size == depth)
         if owners:
-            selected.update(owners)
-            reasons.extend(f"package: {name}" for name in owners)
+            for name, package in owners:
+                kind = package_change(path, package, root)
+                if kind == "production":
+                    production.add(name)
+                elif kind == "local":
+                    local.add(name)
+                elif kind == "integrations":
+                    integrations.add(name)
+                if kind != "docs":
+                    reasons.append(f"package: {name}" if kind == "production" else f"package {kind}: {name}")
         elif path.startswith("scripts/performance_report/"):
             reporting = True
             reasons.append("report presentation")
@@ -92,21 +139,19 @@ def classify(paths, current, previous, root=packages.ROOT, workspace_impact=None
             reasons.append(f"compiler/infrastructure: {path}")
     if workspace_changed and workspace_impact is not None:
         reasons.extend(workspace_impact[1])
-    package_change = workspace_changed or bool(selected)
+    package_changed = workspace_changed or bool(production | local | integrations)
     if full:
-        selected = set(current)
+        checks = selected = set(current)
     else:
-        while True:
-            expanded = selected | {name for catalog in (current, previous) for name, package in catalog.items()
-                                   if selected.intersection(package.all_dependencies)}
-            if expanded == selected:
-                break
-            selected = expanded
+        checks = affected_sources(production, current, previous) | local
+        selected = checks | integrations
+    ordered = packages.validate(current)
     return {
         "compiler": full,
         "reporting": reporting or full,
-        "packages": [name for name in packages.validate(current) if name in selected],
-        "mode": "compiler" if full else "packages" if package_change else "reporting" if reporting else "docs",
+        "packages": [name for name in ordered if name in selected],
+        "package_checks": [name for name in ordered if name in checks],
+        "mode": "compiler" if full else "packages" if package_changed else "reporting" if reporting else "docs",
         "reasons": sorted(set(reasons)),
     }
 
@@ -120,7 +165,8 @@ def scope(root, base, head="HEAD"):
         previous = catalog_at(root, baseline)
         paths = diff_paths(git(root, "diff", "--name-status", "-z", "--find-renames", baseline, head))
     except (subprocess.CalledProcessError, ValueError) as error:
-        return {"compiler": True, "reporting": True, "packages": packages.validate(current), "mode": "compiler",
+        names = packages.validate(current)
+        return {"compiler": True, "reporting": True, "packages": names, "package_checks": names, "mode": "compiler",
                 "reasons": [f"conservative full check: {type(error).__name__}"]}
     impact = None
     if PACKAGE_WORKSPACE_METADATA.intersection(paths):
@@ -143,11 +189,12 @@ def summary(text):
             stream.write(text + "\n")
 
 
-def lane_summary(title, mode, compiler_checks, names):
+def lane_summary(title, mode, compiler_checks, names, checks=None):
     rust = "enabled" if compiler_checks else "skipped"
     return (f"### {title}: {mode}\n"
             f"Rust compiler checks: **{rust}**\n\n"
             f"Affected packages: {', '.join(names) or '(none)'}\n"
+            f"Native package checks: {', '.join(names if checks is None else checks) or '(none)'}\n"
             "Package checks and declared integrations use the prepared compiler bundle.")
 
 
@@ -181,6 +228,15 @@ def selected_packages(encoded, names):
     return selected
 
 
+def selected_checks(encoded, names, selected, mode):
+    checks = selected_packages(encoded, names)
+    if not set(checks) <= set(selected) or (mode == "compiler" and checks != selected):
+        raise ValueError("inconsistent native package check selection")
+    if mode in {"docs", "reporting"} and (checks or selected):
+        raise ValueError("non-package lane cannot select packages")
+    return checks
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -199,9 +255,12 @@ def main():
             validate_package_workspace(compiler=args.fai)
             return
         if args.action == "scope":
-            result = ({"compiler": True, "reporting": True, "packages": packages.validate(packages.discover()),
-                       "mode": "compiler", "reasons": ["full release verification"]}
-                      if args.force_full else scope(packages.ROOT, args.base, args.head))
+            if args.force_full:
+                names = packages.validate(packages.discover())
+                result = {"compiler": True, "reporting": True, "packages": names, "package_checks": names,
+                          "mode": "compiler", "reasons": ["full release verification"]}
+            else:
+                result = scope(packages.ROOT, args.base, args.head)
             print(json.dumps(result, sort_keys=True))
             if args.github_output:
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
@@ -209,14 +268,18 @@ def main():
                     print(f"reporting={str(result['reporting']).lower()}", file=stream)
                     print(f"packages={json.dumps(result['packages'], separators=(',', ':'))}", file=stream)
                     print(f"package_names={' '.join(result['packages'])}", file=stream)
+                    print(f"package_checks={json.dumps(result['package_checks'], separators=(',', ':'))}", file=stream)
+                    print(f"package_check_names={' '.join(result['package_checks'])}", file=stream)
                     print(f"mode={result['mode']}", file=stream)
                 details = "\n\nSelection reasons:\n" + "\n".join(f"- {reason}" for reason in result["reasons"])
-                summary(lane_summary("Selected CI lane", result["mode"], result["compiler"], result["packages"]) + details)
+                summary(lane_summary("Selected CI lane", result["mode"], result["compiler"], result["packages"], result["package_checks"]) + details)
             return
         require(args.result, os.environ.get("CI_MODE"), os.environ.get("CI_COMPILER"), os.environ.get("CI_REPORTING"))
         selected = selected_packages(os.environ.get("CI_PACKAGES", "null"), os.environ.get("PACKAGE_NAMES", ""))
+        checks = selected_checks(os.environ.get("CI_PACKAGE_CHECKS", "null"), os.environ.get("PACKAGE_CHECK_NAMES", ""),
+                                 selected, os.environ["CI_MODE"])
         packages.affected(packages.discover(), selected, False)
-        summary(lane_summary("CI lane", os.environ["CI_MODE"], os.environ["CI_COMPILER"] == "true", selected))
+        summary(lane_summary("CI lane", os.environ["CI_MODE"], os.environ["CI_COMPILER"] == "true", selected, checks))
     except (packages.PackageError, ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"CI: {error}\n")
 

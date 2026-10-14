@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- Keep root and package documentation checks lightweight, and scope package
+  test/integration edits without retesting unrelated production consumers.
 - Compile only the Rust packages and target names needed by cross-platform CI,
   preserving its test policy and checking exact coverage against the full build.
 - Reuse the compiler produced by CI's Rust test build for package and relocation

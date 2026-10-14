@@ -60,6 +60,9 @@ class Package:
     integrations: tuple[Integration, ...] = ()
     fixtures: tuple[Fixture, ...] = ()
     development: tuple[str, ...] = ()
+    source_roots: tuple[str, ...] | None = None
+    test_roots: tuple[str, ...] = ()
+    entrypoints: tuple[str, ...] = ()
 
     @property
     def all_dependencies(self):
@@ -112,6 +115,15 @@ def entry_path(value):
     if (path.is_absolute() or PureWindowsPath(value).drive or ".." in path.parts
             or path.as_posix() != value or path.suffix != ".fai"):
         raise ValueError("integration entry must be a relative .fai path inside its package")
+    return value
+
+
+def source_root(value):
+    if not isinstance(value, str) or not value or "\0" in value or "\\" in value:
+        raise ValueError("source roots must be relative paths with forward slashes")
+    path = PurePosixPath(value)
+    if path.is_absolute() or PureWindowsPath(value).drive or ".." in path.parts or path.as_posix() != value:
+        raise ValueError("source roots must stay inside their package")
     return value
 
 
@@ -223,7 +235,20 @@ def parse(directory, text):
                     else:
                         raise ValueError("dependency has no path or Git source")
             return tuple(sorted(found))
-        return Package(name, directory, dependencies("dependencies"), development=dependencies("dev-dependencies"))
+        source = source_root(data["package"].get("source-dir", "src"))
+        sources = {source}
+        tests = {source_root(data["package"].get("test-dir", "tests"))}
+        for section in data.get("platform", []):
+            sources.update(source_root(value) for value in strings(section.get("source-dirs", []), "source-dirs"))
+            tests.update(source_root(value) for value in strings(section.get("test-source-dirs", []), "test-source-dirs"))
+        entries = {entry_path(binary["path"]) for binary in data.get("bin", [])}
+        auto_main = data["package"].get("auto-main", True)
+        if not isinstance(auto_main, bool):
+            raise ValueError("auto-main must be a boolean")
+        if auto_main:
+            entries.add((PurePosixPath(source) / "Main.fai").as_posix())
+        return Package(name, directory, dependencies("dependencies"), development=dependencies("dev-dependencies"),
+                       source_roots=tuple(sorted(sources)), test_roots=tuple(sorted(tests)), entrypoints=tuple(sorted(entries)))
     except (KeyError, TypeError, ValueError) as error:
         raise PackageError(f"invalid {directory / MANIFEST}: {error}") from error
 

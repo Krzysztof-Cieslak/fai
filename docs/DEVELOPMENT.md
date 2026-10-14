@@ -221,10 +221,13 @@ CI uses `--ci` to consume its already computed, validated package selection.
 The runner never builds the Rust compiler: compiler preparation is the separate
 cached-bundle step. Packages without integration entries need no extra action.
 
-Changes confined to these manifests, their Fai programs and package documentation
-select the package lane. Changes to the shared runner, classifier or workflow
-still select the full infrastructure/compiler lane. Adding another ordinary Fai
-integration therefore requires no workflow edit.
+Changes confined to integration metadata select the owning package's integrations,
+without rerunning its contracts or its consumers. Package-local Fai tests and
+executable entrypoints select that package's checks and integrations; library
+source edits also select affected consumers. Package documentation alone needs
+no compiler. Changes to the shared runner, classifier or workflow still select
+the full infrastructure/compiler lane. Adding another ordinary Fai integration
+therefore requires no workflow edit.
 
 ## Cached compilers for source packages
 
@@ -360,21 +363,32 @@ predecessor, not unconditionally with `main`.
 
 | Changes | Work performed |
 |---|---|
-| `packages/json/**` | JSON and Web formatting, type checks, and Fai contracts |
-| `packages/web/**` | Web formatting, type checks, and Fai contracts |
-| `packages/sql/**` | SQL and SQLite formatting, type checks, and Fai contracts |
-| `packages/sqlite/**` | SQLite formatting, type checks, and Fai contracts |
-| Package-local `ci.json` integrations or Fai entrypoints | Affected packages' native contracts and declared JIT/AOT programs, using the prepared compiler |
+| Package library source, e.g. `packages/json/src/**` | Package and affected consumers' formatting, type checks, contracts, and integrations |
+| Package test source or executable entrypoint | Owning package's checks and integrations, not production consumers |
+| Package-local `ci.json` integration metadata | Owning package's integrations, without contract checks or downstream tests |
+| Package/root README, `AGENTS.md`, `llms.txt`/`llm.txt`, or Markdown/text under `docs/` | Lightweight change/catalog validation; no compiler or Rust build |
 | `packages/fai.toml` or `packages/fai.lock` | Affected members, override consumers and changed lock-graph roots plus dependents; whole-workspace locked validation; no Rust suite on a cache hit |
 | `scripts/performance_report/**` | Python syntax and two presentation fixtures; no Cargo or compiler bundle |
 | Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures |
 | Root documentation and `docs/*.md` / `docs/*.txt` only | Change/catalog validation |
 
 Dependency impact uses both the base and head catalogs, so deleting or changing
-an edge does not hide an affected dependent. Renames include both old and new
-paths. New source-package directories must include `fai.toml`; malformed catalogs
-and missing dependencies fail classification. An unavailable comparison base
-selects the full lane conservatively.
+an edge does not hide an affected dependent. Normal dependencies propagate library
+changes transitively. A development dependency affects its consuming root's tests
+and integrations, but does not invalidate that root's production consumers.
+Renames include both old and new paths. Source ownership comes from each manifest's
+`source-dir`, `test-dir`, executable entries and platform source roots. The deepest
+matching root wins, with production retained on ties or uncertainty. Legacy
+metadata and unrecognized package files retain conservative consumer checks.
+New source-package directories must include `fai.toml`; malformed catalogs and
+missing dependencies fail classification. An unavailable comparison base selects
+the full lane conservatively.
+
+Docs-only diffs retain the four required check names but do not restore a compiler
+or run Cargo. Documentation mixed with code never suppresses the code's checks.
+Integration-only diffs still prepare the compiler and validate all locked graphs.
+The selector publishes separate integration/package-check lists; required jobs
+reject missing or inconsistent lists instead of silently skipping checks.
 Mixed package/presentation changes run both relevant lanes. Changes to the Rust
 report-data exporter or CI infrastructure retain the full compiler checks.
 

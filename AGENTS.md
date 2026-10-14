@@ -1972,7 +1972,15 @@ locally when changing their implementation or invariants.
 Those four check names have dependency-aware lanes. Package-only diffs restore
 an exact cached compiler and run native `fai fmt`/`check`/`test` for changed
 packages and transitive dependents, plus their declared Fai integration programs,
-without Rust commands on a cache hit. **Declare ordinary Fai integrations in the
+without Rust commands on a cache hit. Library changes propagate through normal
+dependencies; development edges select only the consuming root's checks, not its
+production consumers. Declared test roots and executable entries remain local
+to their owning package. Integration-only `ci.json` edits run the owner's
+integrations without contract checks. Root and package documentation—including
+`README.md`, `AGENTS.md`, `llms.txt` and `llm.txt`—gets lightweight validation,
+with no compiler preparation or general build. Mixed code/documentation changes
+retain every check selected by the code. Ambiguous source ownership remains
+conservative. **Declare ordinary Fai integrations in the
 owning package's `ci.json`** (`integrations`: entrypoint, arguments, environment,
 output expectations; optional commit-pinned `fixtures`). The generic
 `scripts/package_integrations.py` runs JIT/AOT on the existing compiler. Adding
@@ -1981,6 +1989,8 @@ shared-workflow edit. Metadata-only changes stay in the package lane; shared
 runner/classifier/workflow changes retain full checks. See `docs/DEVELOPMENT.md`
 for the schema and local command. Protected check names remain the same across
 lanes; the job summary identifies which Rust steps were selected or skipped.
+The selector reports native package checks separately from integrations;
+required jobs reject missing or inconsistent selections.
 Changes to `packages/fai.toml` or `packages/fai.lock` select changed workspace
 members, affected override consumers, and roots whose platform lock graphs or
 referenced source records changed, plus their dependents. Registering an isolated
