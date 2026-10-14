@@ -254,8 +254,15 @@ def build_tests(nextest_profile, root=ROOT, cache=None):
     cache = cache_root() if cache is None else cache
     expected = identity(root, profile="ci")
     environment = build_environment_for(expected)
+    selection = ["--workspace"]
+    if nextest_profile == "cross-os":
+        import cross_os
+        try:
+            selection = cross_os.cargo_args(root, environment)
+        except (KeyError, ValueError) as error:
+            raise BundleError(f"invalid cross-os build selection: {error}") from error
     with bundle_lock(cache, expected["key"]):
-        subprocess.run(["cargo", "nextest", "run", "--workspace", "--locked", "--cargo-profile", "ci",
+        subprocess.run(["cargo", "nextest", "run", *selection, "--locked", "--cargo-profile", "ci",
                         "--profile", nextest_profile, "--no-run"],
                        cwd=root, env=environment, stdout=sys.stderr, check=True)
         return store_built(cache, expected, environment, root)

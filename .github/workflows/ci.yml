@@ -162,6 +162,9 @@ jobs:
       - name: Verify nextest partition
         if: needs.changes.outputs.compiler == 'true'
         run: ./scripts/check-nextest-partition.sh ci
+      - name: Verify cross-platform test coverage
+        if: needs.changes.outputs.compiler == 'true'
+        run: python scripts/cross_os.py verify
       - uses: ./.github/actions/compiler
         id: compiler
         if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
@@ -286,7 +289,7 @@ jobs:
         run: python scripts/ci_rust.py cache --stage built
       - name: Rust platform tests
         if: needs.changes.outputs.compiler == 'true'
-        run: cargo nextest run --workspace --locked --cargo-profile ci --profile cross-os
+        run: python scripts/cross_os.py run
       - name: Optimized task migration regression
         if: needs.changes.outputs.compiler == 'true'
         run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context

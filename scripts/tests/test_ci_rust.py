@@ -121,10 +121,12 @@ class CiBuildConfigurationTests(unittest.TestCase):
     def test_nextest_build_and_run_commands_use_the_same_cargo_profile(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         commands = [line.strip() for line in workflow.splitlines() if "run: cargo nextest run" in line]
-        self.assertEqual(len(commands), 3)
+        self.assertEqual(len(commands), 2)
         self.assertTrue(all("--cargo-profile ci" in command for command in commands))
         self.assertIn("compiler.py build-tests --test-profile unit", workflow)
         self.assertIn("compiler.py build-tests --test-profile cross-os", workflow)
+        self.assertIn("python scripts/cross_os.py run", workflow)
+        self.assertIn("python scripts/cross_os.py verify", workflow)
 
     def test_full_ci_requires_its_prepared_compiler_without_restoring_over_it(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

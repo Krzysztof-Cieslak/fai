@@ -328,6 +328,23 @@ compilation; native target, profile and enabled assertions are verified before
 installation. Later nextest execution uses the same build environment, avoiding a
 profile/provenance change that would invalidate the compiler's Cargo artifacts.
 
+Cross-platform Rust builds derive Cargo package and target selectors from the
+existing `cross-os` filter in `.config/nextest.toml` and `cargo metadata`.
+Selected packages retain their test targets; named integration binaries select
+their owning packages. Excluded property-test binaries need not be compiled.
+Cargo's target-name selectors are shared across selected packages, so same-named
+targets and required support binaries may still build, but the unchanged nextest
+filter decides which tests run. Unknown selector syntax or missing targets fails
+closed rather than silently dropping coverage.
+
+`python scripts/cross_os.py plan` shows the derived Cargo arguments;
+`python scripts/cross_os.py run` runs that scope with the existing `ci` Cargo and
+`cross-os` nextest profiles. Linux retains its full workspace build and runs
+`python scripts/cross_os.py verify`: it lists tests under both the full build and
+the narrowed selectors, comparing exact binary/test identities, not just counts.
+Any missing or additional selected test fails the required Linux job. Platform
+jobs continue to compile and execute their own platform-specific test cases.
+
 Required Rust jobs and cold compiler builds share `.github/actions/rust-cache`.
 Its `fai-rust-v1` namespace does not restore the historical empty dependency
 entries. Only jobs that actually run Rust invoke the action; its normal success

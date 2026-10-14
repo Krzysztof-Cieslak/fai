@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- Compile only the Rust packages and target names needed by cross-platform CI,
+  preserving its test policy and checking exact coverage against the full build.
 - Reuse the compiler produced by CI's Rust test build for package and relocation
   checks, with profile-specific bundle identities instead of a second compiler build.
 - Keep socket readiness delivery atomic with failed I/O probes and waiter
