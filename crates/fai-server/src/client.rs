@@ -292,13 +292,13 @@ impl Client {
                     }
                 }
                 // Selection headers and package notices precede contract events.
-                ServerMessage::Output { stream, chunk } => {
-                    let writer = match stream {
-                        OutputStream::Stdout => &mut *out,
-                        OutputStream::Stderr => &mut *err,
-                    };
-                    writer.write_all(&chunk)?;
-                    writer.flush()?;
+                ServerMessage::Output { stream: OutputStream::Stdout, chunk } => {
+                    out.write_all(&chunk)?;
+                    out.flush()?;
+                }
+                ServerMessage::Output { stream: OutputStream::Stderr, chunk } => {
+                    err.write_all(&chunk)?;
+                    err.flush()?;
                 }
                 ServerMessage::InputReady | ServerMessage::TapFrame(_) => {}
                 ServerMessage::Result(Response::Test(rendered)) => {
