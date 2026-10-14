@@ -30,6 +30,10 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = "package(fai-runtime) & test(process::)"
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+[[profile.default.overrides]]
+filter = "binary(net) | (package(fai-runtime) & test(reactor::tests::))"
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # Fast PR-feedback lane: everything except the property tests.
 [profile.unit]
 fail-fast = false
