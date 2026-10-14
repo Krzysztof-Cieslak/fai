@@ -81,6 +81,37 @@ class PackageTests(unittest.TestCase):
     def test_ssh_repository_urls_preserve_checkout_dependency_identity(self):
         self.assertTrue(packages.in_tree_repository("ssh://git@github.com/Krzysztof-Cieslak/fai.git"))
 
+    def test_default_source_roots_match_the_compiler_manifest_defaults(self):
+        package = packages.discover(self.root)["json"]
+        self.assertEqual((package.source_roots, package.test_roots, package.entrypoints),
+                         (("src",), ("tests",), ("src/Main.fai",)))
+
+    def test_explicit_source_and_test_roots_are_retained(self):
+        package = packages.parse(Path("packages/example"),
+            'manifest-version = 1\n[package]\nname = "example"\nsource-dir = "library"\ntest-dir = "."\nauto-main = false\n')
+        self.assertEqual((package.source_roots, package.test_roots, package.entrypoints), (("library",), (".",), ()))
+
+    def test_platform_source_roots_are_conservatively_unioned(self):
+        package = packages.parse(Path("packages/example"),
+            'manifest-version = 1\n[package]\nname = "example"\n[[platform]]\nwhen = {os = "windows"}\n'
+            'source-dirs = ["windows"]\ntest-source-dirs = ["windows-tests"]\n')
+        self.assertEqual((package.source_roots, package.test_roots), (("src", "windows"), ("tests", "windows-tests")))
+
+    def test_declared_binary_entries_are_retained_separately(self):
+        package = packages.parse(Path("packages/example"),
+            'manifest-version = 1\n[package]\nname = "example"\nauto-main = false\n[[bin]]\nname = "inspect"\npath = "src/Inspect.fai"\n')
+        self.assertEqual(package.entrypoints, ("src/Inspect.fai",))
+
+    def test_outside_package_source_roots_fail_catalog_validation(self):
+        with self.assertRaisesRegex(packages.PackageError, "source roots"):
+            packages.parse(Path("packages/example"),
+                'manifest-version = 1\n[package]\nname = "example"\nsource-dir = "../shared"\n')
+
+    def test_nonboolean_auto_main_fails_catalog_validation(self):
+        with self.assertRaisesRegex(packages.PackageError, "auto-main"):
+            packages.parse(Path("packages/example"),
+                'manifest-version = 1\n[package]\nname = "example"\nauto-main = "false"\n')
+
 
 class IntegrationMetadataTests(unittest.TestCase):
     def test_integration_metadata_uses_the_real_manifest_identity(self):

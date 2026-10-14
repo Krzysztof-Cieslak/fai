@@ -229,7 +229,7 @@ class ClassificationTests(unittest.TestCase):
             git("commit", "-m", "Add integration entrypoint")
             result = ci.scope(root, base)
             self.assertEqual((result["mode"], result["compiler"], result["packages"], result["reasons"]),
-                             ("packages", False, ["example"], ["package: example"]))
+                             ("packages", False, ["example"], ["package integrations: example", "package local: example", "package: example"]))
 
 
 class WorkspaceMetadataScopeTests(unittest.TestCase):
@@ -326,6 +326,26 @@ class WorkspaceMetadataScopeTests(unittest.TestCase):
         self.lock.write_text('lock-version = [\n')
         with self.assertRaises(ValueError):
             self.classify()
+
+    def test_committed_root_guides_stay_lightweight(self):
+        (self.root / "README.md").write_text("Guide\n")
+        (self.root / "AGENTS.md").write_text("Agent guide\n")
+        (self.root / "llms.txt").write_text("Language guide\n")
+        result = self.classify()
+        self.assertEqual((result["mode"], result["compiler"], result["packages"], result["package_checks"]),
+                         ("docs", False, [], []))
+
+    def test_committed_package_readme_stays_lightweight(self):
+        (self.root / "packages/json/README.md").write_text("JSON guide\n")
+        result = self.classify()
+        self.assertEqual((result["mode"], result["compiler"], result["packages"], result["package_checks"]),
+                         ("docs", False, [], []))
+
+    def test_committed_integration_metadata_skips_contract_checks(self):
+        (self.root / "packages/json/ci.json").write_text('{"schemaVersion":1,"integrations":[]}')
+        result = self.classify()
+        self.assertEqual((result["mode"], result["compiler"], result["packages"], result["package_checks"]),
+                         ("packages", False, ["json"], []))
 
 
 class PackageWorkspaceValidationTests(unittest.TestCase):
