@@ -13,6 +13,14 @@ use super::{ContractEvent, ContractSourceOrigin, ContractStatus, TestOutcome, Te
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestSummary {
+    /// Selected named test cases.
+    pub named: usize,
+    /// Named tests reporting operation/fixture errors.
+    pub errored: usize,
+    /// Intentionally skipped tests.
+    pub skipped: usize,
+    /// Cases listed without running.
+    pub listed: usize,
     /// Contracts selected for this run.
     pub total: usize,
     /// Selected example declarations.
@@ -56,6 +64,9 @@ impl TestSummary {
                 ContractStatus::Crashed => summary.crashed += 1,
                 ContractStatus::TimedOut => summary.timed_out += 1,
                 ContractStatus::NotRun => summary.not_run += 1,
+                ContractStatus::Errored => summary.errored += 1,
+                ContractStatus::Skipped => summary.skipped += 1,
+                ContractStatus::Listed => summary.listed += 1,
             }
         }
         summary
@@ -74,11 +85,25 @@ impl TestPlan {
     /// Renders the selection and generator settings before execution starts.
     #[must_use]
     pub fn render_header(&self) -> String {
+        if !self.suites.is_empty() {
+            return format!(
+                "discovering {} named suite{}; {} contracts selected\n\n",
+                self.suites.len(),
+                if self.suites.len() == 1 { "" } else { "s" },
+                self.total
+            );
+        }
         let examples = self.example_count();
         let properties = self.total - examples;
         let mut out = format!(
             "{} {} {} ({examples} {}, {properties} {})\n",
-            if self.blocked { "selected" } else { "running" },
+            if self.options.list {
+                "listing"
+            } else if self.blocked {
+                "selected"
+            } else {
+                "running"
+            },
             self.total,
             if self.total == 1 { "contract" } else { "contracts" },
             if examples == 1 { "example" } else { "examples" },
@@ -146,8 +171,16 @@ pub fn render_test_event_line(event: &ContractEvent, color: bool) -> String {
         ContractStatus::Crashed => ("CRASHED", "1;31"),
         ContractStatus::TimedOut => ("TIMED OUT", "1;31"),
         ContractStatus::NotRun => ("NOT RUN", "33"),
+        ContractStatus::Errored => ("ERROR", "1;31"),
+        ContractStatus::Skipped => ("SKIPPED", "33"),
+        ContractStatus::Listed => ("listed", "36"),
     };
-    format!("test {} ... {}\n", label(event), styled(status, codes, color))
+    let reason = event
+        .reason
+        .as_deref()
+        .map(|reason| format!(" ({})", printable(reason)))
+        .unwrap_or_default();
+    format!("test {} ... {}{reason}\n", label(event), styled(status, codes, color))
 }
 
 impl TestOutcome {
@@ -155,14 +188,25 @@ impl TestOutcome {
     #[must_use]
     pub fn render_human(&self, resolver: &dyn SpanResolver, color: bool) -> String {
         let mut out = String::new();
+        if self.focused {
+            out.push_str("\nFOCUSED RUN: unfocused tests and contracts were filtered out\n");
+        }
         if !self.diagnostics.is_empty() {
             out.push_str("\nfailures:\n\n");
             out.push_str(&render_human(&self.diagnostics, resolver, color));
         }
-        if self.events.iter().any(|event| event.status != ContractStatus::Passed) {
+        if self.events.iter().any(|event| {
+            !matches!(
+                event.status,
+                ContractStatus::Passed | ContractStatus::Skipped | ContractStatus::Listed
+            )
+        }) {
             out.push_str("\nunsuccessful contracts:\n");
             for event in &self.events {
-                if event.status != ContractStatus::Passed {
+                if !matches!(
+                    event.status,
+                    ContractStatus::Passed | ContractStatus::Skipped | ContractStatus::Listed
+                ) {
                     let _ = write!(out, "    {}", render_test_event_line(event, color));
                 }
             }
@@ -196,6 +240,15 @@ impl TestOutcome {
         );
         if summary.blocked > 0 {
             let _ = write!(out, "; {} blocked", summary.blocked);
+        }
+        if summary.errored > 0 {
+            let _ = write!(out, "; {} errors", summary.errored);
+        }
+        if summary.skipped > 0 {
+            let _ = write!(out, "; {} skipped", summary.skipped);
+        }
+        if summary.listed > 0 {
+            let _ = write!(out, "; {} listed", summary.listed);
         }
         let _ = writeln!(
             out,

@@ -406,7 +406,28 @@ impl Lowerer<'_> {
                 Some(&def) => CExpr::new(K::Global(def), ty),
                 None => CExpr::new(K::Local(id), ty),
             },
-            Some(Res::Def(def)) => self.def_value(def, ty),
+            Some(Res::Def(def)) => {
+                if let Some(target) =
+                    crate::test_support::test_location_target(self.db, self.file, def)
+                {
+                    let key = crate::test_support::test_location_key(self.db, self.file, expr);
+                    let value = CExpr::new(
+                        K::Lit(Lit::Str(key.into_bytes())),
+                        Ty::Con(fai_types::Con::String),
+                    );
+                    let target_ty = Ty::arrow(Ty::Con(fai_types::Con::String), ty.clone());
+                    return CExpr::new(
+                        K::App {
+                            func: Box::new(CExpr::new(K::Global(target), target_ty)),
+                            args: vec![value],
+                            reuse: Vec::new(),
+                            alloc: ClosureAlloc::Heap,
+                        },
+                        ty,
+                    );
+                }
+                self.def_value(def, ty)
+            }
             Some(Res::Ctor(ctor)) => self.lower_ctor_value(ctor, ty),
             Some(Res::Builtin(name)) => self.lower_builtin_ref(name, ty, span),
             Some(Res::Error) | None => self.failure(),
@@ -1542,6 +1563,18 @@ impl Lowerer<'_> {
             return self.lower_stmts(rest, tail);
         }
         let body = self.lower_stmts(rest, tail);
+        if self.emit_unsupported && crate::test_support::is_check(self.db, &value.ty) {
+            let local = self.resolved.local_of(stmt.pat);
+            let unused = matches!(self.module.pat(stmt.pat).kind, PatKind::Wildcard)
+                || local.is_some_and(|local| !captures_of(&body, &[]).contains(&local));
+            if unused {
+                emit(self.db, Diagnostic::warning(
+                    fai_diagnostics::DISCARDED_TEST_CHECK,
+                    "this test check is discarded; return it or combine it with Expect.all/andThen".to_owned(),
+                    self.span(self.module.expr(stmt.value).span),
+                ));
+            }
+        }
         let ty = body.ty.clone();
         // A simple `let v = …`/`let _ = …` binds directly; a destructuring
         // `let (x, y) = …` (or any irrefutable pattern) matches the value, with an

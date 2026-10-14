@@ -1422,6 +1422,22 @@ Contracts (examples & properties):
   Synthetic run-error cases keep failures outside a contract visible to CI.
   The client publishes the artifact atomically; the daemon returns XML without
   receiving a filesystem destination. See `docs/CLI.md` for the current wire schema.
+
+  Named scenarios use ordinary `Test.Suite context effects` values and returned
+  `Test.Check` results, with `Expect` providing assertion combinators. Package
+  discovery only recognizes `tests` roots in declared test sources; roots are
+  explicitly typed, pure and argument-free. Construction runs in isolation
+  without initializing runtime capabilities. Cases have stable source/name-path
+  identities, with source-site keys resolved against the compiled revision rather
+  than embedding line offsets into Core. `Test.Suite` lists join their covariant
+  effect bound by declaration identity; other list typing stays strict.
+  `Test.focus` and `Test.skip` are metadata wrappers; skip prevents execution,
+  not typechecking, and CI rejects any focus marker with `--deny-focused`.
+  Fresh workers and parent-owned temporary roots isolate cases. Scoped fixtures
+  preserve body/release errors and mask cancellation during cleanup, but hard
+  process termination cannot execute user cleanup for arbitrary external state.
+  Test JSON schema 2 adds named identities, errors, skips and listing outcomes;
+  contracts retain their existing identities and generator behavior.
 - **D85 Bitwise `Int` intrinsics + float bit-reinterpretation.** splitmix64 needs
   bitwise ops, which Fai lacked. They are **functions** in the `Int` module
   (`and`/`or`/`xor`/`complement`/`shiftLeft`/`shiftRight`/`shiftRightLogical`),

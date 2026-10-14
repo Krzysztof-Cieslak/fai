@@ -33,10 +33,12 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// those two crates have no shared dependency other than this one. The
 /// `CodeInfo` entry lives in `fai_contracts::CODES`.
 pub const CONTRACT_IMPURE: DiagnosticCode = DiagnosticCode::new("FAI6004");
+/// A structured test check was computed but not observed.
+pub const DISCARDED_TEST_CHECK: DiagnosticCode = DiagnosticCode::new("FAI6011");
 
 /// Diagnostic codes owned by this crate. `fai-diagnostics` defines the code
-/// machinery and emits none of its own; [`CONTRACT_IMPURE`] is the lone shared
-/// code constant it hosts (catalogued by `fai-contracts`).
+/// machinery and emits none of its own; shared contract/test constants are
+/// catalogued by `fai-contracts`.
 pub const CODES: &[CodeInfo] = &[];
 
 #[cfg(test)]

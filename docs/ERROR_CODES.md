@@ -618,6 +618,36 @@ A `forall` binder's type cannot be generated because it has no finite value: eve
 
 More than one top-level `Arbitrary` value matches a binder's type, so which one overrides the synthesized generator is ambiguous. Keep a single `Arbitrary` for the type in the contract's module.
 
+### FAI6007 — invalid test suite
+
+**Severity:** error
+
+A named tests binding must have an explicit Test.Suite Test.Context signature, with a closed effect row, no arguments, and a pure initializer. Effects belong to its deferred test bodies.
+
+### FAI6008 — test suite discovery failed
+
+**Severity:** error
+
+A named test suite could not be discovered, contains empty or duplicate sibling names, or uses focus when --deny-focused is enabled. Discovery is isolated and bounded and never runs test bodies or fixtures.
+
+### FAI6009 — test expectation failed
+
+**Severity:** error
+
+A named test returned a failed Expect check. The diagnostic includes its source, expected and actual values, and any supplied context.
+
+### FAI6010 — test execution failed
+
+**Severity:** error
+
+A named test reported an operation or fixture error, crashed, or exceeded its deadline. Cleanup errors are retained alongside body failures; hard termination cannot run Fai cleanup code.
+
+### FAI6011 — discarded test check
+
+**Severity:** warning
+
+A Test.Check value is discarded without being returned or combined. Checks are returned values, not exceptions: use Expect.all or Expect.andThen to observe them. This warning detects obvious discards, not all aliases.
+
 ## FAI7xxx — Native backend
 
 ### FAI7001 — construct not supported by the native backend yet

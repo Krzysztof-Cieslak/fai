@@ -1,0 +1,20 @@
+module NamedTests
+
+// Suites are pure descriptions. Named callbacks use ordinary Fai layout and
+// make their capability effects explicit in their signatures.
+roundTrip : Test.Context -> Test.Check / { FileSystem }
+let roundTrip ctx =
+  let child = Result.withDefault Path.empty (Path.fromString "round-trip.txt")
+  let path = Path.join ctx.tempRoot child
+  match ctx.runtime.fs.writeFile path "hello" with
+  | Err error -> Test.error (FileSystem.errorToString error)
+  | Ok _ ->
+    Expect.ok FileSystem.errorToString (Expect.equal identity "hello") (File.readText ctx.runtime.fs 1024 path)
+
+tests : Test.Suite Test.Context { FileSystem }
+let tests = Test.describe "named tests" [
+  Test.test "pure arithmetic" (fun _ -> Expect.equal Int.toString 4 (2 + 2)),
+  Test.test "temporary file round trip" roundTrip,
+  Test.skip "demonstrates an intentional skip" (Test.test "future scenario" (fun _ ->
+    Expect.fail "not executed"))
+]

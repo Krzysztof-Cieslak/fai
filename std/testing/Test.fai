@@ -398,3 +398,200 @@ example: checkForall 0 10 10 int (fun n -> n = n) = Passed
 public checkExample : Bool -> TestResult
 let checkExample ok = if ok then Passed else Failed ""
 example: checkExample true = Passed
+
+/// One structured assertion or operation failure. Source is a compiler-supplied
+/// location key; the runner resolves it against the revision that was compiled.
+public type Issue = {
+  actual : String,
+  context : List String,
+  expected : String,
+  kind : String,
+  message : String,
+  source : String
+}
+
+/// A returned test result. Return it or combine it with other checks.
+public opaque type Check =
+  | Checked (List Issue)
+
+/// The standard environment supplied separately to every selected named test.
+public type Context = { id : String, runtime : Runtime, seed : Int, tempRoot : Path }
+
+/// A pure description of named tests. Effects belong to the deferred bodies,
+/// never to suite construction or discovery.
+public opaque type Suite 'ctx 'e =
+  | Case String String ('ctx -> Check / 'e)
+  | Group String String (List (Suite 'ctx 'e))
+  | Focus (Suite 'ctx 'e)
+  | Skip String (Suite 'ctx 'e)
+
+/// A successful check.
+public pass : Check
+let pass = Checked []
+example: successful pass
+
+internal issueAt : String -> String -> String -> String -> String -> Check
+let issueAt source kind message expected actual = Checked [
+  {
+    actual = actual,
+    context = [],
+    expected = expected,
+    kind = kind,
+    message = message,
+    source = source
+  }
+]
+
+/// Report an operation failure rather than a failed assertion.
+public error : String -> Check
+let error message = issueAt "" "operation" message "" ""
+example: not (successful (error "operation failed"))
+
+internal errorAt : String -> String -> Check
+let errorAt source message = issueAt source "operation" message "" ""
+
+internal issues : Check -> List Issue
+let issues check =
+  match check with
+  | Checked found -> found
+
+internal combine : Check -> Check -> Check
+let combine first second = Checked (List.append (issues first) (issues second))
+
+internal successful : Check -> Bool
+let successful check = List.isEmpty (issues check)
+
+internal addContext : String -> Check -> Check
+let addContext message check =
+  Checked (List.map (fun issue -> { issue with context = message :: issue.context }) (issues check))
+
+/// Name one deferred test. The compiler captures the constructor's source site.
+public test : String -> ('ctx -> Check / 'e) -> Suite 'ctx 'e
+let test name body = Case name "" body
+example: List.length (manifest (test "one" (fun _ -> pass))) = 1
+
+internal testAt : String -> String -> ('ctx -> Check / 'e) -> Suite 'ctx 'e
+let testAt source name body = Case name source body
+
+/// Group tests without executing their bodies.
+public describe : String -> List (Suite 'ctx 'e) -> Suite 'ctx 'e
+let describe name children = Group name "" children
+example: List.length (manifest (describe "group" [test "one" (fun _ -> pass)])) = 2
+
+internal describeAt : String -> String -> List (Suite 'ctx 'e) -> Suite 'ctx 'e
+let describeAt source name children = Group name source children
+
+/// Focus this test or group within the selected run. CI can deny focus markers.
+public focus : Suite 'ctx 'e -> Suite 'ctx 'e
+let focus suite = Focus suite
+example: List.all (fun item -> item.focused) (manifest (focus (test "one" (fun _ -> pass))))
+
+/// Intentionally skip a test or group, with a nonempty reason. It is still typed.
+public skip : String -> Suite 'ctx 'e -> Suite 'ctx 'e
+let skip reason suite = Skip reason suite
+example: List.all (fun item -> item.skipped) (manifest (skip "later" (test "one" (fun _ -> pass))))
+
+/// Wrap each leaf in a scoped fixture. This only constructs deferred wrappers;
+/// the fixture runs once per selected case and can adapt the context's type.
+public withFixture : ('parent -> ('child -> Check / 'e) -> Check / 'e) -> Suite 'child 'e -> Suite 'parent 'e
+let withFixture fixture suite =
+  match suite with
+  | Case name source body -> Case name source (fun parent -> fixture parent body)
+  | Group name source children -> Group name source (List.map (withFixture fixture) children)
+  | Focus child -> Focus (withFixture fixture child)
+  | Skip reason child -> Skip reason (withFixture fixture child)
+example: List.length (manifest (withFixture (fun _ body ->
+  body 1) (test "one" (fun _ -> pass)))) = 1
+
+/// Acquire and release a fixture separately for each selected leaf. Returned
+/// failures do not skip cleanup; cleanup runs with sticky cancellation masked.
+public bracket : (Context -> Result 'a String / 'e) -> ('a -> Result Unit String / 'e) -> Suite 'a { Concurrency | 'e } -> Suite Context { Concurrency | 'e }
+let bracket acquire release suite = withFixture (runFixture acquire release) suite
+
+runFixture : (Context -> Result 'a String / 'e) -> ('a -> Result Unit String / 'e) -> Context -> ('a -> Check / { Concurrency | 'e }) -> Check / { Concurrency | 'e }
+let runFixture acquire release ctx body =
+  match acquire ctx with
+  | Err message -> error ("fixture setup: " ++ message)
+  | Ok resource ->
+    let checked = body resource
+    let closed = Wire.cleanup ctx.runtime.concurrency (fun _ -> release resource)
+    match closed with
+    | Ok _ -> checked
+    | Err message -> combine checked (error ("fixture cleanup: " ++ message))
+
+internal type Metadata = {
+  focused : Bool,
+  id : String,
+  kind : String,
+  name : String,
+  path : List String,
+  reason : String,
+  skipped : Bool,
+  source : String
+}
+
+let pathId path =
+  String.join "" (List.map (fun name -> Int.toString (String.length name) ++ ":" ++ name) path)
+
+let metadata path name source kind focused skipped reason =
+  let names = List.append path [name]
+  {
+    focused = focused,
+    id = pathId names,
+    kind = kind,
+    name = name,
+    path = names,
+    reason = reason,
+    skipped = skipped,
+    source = source
+  }
+
+let collect path focused skipped reason suite =
+  match suite with
+  | Case name source _ -> [metadata path name source "case" focused skipped reason]
+  | Group name source children ->
+    let entry = metadata path name source "group" focused skipped reason
+    entry :: List.concatMap (collect entry.path focused skipped reason) children
+  | Focus child -> collect path true skipped reason child
+  | Skip why child ->
+    let marker = {
+      focused = focused,
+      id = "",
+      kind = "skip",
+      name = "skip",
+      path = path,
+      reason = why,
+      skipped = true,
+      source = ""
+    }
+    marker :: collect path focused true (if skipped then reason else why) child
+
+internal manifest : Suite 'ctx 'e -> List Metadata
+let manifest suite = collect [] false false "" suite
+
+executeIn : List String -> String -> 'ctx -> Suite 'ctx 'e -> Option Check / 'e
+let executeIn path wanted ctx suite =
+  match suite with
+  | Case name _ body -> if pathId (List.append path [name]) = wanted then Some (body ctx) else None
+  | Group name _ children -> executeChildren (List.append path [name]) wanted ctx children
+  | Focus child -> executeIn path wanted ctx child
+  | Skip _ _ -> None
+
+executeChildren : List String -> String -> 'ctx -> List (Suite 'ctx 'e) -> Option Check / 'e
+let executeChildren path wanted ctx children =
+  match children with
+  | [] -> None
+  | first :: rest ->
+    match executeIn path wanted ctx first with
+    | Some result -> Some result
+    | None -> executeChildren path wanted ctx rest
+
+internal execute : Suite Context 'e -> String -> String -> Runtime -> Int -> String -> Check / 'e
+let execute suite wanted identity runtime seed directory =
+  match Path.fromString directory with
+  | Err _ -> error "runner supplied an invalid temporary path"
+  | Ok path ->
+    let ctx = { id = identity, runtime = runtime, seed = seed, tempRoot = path }
+    match executeIn [] wanted ctx suite with
+    | Some checked -> checked
+    | None -> error "selected test is absent or skipped"

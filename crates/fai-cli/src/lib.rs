@@ -93,6 +93,7 @@ where
                 | Command::Toolchain { .. }
                 | Command::RunWorker(_)
                 | Command::TestWorker(_)
+                | Command::SuiteWorker { .. }
                 | Command::DaemonServe
                 | Command::Daemon { .. }
         );
@@ -220,6 +221,9 @@ fn dispatch(mut parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         }
         Command::RunWorker(args) => return run_worker(&args.bundle, &args.args, err),
         Command::TestWorker(args) => return run_test_worker(&args.bundle, args.start, err),
+        Command::SuiteWorker { request, output } => {
+            return fai_driver::named_suite_worker(request.as_std_path(), output.as_std_path());
+        }
         Command::DaemonServe => return run_daemon_serve(&parsed.global, err),
         _ => {}
     }
@@ -446,6 +450,7 @@ fn dispatch(mut parsed: Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         | Command::Deps { .. }
         | Command::RunWorker(_)
         | Command::TestWorker(_)
+        | Command::SuiteWorker { .. }
         | Command::DaemonServe => {
             unreachable!("handled above")
         }
@@ -689,6 +694,7 @@ fn run_test_inner(
         err,
         global.options(),
         args.junit.as_ref().map(|_| &mut *junit),
+        fai_driver::TestOptions { list: args.list, deny_focused: args.deny_focused },
     ) {
         Ok(exit) => exit,
         Err(daemon_error) => {
@@ -762,23 +768,26 @@ fn run_test_in_process(
             return emit_error(&error, format, color, out, err);
         }
     };
-    let plan = fai_driver::build_test_plan(session.db(), &files, args.r#match.as_deref(), config);
+    let mut plan = fai_driver::build_test_plan_with_options(
+        session.db(),
+        &files,
+        args.r#match.as_deref(),
+        config,
+        fai_driver::TestOptions { list: args.list, deny_focused: args.deny_focused },
+    );
+    fai_driver::configure_test_plan(&mut plan, &session);
     if matches!(format, MessageFormat::Human) {
         let _ = out.write_all(plan.render_header().as_bytes());
         let _ = out.flush();
     }
-    let results = if plan.blocked {
-        Vec::new()
-    } else {
-        let mut on_event = |event: &fai_driver::ContractEvent| {
-            if matches!(format, MessageFormat::Human) {
-                let _ = out.write_all(fai_driver::render_test_event_line(event, color).as_bytes());
-                let _ = out.flush();
-            }
-        };
-        fai_driver::run_test_workers(&plan, &mut on_event)
+    let mut on_event = |event: &fai_driver::ContractEvent| {
+        if matches!(format, MessageFormat::Human) {
+            let _ = out.write_all(fai_driver::render_test_event_line(event, color).as_bytes());
+            let _ = out.flush();
+        }
     };
-    let outcome = fai_driver::assemble_outcome(&plan, &results);
+    let execution = fai_driver::execute_tests(&plan, &mut on_event);
+    let outcome = fai_driver::assemble_execution(&plan, &execution);
     if args.junit.is_some() {
         *junit = Some(fai_driver::render_junit(&plan, &outcome));
     }

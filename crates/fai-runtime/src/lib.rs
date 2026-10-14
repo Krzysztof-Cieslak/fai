@@ -5113,6 +5113,17 @@ pub fn read_string(v: Value) -> Vec<u8> {
     unsafe { string_bytes(v).to_vec() }
 }
 
+/// A non-returning placeholder for native symbols during pure suite discovery.
+/// Native library initializers must not run until a test is selected for execution.
+#[must_use]
+pub fn discovery_foreign_address() -> *const u8 {
+    extern "C" fn unavailable() -> ! {
+        eprintln!("native code cannot execute during pure test discovery");
+        std::process::abort()
+    }
+    unavailable as *const u8
+}
+
 // ---------------------------------------------------------------------------
 // Allocator fuzz/property harness.
 // ---------------------------------------------------------------------------
@@ -5202,6 +5213,8 @@ fn verify_payload(p: *const u8, size: usize, byte: u8) {
 
 /// The M:N green-thread scheduler that runs a Fai program's concurrent tasks.
 mod scheduler;
+pub use process::{HostOutput, host_output};
+pub use scheduler::block_on_cancellable;
 
 pub mod allocation_stats;
 mod data_header;

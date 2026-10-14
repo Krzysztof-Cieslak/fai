@@ -25,8 +25,7 @@ use std::time::{Duration, Instant};
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_driver::{
     ContractEvent, DirtyFile, EXIT_FAILURES, EXIT_INTERNAL, EXIT_OK, OutputFormat, RenderOpts,
-    Rendered, Session, TestConfig, TestPlan, WireBundle, assemble_outcome, build_test_plan,
-    catch_cancellation, run_command, run_test_workers,
+    Rendered, Session, TestConfig, TestPlan, WireBundle, catch_cancellation, run_command,
 };
 use interprocess::TryClone;
 use interprocess::local_socket::Stream;
@@ -617,23 +616,21 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
             chunk: plan.render_header().into_bytes(),
         })?;
     }
-    let results = if plan.blocked {
-        Vec::new()
-    } else {
+    let execution = {
         let mut send_err: std::io::Result<()> = Ok(());
         let results = {
             let mut on_event = |event: &ContractEvent| {
                 if send_err.is_ok() {
-                    send_err = conn.send(&ServerMessage::TestEvent(event.clone()));
+                    send_err = conn.send(&ServerMessage::TestEvent(Box::new(event.clone())));
                 }
             };
-            run_test_workers(&plan, &mut on_event)
+            fai_driver::execute_tests(&plan, &mut on_event)
         };
         send_err?;
         results
     };
 
-    let outcome = assemble_outcome(&plan, &results);
+    let outcome = fai_driver::assemble_execution(&plan, &execution);
     if request.junit {
         conn.send(&ServerMessage::JunitReport(fai_driver::render_junit(&plan, &outcome)))?;
     }
@@ -655,10 +652,15 @@ fn prepare_test(daemon: &Daemon, request: &TestRequest) -> Result<(TestPlan, Str
             trials: request.count.unwrap_or(defaults.trials),
             max_size: request.max_size.unwrap_or(defaults.max_size),
         };
-        Ok((
-            build_test_plan(snapshot.db(), &files, request.r#match.as_deref(), config),
-            package_notices(snapshot),
-        ))
+        let mut plan = fai_driver::build_test_plan_with_options(
+            snapshot.db(),
+            &files,
+            request.r#match.as_deref(),
+            config,
+            fai_driver::TestOptions { list: request.list, deny_focused: request.deny_focused },
+        );
+        fai_driver::configure_test_plan(&mut plan, snapshot);
+        Ok((plan, package_notices(snapshot)))
     })?
 }
 

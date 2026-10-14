@@ -17,6 +17,34 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// A nonblocking host-side output pipe. Unlike a blocking reader thread, it can
+/// stop after its supervised process exits even if a descendant retains a writer.
+pub struct HostOutput {
+    pipe: platform::Pipe,
+    poll: mio::Poll,
+    events: mio::Events,
+}
+
+impl HostOutput {
+    /// Read currently available bytes; `WouldBlock` means to wait for readiness.
+    pub fn try_read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.pipe.read(bytes)
+    }
+
+    /// Wait for readiness, bounded by the caller's deadline.
+    pub fn wait(&mut self, timeout: Duration) -> io::Result<()> {
+        self.poll.poll(&mut self.events, Some(timeout))
+    }
+}
+
+/// Create a nonblocking capture endpoint and the child-side file handle.
+pub fn host_output() -> io::Result<(HostOutput, std::fs::File)> {
+    let poll = mio::Poll::new()?;
+    let (mut pipe, child) = platform::endpoint(true)?;
+    pipe.register(poll.registry(), 0, true)?;
+    Ok((HostOutput { pipe, poll, events: mio::Events::with_capacity(4) }, child))
+}
+
 #[derive(Clone, Debug)]
 struct Spec {
     executable: String,

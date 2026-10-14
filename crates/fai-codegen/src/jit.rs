@@ -390,10 +390,21 @@ impl JitProgram {
         borrows_of: &dyn Fn(DefId) -> Vec<bool>,
         bce: &Bce,
     ) -> JitProgram {
-        // Contracts cannot call a user `foreign` (it carries a capability effect,
-        // which an impure contract is rejected for), so the test path needs no
-        // foreign symbol resolution.
-        let mut module = jit_module(None);
+        Self::compile_with_foreign(defs, namer, arity_of, signature_of, borrows_of, bce, None)
+    }
+
+    /// Compiles an isolated entry set with optional user-native symbol lookup.
+    #[must_use]
+    pub fn compile_with_foreign(
+        defs: &[LoweredDef],
+        namer: &dyn Fn(DefId) -> String,
+        arity_of: &dyn Fn(DefId) -> usize,
+        signature_of: &dyn Fn(DefId) -> FnAbi,
+        borrows_of: &dyn Fn(DefId) -> Vec<bool>,
+        bce: &Bce,
+        foreign: Option<ForeignLookup>,
+    ) -> JitProgram {
+        let mut module = jit_module(foreign);
         compile_module(&mut module, defs, namer, arity_of, signature_of, borrows_of, bce);
         module.finalize_definitions().expect("finalize");
         JitProgram { module }

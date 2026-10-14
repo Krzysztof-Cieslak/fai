@@ -764,10 +764,16 @@ fn validate_code(
                 }
             }
         }
-        let plan = crate::build_test_plan(session.db(), files, None, crate::TestConfig::default());
-        let results =
-            if plan.blocked { Vec::new() } else { crate::run_test_workers(&plan, &mut |_| {}) };
-        let outcome = crate::assemble_outcome(&plan, &results);
+        let mut plan = crate::build_test_plan_with_options(
+            session.db(),
+            files,
+            None,
+            crate::TestConfig::default(),
+            crate::TestOptions { list: false, deny_focused: true },
+        );
+        crate::configure_test_plan(&mut plan, session);
+        let execution = crate::execute_tests(&plan, &mut |_| {});
+        let outcome = crate::assemble_execution(&plan, &execution);
         if !outcome.ok {
             return Err(validation_error(session, &outcome.diagnostics, name));
         }

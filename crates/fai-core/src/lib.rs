@@ -28,6 +28,8 @@ pub mod purity;
 pub mod reassoc;
 pub mod representation;
 mod scalar_peel;
+mod test_support;
+pub use test_support::{test_location_key, test_location_target};
 #[allow(unsafe_code)]
 pub mod simplify;
 pub mod wire;

@@ -1367,7 +1367,9 @@ pub fn build_run_bundle_with_deps(
 /// returned closure owns the library handles, so they stay loaded as long as the
 /// JIT image that may call into them. A library that cannot be loaded is an error.
 #[allow(unsafe_code)]
-fn load_foreign_libraries(paths: &[String]) -> Result<Option<fai_codegen::ForeignLookup>, String> {
+pub(crate) fn load_foreign_libraries(
+    paths: &[String],
+) -> Result<Option<fai_codegen::ForeignLookup>, String> {
     if paths.is_empty() {
         return Ok(None);
     }

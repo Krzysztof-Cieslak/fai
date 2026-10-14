@@ -2019,7 +2019,50 @@ OS random bytes. `Wire.peer net connection` reports the actual TCP peer;
 `Wire.serverEndPoint tls session` returns TLS channel binding. `Wire.cleanup
 concurrency thunk` masks sticky cancellation during bounded resource cleanup.
 
-### Test — property testing (used by `forall`)
+### Test — contracts and named test suites
+
+`example` and `forall` remain pure. For named scenarios, define an explicitly
+typed `tests : Test.Suite Test.Context { ... }` value in a package's test sources.
+`fai test` discovers it without executing its bodies, then runs each selected
+case in a fresh supervised worker. `Test.Context` supplies `runtime`, `seed`,
+the stable string `id`, and an absolute, temporary `tempRoot : Path`.
+
+```fai
+module ArithmeticTests
+
+tests : Test.Suite Test.Context {}
+let tests = Test.describe "arithmetic" [
+  Test.test "sum" (fun _ -> Expect.equal Int.toString 4 (2 + 2))
+]
+```
+
+`Test.test name callback` and `Test.describe name children` construct pure suite
+descriptions. `Test.focus suite` narrows a run; `Test.skip reason suite` skips a
+subtree but still typechecks it. Reasons must be nonempty and sibling names must
+be unique. Use `fai test --list` for discovery only and `--deny-focused` in CI;
+the latter rejects focus markers even behind a name filter or skip. Active focus
+filters out other named cases and contracts. Skip wins over focus.
+
+Return a `Test.Check`: `Expect.equal renderer expected actual`, `Expect.isTrue
+message condition`, or `Expect.fail message`. `Test.error message` denotes an
+operation failure. `Expect.all checks` collects already-evaluated checks; use
+`Expect.andThen deferred previous` for lazy, fail-fast sequencing. `Expect.ok
+renderError next result` adapts `Result` values, and `Expect.context` adds detail.
+Discarding a check does not throw; obvious discards are diagnosed during test
+compilation. Existing `Test.TestResult` is separate and remains unchanged.
+
+Use named callback functions with explicit `Test.Context -> Test.Check / { ... }`
+signatures for effectful or multiline scenarios. Indentation blocks are suspended
+inside parenthesized list elements; a named function also supplies the nominal
+capability types needed for method inference. Mixed `Test.Suite` lists join their
+effect bounds; ordinary list element types still unify strictly.
+
+`Test.withFixture fixture suite` wraps each leaf independently, adapting its
+context through a scoped callback. `Test.bracket acquire release suite` works
+from `Test.Context` with fallible acquisition/release (`Result _ String`), keeps
+body and cleanup failures, and masks cancellation during release. Do not assume
+Fai cleanup can run after a hard process abort. The runner removes its own
+temporary storage; tests are not a filesystem/network security sandbox.
 
 You rarely call this directly, but a custom generator overrides synthesis for a
 type:
@@ -2559,7 +2602,7 @@ incremental database warm, so repeated commands are near-instant.
 | `fai check [path]` | Typecheck (fast inner loop); also evaluates closed `example`s. `--no-examples` to skip. |
 | `fai build <path>` | Compile to a native executable (AOT). `--release`, `--out <file>`. |
 | `fai run <path> [-- args]` | Build (JIT) and run with lowest latency. |
-| `fai test [path]` | Run `example`/`forall` contracts. `--match <pat>`, `--seed <n>`, `--count <n>`. `--junit <path>` also writes a CI report without changing console output. |
+| `fai test [path]` | Run contracts and named suites. `--match`, `--seed`, `--count`, `--list`, `--deny-focused`. `--junit <path>` writes a CI report without changing console output. |
 | `fai fmt [path]` | Apply the one canonical format. `--check` to verify without writing. |
 | `fai lsp` | Language server for editors (stdio). |
 | `fai query <q> ...` | Read-only code intelligence (see below). |

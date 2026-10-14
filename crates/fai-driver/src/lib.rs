@@ -52,10 +52,12 @@ pub use command::{
 };
 pub use contracts::{
     ContractEvent, ContractLocation, ContractResult, ContractSource, ContractSourceOrigin,
-    ContractStatus, TestConfig, TestOutcome, TestOutput, TestPlan, TestSummary, assemble_outcome,
-    build_example_plan, build_test_plan, check_examples, check_examples_in_process,
-    example_failures, jit_test_bundle, junit_error_report, render_junit, render_test_event_line,
-    run_test_workers, run_test_workers_with_timeout, run_tests,
+    ContractStatus, TestConfig, TestExecution, TestFailure, TestOptions, TestOutcome, TestOutput,
+    TestPlan, TestSummary, assemble_execution, assemble_outcome, build_example_plan,
+    build_test_plan, build_test_plan_with_options, check_examples, check_examples_in_process,
+    configure_test_plan, example_failures, execute_tests, jit_test_bundle, junit_error_report,
+    named_suite_worker, render_junit, render_test_event_line, run_test_workers,
+    run_test_workers_with_timeout, run_tests,
 };
 pub use fai_core::{TestWireBundle, WireBundle};
 pub use manifest::{MANIFEST_NAME, NativeDeps, read_native_manifest};
