@@ -732,10 +732,13 @@ fn a_test_batch_outlives_the_daemon_idle_timeout() {
         stdout(&output),
         String::from_utf8_lossy(&output.stderr)
     );
+    // Unix's CPU budget can terminate the worker before its wall-clock limit.
+    // Either result must leave the daemon alive and let the next contract pass.
+    let report = stdout(&output);
     assert!(
-        stdout(&output).contains("1 passed; 0 failed; 0 crashed; 1 timed out"),
-        "{}",
-        stdout(&output)
+        report.contains("1 passed; 0 failed; 1 crashed; 0 timed out")
+            || report.contains("1 passed; 0 failed; 0 crashed; 1 timed out"),
+        "{report}"
     );
     assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(status_pid(&daemon).is_some());
