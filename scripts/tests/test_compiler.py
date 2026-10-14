@@ -42,8 +42,8 @@ class CompilerTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(value)
 
-    def identity(self, environment=None):
-        return compiler.identity(self.root, {} if environment is None else environment, HOST)
+    def identity(self, environment=None, profile=compiler.PROFILE):
+        return compiler.identity(self.root, {} if environment is None else environment, HOST, profile)
 
     def fake_bundle(self, expected=None):
         expected = expected or self.identity()
@@ -54,7 +54,7 @@ class CompilerTests(unittest.TestCase):
         manifest = {
             "identity": expected,
             "buildInfo": {"sourceId": expected["sourceId"], "target": HOST[0],
-                          "profile": compiler.PROFILE, "debugAssertions": True},
+                          "profile": expected["profile"], "debugAssertions": True},
             "files": {"fai": {"size": binary.stat().st_size,
                               "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}},
         }
@@ -65,6 +65,18 @@ class CompilerTests(unittest.TestCase):
         before = self.identity()
         self.write("packages/json/Json.fai", "changed library")
         self.assertEqual(before, self.identity())
+
+    def test_profiles_have_separate_bundle_identities(self):
+        default = self.identity()
+        ci = self.identity(profile="ci")
+        self.assertEqual(default["sourceId"], ci["sourceId"])
+        self.assertEqual(default["profile"], "package-dev")
+        self.assertEqual(ci["profile"], "ci")
+        self.assertNotEqual(default["key"], ci["key"])
+
+    def test_unsupported_bundle_profile_is_rejected(self):
+        with self.assertRaisesRegex(compiler.BundleError, "unsupported.*profile"):
+            self.identity(profile="release")
 
     def test_package_integration_metadata_does_not_change_compiler_key(self):
         before = self.identity()
@@ -143,6 +155,108 @@ class CompilerTests(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), patch.object(subprocess, "run", side_effect=AssertionError("unexpected subprocess")):
             self.assertEqual(binary, compiler.ensure(self.root, self.cache, offline=True, no_build=True))
 
+    def test_ci_cache_hit_never_invokes_cargo(self):
+        binary = self.fake_bundle(self.identity(profile="ci"))
+        with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), \
+                patch.object(subprocess, "run", side_effect=AssertionError("unexpected subprocess")):
+            self.assertEqual(binary, compiler.ensure(self.root, self.cache, offline=True, no_build=True, profile="ci"))
+
+    def test_ci_binary_cannot_be_relabelled_as_package_dev(self):
+        binary = self.fake_bundle()
+        manifest = json.loads((binary.parent / "manifest.json").read_text())
+        manifest["buildInfo"]["profile"] = "ci"
+        (binary.parent / "manifest.json").write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(compiler.BundleError, "provenance"):
+            compiler.validate(binary.parent, self.identity())
+
+    def test_unasserted_ci_binary_is_rejected(self):
+        expected = self.identity(profile="ci")
+        binary = self.fake_bundle(expected)
+        manifest = json.loads((binary.parent / "manifest.json").read_text())
+        manifest["buildInfo"]["debugAssertions"] = False
+        (binary.parent / "manifest.json").write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(compiler.BundleError, "provenance"):
+            compiler.validate(binary.parent, expected)
+
+    def build_fixture(self, environment=None):
+        environment = environment or {}
+        expected = self.identity(environment, profile="ci")
+        binary = compiler.built_binary(self.root, expected, environment)
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"compiler from the test build")
+        info = {"sourceId": expected["sourceId"], "target": HOST[0], "profile": "ci", "debugAssertions": True}
+        return expected, binary, info
+
+    def test_unit_build_produces_a_bundle_without_a_second_cargo_build(self):
+        expected, built, info = self.build_fixture()
+        with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), \
+                patch.object(subprocess, "run") as run, \
+                patch.object(subprocess, "check_output", return_value=json.dumps(info)):
+            binary = compiler.build_tests("unit", self.root, self.cache)
+            reused = compiler.ensure(self.root, self.cache, offline=True, no_build=True, profile="ci")
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ["cargo", "nextest", "run", "--workspace", "--locked",
+                                               "--cargo-profile", "ci", "--profile", "unit", "--no-run"])
+        self.assertEqual(run.call_args.kwargs["env"]["FAI_BUILD_PROFILE"], "ci")
+        self.assertNotIn("FAI_TOOL_INPUT_ID", run.call_args.kwargs["env"])
+        self.assertEqual(binary.read_bytes(), built.read_bytes())
+        self.assertEqual(reused, binary)
+        self.assertEqual(compiler.validate(binary.parent, expected), binary)
+
+    def test_platform_build_uses_the_existing_cross_os_selection(self):
+        _, _, info = self.build_fixture()
+        with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), \
+                patch.object(subprocess, "run") as run, \
+                patch.object(subprocess, "check_output", return_value=json.dumps(info)):
+            compiler.build_tests("cross-os", self.root, self.cache)
+        self.assertEqual(run.call_args.args[0][-3:], ["--profile", "cross-os", "--no-run"])
+
+    def test_package_only_ci_miss_builds_only_the_cli_in_the_requested_profile(self):
+        expected, _, info = self.build_fixture()
+        with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), \
+                patch.object(subprocess, "run") as run, \
+                patch.object(subprocess, "check_output", return_value=json.dumps(info)):
+            binary = compiler.ensure(self.root, self.cache, offline=True, profile="ci")
+        self.assertEqual(run.call_args.args[0], ["cargo", "build", "--locked", "--profile", "ci", "-p", "fai-cli"])
+        self.assertEqual(compiler.validate(binary.parent, expected), binary)
+
+    def test_test_build_rejects_unknown_selection_before_running_cargo(self):
+        with patch.object(subprocess, "run", side_effect=AssertionError("unexpected build")):
+            with self.assertRaisesRegex(compiler.BundleError, "test-build selection"):
+                compiler.build_tests("unknown", self.root, self.cache)
+
+    def test_test_build_rejects_changed_inputs_before_packaging(self):
+        self.build_fixture()
+        with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), \
+                patch.object(subprocess, "run", side_effect=lambda *args, **kwargs: self.write("crates/tool/src/lib.rs", "changed")), \
+                patch.object(subprocess, "check_output", side_effect=AssertionError("stale binary queried")):
+            with self.assertRaisesRegex(compiler.BundleError, "inputs changed"):
+                compiler.build_tests("unit", self.root, self.cache)
+
+    def test_test_build_rejects_binary_from_another_profile(self):
+        _, _, info = self.build_fixture()
+        info["profile"] = "package-dev"
+        with patch.dict("os.environ", {}, clear=True), patch.object(compiler, "host", return_value=HOST), \
+                patch.object(subprocess, "run"), patch.object(subprocess, "check_output", return_value=json.dumps(info)):
+            with self.assertRaisesRegex(compiler.BundleError, "provenance"):
+                compiler.build_tests("unit", self.root, self.cache)
+
+    def test_test_build_honors_custom_target_directory(self):
+        environment = {"CARGO_TARGET_DIR": str(self.root / "custom-target")}
+        expected, built, info = self.build_fixture(environment)
+        with patch.dict("os.environ", environment, clear=True), patch.object(compiler, "host", return_value=HOST), \
+                patch.object(subprocess, "run"), patch.object(subprocess, "check_output", return_value=json.dumps(info)) as query:
+            binary = compiler.build_tests("unit", self.root, self.cache)
+        self.assertEqual(query.call_args.args[0], [str(built), "build-info"])
+        self.assertEqual(compiler.validate(binary.parent, expected), binary)
+
+    def test_test_build_rejects_a_cross_compilation_target(self):
+        with patch.dict("os.environ", {"CARGO_BUILD_TARGET": "aarch64-apple-darwin"}, clear=True), \
+                patch.object(compiler, "host", return_value=HOST), \
+                patch.object(subprocess, "run", side_effect=AssertionError("unexpected build")):
+            with self.assertRaisesRegex(compiler.BundleError, "native target"):
+                compiler.build_tests("unit", self.root, self.cache)
+
     def test_corrupt_executable_is_rejected(self):
         binary = self.fake_bundle()
         binary.write_bytes(b"x" * binary.stat().st_size)
@@ -163,6 +277,13 @@ class CompilerTests(unittest.TestCase):
         restored = compiler.restore(archive, destination, self.identity())
         self.assertEqual(binary.read_bytes(), restored.read_bytes())
         self.assertEqual(restored, compiler.validate(restored.parent, self.identity()))
+
+    def test_archive_cannot_cross_profile_boundaries(self):
+        binary = self.fake_bundle(self.identity(profile="ci"))
+        archive = Path(self.temporary.name) / "compiler.zip"
+        compiler.pack(binary, archive)
+        with self.assertRaisesRegex(compiler.BundleError, "identity"):
+            compiler.restore(archive, Path(self.temporary.name) / "other-cache", self.identity())
 
     def test_archive_path_traversal_is_rejected(self):
         archive = Path(self.temporary.name) / "bad.zip"

@@ -18,6 +18,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = "package-dev"
+PROFILES = (PROFILE, "ci")
 SCHEMA = 1
 
 
@@ -94,10 +95,12 @@ def build_environment(environ=None):
             if key != "CARGO_TARGET_DIR" and (key in exact or key.startswith(prefixes))}
 
 
-def identity(root=ROOT, environ=None, host_info=None):
+def identity(root=ROOT, environ=None, host_info=None, profile=PROFILE):
+    if profile not in PROFILES:
+        raise BundleError(f"unsupported compiler bundle profile: {profile}")
     target, compatibility = host() if host_info is None else host_info
     result = {"schemaVersion": SCHEMA, "sourceId": source_id(root), "target": target,
-              "compatibility": compatibility, "profile": PROFILE,
+              "compatibility": compatibility, "profile": profile,
               "environment": build_environment(environ)}
     result["key"] = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return result
@@ -131,7 +134,8 @@ def validate(directory, expected, checksums=True):
             raise BundleError("unexpected files in compiler bundle manifest")
         binary = directory / name
         info = manifest["buildInfo"]
-        if info["sourceId"] != expected["sourceId"] or info["target"] != expected["target"] or info["profile"] != PROFILE or info["debugAssertions"] is not True:
+        if (info["sourceId"] != expected["sourceId"] or info["target"] != expected["target"]
+                or info["profile"] != expected["profile"] or info["debugAssertions"] is not True):
             raise BundleError("compiler provenance does not match the requested bundle")
         entry = manifest["files"][name]
         if binary.is_symlink() or binary.stat().st_size != entry["size"]:
@@ -204,22 +208,26 @@ def restore(archive, cache, expected):
         return install(directory, cache, expected)
 
 
-def build(cache, expected, root=ROOT):
-    environment = {**os.environ, "FAI_BUILD_PROFILE": PROFILE,
-                   "FAI_TOOL_INPUT_ID": expected["sourceId"]}
+def build_environment_for(expected):
+    environment = {**os.environ, "FAI_BUILD_PROFILE": expected["profile"]}
     if environment.get("CARGO_BUILD_TARGET", expected["target"]) != expected["target"]:
         raise BundleError("compiler bootstrap requires a native target")
-    print(f"Building Fai compiler {expected['key'][:12]} ({PROFILE})", file=sys.stderr)
-    subprocess.run(["cargo", "build", "--locked", "--profile", PROFILE, "-p", "fai-cli"],
-                   cwd=root, env=environment, stdout=sys.stderr, check=True)
-    if identity(root) != expected:
-        raise BundleError("compiler inputs changed during the build; retry with the new inputs")
+    return environment
+
+
+def built_binary(root, expected, environment):
     target = Path(environment.get("CARGO_TARGET_DIR", root / "target"))
     if not target.is_absolute():
         target = root / target
     if "CARGO_BUILD_TARGET" in environment:
         target /= environment["CARGO_BUILD_TARGET"]
-    binary = target / PROFILE / executable_name(expected)
+    return target / expected["profile"] / executable_name(expected)
+
+
+def store_built(cache, expected, environment, root=ROOT):
+    if identity(root, profile=expected["profile"]) != expected:
+        raise BundleError("compiler inputs changed during the build; retry with the new inputs")
+    binary = built_binary(root, expected, environment)
     info = json.loads(subprocess.check_output([str(binary), "build-info"], cwd=root, text=True))
     manifest = {"identity": expected, "buildInfo": info,
                 "files": {binary.name: {"size": binary.stat().st_size, "sha256": file_digest(binary)}}}
@@ -229,6 +237,28 @@ def build(cache, expected, root=ROOT):
         shutil.copy2(binary, directory / binary.name)
         (directory / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
         return install(directory, cache, expected)
+
+
+def build(cache, expected, root=ROOT):
+    environment = build_environment_for(expected)
+    print(f"Building Fai compiler {expected['key'][:12]} ({expected['profile']})", file=sys.stderr)
+    subprocess.run(["cargo", "build", "--locked", "--profile", expected["profile"], "-p", "fai-cli"],
+                   cwd=root, env=environment, stdout=sys.stderr, check=True)
+    return store_built(cache, expected, environment, root)
+
+
+def build_tests(nextest_profile, root=ROOT, cache=None):
+    """Build the test graph once and retain its compiler for native package checks."""
+    if nextest_profile not in {"unit", "cross-os"}:
+        raise BundleError(f"unsupported test-build selection: {nextest_profile}")
+    cache = cache_root() if cache is None else cache
+    expected = identity(root, profile="ci")
+    environment = build_environment_for(expected)
+    with bundle_lock(cache, expected["key"]):
+        subprocess.run(["cargo", "nextest", "run", "--workspace", "--locked", "--cargo-profile", "ci",
+                        "--profile", nextest_profile, "--no-run"],
+                       cwd=root, env=environment, stdout=sys.stderr, check=True)
+        return store_built(cache, expected, environment, root)
 
 
 def gh_json(path):
@@ -280,9 +310,9 @@ def download(cache, expected, root=ROOT):
     return None
 
 
-def ensure(root=ROOT, cache=None, offline=False, no_build=False):
+def ensure(root=ROOT, cache=None, offline=False, no_build=False, profile=PROFILE):
     cache = cache_root() if cache is None else cache
-    expected = identity(root)
+    expected = identity(root, profile=profile)
     try:
         return validate(cache / expected["key"], expected)
     except BundleError:
@@ -311,7 +341,9 @@ def pack(binary, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("key", "ensure", "pack", "restore"))
+    parser.add_argument("action", choices=("key", "ensure", "pack", "restore", "build-tests"))
+    parser.add_argument("--profile", choices=PROFILES, help="bundle profile (default: package-dev; build-tests: ci)")
+    parser.add_argument("--test-profile", choices=("unit", "cross-os"), default="unit")
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--no-build", action="store_true")
@@ -319,8 +351,11 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--github-output", action="store_true")
     args = parser.parse_args()
+    profile = args.profile or ("ci" if args.action == "build-tests" else PROFILE)
+    if args.action == "build-tests" and profile != "ci":
+        parser.error("build-tests requires the ci profile")
     cache = args.cache_dir.resolve() if args.cache_dir else cache_root()
-    expected = identity()
+    expected = identity(profile=profile)
     try:
         if args.action == "key":
             values = {**expected, "cacheDir": str(cache / expected["key"]),
@@ -333,13 +368,15 @@ def main():
             else:
                 print(json.dumps(values, sort_keys=True))
             return
-        if args.action == "restore":
+        if args.action == "build-tests":
+            binary = build_tests(args.test_profile, cache=cache)
+        elif args.action == "restore":
             if not args.archive:
                 parser.error("restore requires --archive")
             with bundle_lock(cache, expected["key"]):
                 binary = restore(args.archive, cache, expected)
         else:
-            binary = ensure(cache=cache, offline=args.offline, no_build=args.no_build)
+            binary = ensure(cache=cache, offline=args.offline, no_build=args.no_build, profile=profile)
             if args.action == "pack":
                 if not args.output:
                     parser.error("pack requires --output")

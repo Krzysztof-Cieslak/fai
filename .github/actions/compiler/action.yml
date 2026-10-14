@@ -1,5 +1,12 @@
 name: Cached Fai compiler
 description: Restore an exact compiler bundle, or build just the compiler on a miss.
+inputs:
+  prepared:
+    description: Require the compiler bundle produced by this job's Rust test build.
+    default: 'false'
+  profile:
+    description: Cargo profile included in the compiler bundle identity.
+    default: ci
 outputs:
   binary:
     description: Absolute path of the compiler executable.
@@ -11,7 +18,7 @@ outputs:
     description: Name for publishing this compiler bundle.
     value: ${{ steps.identity.outputs.artifactName }}
   source:
-    description: cache, artifact, or build.
+    description: test-build, cache, artifact, or build.
     value: ${{ steps.expose.outputs.source }}
 runs:
   using: composite
@@ -19,12 +26,15 @@ runs:
     - name: Fingerprint compiler inputs
       id: identity
       shell: python
+      env:
+        BUNDLE_PROFILE: ${{ inputs.profile }}
       run: |
-        import subprocess, sys
-        subprocess.run([sys.executable, "scripts/compiler.py", "key", "--github-output"], check=True)
+        import os, subprocess, sys
+        subprocess.run([sys.executable, "scripts/compiler.py", "key", "--profile", os.environ["BUNDLE_PROFILE"], "--github-output"], check=True)
 
     - name: Restore exact compiler cache
       id: cache
+      if: inputs.prepared != 'true'
       uses: actions/cache@v4
       with:
         path: ${{ steps.identity.outputs.cacheDir }}
@@ -33,15 +43,23 @@ runs:
     - name: Validate cache or restore a published bundle
       id: available
       shell: python
+      env:
+        BUNDLE_PROFILE: ${{ inputs.profile }}
+        BUNDLE_PREPARED: ${{ inputs.prepared }}
       run: |
         import os, sys
         sys.path.insert(0, "scripts")
         import compiler
-        try:
-            compiler.ensure(no_build=True)
+        if os.environ["BUNDLE_PREPARED"] == "true":
+            expected = compiler.identity(profile=os.environ["BUNDLE_PROFILE"])
+            compiler.validate(compiler.cache_root() / expected["key"], expected)
             available = "true"
-        except compiler.BundleError:
-            available = "false"
+        else:
+            try:
+                compiler.ensure(no_build=True, profile=os.environ["BUNDLE_PROFILE"])
+                available = "true"
+            except compiler.BundleError:
+                available = "false"
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             print(f"available={available}", file=output)
 
@@ -49,14 +67,16 @@ runs:
       if: steps.available.outputs.available != 'true'
       uses: ./.github/actions/rust-cache
       with:
-        shared-key: compiler-package-dev
+        shared-key: compiler-${{ inputs.profile }}
 
     - name: Build compiler only on a miss
       if: steps.available.outputs.available != 'true'
       shell: python
+      env:
+        BUNDLE_PROFILE: ${{ inputs.profile }}
       run: |
-        import subprocess, sys
-        subprocess.run([sys.executable, "scripts/compiler.py", "ensure", "--offline"], check=True)
+        import os, subprocess, sys
+        subprocess.run([sys.executable, "scripts/compiler.py", "ensure", "--profile", os.environ["BUNDLE_PROFILE"], "--offline"], check=True)
 
     - name: Report built Rust artifacts
       if: steps.available.outputs.available != 'true'
@@ -72,18 +92,20 @@ runs:
         EXPECTED_KEY: ${{ steps.identity.outputs.key }}
         CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
         AVAILABLE: ${{ steps.available.outputs.available }}
+        BUNDLE_PROFILE: ${{ inputs.profile }}
+        BUNDLE_PREPARED: ${{ inputs.prepared }}
       run: |
         import os, sys
         sys.path.insert(0, "scripts")
         import compiler
-        expected = compiler.identity()
+        expected = compiler.identity(profile=os.environ["BUNDLE_PROFILE"])
         if expected["key"] != os.environ["EXPECTED_KEY"]:
             raise RuntimeError("compiler configuration changed during preparation")
         binary = compiler.validate(compiler.cache_root() / expected["key"], expected)
-        source = "build" if os.environ["AVAILABLE"] != "true" else "cache" if os.environ["CACHE_HIT"] == "true" else "artifact"
+        source = "test-build" if os.environ["BUNDLE_PREPARED"] == "true" else "build" if os.environ["AVAILABLE"] != "true" else "cache" if os.environ["CACHE_HIT"] == "true" else "artifact"
         with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as output:
             print(binary.parent, file=output)
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             print(f"source={source}", file=output)
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
-            print(f"### Compiler bundle\nSource: **{source}**\n\nKey: `{expected['key']}`\n\nTarget: `{expected['target']}`", file=output)
+            print(f"### Compiler bundle\nSource: **{source}**\n\nProfile: `{expected['profile']}`\n\nKey: `{expected['key']}`\n\nTarget: `{expected['target']}`", file=output)

@@ -115,6 +115,7 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
+      FAI_BUILD_PROFILE: ci
       SCOPE_RESULT: ${{ needs.changes.result }}
       CI_MODE: ${{ needs.changes.outputs.mode }}
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
@@ -145,7 +146,7 @@ jobs:
           tool: nextest
       - name: Build Rust tests
         if: needs.changes.outputs.compiler == 'true'
-        run: cargo nextest run --workspace --locked --cargo-profile ci --profile unit --no-run
+        run: python scripts/compiler.py build-tests --test-profile unit
       - name: Report built Rust artifacts
         if: needs.changes.outputs.compiler == 'true'
         run: python scripts/ci_rust.py cache --stage built
@@ -164,6 +165,8 @@ jobs:
       - uses: ./.github/actions/compiler
         id: compiler
         if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
+        with:
+          prepared: ${{ needs.changes.outputs.compiler == 'true' }}
       - name: Validate locked package workspace
         if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
         run: python scripts/ci.py validate-packages
@@ -213,7 +216,7 @@ jobs:
         run: python scripts/tests/filesystem_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
       - name: Package verified compiler bundle
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
-        run: python scripts/compiler.py pack --offline --no-build --output "$RUNNER_TEMP/compiler.zip"
+        run: python scripts/compiler.py pack --profile ci --offline --no-build --output "$RUNNER_TEMP/compiler.zip"
       - uses: actions/upload-artifact@v4
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
         with:
@@ -241,6 +244,7 @@ jobs:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
+      FAI_BUILD_PROFILE: ci
       SCOPE_RESULT: ${{ needs.changes.result }}
       CI_MODE: ${{ needs.changes.outputs.mode }}
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
@@ -276,7 +280,7 @@ jobs:
           tool: nextest
       - name: Build Rust platform tests
         if: needs.changes.outputs.compiler == 'true'
-        run: cargo nextest run --workspace --locked --cargo-profile ci --profile cross-os --no-run
+        run: python scripts/compiler.py build-tests --test-profile cross-os
       - name: Report built Rust artifacts
         if: needs.changes.outputs.compiler == 'true'
         run: python scripts/ci_rust.py cache --stage built
@@ -289,6 +293,8 @@ jobs:
       - uses: ./.github/actions/compiler
         id: compiler
         if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
+        with:
+          prepared: ${{ needs.changes.outputs.compiler == 'true' }}
       - name: Validate locked package workspace
         if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
         run: python scripts/ci.py validate-packages
@@ -356,7 +362,7 @@ jobs:
         run: |
           import os, subprocess, sys
           from pathlib import Path
-          subprocess.run([sys.executable, "scripts/compiler.py", "pack", "--offline", "--no-build", "--output", str(Path(os.environ["RUNNER_TEMP"]) / "compiler.zip")], check=True)
+          subprocess.run([sys.executable, "scripts/compiler.py", "pack", "--profile", "ci", "--offline", "--no-build", "--output", str(Path(os.environ["RUNNER_TEMP"]) / "compiler.zip")], check=True)
       - uses: actions/upload-artifact@v4
         if: needs.changes.outputs.packages != '[]' && (needs.changes.outputs.compiler == 'true' || steps.compiler.outputs.source == 'build' || github.event_name == 'push')
         with:
