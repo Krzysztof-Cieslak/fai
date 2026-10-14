@@ -302,6 +302,24 @@ they are compiler/toolchain checks, separate from the direct package contracts.
 
 ## CI selection and compiler reuse
 
+Rust test jobs use Cargo's `ci` profile (`--cargo-profile ci` for nextest):
+optimization level 1 and reduced debug information, with debug assertions and
+overflow checks explicitly enabled. Runtime counters and native leak guards
+remain enabled. The nextest `unit`, `cross-os`, and optional `proptest` filters
+are unchanged. Build and test execution are separate workflow steps so their
+times remain visible; doctests, test-partition validation, and the relocation
+launcher reuse the same Cargo profile. The task-migration regression still runs
+separately with `--release` to check the fully optimized runtime.
+
+Required Rust jobs and cold compiler builds share `.github/actions/rust-cache`.
+Its `fai-rust-v1` namespace does not restore the historical empty dependency
+entries. Only jobs that actually run Rust invoke the action; its normal success
+hook saves dependency artifacts. Compiler bundle hits still need no Rust cache.
+Job summaries report compiled rlib/rmeta counts and bytes after restoration and
+building, distinct from the cache service's key-hit status. An empty exact hit
+warns rather than blocking Cargo's normal rebuild. Dependency artifacts remain
+disposable acceleration, never evidence that tests passed.
+
 The workflow always starts and classifies the diff against the actual PR base
 (or the previous commit for a push). A stacked PR is compared with its immediate
 predecessor, not unconditionally with `main`.

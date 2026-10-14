@@ -9,9 +9,11 @@
 # beyond what `cargo nextest list` needs).
 set -eu
 
+profile=${1:-dev}
+
 count() {
   cargo nextest list --workspace --locked \
-    --profile "$1" --message-format json 2>/dev/null \
+    --cargo-profile "$profile" --profile "$1" --message-format json 2>/dev/null \
   | python3 -c 'import sys, json
 d = json.load(sys.stdin)
 print(sum(
