@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Changed
+- Add `fai test --junit <path>` for atomic JUnit XML artifacts alongside human or
+  JSON output, including diagnostics and preparation errors. Native package CI
+  publishes these reports and summaries on success or failure.
 - Give `fai test` Rust-style live results with source locations, grouped failure
   details, reproduction settings and timed summaries. Distinguish assertion
   failures, crashes, timeouts and blocked execution; add compatible JSON summary,

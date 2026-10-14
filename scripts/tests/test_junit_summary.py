@@ -71,3 +71,50 @@ class JunitSummaryTests(unittest.TestCase):
                 summary.main()
             self.assertTrue(output.read_text().startswith("existing summary\n"))
             self.assertIn("**1 passed**", output.read_text())
+
+    def test_suite_duration_is_used_when_cases_have_no_timings(self):
+        output = self.rendered('<testsuite name="fai test" time="1.25"><testcase name="example"/></testsuite>')
+        self.assertIn("| fai test | 1 | 1 | 0 | 0 | 1.25 |", output)
+
+    def test_case_duration_takes_precedence_over_suite_duration(self):
+        output = self.rendered('<testsuite name="unit" time="10"><testcase name="a" time="1"/></testsuite>')
+        self.assertIn("| unit | 1 | 1 | 0 | 0 | 1.00 |", output)
+
+    def test_invalid_suite_duration_returns_a_note(self):
+        self.assertIn("Could not parse", self.rendered('<testsuite time="NaN"><testcase/></testsuite>'))
+
+    def test_directory_reports_are_named_and_aggregated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "alpha.xml").write_text('<testsuites><testsuite name="fai test" time="0.5"><testcase name="ok"/></testsuite></testsuites>')
+            (directory / "beta.xml").write_text('<testsuite name="fai test"><testcase name="bad"><error/></testcase></testsuite>')
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["junit-summary.py", str(directory)]), \
+                    patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), redirect_stdout(output):
+                self.assertEqual(summary.main(), 0)
+            text = output.getvalue()
+            self.assertIn("**1 passed**, **1 failed**", text)
+            self.assertIn("alpha: fai test", text)
+            self.assertIn("beta: fai test", text)
+
+    def test_empty_report_directory_returns_a_note(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["junit-summary.py", temporary]), \
+                    patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), redirect_stdout(output):
+                self.assertEqual(summary.main(), 0)
+            self.assertIn("No JUnit report was produced", output.getvalue())
+
+    def test_package_ci_requests_reports_outside_restored_caches(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        commands = [line.strip() for line in workflow.splitlines() if line.strip().startswith("fai test --locked")]
+        self.assertEqual(len(commands), 3)
+        self.assertTrue(all("--junit" in command and "RUNNER_TEMP/fai-junit/" in command for command in commands))
+
+    def test_package_ci_publishes_reports_on_failure(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        self.assertEqual(workflow.count("- name: Fai test summary\n        if: always()"), 2)
+        blocks = workflow.split("- uses: actions/upload-artifact@v4")
+        reports = [block for block in blocks if "name: junit-report-fai-" in block.split("- name:", 1)[0]]
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(all("if: always()" in block and "${{ runner.temp }}/fai-junit/*.xml" in block for block in reports))

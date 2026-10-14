@@ -1415,6 +1415,7 @@ fai run   path/to/Main.fai        # build + run (JIT)
 fai check [path]                  # typecheck only (fast, incremental)
 fai fmt   [path]                  # canonical-format in place (idempotent)
 fai test  [path]                  # run example/forall contracts (JIT)
+fai test --junit target/tests.xml # also publish a JUnit XML report for CI
 fai lsp                           # start language server (stdio)
 fai query <q> …                   # read-only code intelligence (refs/type/api/caps/…)
 fai daemon <status|stop|…>        # manage the per-workspace daemon
@@ -1487,7 +1488,7 @@ Source-package development can reuse an optimized assertion-enabled compiler
 bundle through `scripts/compiler.py` (see `docs/DEVELOPMENT.md`). Its exact key
 includes all declared tool sources, embedded std, dependencies, profile and host
 compatibility, but excludes `packages/`. `fai build-info` exposes source, whole-tool
-and backend identities. Daemon protocol 5 and endpoint names distinguish different
+and backend identities. Daemon protocol 6 and endpoint names distinguish different
 whole-tool builds of the same version. Native import libraries are embedded and
 extracted when linking, making compiler bundles independent of Cargo build paths.
 

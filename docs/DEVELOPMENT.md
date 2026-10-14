@@ -470,9 +470,16 @@ changes their source checks are direct commands:
 ```sh
 python scripts/ci.py validate-packages --fai /path/to/fai
 fai fmt --check --locked -C packages --package PACKAGE
+fai test --locked -C packages --package PACKAGE --seed 42 --count 128 --junit /absolute/path/PACKAGE.xml
 fai check --no-examples --locked -C packages --package PACKAGE
-fai test --locked -C packages --package PACKAGE --seed 42 --count 128
 ```
+
+Contract tests run before the separate check so compilation failures also reach
+the JUnit report. CI writes per-package reports beneath the job's temporary
+`fai-junit` directory, outside restored caches. An `always()` summary/upload step
+preserves available XML on test failures. `scripts/junit-summary.py` accepts a
+report file or a directory, aggregates package reports and uses suite duration
+when per-case timings are unavailable.
 
 Linux, macOS, and Windows each restore an exact compiler bundle and put its
 directory on PATH. On a valid cache hit there are no Cargo, rustup, nextest,

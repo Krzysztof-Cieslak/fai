@@ -2509,7 +2509,7 @@ incremental database warm, so repeated commands are near-instant.
 | `fai check [path]` | Typecheck (fast inner loop); also evaluates closed `example`s. `--no-examples` to skip. |
 | `fai build <path>` | Compile to a native executable (AOT). `--release`, `--out <file>`. |
 | `fai run <path> [-- args]` | Build (JIT) and run with lowest latency. |
-| `fai test [path]` | Run `example`/`forall` contracts. `--match <pat>`, `--seed <n>`, `--count <n>`. |
+| `fai test [path]` | Run `example`/`forall` contracts. `--match <pat>`, `--seed <n>`, `--count <n>`. `--junit <path>` also writes a CI report without changing console output. |
 | `fai fmt [path]` | Apply the one canonical format. `--check` to verify without writing. |
 | `fai lsp` | Language server for editors (stdio). |
 | `fai query <q> ...` | Read-only code intelligence (see below). |

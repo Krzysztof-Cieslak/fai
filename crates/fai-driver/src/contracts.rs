@@ -27,7 +27,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+mod junit;
 mod report;
+pub use junit::{junit_error_report, render_junit};
 pub use report::{TestSummary, render_test_event_line};
 
 use fai_codegen::JitProgram;
@@ -1144,7 +1146,7 @@ mod tests {
 
     use super::*;
 
-    fn meta(ordinal: usize) -> ContractMeta {
+    pub(super) fn meta(ordinal: usize) -> ContractMeta {
         ContractMeta {
             source: ContractSource { file: "M.fai".to_owned(), origin: ContractSourceOrigin::User },
             ordinal,
@@ -1159,7 +1161,7 @@ mod tests {
         }
     }
 
-    fn plan(n: usize) -> TestPlan {
+    pub(super) fn plan(n: usize) -> TestPlan {
         TestPlan {
             render_spans: TestSpans::default(),
             bundle: TestWireBundle {
@@ -1513,7 +1515,7 @@ mod tests {
         assert_eq!(outcome.events.len(), 2);
     }
 
-    fn result(position: usize, status: ResultStatus) -> ContractResult {
+    pub(super) fn result(position: usize, status: ResultStatus) -> ContractResult {
         ContractResult { position, status, counterexample: None, live_delta: 0 }
     }
 

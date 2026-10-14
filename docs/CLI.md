@@ -509,7 +509,8 @@ in a supervised isolated worker, so a body that traps on a generated input fails
 *that* contract (a located `FAI6003`) without aborting the run.
 
 - **Options:** `--match <pat>` (run only contracts whose subject/module matches),
-  `--seed <n>`, `--count <n>` (trials per property), `--max-size <n>`.
+  `--seed <n>`, `--count <n>` (trials per property), `--max-size <n>`,
+  `--junit <path>` (also write a JUnit XML artifact).
 - **Output (human):** a selection header, one live line per completed contract,
   detailed failures and an end-of-run summary. For example:
 
@@ -565,6 +566,44 @@ in a supervised isolated worker, so a body that traps on a generated input fails
 
 Test diagnostic coordinates refer to the source revision compiled for that run,
 even if another daemon request edits, replaces, or removes the file meanwhile.
+
+#### JUnit export
+
+```sh
+fai test --junit target/test-results/fai.xml
+fai test --message-format=json --junit target/test-results/fai.xml
+```
+
+JUnit export leaves normal human/JSON stdout unchanged. The path is relative to
+the selected project root (`-C`), or absolute. Parent directories are created.
+The CLI writes a temporary sibling and atomically replaces the destination only
+after a complete report is available; the daemon returns XML, never receives or
+writes the artifact path. Report-write errors go to stderr and exit `3`, even if
+the tests passed; JSON stdout still describes the test outcome as one envelope.
+
+The XML uses a `testsuites` root with one `testsuite` for the invocation. Every
+selected contract becomes a `testcase`, grouped by source through `classname`.
+Names include the subject, kind and one-based file ordinal so contracts sharing
+a binding remain distinct. `file` and `line` identify the compiled source.
+False assertions are `failure` elements; crashes, timeouts, unavailable generators,
+and blocked contracts are `error` elements. Diagnostic codes, locations and
+counterexamples appear in their details. Filtered-out contracts are not emitted.
+Non-contract compiler/setup errors become a synthetic `test run` error case,
+including failures before a test plan exists. Consequently XML case counts can
+exceed the selected contract count; all XML counts describe the emitted cases.
+An empty successful selection produces a valid zero-case report.
+
+Suite properties record the seed, configured trial limit, maximum size, selected
+count and filtered-out count. Suite time is the measured preparation/execution
+duration in seconds; per-case times are omitted rather than fabricated. Reports
+are produced on ordinary test and preparation failures, but a killed/disconnected
+CLI or invalid command-line arguments cannot guarantee an artifact. Existing
+files remain intact if publication fails.
+
+Most CI systems can consume JUnit XML directly. In this repository,
+`scripts/junit-summary.py <file-or-directory>` renders it into GitHub Actions'
+step summary. Native package CI retains one XML file per package and uploads
+available reports even when a test step fails.
 
 ### `fai fmt [path] [--check]`
 Canonically format in place (idempotent).
@@ -683,12 +722,12 @@ The first request is `initialize`:
 ```jsonc
 // → request
 { "method": "initialize",
-  "params": { "protocolVersion": 5, "compilerVersion": "0.1.0", "compilerBuildId": "…",
+  "params": { "protocolVersion": 6, "compilerVersion": "0.1.0", "compilerBuildId": "…",
               "schemaVersion": 1, "workspaceRoot": "/abs/path",
               "clientInfo": { "name": "fai-cli", "version": "0.1.0" } } }
 // ← response
 { "result": { "serverCapabilities": { "streaming": true, "query": true },
-              "compilerVersion": "0.1.0", "compilerBuildId": "…", "protocolVersion": 5, "schemaVersion": 1 } }
+               "compilerVersion": "0.1.0", "compilerBuildId": "…", "protocolVersion": 6, "schemaVersion": 1 } }
 ```
 
 Because the client and daemon are the **same binary**, a version mismatch means a
@@ -761,6 +800,7 @@ deferred; the request shape reserves room for them.
 | `$/progress` | `{ id, message, done?, total? }` | build/check/test progress |
 | `$/diagnostic` | `{ id, diagnostic: Diagnostic }` | streamed diagnostics |
 | `$/testEvent` | `TestEvent` (per the `fai test` schema: `source`, `ordinal`, `location?`, `symbol?`, `kind`, `status`, `counterexample?`, `seed`, `trials`, `maxSize`) | `test` |
+| `$/junitReport` | complete JUnit XML string, requested by the test request's `junit` boolean, before its terminal response | `test --junit` |
 | `$/output` | `{ id, stream: "stdout"\|"stderr", chunk: bytes }` | `run` worker output; `test` human header and package notices |
 | `inputReady` | one credit for up to 8192 stdin bytes | server → run client |
 | `input` / `inputEof` | one credited byte chunk / terminal EOF | run client → server |

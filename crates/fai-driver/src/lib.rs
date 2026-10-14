@@ -54,8 +54,8 @@ pub use contracts::{
     ContractEvent, ContractLocation, ContractResult, ContractSource, ContractSourceOrigin,
     ContractStatus, TestConfig, TestOutcome, TestOutput, TestPlan, TestSummary, assemble_outcome,
     build_example_plan, build_test_plan, check_examples, check_examples_in_process,
-    example_failures, jit_test_bundle, render_test_event_line, run_test_workers,
-    run_test_workers_with_timeout, run_tests,
+    example_failures, jit_test_bundle, junit_error_report, render_junit, render_test_event_line,
+    run_test_workers, run_test_workers_with_timeout, run_tests,
 };
 pub use fai_core::{TestWireBundle, WireBundle};
 pub use manifest::{MANIFEST_NAME, NativeDeps, read_native_manifest};
