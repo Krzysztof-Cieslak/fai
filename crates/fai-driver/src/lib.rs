@@ -523,7 +523,7 @@ mod tests {
         assert_eq!(outcome.passed, 0);
         let resolver = fai_db::DbSpanResolver::new(&db);
         let output = outcome.to_output(&resolver);
-        assert_eq!(output.schema_version, 1);
+        assert_eq!(output.schema_version, 2);
         assert!(output.ok);
     }
 
