@@ -97,6 +97,7 @@ def affected_sources(selected, current, previous):
 def classify(paths, current, previous, root=packages.ROOT, workspace_impact=None):
     full = False
     reporting = False
+    vscode = False
     workspace_changed = False
     production = set()
     local = set()
@@ -129,6 +130,9 @@ def classify(paths, current, previous, root=packages.ROOT, workspace_impact=None
                     integrations.add(name)
                 if kind != "docs":
                     reasons.append(f"package: {name}" if kind == "production" else f"package {kind}: {name}")
+        elif path.startswith("editors/vscode/"):
+            vscode = True
+            reasons.append("VS Code extension")
         elif path.startswith("scripts/performance_report/"):
             reporting = True
             reasons.append("report presentation")
@@ -149,9 +153,10 @@ def classify(paths, current, previous, root=packages.ROOT, workspace_impact=None
     return {
         "compiler": full,
         "reporting": reporting or full,
+        "vscode": vscode or full,
         "packages": [name for name in ordered if name in selected],
         "package_checks": [name for name in ordered if name in checks],
-        "mode": "compiler" if full else "packages" if package_changed else "reporting" if reporting else "docs",
+        "mode": "compiler" if full else "packages" if package_changed else "reporting" if reporting else "vscode" if vscode else "docs",
         "reasons": sorted(set(reasons)),
     }
 
@@ -166,7 +171,7 @@ def scope(root, base, head="HEAD"):
         paths = diff_paths(git(root, "diff", "--name-status", "-z", "--find-renames", baseline, head))
     except (subprocess.CalledProcessError, ValueError) as error:
         names = packages.validate(current)
-        return {"compiler": True, "reporting": True, "packages": names, "package_checks": names, "mode": "compiler",
+        return {"compiler": True, "reporting": True, "vscode": True, "packages": names, "package_checks": names, "mode": "compiler",
                 "reasons": [f"conservative full check: {type(error).__name__}"]}
     impact = None
     if PACKAGE_WORKSPACE_METADATA.intersection(paths):
@@ -189,10 +194,11 @@ def summary(text):
             stream.write(text + "\n")
 
 
-def lane_summary(title, mode, compiler_checks, names, checks=None):
+def lane_summary(title, mode, compiler_checks, names, checks=None, vscode=False):
     rust = "enabled" if compiler_checks else "skipped"
     return (f"### {title}: {mode}\n"
             f"Rust compiler checks: **{rust}**\n\n"
+            f"VS Code checks: **{'enabled' if vscode else 'skipped'}**\n\n"
             f"Affected packages: {', '.join(names) or '(none)'}\n"
             f"Native package checks: {', '.join(names if checks is None else checks) or '(none)'}\n"
             "Package checks and declared integrations use the prepared compiler bundle.")
@@ -208,15 +214,19 @@ def validate_package_workspace(root=packages.ROOT, compiler="fai"):
     subprocess.run([compiler, "resolve", "--locked", "-C", str(workspace)], check=True)
 
 
-def require(result, mode, compiler_flag, reporting_flag="false"):
+def require(result, mode, compiler_flag, reporting_flag="false", vscode_flag="false"):
     if result != "success":
         raise ValueError(f"change classification did not succeed: {result}")
-    if mode not in {"compiler", "packages", "reporting", "docs"} or compiler_flag != str(mode == "compiler").lower():
+    if mode not in {"compiler", "packages", "reporting", "vscode", "docs"} or compiler_flag != str(mode == "compiler").lower():
         raise ValueError("missing or inconsistent change classification outputs")
     if (reporting_flag not in {"true", "false"}
             or (mode in {"compiler", "reporting"} and reporting_flag != "true")
-            or (mode == "docs" and reporting_flag != "false")):
+            or (mode in {"docs", "vscode"} and reporting_flag != "false")):
         raise ValueError("missing or inconsistent reporting selection")
+    if (vscode_flag not in {"true", "false"}
+            or (mode in {"compiler", "vscode"} and vscode_flag != "true")
+            or (mode == "docs" and vscode_flag != "false")):
+        raise ValueError("missing or inconsistent VS Code selection")
 
 
 def selected_packages(encoded, names):
@@ -232,7 +242,7 @@ def selected_checks(encoded, names, selected, mode):
     checks = selected_packages(encoded, names)
     if not set(checks) <= set(selected) or (mode == "compiler" and checks != selected):
         raise ValueError("inconsistent native package check selection")
-    if mode in {"docs", "reporting"} and (checks or selected):
+    if mode in {"docs", "reporting", "vscode"} and (checks or selected):
         raise ValueError("non-package lane cannot select packages")
     return checks
 
@@ -257,7 +267,7 @@ def main():
         if args.action == "scope":
             if args.force_full:
                 names = packages.validate(packages.discover())
-                result = {"compiler": True, "reporting": True, "packages": names, "package_checks": names,
+                result = {"compiler": True, "reporting": True, "vscode": True, "packages": names, "package_checks": names,
                           "mode": "compiler", "reasons": ["full release verification"]}
             else:
                 result = scope(packages.ROOT, args.base, args.head)
@@ -266,20 +276,21 @@ def main():
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
                     print(f"compiler={str(result['compiler']).lower()}", file=stream)
                     print(f"reporting={str(result['reporting']).lower()}", file=stream)
+                    print(f"vscode={str(result['vscode']).lower()}", file=stream)
                     print(f"packages={json.dumps(result['packages'], separators=(',', ':'))}", file=stream)
                     print(f"package_names={' '.join(result['packages'])}", file=stream)
                     print(f"package_checks={json.dumps(result['package_checks'], separators=(',', ':'))}", file=stream)
                     print(f"package_check_names={' '.join(result['package_checks'])}", file=stream)
                     print(f"mode={result['mode']}", file=stream)
                 details = "\n\nSelection reasons:\n" + "\n".join(f"- {reason}" for reason in result["reasons"])
-                summary(lane_summary("Selected CI lane", result["mode"], result["compiler"], result["packages"], result["package_checks"]) + details)
+                summary(lane_summary("Selected CI lane", result["mode"], result["compiler"], result["packages"], result["package_checks"], result["vscode"]) + details)
             return
-        require(args.result, os.environ.get("CI_MODE"), os.environ.get("CI_COMPILER"), os.environ.get("CI_REPORTING"))
+        require(args.result, os.environ.get("CI_MODE"), os.environ.get("CI_COMPILER"), os.environ.get("CI_REPORTING"), os.environ.get("CI_VSCODE"))
         selected = selected_packages(os.environ.get("CI_PACKAGES", "null"), os.environ.get("PACKAGE_NAMES", ""))
         checks = selected_checks(os.environ.get("CI_PACKAGE_CHECKS", "null"), os.environ.get("PACKAGE_CHECK_NAMES", ""),
                                  selected, os.environ["CI_MODE"])
         packages.affected(packages.discover(), selected, False)
-        summary(lane_summary("CI lane", os.environ["CI_MODE"], os.environ["CI_COMPILER"] == "true", selected, checks))
+        summary(lane_summary("CI lane", os.environ["CI_MODE"], os.environ["CI_COMPILER"] == "true", selected, checks, os.environ["CI_VSCODE"] == "true"))
     except (packages.PackageError, ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"CI: {error}\n")
 

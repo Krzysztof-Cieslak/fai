@@ -1,0 +1,32 @@
+name: VS Code extension checks
+description: Type-check, test the grammar against samples, and package the extension.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: editors/vscode/package-lock.json
+    - name: Install extension dependencies
+      shell: bash
+      working-directory: editors/vscode
+      run: npm ci
+    - name: Type-check the extension
+      shell: bash
+      working-directory: editors/vscode
+      run: npm run check-types
+    - name: Test the TextMate grammar
+      shell: bash
+      working-directory: editors/vscode
+      run: npm test
+    - name: Package the extension
+      shell: bash
+      working-directory: editors/vscode
+      run: npm run package
+    - uses: actions/upload-artifact@v4
+      with:
+        name: fai-vscode-extension
+        path: editors/vscode/fai.vsix
+        retention-days: 14
+        if-no-files-found: error

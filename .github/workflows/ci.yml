@@ -32,6 +32,7 @@ jobs:
     outputs:
       compiler: ${{ steps.scope.outputs.compiler }}
       reporting: ${{ steps.scope.outputs.reporting }}
+      vscode: ${{ steps.scope.outputs.vscode }}
       packages: ${{ steps.scope.outputs.packages }}
       package_names: ${{ steps.scope.outputs.package_names }}
       package_checks: ${{ steps.scope.outputs.package_checks }}
@@ -68,6 +69,7 @@ jobs:
       CI_MODE: ${{ needs.changes.outputs.mode }}
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
       CI_REPORTING: ${{ needs.changes.outputs.reporting }}
+      CI_VSCODE: ${{ needs.changes.outputs.vscode }}
       CI_PACKAGES: ${{ needs.changes.outputs.packages }}
       PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
       CI_PACKAGE_CHECKS: ${{ needs.changes.outputs.package_checks }}
@@ -82,6 +84,9 @@ jobs:
           python-version: '3.x'
       - name: Require successful change classification
         run: python scripts/ci.py require
+      - uses: ./.github/actions/vscode
+        if: needs.changes.outputs.vscode == 'true'
+        timeout-minutes: 10
       - name: Tooling tests
         if: needs.changes.outputs.compiler == 'true'
         run: python -m unittest discover -s scripts/tests -v
@@ -124,6 +129,7 @@ jobs:
       CI_MODE: ${{ needs.changes.outputs.mode }}
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
       CI_REPORTING: ${{ needs.changes.outputs.reporting }}
+      CI_VSCODE: ${{ needs.changes.outputs.vscode }}
       CI_PACKAGES: ${{ needs.changes.outputs.packages }}
       PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
       CI_PACKAGE_CHECKS: ${{ needs.changes.outputs.package_checks }}
@@ -251,13 +257,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ needs.changes.outputs.mode == 'vscode' && 'ubuntu-latest' || matrix.os }}
     env:
       FAI_BUILD_PROFILE: ci
       SCOPE_RESULT: ${{ needs.changes.result }}
       CI_MODE: ${{ needs.changes.outputs.mode }}
       CI_COMPILER: ${{ needs.changes.outputs.compiler }}
       CI_REPORTING: ${{ needs.changes.outputs.reporting }}
+      CI_VSCODE: ${{ needs.changes.outputs.vscode }}
       CI_PACKAGES: ${{ needs.changes.outputs.packages }}
       PACKAGE_NAMES: ${{ needs.changes.outputs.package_names }}
       CI_PACKAGE_CHECKS: ${{ needs.changes.outputs.package_checks }}

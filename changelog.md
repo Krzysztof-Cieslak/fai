@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- Validate isolated VS Code extension changes with TypeScript, grammar and VSIX
+  checks instead of the Rust suite; retain editor checks for full compiler changes.
 - Reserve daemon-test fixture directories atomically so reused Windows process
   IDs cannot reopen stale Git repositories from earlier tests.
 - Keep root and package documentation checks lightweight, and scope package
