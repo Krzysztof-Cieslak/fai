@@ -194,4 +194,7 @@ fn daemon_setup_error_produces_a_report_with_the_original_diagnostic() {
     let xml = fixture.report("report.xml");
     assert_eq!(counts(&xml), (1, 0, 1));
     assert!(xml.contains("missing.fai"), "{xml}");
+    let direct = fixture.run(&["--no-daemon", "missing.fai", "--junit", "direct.xml"]);
+    assert_eq!(direct.status.code(), Some(3), "{direct:?}");
+    assert_eq!(semantic_xml(&xml), semantic_xml(&fixture.report("direct.xml")));
 }
