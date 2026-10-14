@@ -189,3 +189,11 @@ all = { level = "deny", priority = -1 }
 inherits = "release"
 debug-assertions = true
 overflow-checks = true
+
+# Keep test diagnostics and runtime leak guards while optimizing compiler work.
+[profile.ci]
+inherits = "test"
+opt-level = 1
+debug = 1
+debug-assertions = true
+overflow-checks = true

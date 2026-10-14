@@ -84,14 +84,19 @@ jobs:
       - name: Report presentation syntax
         if: needs.changes.outputs.reporting == 'true'
         run: python -m compileall -q scripts/performance_report
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-cache
         if: needs.changes.outputs.compiler == 'true'
+        with:
+          shared-key: lint
       - name: Rust format
         if: needs.changes.outputs.compiler == 'true'
         run: cargo fmt --all -- --check
       - name: Clippy
         if: needs.changes.outputs.compiler == 'true'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Report built Rust artifacts
+        if: needs.changes.outputs.compiler == 'true'
+        run: python scripts/ci_rust.py cache --stage built
       - uses: ./.github/actions/compiler
         if: needs.changes.outputs.mode == 'packages'
       - name: Validate locked package workspace
@@ -129,7 +134,7 @@ jobs:
       - name: Report presentation fixtures
         if: needs.changes.outputs.reporting == 'true'
         run: python -m unittest discover -s scripts/performance_report/tests -v
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-cache
         if: needs.changes.outputs.compiler == 'true'
         with:
           shared-key: linux-tests
@@ -138,18 +143,24 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
+      - name: Build Rust tests
+        if: needs.changes.outputs.compiler == 'true'
+        run: cargo nextest run --workspace --locked --cargo-profile ci --profile unit --no-run
+      - name: Report built Rust artifacts
+        if: needs.changes.outputs.compiler == 'true'
+        run: python scripts/ci_rust.py cache --stage built
       - name: Rust unit and integration tests
         if: needs.changes.outputs.compiler == 'true'
-        run: cargo nextest run --workspace --locked --profile unit
+        run: cargo nextest run --workspace --locked --cargo-profile ci --profile unit
       - name: Doctests
         if: needs.changes.outputs.compiler == 'true'
-        run: cargo test --workspace --locked --doc
+        run: cargo test --workspace --locked --profile ci --doc
       - name: Optimized task migration regression
         if: needs.changes.outputs.compiler == 'true'
         run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
       - name: Verify nextest partition
         if: needs.changes.outputs.compiler == 'true'
-        run: ./scripts/check-nextest-partition.sh
+        run: ./scripts/check-nextest-partition.sh ci
       - uses: ./.github/actions/compiler
         id: compiler
         if: needs.changes.outputs.mode == 'compiler' || needs.changes.outputs.mode == 'packages'
@@ -166,11 +177,11 @@ jobs:
           done
       - name: Build launcher for relocation fixture
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
-        run: cargo build --locked -p fai-installer --bin fai-installer
+        run: cargo build --locked --profile ci -p fai-installer --bin fai-installer
       - name: Compiler relocation and execution fixtures
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: |
-          python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}' --launcher target/debug/fai-installer
+          python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}' --launcher target/ci/fai-installer
           python scripts/tests/json_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
           python scripts/tests/web_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
       - uses: ./.github/actions/postgres
@@ -255,15 +266,23 @@ jobs:
       - name: Windows installer archive validation
         if: runner.os == 'Windows' && needs.changes.outputs.compiler == 'true'
         run: python -m unittest discover -s scripts/tests -p test_install_ps1.py -v
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-cache
         if: needs.changes.outputs.compiler == 'true'
+        with:
+          shared-key: platform-tests
       - uses: taiki-e/install-action@v2
         if: needs.changes.outputs.compiler == 'true'
         with:
           tool: nextest
+      - name: Build Rust platform tests
+        if: needs.changes.outputs.compiler == 'true'
+        run: cargo nextest run --workspace --locked --cargo-profile ci --profile cross-os --no-run
+      - name: Report built Rust artifacts
+        if: needs.changes.outputs.compiler == 'true'
+        run: python scripts/ci_rust.py cache --stage built
       - name: Rust platform tests
         if: needs.changes.outputs.compiler == 'true'
-        run: cargo nextest run --workspace --locked --profile cross-os
+        run: cargo nextest run --workspace --locked --cargo-profile ci --profile cross-os
       - name: Optimized task migration regression
         if: needs.changes.outputs.compiler == 'true'
         run: cargo test --locked --release -p fai-runtime --lib migrated_task_reads_the_resuming_threads_context
@@ -294,10 +313,10 @@ jobs:
           }
       - name: Build launcher for relocation fixture
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
-        run: cargo build --locked -p fai-installer --bin fai-installer
+        run: cargo build --locked --profile ci -p fai-installer --bin fai-installer
       - name: Compiler relocation fixture
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
-        run: python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}' --launcher target/debug/fai-installer
+        run: python scripts/tests/smoke_compiler.py --fai '${{ steps.compiler.outputs.binary }}' --launcher target/ci/fai-installer
       - name: JSON compiler fixtures
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: python scripts/tests/json_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
@@ -366,7 +385,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install nightly-2026-10-08 --profile minimal --component miri,rust-src
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-cache
         with:
           shared-key: shared-rc-miri
       - run: cargo miri setup
@@ -384,13 +403,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-cache
         with:
           shared-key: linux-tests
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - run: cargo nextest run --workspace --locked --profile proptest
+      - run: cargo nextest run --workspace --locked --cargo-profile ci --profile proptest
       - name: Test summary
         if: always()
         run: python scripts/junit-summary.py target/nextest/proptest/junit.xml

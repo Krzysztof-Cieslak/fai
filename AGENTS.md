@@ -1943,6 +1943,13 @@ snapshot, type golden, and/or e2e) in the same change.
 
 ## 12. Definition of Done / CI
 
+Rust CI tests use the optimized Cargo `ci` profile while retaining debug
+assertions, overflow checks, runtime counters and leak guards. Nextest's existing
+test filters are unchanged. The separate release-mode task-migration regression
+still checks the fully optimized runtime. The shared Rust cache action uses a
+populated-cache namespace and reports compiled artifacts, not just key hits;
+package-only compiler-bundle hits do not restore or publish Rust dependency caches.
+
 Automatic CI runs only the four branch-protection-required checks: `fmt + clippy`,
 `unit + e2e tests (linux)`, and platform tests on macOS and Windows. The optional
 Miri/property jobs are disabled; Benchmarks, Editors, Fuzz, and deep properties

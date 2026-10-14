@@ -47,7 +47,7 @@ runs:
 
     - name: Restore Rust build cache only on a compiler miss
       if: steps.available.outputs.available != 'true'
-      uses: Swatinem/rust-cache@v2
+      uses: ./.github/actions/rust-cache
       with:
         shared-key: compiler-package-dev
 
@@ -57,6 +57,13 @@ runs:
       run: |
         import subprocess, sys
         subprocess.run([sys.executable, "scripts/compiler.py", "ensure", "--offline"], check=True)
+
+    - name: Report built Rust artifacts
+      if: steps.available.outputs.available != 'true'
+      shell: python
+      run: |
+        import subprocess, sys
+        subprocess.run([sys.executable, "scripts/ci_rust.py", "cache", "--stage", "built"], check=True)
 
     - name: Activate the compiler
       id: expose
