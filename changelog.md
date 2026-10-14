@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- Reserve daemon-test fixture directories atomically so reused Windows process
+  IDs cannot reopen stale Git repositories from earlier tests.
 - Keep root and package documentation checks lightweight, and scope package
   test/integration edits without retesting unrelated production consumers.
 - Compile only the Rust packages and target names needed by cross-platform CI,
