@@ -86,18 +86,18 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(result["packages"], ["web", "web-examples"])
         self.assertFalse(result["compiler"])
 
-    def test_workspace_manifest_changes_select_all_packages_without_rust(self):
+    def test_workspace_manifest_without_snapshots_selects_all_packages_without_rust(self):
         result = ci.classify(["packages/fai.toml"], catalog(), catalog())
         self.assertEqual((result["mode"], result["compiler"], result["reporting"], result["packages"]),
                          ("packages", False, False, ["json", "web"]))
         self.assertEqual(result["reasons"], ["package workspace: packages/fai.toml"])
 
-    def test_workspace_lock_changes_select_all_packages_without_rust(self):
+    def test_workspace_lock_without_snapshots_selects_all_packages_without_rust(self):
         result = ci.classify(["packages/fai.lock"], catalog(), catalog())
         self.assertEqual((result["mode"], result["compiler"], result["packages"]),
                          ("packages", False, ["json", "web"]))
 
-    def test_new_package_registration_keeps_the_package_lane(self):
+    def test_new_package_without_snapshots_conservatively_keeps_the_package_lane(self):
         current = {**catalog(), "encoding": packages.Package("encoding", Path("packages/encoding"), ())}
         result = ci.classify(["packages/encoding/fai.toml", "packages/encoding/src/Hex.fai",
                               "packages/fai.toml", "packages/fai.lock"], current, catalog())
@@ -248,7 +248,13 @@ class WorkspaceMetadataScopeTests(unittest.TestCase):
         self.workspace = self.root / "packages/fai.toml"
         self.workspace.write_text('manifest-version = 1\n[workspace]\nmembers = ["json", "web"]\n')
         self.lock = self.root / "packages/fai.lock"
-        self.lock.write_text('lock-version = 1\n')
+        self.lock.write_text('lock-version = 1\nresolver-version = 1\ncontext = "shared"\n' + "".join(
+            f'\n[[packages]]\nid = "{name}"\nversion = "0.1.0"\nmanifest-fingerprint = "original"\n'
+            f'[packages.logical]\npath = "{name}"\n[packages.source]\npath = "{name}"\n'
+            for name in ("json", "web")) + "".join(
+            f'\n[[graphs]]\nid = "{name}-linux"\nroot = "{name}"\ntarget = "x86_64-unknown-linux-gnu"\n'
+            f'root-package = "{name}"\ninput-fingerprint = "original"\npackages = ["{name}"]\n'
+            'resolved-with = "0.0.1"\n' for name in ("json", "web")))
         self.git("add", ".")
         self.git("commit", "-m", "Add workspace")
         self.base = self.git("rev-parse", "HEAD")
@@ -262,11 +268,40 @@ class WorkspaceMetadataScopeTests(unittest.TestCase):
         self.git("commit", "-m", "Change workspace metadata")
         return ci.scope(self.root, self.base)
 
-    def test_committed_lock_only_edit_uses_the_package_lane(self):
-        self.lock.write_text('lock-version = 1\n# Updated graph records\n')
+    def test_committed_lock_comment_needs_only_workspace_validation(self):
+        with self.lock.open("a") as output:
+            output.write("# Updated graph records\n")
         result = self.classify()
         self.assertEqual((result["mode"], result["compiler"], result["packages"]),
-                         ("packages", False, ["json", "web"]))
+                         ("packages", False, []))
+
+    def test_committed_lock_graph_edit_selects_only_its_package(self):
+        prefix, web = self.lock.read_text().split('id = "web-linux"', 1)
+        self.lock.write_text(prefix + 'id = "web-linux"' + web.replace('input-fingerprint = "original"',
+                                                                     'input-fingerprint = "changed"'))
+        result = self.classify()
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, ["web"]))
+
+    def test_new_package_registration_does_not_retest_existing_packages(self):
+        directory = self.root / "packages/yaml"
+        directory.mkdir()
+        (directory / "fai.toml").write_text(
+            'manifest-version = 1\n[package]\nname = "yaml"\nversion = "0.1.0"\n'
+            '[dependencies]\njson = {path = "../json"}\n')
+        self.workspace.write_text(
+            self.workspace.read_text().replace('["json", "web"]', '["json", "web", "yaml"]')
+            + '\n[[overrides]]\nreplace = {git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/yaml"}\n'
+            'with = {path = "yaml"}\n')
+        with self.lock.open("a") as output:
+            output.write('\n[[packages]]\nid = "yaml"\nversion = "0.1.0"\nmanifest-fingerprint = "new"\n'
+                         '[packages.logical]\npath = "yaml"\n[packages.source]\npath = "yaml"\n'
+                         '[[graphs]]\nid = "yaml-linux"\nroot = "yaml"\ntarget = "x86_64-unknown-linux-gnu"\n'
+                         'root-package = "yaml"\ninput-fingerprint = "new"\npackages = ["yaml", "json"]\n'
+                         'resolved-with = "0.0.1"\n[[graphs.edges]]\nfrom = "yaml"\nto = "json"\nalias = "json"\nkind = "normal"\n')
+        result = self.classify()
+        self.assertEqual((result["mode"], result["compiler"], result["packages"]),
+                         ("packages", False, ["yaml"]))
 
     def test_workspace_override_edit_selects_every_package(self):
         with self.workspace.open("a") as output:
@@ -284,6 +319,11 @@ class WorkspaceMetadataScopeTests(unittest.TestCase):
 
     def test_invalid_workspace_toml_fails_selection(self):
         self.workspace.write_text('manifest-version = [\n')
+        with self.assertRaises(ValueError):
+            self.classify()
+
+    def test_invalid_lock_toml_fails_selection(self):
+        self.lock.write_text('lock-version = [\n')
         with self.assertRaises(ValueError):
             self.classify()
 
