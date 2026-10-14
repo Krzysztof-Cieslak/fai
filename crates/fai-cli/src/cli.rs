@@ -336,6 +336,9 @@ pub struct RunArgs {
 /// Arguments for `fai test`.
 #[derive(Debug, Args)]
 pub struct TestArgs {
+    /// Also write a JUnit XML report (path relative to the selected project root).
+    #[arg(long, value_name = "PATH")]
+    pub junit: Option<Utf8PathBuf>,
     /// A file or directory; defaults to the whole workspace.
     pub path: Option<Utf8PathBuf>,
     /// Run only contracts whose symbol matches this pattern.

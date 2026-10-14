@@ -107,6 +107,7 @@ pub fn test(
         out,
         err,
         fai_driver::ProjectOptions::default(),
+        None,
     )
 }
 
@@ -124,9 +125,11 @@ pub fn test_in_context(
     out: &mut dyn Write,
     err: &mut dyn Write,
     project: fai_driver::ProjectOptions,
+    junit: Option<&mut Option<String>>,
 ) -> Result<i32, DaemonError> {
     let mut client = connect_or_spawn(root, log)?;
     let request = TestRequest {
+        junit: junit.is_some(),
         project,
         path: path.map(|p| p.as_str().to_owned()),
         r#match: r#match.map(str::to_owned),
@@ -136,7 +139,7 @@ pub fn test_in_context(
         opts,
         dirty: Vec::new(),
     };
-    client.stream_test(request, out, err)
+    client.stream_test(request, out, err, junit)
 }
 
 /// Streams a JSON decode of this workspace's daemon traffic to `out` (one frame

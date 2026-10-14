@@ -1396,7 +1396,11 @@ Contracts (examples & properties):
   kind/location-labelled results, groups detailed failures, and ends with the
   same counts. A contract blocked before execution is not an assertion failure;
   an unavailable generator is not an ignored success. Daemon and direct reports
-  agree apart from elapsed time. See `docs/CLI.md` for the current wire schema.
+  agree apart from elapsed time. Optional JUnit export uses the same outcomes,
+  with false assertions as failures and execution/setup problems as errors.
+  Synthetic run-error cases keep failures outside a contract visible to CI.
+  The client publishes the artifact atomically; the daemon returns XML without
+  receiving a filesystem destination. See `docs/CLI.md` for the current wire schema.
 - **D85 Bitwise `Int` intrinsics + float bit-reinterpretation.** splitmix64 needs
   bitwise ops, which Fai lacked. They are **functions** in the `Int` module
   (`and`/`or`/`xor`/`complement`/`shiftLeft`/`shiftRight`/`shiftRightLogical`),

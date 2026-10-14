@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol version. Bumped on any incompatible wire change.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Both the wire schema and the complete executable must match a warm daemon.
 pub(crate) fn compatible(protocol: u32, version: &str, build: &str) -> bool {
@@ -115,6 +115,9 @@ pub struct RunRequest {
 /// the client's render options, and a dirty-set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestRequest {
+    /// Request a JUnit artifact returned to the client, without a server-side path.
+    #[serde(default)]
+    pub junit: bool,
     /// Package lock, network, and root-override policy for this request.
     #[serde(default)]
     pub project: fai_driver::ProjectOptions,
@@ -149,6 +152,8 @@ pub enum ServerMessage {
     },
     /// A per-contract result from a supervised `test` run (`$/testEvent`).
     TestEvent(ContractEvent),
+    /// JUnit XML for a completed or preparation-failed test run.
+    JunitReport(String),
     /// A JSON decode of one frame observed on another connection, streamed to a
     /// `tap` subscriber.
     TapFrame(TapFrame),
@@ -326,6 +331,7 @@ mod tests {
             dirty: Vec::new(),
         }));
         round_trip(&Request::Test(TestRequest {
+            junit: true,
             project: fai_driver::ProjectOptions::default(),
             path: Some("M.fai".to_owned()),
             r#match: Some("foo".to_owned()),
@@ -359,6 +365,7 @@ mod tests {
 
     #[test]
     fn every_server_message_variant_round_trips() {
+        round_trip(&ServerMessage::JunitReport("<testsuites/>".to_owned()));
         round_trip(&ServerMessage::Output {
             stream: OutputStream::Stdout,
             chunk: b"hello\n".to_vec(),

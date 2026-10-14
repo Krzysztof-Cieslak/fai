@@ -10,6 +10,7 @@
 //! in-process path share `fai_driver::run_command`, so their output is identical.
 
 mod cli;
+mod junit;
 
 use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
@@ -620,6 +621,39 @@ fn run_test(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    let mut report = None;
+    let exit = run_test_inner(global, root, args, format, color, log, out, err, &mut report);
+    let Some(path) = &args.junit else { return exit };
+    let missing = report.is_none();
+    let xml = report.unwrap_or_else(|| {
+        fai_driver::junit_error_report(
+            "test execution ended before a report was available; see compiler diagnostics",
+        )
+    });
+    let path = root.join(path);
+    if let Err(error) = junit::write_report(path.as_std_path(), &xml) {
+        let _ = writeln!(
+            err,
+            "error [{}]: failed to write JUnit report {path}: {error}",
+            fai_driver::WORKSPACE_ERROR
+        );
+        return EXIT_WORKSPACE;
+    }
+    if missing && exit == EXIT_OK { EXIT_INTERNAL } else { exit }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_test_inner(
+    global: &GlobalArgs,
+    root: &Utf8Path,
+    args: &cli::TestArgs,
+    format: MessageFormat,
+    color: bool,
+    log: Option<PathBuf>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    junit: &mut Option<String>,
+) -> i32 {
     let defaults = fai_driver::TestConfig::default();
     let config = fai_driver::TestConfig {
         seed: args.seed.unwrap_or(defaults.seed),
@@ -638,6 +672,7 @@ fn run_test(
             err,
             global.options(),
             single,
+            junit,
         );
     }
     let opts = RenderOpts { format: to_output_format(format), color };
@@ -653,6 +688,7 @@ fn run_test(
         out,
         err,
         global.options(),
+        args.junit.as_ref().map(|_| &mut *junit),
     ) {
         Ok(exit) => exit,
         Err(daemon_error) => {
@@ -661,7 +697,18 @@ fn run_test(
                 "warning [{}]: daemon unavailable ({daemon_error}); running in-process",
                 fai_driver::DAEMON_UNAVAILABLE
             );
-            run_test_in_process(root, args, config, format, color, out, err, global.options(), None)
+            run_test_in_process(
+                root,
+                args,
+                config,
+                format,
+                color,
+                out,
+                err,
+                global.options(),
+                None,
+                junit,
+            )
         }
     }
 }
@@ -680,13 +727,19 @@ fn run_test_in_process(
     err: &mut dyn Write,
     project: fai_driver::ProjectOptions,
     single: Option<&Utf8Path>,
+    junit: &mut Option<String>,
 ) -> i32 {
     let session = match single.map_or_else(
         || Session::open_with_options(root.to_owned(), project),
         Session::open_standalone,
     ) {
         Ok(session) => session,
-        Err(error) => return emit_error(&error, format, color, out, err),
+        Err(error) => {
+            if args.junit.is_some() {
+                *junit = Some(fai_driver::junit_error_report(&error.to_string()));
+            }
+            return emit_error(&error, format, color, out, err);
+        }
     };
     if session.has_local_overrides() {
         let _ = err.write_all(fai_driver::LOCAL_CONTEXT_NOTICE.as_bytes());
@@ -696,7 +749,12 @@ fn run_test_in_process(
     }
     let files = match session.select_files_checked(args.path.as_deref()) {
         Ok(files) => files,
-        Err(error) => return emit_error(&error, format, color, out, err),
+        Err(error) => {
+            if args.junit.is_some() {
+                *junit = Some(fai_driver::junit_error_report(&error.to_string()));
+            }
+            return emit_error(&error, format, color, out, err);
+        }
     };
     let plan = fai_driver::build_test_plan(session.db(), &files, args.r#match.as_deref(), config);
     if matches!(format, MessageFormat::Human) {
@@ -715,6 +773,9 @@ fn run_test_in_process(
         fai_driver::run_test_workers(&plan, &mut on_event)
     };
     let outcome = fai_driver::assemble_outcome(&plan, &results);
+    if args.junit.is_some() {
+        *junit = Some(fai_driver::render_junit(&plan, &outcome));
+    }
     let resolver = &plan.render_spans;
     match format {
         MessageFormat::Json => match serde_json::to_string_pretty(&outcome.to_output(resolver)) {

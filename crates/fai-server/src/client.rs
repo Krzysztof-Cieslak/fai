@@ -109,6 +109,7 @@ impl Client {
                 ServerMessage::InputReady
                 | ServerMessage::Output { .. }
                 | ServerMessage::TestEvent(_)
+                | ServerMessage::JunitReport(_)
                 | ServerMessage::TapFrame(_) => {}
                 ServerMessage::Result(response) => return Ok(response),
             }
@@ -254,7 +255,9 @@ impl Client {
                     err.flush()?;
                 }
                 // `run` produces no test events or tap frames; ignore defensively.
-                ServerMessage::TestEvent(_) | ServerMessage::TapFrame(_) => {}
+                ServerMessage::TestEvent(_)
+                | ServerMessage::JunitReport(_)
+                | ServerMessage::TapFrame(_) => {}
                 ServerMessage::Result(Response::RunExit(code)) => return Ok(code),
                 ServerMessage::Result(Response::Error(message)) => {
                     return Err(DaemonError::Protocol(message));
@@ -279,12 +282,18 @@ impl Client {
         request: TestRequest,
         out: &mut dyn Write,
         err: &mut dyn Write,
+        mut junit: Option<&mut Option<String>>,
     ) -> Result<i32, DaemonError> {
         let human = matches!(request.opts.format, OutputFormat::Human);
         let color = request.opts.color;
         self.send(&Request::Test(request))?;
         loop {
             match self.next_message()? {
+                ServerMessage::JunitReport(xml) => {
+                    if let Some(report) = &mut junit {
+                        **report = Some(xml);
+                    }
+                }
                 ServerMessage::TestEvent(event) => {
                     if human {
                         let _ = out.write_all(render_test_event_line(&event, color).as_bytes());

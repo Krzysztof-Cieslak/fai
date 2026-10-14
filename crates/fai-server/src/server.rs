@@ -595,6 +595,12 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
     let (plan, notices) = match prepare_test(conn.daemon, request) {
         Ok(plan) => plan,
         Err(rendered) => {
+            if request.junit {
+                conn.send(&ServerMessage::JunitReport(fai_driver::junit_error_report(&format!(
+                    "{}{}",
+                    rendered.stdout, rendered.stderr
+                ))))?;
+            }
             return conn.send(&ServerMessage::Result(Response::Test(rendered)));
         }
     };
@@ -627,7 +633,11 @@ fn handle_test(conn: &mut Conn, request: &TestRequest) -> std::io::Result<()> {
         results
     };
 
-    let rendered = render_test(request, &plan, &results);
+    let outcome = assemble_outcome(&plan, &results);
+    if request.junit {
+        conn.send(&ServerMessage::JunitReport(fai_driver::render_junit(&plan, &outcome)))?;
+    }
+    let rendered = render_test(request, &plan, &outcome);
     conn.send(&ServerMessage::Result(Response::Test(rendered)))
 }
 
@@ -670,9 +680,8 @@ fn package_notices(session: &Session) -> String {
 fn render_test(
     request: &TestRequest,
     plan: &TestPlan,
-    results: &[fai_driver::ContractResult],
+    outcome: &fai_driver::TestOutcome,
 ) -> Rendered {
-    let outcome = assemble_outcome(plan, results);
     let exit = if outcome.ok { EXIT_OK } else { EXIT_FAILURES };
     let resolver = &plan.render_spans;
     match request.opts.format {

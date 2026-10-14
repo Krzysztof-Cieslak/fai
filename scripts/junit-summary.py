@@ -6,25 +6,36 @@ GitHub Actions run page) or, when that variable is unset, to stdout (handy for
 local inspection). Never fails the build: a missing or malformed report degrades
 to a short note.
 
-Usage: junit-summary.py [path-to-junit.xml]
+Usage: junit-summary.py [path-to-junit.xml-or-directory]
 """
 
 from __future__ import annotations
 
 import math
 import os
+from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
 
 def main() -> int:
-    path = sys.argv[1] if len(sys.argv) > 1 else "target/nextest/ci/junit.xml"
-    if not os.path.exists(path):
-        emit(["## Test results", "", "No JUnit report was produced (tests may not have run)."])
-        return 0
-
+    path = Path(sys.argv[1] if len(sys.argv) > 1 else "target/nextest/ci/junit.xml")
     try:
-        root = ET.parse(path).getroot()
+        directory = path.is_dir()
+        paths = sorted(path.glob("*.xml")) if directory else [path] if path.exists() else []
+        if not paths:
+            emit(["## Test results", "", "No JUnit report was produced (tests may not have run)."])
+            return 0
+        root = ET.Element("testsuites")
+        for report in paths:
+            parsed = ET.parse(report).getroot()
+            if parsed.tag not in {"testsuite", "testsuites"}:
+                raise ValueError("expected a JUnit testsuite or testsuites root")
+            suites = [parsed] if parsed.tag == "testsuite" else list(parsed)
+            for suite in suites:
+                if directory:
+                    suite.set("name", f"{report.stem}: {suite.get('name', '?')}")
+                root.append(suite)
         lines = render(root)
     except (ET.ParseError, OSError, ValueError) as err:
         emit(["## Test results", "", f"Could not parse the JUnit report: `{err}`."])
@@ -49,8 +60,10 @@ def render(root: ET.Element) -> list[str]:
         name = suite.get("name", "?")
         tests = fails = skips = 0
         seconds = 0.0
+        has_case_times = False
         for case in suite.iter("testcase"):
             tests += 1
+            has_case_times |= "time" in case.attrib
             duration = float(case.get("time", "0") or "0")
             if not math.isfinite(duration) or duration < 0:
                 raise ValueError("invalid test duration")
@@ -60,6 +73,10 @@ def render(root: ET.Element) -> list[str]:
                 failures.append(f'{name} :: {case.get("name", "?")}')
             elif case.find("skipped") is not None:
                 skips += 1
+        if not has_case_times:
+            seconds = float(suite.get("time", "0") or "0")
+            if not math.isfinite(seconds) or seconds < 0:
+                raise ValueError("invalid suite duration")
         total += tests
         failed += fails
         skipped += skips

@@ -144,6 +144,7 @@ toml_edit = "0.22.27"
 semver = "1"
 url = "2"
 glob = "0.3"
+roxmltree = "0.21"
 # Dynamic loading of user native libraries for the JIT run/test path.
 libloading = "0.8"
 tar = "0.4"
