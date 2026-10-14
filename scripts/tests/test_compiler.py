@@ -90,6 +90,11 @@ class CompilerTests(unittest.TestCase):
         self.write("scripts/performance_report/tests/fixtures/normal.json", "{}")
         self.assertEqual(before, self.identity())
 
+    def test_editor_changes_do_not_change_compiler_key(self):
+        before = self.identity()
+        self.write("editors/vscode/src/extension.ts", "export const version = 1;")
+        self.assertEqual(before, self.identity())
+
     def test_tooling_edits_change_compiler_key(self):
         before = self.identity()
         self.write("crates/tool/src/lib.rs", "changed compiler")

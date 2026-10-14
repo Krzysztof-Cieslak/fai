@@ -59,6 +59,11 @@ Development Host. The grammar is `syntaxes/fai.tmLanguage.json`; it mirrors the
 `fai-syntax` lexer and is pinned by `npm test` against the repository's
 `samples/` corpus so it cannot silently drift.
 
+Required repository CI runs these checks and VSIX packaging for extension-only
+changes without building the Rust compiler. Full compiler changes also run the
+grammar checks. CI uses Node 24 and `npm ci`; the manual Editors workflow runs the
+same action. The packaged extension is uploaded as `fai-vscode-extension`.
+
 ### Smoke test
 
 1. Build the compiler: `cargo build` (from the repository root).

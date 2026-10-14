@@ -369,7 +369,8 @@ predecessor, not unconditionally with `main`.
 | Package/root README, `AGENTS.md`, `llms.txt`/`llm.txt`, or Markdown/text under `docs/` | Lightweight change/catalog validation; no compiler or Rust build |
 | `packages/fai.toml` or `packages/fai.lock` | Affected members, override consumers and changed lock-graph roots plus dependents; whole-workspace locked validation; no Rust suite on a cache hit |
 | `scripts/performance_report/**` | Python syntax and two presentation fixtures; no Cargo or compiler bundle |
-| Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures |
+| `editors/vscode/**` only | TypeScript checks, grammar tests and VSIX packaging; no Rust or compiler bundle |
+| Compiler, runtime, embedded `std/`, build/CI infrastructure, or unknown paths | Full Rust checks and all packages; compiler execution fixtures and VS Code checks |
 | Root documentation and `docs/*.md` / `docs/*.txt` only | Change/catalog validation |
 
 Dependency impact uses both the base and head catalogs, so deleting or changing
@@ -391,6 +392,19 @@ The selector publishes separate integration/package-check lists; required jobs
 reject missing or inconsistent lists instead of silently skipping checks.
 Mixed package/presentation changes run both relevant lanes. Changes to the Rust
 report-data exporter or CI infrastructure retain the full compiler checks.
+
+VS Code changes use `.github/actions/vscode` once under the existing required
+`fmt + clippy` check. It installs the committed npm lock with Node 24, runs
+`npm run check-types`, `npm test`, and `npm run package`, then uploads
+`fai-vscode-extension` containing the VSIX. Packaged extension documentation also
+uses this lane. Root documentation-only changes still run neither Node nor Rust.
+Mixed editor/package/reporting changes run all relevant checks without promoting
+an otherwise isolated change to a Rust build. Full compiler checks include the
+editor lane because grammar tests read the source samples. The manual Editors
+workflow reuses the same action rather than keeping a separate check sequence.
+For a VS Code-only diff, the otherwise-idle platform-check wrappers run on Ubuntu,
+retaining their required names without waiting for native macOS/Windows capacity.
+Mixed changes that need platform checks retain their usual native runners.
 
 Workspace metadata is compared structurally against the same base. Literal member
 additions/removals select their packages. Changed in-tree overrides select the

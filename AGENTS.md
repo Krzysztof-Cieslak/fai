@@ -1965,9 +1965,18 @@ package-only compiler-bundle hits do not restore or publish Rust dependency cach
 
 Automatic CI runs only the four branch-protection-required checks: `fmt + clippy`,
 `unit + e2e tests (linux)`, and platform tests on macOS and Windows. The optional
-Miri/property jobs are disabled; Benchmarks, Editors, Fuzz, and deep properties
-are disabled workflows with manual-only triggers. Run affected property tests
-locally when changing their implementation or invariants.
+Miri/property jobs are disabled; Benchmarks, Fuzz, and deep properties are disabled
+workflows with manual-only triggers. The Editors workflow remains a manual entry
+point, while required CI runs the same VS Code checks automatically. Run affected
+property tests locally when changing their implementation or invariants.
+
+Changes confined to `editors/vscode/` run Node-based type checking, grammar tests
+against `samples/`, and VSIX packaging under the required `fmt + clippy` check,
+without preparing the compiler or running Rust. Full compiler/infrastructure
+changes also run these checks so syntax and sample edits cannot silently drift
+from the editor. Mixed editor/package/reporting changes retain each relevant
+lane. The other required check names remain present and validate the selection;
+missing or inconsistent editor outputs fail rather than skipping the editor gate.
 
 Those four check names have dependency-aware lanes. Package-only diffs restore
 an exact cached compiler and run native `fai fmt`/`check`/`test` for changed

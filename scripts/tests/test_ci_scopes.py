@@ -201,6 +201,7 @@ class CheckOutputTests(unittest.TestCase):
                 ci.main()
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual(values["compiler"], "true")
+        self.assertEqual(values["vscode"], "true")
         self.assertEqual(values["packages"], values["package_checks"])
         self.assertEqual(values["package_names"], values["package_check_names"])
 
@@ -215,3 +216,4 @@ class CheckOutputTests(unittest.TestCase):
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual((values["mode"], values["compiler"], values["packages"], values["package_checks"]),
                          ("docs", "false", "[]", "[]"))
+        self.assertEqual(values["vscode"], "false")
