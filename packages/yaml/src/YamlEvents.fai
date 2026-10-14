@@ -1,0 +1,73 @@
+module YamlEvents
+
+/// Presentation-independent event view of a composed document. Aliases are not
+/// followed, so even cyclic documents have finite event streams.
+public type Event =
+  | Scalar (Option String) (Option String) YamlDocument.Style String
+  | SequenceStart (Option String) (Option String)
+  | SequenceEnd
+  | MappingStart (Option String) (Option String)
+  | MappingEnd
+  | Alias String
+
+type Work =
+  | Visit Int
+  | Emit Event
+
+let children ids work = List.append (List.map Visit (Array.toList ids)) work
+
+let pairWork pair =
+  let (key, value) = pair
+  [Visit key, Visit value]
+
+let fields pairs work = List.append (List.concat (List.map pairWork (Array.toList pairs))) work
+
+let walk document pending output =
+  match pending with
+  | [] -> List.reverse output
+  | Emit event :: rest -> walk document rest (event :: output)
+  | Visit id :: rest ->
+    match YamlDocument.node document id with
+    | None -> walk document rest output
+    | Some node ->
+      match node.body with
+      | YamlDocument.Scalar style value ->
+        walk document rest (Scalar node.anchor node.tag style value :: output)
+      | YamlDocument.Alias name _ -> walk document rest (Alias name :: output)
+      | YamlDocument.Sequence ids ->
+        walk document (children ids (Emit SequenceEnd :: rest)) (SequenceStart node.anchor node.tag :: output)
+      | YamlDocument.Mapping pairs ->
+        walk document (fields pairs (Emit MappingEnd :: rest)) (MappingStart node.anchor node.tag :: output)
+
+/// Traverse syntactic ownership edges without expanding alias references.
+public events : YamlDocument.Document -> List Event
+let events document = walk document [Visit (YamlDocument.root document)] []
+
+let props anchor tag =
+  (match anchor with
+  | None -> ""
+  | Some name -> " &" ++ name) ++ (match tag with
+  | None -> ""
+  | Some tag -> " <" ++ tag ++ ">")
+
+let escape text =
+  String.join "\\b" (String.split "\u{8}" (String.join "\\t" (String.split "\t" (String.join "\\r" (String.split "\r" (String.join "\\n" (String.split "\n" (String.join "\\\\" (String.split "\\" text)))))))))
+
+let render event =
+  match event with
+  | Scalar anchor tag style value ->
+    "=VAL" ++ props anchor tag ++ " " ++ (match style with
+    | YamlDocument.Plain -> ":"
+    | YamlDocument.SingleQuoted -> "'"
+    | YamlDocument.DoubleQuoted -> "\""
+    | YamlDocument.Literal -> "|"
+    | YamlDocument.Folded -> ">") ++ escape value
+  | SequenceStart anchor tag -> "+SEQ" ++ props anchor tag
+  | SequenceEnd -> "-SEQ"
+  | MappingStart anchor tag -> "+MAP" ++ props anchor tag
+  | MappingEnd -> "-MAP"
+  | Alias name -> "=ALI *" ++ name
+
+/// A normalized diagnostic event format, excluding document-boundary styles.
+public toString : YamlDocument.Document -> String
+let toString document = "+DOC\n" ++ String.join "\n" (List.map render (events document)) ++ "\n-DOC"

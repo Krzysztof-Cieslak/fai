@@ -1,0 +1,219 @@
+module YamlRender
+
+import json.Json
+
+/// Cumulative UTF-8 output budget, nesting limit, and explicit key-sort policy.
+public type Options = { maxBytes : Int, maxDepth : Int, sortKeys : Bool }
+
+/// Preserve insertion order with 16 MiB output and depth 128.
+public defaults : Options
+let defaults = { maxBytes = 16777216, maxDepth = 128, sortKeys = false }
+
+type Output = { parts : List String, remaining : Int }
+
+let put text output =
+  let bytes = Bytes.length (Bytes.fromString text)
+  if bytes > output.remaining then
+    Err (YamlTypes.error YamlTypes.LimitExceeded "rendered YAML exceeds byte limit")
+  else
+    Ok { parts = text :: output.parts, remaining = output.remaining - bytes }
+
+let quoted text = Json.toString (Json.String text)
+
+let indentation depth = String.joinArray "" (Array.repeat (depth * 2) " ")
+
+let scalar value =
+  match value with
+  | YamlData.Null -> "null"
+  | YamlData.Boolean true -> "true"
+  | YamlData.Boolean false -> "false"
+  | YamlData.String text -> quoted text
+  | YamlData.Integer number -> YamlNumber.integerToString number
+  | YamlData.Float number -> YamlNumber.floatToString number
+  | YamlData.Sequence _ -> "[]"
+  | YamlData.Mapping _ -> "{}"
+
+let container value =
+  match value with
+  | YamlData.Sequence values -> not (Array.isEmpty values)
+  | YamlData.Mapping values -> not (Array.isEmpty values)
+  | _ -> false
+
+let render options value depth output =
+  if depth > options.maxDepth then
+    Err (YamlTypes.error YamlTypes.LimitExceeded "rendered YAML exceeds depth limit")
+  else
+    match value with
+    | YamlData.Sequence items ->
+      if Array.isEmpty items then put "[]" output else renderItems options items 0 depth output
+    | YamlData.Mapping fields ->
+      let fields = if options.sortKeys then Array.sortBy fieldOrder fields else fields
+      if Array.isEmpty fields then put "{}" output else renderFields options fields 0 depth output
+    | _ -> put (scalar value) output
+
+let fieldOrder a b =
+  let (a, _) = a
+  let (b, _) = b
+  compare a b
+
+let renderItems options items index depth output =
+  if index = Array.length items then
+    Ok output
+  else
+    let value = Array.unsafeGet index items
+    let prefix =
+      (if index = 0 then
+        ""
+      else
+        "\n" ++ indentation depth) ++ "-" ++ (if container value then
+        "\n" ++ indentation (depth + 1)
+      else
+        " ")
+    match put prefix output with
+    | Err error -> Err error
+    | Ok output ->
+      match render options value (depth + 1) output with
+      | Err error -> Err error
+      | Ok output -> renderItems options items (index + 1) depth output
+
+let renderFields options fields index depth output =
+  if index = Array.length fields then
+    Ok output
+  else
+    let (key, value) = Array.unsafeGet index fields
+    let prefix =
+      (if index = 0 then
+        ""
+      else
+        "\n" ++ indentation depth) ++ quoted key ++ ":" ++ (if container value then
+        "\n" ++ indentation (depth + 1)
+      else
+        " ")
+    match put prefix output with
+    | Err error -> Err error
+    | Ok output ->
+      match render options value (depth + 1) output with
+      | Err error -> Err error
+      | Ok output -> renderFields options fields (index + 1) depth output
+
+/// Validate and render data in deterministic two-space block form.
+public toStringWith : Options -> YamlData.Value -> Result String YamlTypes.Error
+let toStringWith options value =
+  if options.maxBytes < 0 || options.maxDepth < 0 || options.maxDepth > 128 then
+    Err (YamlTypes.error YamlTypes.InvalidOptions "invalid YAML rendering limits")
+  else
+    match YamlData.validate { YamlData.limits with maxDepth = options.maxDepth } value with
+    | Err error -> Err error
+    | Ok _ ->
+      match render options value 0 { parts = [], remaining = options.maxBytes } with
+      | Err error -> Err error
+      | Ok output ->
+        Result.map (fun output -> String.join "" (List.reverse output.parts)) (put "\n" output)
+
+/// Render data under the default output policy.
+public toString : YamlData.Value -> Result String YamlTypes.Error
+let toString value = toStringWith defaults value
+
+type Task =
+  | Text String
+  | Node Int Int
+
+let properties node =
+  (match node.anchor with
+  | None -> ""
+  | Some anchor -> "&" ++ anchor ++ " ") ++ (match node.tag with
+  | None -> ""
+  | Some "!" -> "! "
+  | Some tag -> "!<" ++ Url.encodeComponent tag ++ "> ")
+
+let sequenceTasks items index depth output =
+  if index < 0 then
+    Text "[" :: output
+  else
+    sequenceTasks items (index - 1) depth (Node (Array.unsafeGet index items) depth :: (if index = Array.length items - 1 then
+      output
+    else
+      Text ", " :: output))
+
+let mappingTasks fields index depth output =
+  if index < 0 then
+    Text "{" :: output
+  else
+    let (key, value) = Array.unsafeGet index fields
+    mappingTasks fields (index - 1) depth (Node key depth :: Text " : " :: Node value depth :: (if index = Array.length fields - 1 then
+      output
+    else
+      Text ", " :: output))
+
+let documentTasks options document pending output =
+  match pending with
+  | [] -> Result.map (fun output -> String.join "" (List.reverse output.parts)) (put "\n" output)
+  | Text text :: rest ->
+    match put text output with
+    | Err error -> Err error
+    | Ok output -> documentTasks options document rest output
+  | Node id depth :: rest ->
+    if depth > options.maxDepth then
+      Err (YamlTypes.error YamlTypes.LimitExceeded "rendered document exceeds depth limit")
+    else
+      match YamlDocument.node document id with
+      | None -> Err (YamlTypes.error YamlTypes.Conversion "invalid document reference")
+      | Some node ->
+        let prefix = properties node
+        let tasks =
+          match node.body with
+          | YamlDocument.Alias name _ -> Text ("*" ++ name) :: rest
+          | YamlDocument.Scalar style text ->
+            let rendered =
+              if node.tag = None && style = YamlDocument.Plain then
+                scalar (YamlData.coreScalar style text)
+              else
+                quoted text
+            Text (prefix ++ rendered) :: rest
+          | YamlDocument.Sequence items ->
+            Text prefix :: sequenceTasks items (Array.length items - 1) (depth + 1) (Text "]" :: rest)
+          | YamlDocument.Mapping fields ->
+            Text prefix :: mappingTasks fields (Array.length fields - 1) (depth + 1) (Text "}" :: rest)
+        documentTasks options document tasks output
+
+/// Render the graph without following alias edges, preserving explicit tags and
+/// anchor relationships. Collection formatting is normalized to flow form.
+public documentWith : Options -> YamlDocument.Document -> Result String YamlTypes.Error
+let documentWith options document =
+  if options.maxBytes < 0 || options.maxDepth < 0 then
+    Err (YamlTypes.error YamlTypes.InvalidOptions "invalid rendering limits")
+  else
+    documentTasks options document [
+      Node (YamlDocument.root document) 0
+    ] { parts = [], remaining = options.maxBytes }
+
+/// Render a graph under default limits in normalized flow form.
+public document : YamlDocument.Document -> Result String YamlTypes.Error
+let document value = documentWith defaults value
+
+let renderAll options render items output =
+  match items with
+  | [] -> Ok (String.join "" (List.reverse output.parts))
+  | value :: rest ->
+    match render { options with maxBytes = output.remaining } value with
+    | Err error -> Err error
+    | Ok text ->
+      match put ("---\n" ++ text ++ "...\n") output with
+      | Err error -> Err error
+      | Ok output -> renderAll options render rest output
+
+/// Emit a complete value stream with explicit document boundaries.
+public values : Options -> List YamlData.Value -> Result String YamlTypes.Error
+let values options values =
+  if options.maxBytes < 0 || options.maxDepth < 0 || options.maxDepth > 128 then
+    Err (YamlTypes.error YamlTypes.InvalidOptions "invalid YAML rendering limits")
+  else
+    renderAll options toStringWith values { parts = [], remaining = options.maxBytes }
+
+/// Emit graphs with a shared output budget and fresh anchor scope per document.
+public documents : Options -> List YamlDocument.Document -> Result String YamlTypes.Error
+let documents options documents =
+  if options.maxBytes < 0 || options.maxDepth < 0 then
+    Err (YamlTypes.error YamlTypes.InvalidOptions "invalid YAML rendering limits")
+  else
+    renderAll options documentWith documents { parts = [], remaining = options.maxBytes }

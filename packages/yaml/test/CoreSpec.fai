@@ -1,0 +1,92 @@
+module YamlCoreSpec
+
+import json.JsonNumber
+
+let number value = YamlData.Integer (YamlNumber.integerFromInt value)
+
+let sequence values = YamlData.Sequence (Array.fromList values)
+
+let mapping values = YamlData.Mapping (Array.fromList values)
+example: Yaml.load "" = Ok YamlData.Null
+example: Yaml.load "# comment\n" = Ok YamlData.Null
+example: Result.map List.length (Yaml.parseAll "# comment\n") = Ok 0
+example: Yaml.load "null" = Ok YamlData.Null
+example: Yaml.load "TRUE" = Ok (YamlData.Boolean true)
+example: Yaml.load "on" = Ok (YamlData.String "on")
+example: Yaml.load "yes" = Ok (YamlData.String "yes")
+example: Yaml.load "2024-01-01" = Ok (YamlData.String "2024-01-01")
+example: Yaml.load "\"true\"" = Ok (YamlData.String "true")
+example: Yaml.load "[1, 2, 3]" = Ok (sequence [number 1, number 2, number 3])
+example: Yaml.load "- 1\n- 2\n- 3" = Ok (sequence [number 1, number 2, number 3])
+example: Yaml.load "a: 1\nb: true" = Ok (mapping [("a", number 1), ("b", YamlData.Boolean true)])
+example: Yaml.load "a:\n  b: 1\nc: 2" = Ok (mapping [
+  ("a", mapping [("b", number 1)]),
+  ("c", number 2)
+])
+example: Yaml.load "a:\n- 1\n- 2\nb: 3" = Ok (mapping [
+  ("a", sequence [number 1, number 2]),
+  ("b", number 3)
+])
+example: Yaml.load "a: &x [1, 2]\nb: *x" = Ok (mapping [
+  ("a", sequence [number 1, number 2]),
+  ("b", sequence [number 1, number 2])
+])
+example: Yaml.load "{a: 1, a: 2}" |> Result.isErr
+example: Yaml.load "[a: 1, a: 2]" |> Result.isOk
+example: Yaml.load "true: 1" |> Result.isErr
+example: Yaml.load "\"true\": 1" = Ok (mapping [("true", number 1)])
+example: Yaml.parse "? [1, 2]\n: 3" |> Result.isOk
+example: Yaml.load "? [1, 2]\n: 3" |> Result.isErr
+example: Yaml.parse "&x [*x]" |> Result.isOk
+example: (match Yaml.load "&x [*x]" with
+| Err error -> error.kind = YamlTypes.CyclicAlias
+| _ -> false)
+example: Yaml.parse "*absent" |> Result.isErr
+example: Yaml.load "!custom value" |> Result.isErr
+example: Yaml.load "!!str true" = Ok (YamlData.String "true")
+example: Yaml.load "!!bool \"true\"" = Ok (YamlData.Boolean true)
+example: Yaml.load "!!int \"12\"" = Ok (number 12)
+example: Yaml.load "!!int nope" |> Result.isErr
+example: Yaml.load "[a, b,]" = Ok (sequence [YamlData.String "a", YamlData.String "b"])
+example: Yaml.load "[a,,b]" |> Result.isErr
+example: Yaml.load "--- one\n--- two" |> Result.isErr
+example: Result.map List.length (Yaml.parseAll "--- one\n...\n--- two") = Ok 2
+example: Yaml.load "|\n  hello\n  world\n" = Ok (YamlData.String "hello\nworld\n")
+example: Yaml.load ">\n  hello\n  world\n" = Ok (YamlData.String "hello world\n")
+example: Yaml.load "|-\n  hello\n" = Ok (YamlData.String "hello")
+example: Yaml.load "|+\n  hello\n\n" = Ok (YamlData.String "hello\n\n")
+
+let merges = "base: &base {a: 1, b: 2}\nresult: {<<: *base, b: 3}"
+example: Yaml.load merges = Ok (mapping [
+  ("base", mapping [("a", number 1), ("b", number 2)]),
+  ("result", mapping [("<<", mapping [("a", number 1), ("b", number 2)]), ("b", number 3)])
+])
+example: Yaml.loadWith Yaml.defaults { YamlProject.defaults with
+  mergeKeys = true
+} merges = Ok (mapping [
+  ("base", mapping [("a", number 1), ("b", number 2)]),
+  ("result", mapping [("b", number 3), ("a", number 1)])
+])
+
+let handler = {
+  run = fun content ->
+    match content with
+    | YamlProject.Scalar _ text -> Ok (YamlData.String (String.toUpper text))
+    | _ -> Err "expected scalar",
+  tag = "!upper"
+}
+example: Yaml.loadWith Yaml.defaults { YamlProject.defaults with
+  handlers = [handler]
+} "!upper hello" = Ok (YamlData.String "HELLO")
+
+let roundtrip value =
+  match Yaml.toString value with
+  | Err _ -> false
+  | Ok text -> Yaml.load text = Ok value
+example: roundtrip (mapping [
+  ("on", YamlData.String "true"),
+  ("x", sequence [number 1, YamlData.Null])
+])
+example: roundtrip (YamlData.String "a\nb\n")
+example: roundtrip (YamlData.Float YamlNumber.PositiveInfinity)
+example: roundtrip (YamlData.Float (YamlNumber.Finite (Result.withDefault (JsonNumber.fromInt 0) (JsonNumber.fromString "1e999"))))

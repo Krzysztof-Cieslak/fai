@@ -1,0 +1,286 @@
+module YamlDecode
+
+/// Located, path-addressed decoder failures. Alternatives retain every branch.
+public type Error =
+  | Failure YamlTypes.Error
+  | Alternatives (List Error)
+
+/// Keep YAML loading/projection failure separate from application-schema failure.
+public type ReadError =
+  | Load YamlTypes.Error
+  | Data Error
+
+/// A pure reusable conversion over a validated, optionally located value tree.
+public opaque type Decoder 'a =
+  | Decoder (YamlProject.Tree -> Result 'a Error)
+
+let apply decoder input =
+  match decoder with
+  | Decoder run -> run input
+
+let failure input kind message = Failure { (YamlTypes.error kind message) with
+  primary = YamlProject.treeSpan input
+}
+
+let prefix segment error =
+  match error with
+  | Failure error -> Failure { error with path = segment :: error.path }
+  | Alternatives errors -> Alternatives (List.map (prefix segment) errors)
+
+let documentIndex index error =
+  match error with
+  | Failure error -> Failure { error with document = index }
+  | Alternatives errors -> Alternatives (List.map (documentIndex index) errors)
+
+/// Lift a pure conversion; failure receives the current source location.
+public fromFunction : (YamlData.Value -> Result 'a String) -> Decoder 'a
+let fromFunction run =
+  Decoder (fun input ->
+    Result.mapError (failure input YamlTypes.Conversion) (run (YamlProject.treeValue input)))
+
+/// Accept the application value without further schema constraints.
+public value : Decoder YamlData.Value
+let value = Decoder (fun input -> Ok (YamlProject.treeValue input))
+
+/// Accept only a resolved string value.
+public string : Decoder String
+let string =
+  Decoder (fun input ->
+    match YamlProject.treeValue input with
+    | YamlData.String text -> Ok text
+    | _ -> Err (failure input YamlTypes.WrongType "expected a string"))
+
+/// Accept only a resolved boolean value.
+public bool : Decoder Bool
+let bool =
+  Decoder (fun input ->
+    match YamlProject.treeValue input with
+    | YamlData.Boolean value -> Ok value
+    | _ -> Err (failure input YamlTypes.WrongType "expected a boolean"))
+
+/// Accept an exact integer without narrowing it.
+public integer : Decoder YamlNumber.Integer
+let integer =
+  Decoder (fun input ->
+    match YamlProject.treeValue input with
+    | YamlData.Integer value -> Ok value
+    | _ -> Err (failure input YamlTypes.WrongType "expected an integer"))
+
+/// Narrow an integer to signed 64 bits, rejecting overflow.
+public int : Decoder Int
+let int =
+  Decoder (fun input ->
+    match YamlProject.treeValue input with
+    | YamlData.Integer value ->
+      Result.mapError (failure input YamlTypes.Conversion) (YamlNumber.integerToInt value)
+    | _ -> Err (failure input YamlTypes.WrongType "expected an integer"))
+
+/// Convert finite numbers to binary64, or return explicit IEEE non-finites.
+public float : Decoder Float
+let float =
+  Decoder (fun input ->
+    match YamlProject.treeValue input with
+    | YamlData.Integer value ->
+      Result.mapError (failure input YamlTypes.Conversion) (YamlNumber.integerToFloat value)
+    | YamlData.Float value ->
+      Result.mapError (failure input YamlTypes.Conversion) (YamlNumber.floatToFloat value)
+    | _ -> Err (failure input YamlTypes.WrongType "expected a number"))
+
+/// Accept null and return a supplied value.
+public null : 'a -> Decoder 'a
+let null value =
+  Decoder (fun input ->
+    match YamlProject.treeValue input with
+    | YamlData.Null -> Ok value
+    | _ -> Err (failure input YamlTypes.WrongType "expected null"))
+
+/// Accept explicit null as None; otherwise apply the child decoder.
+public nullable : Decoder 'a -> Decoder (Option 'a)
+let nullable decoder =
+  Decoder (fun input ->
+    match YamlProject.treeValue input with
+    | YamlData.Null -> Ok None
+    | _ -> Result.map Some (apply decoder input))
+
+/// Return a value without inspecting the input.
+public succeed : 'a -> Decoder 'a
+let succeed value = Decoder (fun _ -> Ok value)
+
+/// Fail at the current source location.
+public fail : String -> Decoder 'a
+let fail message = Decoder (fun input -> Err (failure input YamlTypes.Conversion message))
+
+/// Transform a decoded value.
+public map : ('a -> 'b) -> Decoder 'a -> Decoder 'b
+let map f decoder = Decoder (fun input -> Result.map f (apply decoder input))
+
+/// Decode two views of the same input, preserving left-to-right error order.
+public map2 : ('a -> 'b -> 'c) -> Decoder 'a -> Decoder 'b -> Decoder 'c
+let map2 f a b =
+  Decoder (fun input ->
+    match apply a input with
+    | Err error -> Err error
+    | Ok a -> Result.map (f a) (apply b input))
+
+/// Apply another decoded argument in an applicative pipeline.
+public andMap : Decoder 'a -> Decoder ('a -> 'b) -> Decoder 'b
+let andMap argument function = map2 (fun f value -> f value) function argument
+
+/// Choose a decoder that sees the original input after the first succeeds.
+public andThen : ('a -> Decoder 'b) -> Decoder 'a -> Decoder 'b
+let andThen choose decoder =
+  Decoder (fun input ->
+    match apply decoder input with
+    | Err error -> Err error
+    | Ok value -> apply (choose value) input)
+
+/// Defer decoder construction for recursive application types.
+public lazy : (Unit -> Decoder 'a) -> Decoder 'a
+let lazy create = Decoder (fun input -> apply (create ()) input)
+
+let findField fields index name =
+  if index = Array.length fields then
+    None
+  else
+    let (key, value) = Array.unsafeGet index fields
+    if key = name then Some value else findField fields (index + 1) name
+
+let member name decoder input optional =
+  match YamlProject.treeValue input with
+  | YamlData.Mapping _ ->
+    match findField (YamlProject.treeFields input) 0 name with
+    | None ->
+      if optional then
+        Ok None
+      else
+        Err (prefix (YamlTypes.Field name) (failure input YamlTypes.Missing "missing field"))
+    | Some child ->
+      Result.map Some (Result.mapError (prefix (YamlTypes.Field name)) (apply decoder child))
+  | _ -> Err (failure input YamlTypes.WrongType "expected a mapping")
+
+/// Decode a required mapping field; unrelated fields remain accepted.
+public field : String -> Decoder 'a -> Decoder 'a
+let field name decoder =
+  Decoder (fun input ->
+    match member name decoder input false with
+    | Ok (Some value) -> Ok value
+    | Ok None -> Err (failure input YamlTypes.Missing "missing field")
+    | Err error -> Err error)
+
+/// Missing is None; present null still uses the child decoder.
+public optionalField : String -> Decoder 'a -> Decoder (Option 'a)
+let optionalField name decoder = Decoder (fun input -> member name decoder input true)
+
+let listFrom decoder items index output =
+  if index = Array.length items then
+    Ok (List.reverse output)
+  else
+    match apply decoder (Array.unsafeGet index items) with
+    | Err error -> Err (prefix (YamlTypes.Index index) error)
+    | Ok value -> listFrom decoder items (index + 1) (value :: output)
+
+/// Decode sequence items in source order, retaining failing indices.
+public list : Decoder 'a -> Decoder (List 'a)
+let list decoder =
+  Decoder (fun input ->
+    match YamlProject.treeValue input with
+    | YamlData.Sequence _ -> listFrom decoder (YamlProject.treeItems input) 0 []
+    | _ -> Err (failure input YamlTypes.WrongType "expected a sequence"))
+
+/// Decode a YAML sequence into a contiguous Array.
+public array : Decoder 'a -> Decoder (Array 'a)
+let array decoder = map Array.fromList (list decoder)
+
+/// Decode a zero-based sequence element; invalid indices fail.
+public index : Int -> Decoder 'a -> Decoder 'a
+let index index decoder = Decoder (atIndex index decoder)
+
+let atIndex index decoder input =
+  match YamlProject.treeValue input with
+  | YamlData.Sequence _ ->
+    match Array.get index (YamlProject.treeItems input) with
+    | None ->
+      Err (prefix (YamlTypes.Index index) (failure input YamlTypes.Missing "missing sequence index"))
+    | Some child -> Result.mapError (prefix (YamlTypes.Index index)) (apply decoder child)
+  | _ -> Err (failure input YamlTypes.WrongType "expected a sequence")
+
+let pairsFrom decoder fields index output =
+  if index = Array.length fields then
+    Ok (List.reverse output)
+  else
+    let (name, child) = Array.unsafeGet index fields
+    match apply decoder child with
+    | Err error -> Err (prefix (YamlTypes.Field name) error)
+    | Ok value -> pairsFrom decoder fields (index + 1) ((name, value) :: output)
+
+/// Decode mapping fields in insertion order.
+public keyValuePairs : Decoder 'a -> Decoder (List (String * 'a))
+let keyValuePairs decoder =
+  Decoder (fun input ->
+    match YamlProject.treeValue input with
+    | YamlData.Mapping _ -> pairsFrom decoder (YamlProject.treeFields input) 0 []
+    | _ -> Err (failure input YamlTypes.WrongType "expected a mapping"))
+
+/// Decode mapping fields into a HashDict.
+public dict : Decoder 'a -> Decoder (HashDict String 'a)
+let dict decoder = map HashDict.fromList (keyValuePairs decoder)
+
+let alternatives decoders input errors =
+  match decoders with
+  | [] -> Err (Alternatives (List.reverse errors))
+  | decoder :: rest ->
+    match apply decoder input with
+    | Ok value -> Ok value
+    | Err error -> alternatives rest input (error :: errors)
+
+/// Try alternatives in order and retain all failures when none succeeds.
+public oneOf : List (Decoder 'a) -> Decoder 'a
+let oneOf decoders = Decoder (fun input -> alternatives decoders input [])
+
+/// Project and validate the whole graph before applying the decoder.
+public decodeDocumentWith : YamlProject.Options -> Decoder 'a -> YamlDocument.Document -> Result 'a ReadError
+let decodeDocumentWith options decoder document =
+  match YamlProject.treeWith options document with
+  | Err error -> Err (Load error)
+  | Ok input ->
+    Result.mapError (fun error ->
+      Data (documentIndex (YamlDocument.index document) error)) (apply decoder input)
+
+/// Decode a document under the default Core projection policy.
+public decodeDocument : Decoder 'a -> YamlDocument.Document -> Result 'a ReadError
+let decodeDocument decoder document = decodeDocumentWith YamlProject.defaults decoder document
+
+/// Parse, project and decode one UTF-8 document.
+public fromString : Decoder 'a -> String -> Result 'a ReadError
+let fromString decoder text =
+  match Yaml.parse text with
+  | Err error -> Err (Load error)
+  | Ok document -> decodeDocument decoder document
+
+/// Parse, project and decode one encoding-detected document.
+public fromBytes : Decoder 'a -> Bytes -> Result 'a ReadError
+let fromBytes decoder bytes =
+  match Yaml.parseBytes bytes with
+  | Err error -> Err (Load error)
+  | Ok document -> decodeDocument decoder document
+
+/// Validate duplicate names and limits before decoding unlocated data.
+public decode : Decoder 'a -> YamlData.Value -> Result 'a Error
+let decode decoder value =
+  match YamlData.validate YamlData.limits value with
+  | Err error -> Err (Failure error)
+  | Ok _ -> apply decoder (YamlProject.unlocated value)
+
+/// Render schema failures or their alternatives.
+public errorToString : Error -> String
+let errorToString error =
+  match error with
+  | Failure error -> YamlTypes.errorToString error
+  | Alternatives errors -> String.join "; " (List.map errorToString errors)
+
+/// Render a loading or schema failure.
+public readErrorToString : ReadError -> String
+let readErrorToString error =
+  match error with
+  | Load error -> YamlTypes.errorToString error
+  | Data error -> errorToString error

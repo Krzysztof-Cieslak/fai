@@ -1,0 +1,85 @@
+module YamlDocument
+
+/// A document-local arena index; always inspect through its owning document.
+public type NodeId = Int
+
+/// Scalar style retained for schema resolution and source inspection.
+public type Style =
+  | Plain
+  | SingleQuoted
+  | DoubleQuoted
+  | Literal
+  | Folded
+
+/// Aliases remain graph edges rather than eagerly expanded subtrees.
+public type Body =
+  | Scalar Style String
+  | Sequence (Array NodeId)
+  | Mapping (Array (NodeId * NodeId))
+  | Alias String NodeId
+
+/// A located node with expanded explicit tag and optional anchor spelling.
+public type Node = {
+  anchor : Option String,
+  body : Body,
+  span : YamlTypes.Span,
+  tag : Option String
+}
+
+/// Original directive parameters and source range.
+public type Directive = { name : String, parameters : List String, span : YamlTypes.Span }
+
+/// IDs are local to this document, with cycles represented only by integer IDs.
+public opaque type Document = {
+  directives : List Directive,
+  index : Int,
+  nodes : Array Node,
+  root : NodeId,
+  source : Bytes,
+  span : YamlTypes.Span
+}
+
+internal create : Int -> Array Node -> NodeId -> List Directive -> YamlTypes.Span -> Bytes -> Document
+let create index nodes root directives span source = {
+  directives = directives,
+  index = index,
+  nodes = nodes,
+  root = root,
+  source = source,
+  span = span
+}
+
+/// The document's root node ID.
+public root : Document -> NodeId
+let root document = document.root
+
+/// Safely look up a node ID; out-of-range IDs return None.
+public node : Document -> NodeId -> Option Node
+let node document id = Array.get id document.nodes
+
+/// Immutable arena contents in parser allocation order.
+public nodes : Document -> Array Node
+let nodes document = document.nodes
+
+/// Directives in source order, with expanded tags stored on nodes separately.
+public directives : Document -> List Directive
+let directives document = document.directives
+
+/// Zero-based index within the input stream.
+public index : Document -> Int
+let index document = document.index
+
+/// Original-input range for the document's content.
+public span : Document -> YamlTypes.Span
+let span document = document.span
+
+/// Original bytes for the complete input stream, shared between its documents.
+public source : Document -> Bytes
+let source document = document.source
+
+/// Exact original spelling covered by a node, including its syntax/properties.
+/// The returned bytes retain the original UTF-8/16/32 encoding.
+public spelling : Document -> NodeId -> Option Bytes
+let spelling document id =
+  Option.map (fun node ->
+    Bytes.slice node.span.start.byte node.span.finish.byte document.source) (node document id)

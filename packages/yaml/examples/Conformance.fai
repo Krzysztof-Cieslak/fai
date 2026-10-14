@@ -1,0 +1,136 @@
+module YamlConformance
+
+let path text = Result.withDefault Path.empty (Path.fromString text)
+
+let normalizeLine line =
+  if String.take 4 line = "+DOC" then
+    "+DOC"
+  else if String.take 4 line = "-DOC" then
+    "-DOC"
+  else if String.take 7 line = "+SEQ []" then
+    "+SEQ" ++ String.drop 7 line
+  else if String.take 7 line = "+MAP {}" then "+MAP" ++ String.drop 7 line else line
+
+let normalize text =
+  String.join "\n" (List.map normalizeLine (List.filter (fun line ->
+    line <> "") (String.split "\n" text)))
+
+let events documents =
+  "+STR\n" ++ String.join "\n" (List.map YamlEvents.toString documents) ++ "\n-STR"
+
+let values documents output =
+  match documents with
+  | [] -> Some (List.reverse output)
+  | document :: rest ->
+    match Yaml.value document with
+    | Err _ -> None
+    | Ok value -> values rest (value :: output)
+
+let roundtrip documents =
+  match Yaml.documentsToString documents with
+  | Err error -> Some (Yaml.errorToString error)
+  | Ok text ->
+    match Yaml.parseAll text with
+    | Err error -> Some ("rendered document: " ++ Yaml.errorToString error)
+    | Ok parsed ->
+      match values documents [] with
+      | None -> None
+      | Some expected ->
+        if values parsed [] = Some expected then
+          None
+        else
+          Some "rendering changed application values"
+
+check : FileSystem -> Path -> Result (Option String) String / { FileSystem }
+let check fs input =
+  let parent = Option.withDefault Path.empty (Path.parent input)
+  match (File.readBytes fs 4194304 input, FileSystem.entryExists fs (Path.join parent (path "error"))) with
+  | (Err error, _) -> Err (FileSystem.errorToString error)
+  | (_, Err error) -> Err (FileSystem.errorToString error)
+  | (Ok bytes, Ok invalid) ->
+    match Yaml.parseAllBytes bytes with
+    | Err error -> if invalid then Ok None else Ok (Some (Yaml.errorToString error))
+    | Ok documents ->
+      if invalid then
+        Ok (Some "accepted invalid YAML")
+      else
+        match File.readText fs 4194304 (Path.join parent (path "test.event")) with
+        | Err error -> Err (FileSystem.errorToString error)
+        | Ok expected ->
+          if normalize (events documents) <> normalize expected then
+            Ok (Some ("events differ: " ++ events documents))
+          else
+            Ok (roundtrip documents)
+
+public main : Runtime -> Unit / { Console, Env, FileSystem }
+let main env =
+  match env.env.args () with
+  | [file, "--one"] ->
+    match check env.fs (path file) with
+    | Err error -> env.console.writeLine ("FAIL " ++ error)
+    | Ok None -> env.console.writeLine "PASS"
+    | Ok (Some error) -> env.console.writeLine ("FAIL " ++ error)
+  | [root] ->
+    match enumerate env.fs [path root] [] with
+    | Err error -> env.console.writeLine error
+    | Ok paths ->
+      let (count, failures) = runCases env (List.sort paths) 0 0
+      let shown = env.console.writeLine ("cases: " ++ Int.toString count)
+      let shown = env.console.writeLine ("failures: " ++ Int.toString failures)
+      if count = 402 && failures = 0 then
+        env.console.writeLine "YAML conformance passed"
+      else
+        env.console.writeLine "YAML conformance FAILED"
+  | _ -> env.console.writeLine "expected pinned YAML test-suite directory"
+
+readEntries : FileSystem -> Io.DirectoryCursor -> List FileSystem.Entry -> Result (List FileSystem.Entry) String / { FileSystem }
+let readEntries fs cursor output =
+  match fs.nextDirectory cursor with
+  | Err error -> Err (FileSystem.errorToString error)
+  | Ok None -> Ok output
+  | Ok (Some entry) -> readEntries fs cursor (entry :: output)
+
+enumerate : FileSystem -> List Path -> List Path -> Result (List Path) String / { FileSystem }
+let enumerate fs pending output =
+  match pending with
+  | [] -> Ok output
+  | directory :: rest ->
+    match fs.openDirectory directory with
+    | Err error -> Err (FileSystem.errorToString error)
+    | Ok cursor ->
+      let entries = readEntries fs cursor []
+      let closed = fs.closeDirectory cursor
+      match (entries, closed) with
+      | (Err error, _) -> Err error
+      | (_, Err error) -> Err (FileSystem.errorToString error)
+      | (Ok entries, Ok _) -> collectEntries fs entries rest output
+
+collectEntries : FileSystem -> List FileSystem.Entry -> List Path -> List Path -> Result (List Path) String / { FileSystem }
+let collectEntries fs entries pending output =
+  match entries with
+  | [] -> enumerate fs pending output
+  | entry :: rest ->
+    if entry.name = path ".git" then
+      collectEntries fs rest pending output
+    else
+      match fs.linkMetadata entry.path with
+      | Err error -> Err (FileSystem.errorToString error)
+      | Ok info ->
+        collectEntries fs rest (if info.kind = FileSystem.Directory then
+          entry.path :: pending
+        else
+          pending) (if entry.name = path "in.yaml" then entry.path :: output else output)
+
+runCases : Runtime -> List Path -> Int -> Int -> (Int * Int) / { Console, FileSystem }
+let runCases env paths count failures =
+  match paths with
+  | [] -> (count, failures)
+  | file :: rest ->
+    match check env.fs file with
+    | Err error ->
+      let shown = env.console.writeLine ("FAIL " ++ Path.display file ++ ": " ++ error)
+      runCases env rest (count + 1) (failures + 1)
+    | Ok None -> runCases env rest (count + 1) failures
+    | Ok (Some message) ->
+      let shown = env.console.writeLine ("FAIL " ++ Path.display file ++ ": " ++ message)
+      runCases env rest (count + 1) (failures + 1)

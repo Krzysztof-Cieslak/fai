@@ -140,6 +140,17 @@ subdir = "packages/toml"
 path = "toml"
 
 [[packages]]
+id = "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1"
+version = "0.1.0"
+manifest-fingerprint = "blake3:39379d4a0f01c29c6d9069bd3a932aee73014241b2683ef6e9979318481dbb9c"
+
+[packages.logical]
+path = "yaml"
+
+[packages.source]
+path = "yaml"
+
+[[packages]]
 id = "p-397f890d093f1cb280f5cff0e9c5ed569ee1517cb28aed270bbf3f2fe6b1cdbd"
 version = "0.1.0"
 manifest-fingerprint = "blake3:6e769457bcb36a0640acdd1491fdff1451d18f6be158814e0f56f9c6353c8ef4"
@@ -3069,3 +3080,60 @@ from = "p-7b4d9726de3738d78bbbee56a1d1fec4e356189393b967b1164a4935c866ebc2"
 alias = "sse"
 kind = "normal"
 to = "p-e564a505047e7760f8a912fe180a39618dcae04f54f8edfa2c05d1e5b666f87a"
+
+[[graphs]]
+id = "g-d67d59caf0876ea5af955a2e5f51f9283a677905527c9027bcd10dd7995c4063"
+root = "yaml"
+target = "aarch64-apple-darwin"
+root-package = "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1"
+input-fingerprint = "blake3:e2d070d534e54d66be6505c3dc8ec9df73389c0e881a72936d16893934edd996"
+packages = [
+    "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1",
+    "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53",
+]
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs.edges]]
+from = "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1"
+alias = "json"
+kind = "normal"
+to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
+
+[[graphs]]
+id = "g-e79578376e8df43429e50b072974cd0d301d2ddc87c43b68ab4556c6adb34394"
+root = "yaml"
+target = "x86_64-pc-windows-msvc"
+root-package = "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1"
+input-fingerprint = "blake3:c422b82cb886666dc7170a38e94773913c3cd03ac343767dc4a3c605632183f7"
+packages = [
+    "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1",
+    "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53",
+]
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs.edges]]
+from = "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1"
+alias = "json"
+kind = "normal"
+to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"
+
+[[graphs]]
+id = "g-30931b96d1513e74d1eadcd2774bc5de41391b9a476011a679523f94f7e945e4"
+root = "yaml"
+target = "x86_64-unknown-linux-gnu"
+root-package = "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1"
+input-fingerprint = "blake3:ce65def96bb0acebee78eb49de6cf355ad94e64f2799b80d689dad0977f3d1cb"
+packages = [
+    "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1",
+    "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53",
+]
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs.edges]]
+from = "p-2d570f777237fe5f58c7ad9d3972ad235d7aa497bd2c552a03a603ac00f82ef1"
+alias = "json"
+kind = "normal"
+to = "p-5cb74d68f35fdb6c9f5de4a33b3b1068afc325dfafe85f7df38c5d94e7797e53"

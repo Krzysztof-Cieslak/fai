@@ -1,0 +1,90 @@
+module YamlData
+
+/// Ordered application data. Use checked builders/entry points to reject
+/// duplicate mapping names; a raw Document can represent arbitrary YAML keys.
+public type Value =
+  | Null
+  | Boolean Bool
+  | String String
+  | Integer YamlNumber.Integer
+  | Float YamlNumber.Floating
+  | Sequence (Array Value)
+  | Mapping (Array (String * Value))
+
+/// Limits for application tree validation and alias expansion.
+public type Limits = { maxDepth : Int, maxNodes : Int }
+
+/// At most 100000 expanded nodes and depth 128 by default.
+public limits : Limits
+let limits = { maxDepth = 128, maxNodes = 100000 }
+
+internal validateLimits : Limits -> Result Unit YamlTypes.Error
+let validateLimits limits =
+  if limits.maxDepth < 0 || limits.maxNodes < 0 then
+    Err (YamlTypes.error YamlTypes.InvalidOptions "value limits must be nonnegative")
+  else
+    Ok ()
+
+type Work =
+  | Visit Int (List YamlTypes.Segment) Value
+
+let mapWork pairs index depth path seen pending =
+  if index = Array.length pairs then
+    Ok pending
+  else
+    let (key, value) = Array.unsafeGet index pairs
+    if Set.member key seen then
+      Err { (YamlTypes.error YamlTypes.DuplicateKey "duplicate mapping key") with
+        path = List.reverse (YamlTypes.Field key :: path)
+      }
+    else
+      mapWork pairs (index + 1) depth path (Set.insert key seen) (Visit depth (YamlTypes.Field key :: path) value :: pending)
+
+let seqWork values index depth path pending =
+  if index = Array.length values then
+    pending
+  else
+    seqWork values (index + 1) depth path (Visit depth (YamlTypes.Index index :: path) (Array.unsafeGet index values) :: pending)
+
+let validateWork limits pending count =
+  match pending with
+  | [] -> Ok ()
+  | Visit depth path value :: rest ->
+    if count >= limits.maxNodes || depth > limits.maxDepth then
+      Err { (YamlTypes.error YamlTypes.LimitExceeded "application value exceeds node/depth limit") with
+        path = List.reverse path
+      }
+    else
+      match value with
+      | Mapping pairs ->
+        match mapWork pairs 0 (depth + 1) path Set.empty [] with
+        | Err error -> Err error
+        | Ok work -> validateWork limits (List.append (List.reverse work) rest) (count + 1)
+      | Sequence values ->
+        validateWork limits (List.append (List.reverse (seqWork values 0 (depth + 1) path [])) rest) (count + 1)
+      | _ -> validateWork limits rest (count + 1)
+
+/// Reject duplicate names anywhere in the tree and enforce structural limits.
+public validate : Limits -> Value -> Result Unit YamlTypes.Error
+let validate limits value =
+  match validateLimits limits with
+  | Err error -> Err error
+  | Ok _ -> validateWork limits [Visit 0 [] value] 0
+
+internal coreScalar : YamlDocument.Style -> String -> Value
+let coreScalar style text =
+  if style <> YamlDocument.Plain then
+    String text
+  else if List.member text ["", "~", "null", "Null", "NULL"] then
+    Null
+  else if List.member text ["true", "True", "TRUE"] then
+    Boolean true
+  else if List.member text ["false", "False", "FALSE"] then
+    Boolean false
+  else
+    match YamlNumber.parseInteger text with
+    | Some number -> Integer number
+    | None ->
+      match YamlNumber.parseFloat text with
+      | Some number -> Float number
+      | None -> String text

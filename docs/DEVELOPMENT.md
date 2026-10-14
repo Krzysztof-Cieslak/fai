@@ -15,6 +15,12 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+YAML contracts run with `fai test -C packages --package yaml`. Its `ci.json` pins
+the published upstream data release and runs all 402 syntax/event cases, graph
+rendering round trips and application-value checks under JIT and AOT. The separate
+runtime fixture exercises large scalars, nested values and bounded alias expansion.
+Use `python3 scripts/package_integrations.py yaml --no-dependents --fai /path/to/fai`.
+
 Semver contracts run with `fai test -C packages --package semver`. Its package-local
 integration programs cover large decimal components, long identifier/requirement
 lists and stable version selection through JIT and AOT. Run them with

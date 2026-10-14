@@ -1,0 +1,953 @@
+module YamlParser
+
+type State = {
+  anchors : HashDict String Int,
+  directives : List YamlDocument.Directive,
+  document : Int,
+  floor : Int,
+  handles : HashDict String String,
+  index : Int,
+  input : YamlSource.Input,
+  nodes : Array YamlDocument.Node,
+  options : YamlTypes.Options
+}
+
+at : State -> Int -> Int
+let at state index = Option.withDefault (-1) (Bytes.get index state.input.bytes)
+
+current : State -> Int
+let current state = at state state.index
+
+next : State -> State
+let next state = { state with index = state.index + 1 }
+
+let space byte = byte = 32 || byte = 9
+
+let separated byte = byte < 0 || space byte || byte = 10
+
+let flowEnd byte = byte = 44 || byte = 93 || byte = 125
+
+text : State -> Int -> Int -> String
+let text state start finish =
+  Option.withDefault "" (Bytes.toString (Bytes.slice start finish state.input.bytes))
+
+fail : State -> YamlTypes.ErrorKind -> Int -> Int -> String -> Result 'a YamlTypes.Error
+let fail state kind start finish message =
+  Err (YamlSource.issue state.input state.document kind start finish message)
+
+syntax : State -> String -> Result 'a YamlTypes.Error
+let syntax state message =
+  fail state YamlTypes.Syntax state.index (state.index + (if current state < 0 then
+    0
+  else
+    1)) message
+
+lineStart : State -> Int -> Int
+let lineStart state index =
+  if index = 0 || at state (index - 1) = 10 then index else lineStart state (index - 1)
+
+column : State -> Int
+let column state = state.index - lineStart state state.index
+
+lineEnd : State -> Int -> Int
+let lineEnd state index =
+  if at state index < 0 || at state index = 10 then index else lineEnd state (index + 1)
+
+spaces : State -> Int -> Int
+let spaces state index = if space (at state index) then spaces state (index + 1) else index
+
+marker : State -> Int -> String -> Bool
+let marker state index spelling =
+  text state index (index + 3) = spelling && separated (at state (index + 3)) && index = lineStart state index
+
+boundary : State -> Int -> Bool
+let boundary state index = marker state index "---" || marker state index "..."
+
+skipLine : State -> State
+let skipLine state = { state with
+  index = lineEnd state state.index + (if at state (lineEnd state state.index) = 10 then 1 else 0)
+}
+
+blank : State -> State
+let blank state =
+  let index = spaces state state.index
+  if at state index = 35 then
+    blank (skipLine { state with index = index })
+  else if at state index = 10 then
+    blank { state with index = index + 1 }
+  else
+    { state with index = index }
+
+inlineSpace : State -> State
+let inlineSpace state = { state with index = spaces state state.index }
+
+flowSpace : State -> State
+let flowSpace state = blank state
+
+let trimRight text =
+  let length = String.length text
+  if length > 0 && (String.substring (length - 1) 1 text = " " || String.substring (length - 1) 1 text = "\t") then
+    trimRight (String.take (length - 1) text)
+  else
+    text
+
+previousSignificant : State -> Int -> Int
+let previousSignificant state index =
+  if index < lineStart state state.index then
+    -1
+  else if at state index = 32 then previousSignificant state (index - 1) else at state index
+
+compactForbidden : State -> Bool
+let compactForbidden state =
+  let previous = previousSignificant state (state.index - 1)
+  let first = indentEnd state (lineStart state state.index)
+  previous = 9 || (previous = 58 && at state first <> 58 && at state first <> 63)
+
+checkedScalar : State -> YamlDocument.Style -> Int -> String -> Result (State * YamlDocument.Body) YamlTypes.Error
+let checkedScalar state style start value =
+  if Bytes.length (Bytes.fromString value) > state.options.maxScalarBytes then
+    fail state YamlTypes.LimitExceeded start state.index "scalar exceeds byte limit"
+  else
+    Ok (state, YamlDocument.Scalar style value)
+
+trailing : State -> Result State YamlTypes.Error
+let trailing state =
+  let before = state.index
+  let state = inlineSpace state
+  if current state = 35 && state.index = before && before > 0 && not (space (at state (before - 1))) && at state (before - 1) <> 10 then
+    syntax state "comment must be separated from node"
+  else if current state = 35 then
+    Ok (skipLine state)
+  else if current state = 10 then
+    Ok (next state)
+  else if current state < 0 || boundary state state.index then
+    Ok state
+  else
+    syntax state "unexpected content after node"
+
+let appendCode code output =
+  match Char.fromCode code with
+  | None -> None
+  | Some value -> Some (Char.toString value :: output)
+
+let hex byte =
+  if byte >= 48 && byte <= 57 then
+    byte - 48
+  else if byte >= 65 && byte <= 70 then
+    byte - 55
+  else if byte >= 97 && byte <= 102 then byte - 87 else -1
+
+unicode : State -> Int -> Int -> Result (State * Int) YamlTypes.Error
+let unicode state count value =
+  if count = 0 then
+    Ok (state, value)
+  else
+    let digit = hex (current state)
+    if digit < 0 then
+      syntax state "invalid Unicode escape"
+    else
+      unicode (next state) (count - 1) (value * 16 + digit)
+
+escape : State -> Result (State * Int) YamlTypes.Error
+let escape state =
+  match current state with
+  | 48 -> Ok (next state, 0)
+  | 97 -> Ok (next state, 7)
+  | 98 -> Ok (next state, 8)
+  | 116 -> Ok (next state, 9)
+  | 9 -> Ok (next state, 9)
+  | 110 -> Ok (next state, 10)
+  | 118 -> Ok (next state, 11)
+  | 102 -> Ok (next state, 12)
+  | 114 -> Ok (next state, 13)
+  | 101 -> Ok (next state, 27)
+  | 32 -> Ok (next state, 32)
+  | 34 -> Ok (next state, 34)
+  | 47 -> Ok (next state, 47)
+  | 92 -> Ok (next state, 92)
+  | 78 -> Ok (next state, 133)
+  | 95 -> Ok (next state, 160)
+  | 76 -> Ok (next state, 8232)
+  | 80 -> Ok (next state, 8233)
+  | 120 -> unicode (next state) 2 0
+  | 117 -> unicode (next state) 4 0
+  | 85 -> unicode (next state) 8 0
+  | _ -> syntax state "unknown double-quoted escape"
+
+breaks : State -> Int -> (State * Int)
+let breaks state count =
+  let state = inlineSpace state
+  if current state = 10 then breaks (next state) (count + 1) else (state, count)
+
+let newlines count output = if count <= 0 then output else newlines (count - 1) ("\n" :: output)
+
+quoted : State -> Bool -> Int -> Int -> List String -> Result (State * YamlDocument.Body) YamlTypes.Error
+let quoted state double start segment output =
+  let byte = current state
+  let quote = if double then 34 else 39
+  if byte < 0 || boundary state state.index then
+    syntax state "unterminated quoted scalar"
+  else if byte = quote then
+    let output = text state segment state.index :: output
+    if not double && at state (state.index + 1) = 39 then
+      quoted { state with index = state.index + 2 } double start (state.index + 2) ("'" :: output)
+    else
+      checkedScalar (next state) (if double then
+        YamlDocument.DoubleQuoted
+      else
+        YamlDocument.SingleQuoted) start (String.join "" (List.reverse output))
+  else if double && byte = 92 then
+    let output = text state segment state.index :: output
+    let escaped = next state
+    if current escaped = 10 then
+      let (state, count) = breaks (next escaped) 0
+      quoted state double start state.index (newlines count output)
+    else
+      match escape escaped with
+      | Err error -> Err error
+      | Ok (state, code) ->
+        match appendCode code output with
+        | None -> syntax state "escape does not name a Unicode scalar"
+        | Some output -> quoted state double start state.index output
+  else if byte = 10 then
+    let piece = text state segment state.index
+    let piece = if segment = start + 1 then trimRight piece else String.trim piece
+    let output = piece :: output
+    let (state, count) = breaks (next state) 0
+    if column state <= state.floor || (at state (indentEnd state (lineStart state state.index)) = 9 && indentEnd state (lineStart state state.index) - lineStart state state.index <= state.floor) then
+      syntax state "quoted continuation is not sufficiently indented"
+    else
+      quoted state double start state.index (if count = 0 then
+        " " :: output
+      else
+        newlines count output)
+  else
+    quoted (next state) double start segment output
+
+// Locate an implicit key's colon without confusing nested flow collections or quotes.
+mappingColon : State -> Int -> Int -> Int -> Bool -> Option Int
+let mappingColon state index nesting quote escaped =
+  let byte = at state index
+  if byte < 0 || byte = 10 then
+    None
+  else if index = state.index && byte = 38 then
+    mappingColon state (propertyEnd state (index + 1)) nesting quote escaped
+  else if index = state.index && byte = 33 then
+    let finish =
+      if at state (index + 1) = 60 then
+        uriEnd state (index + 2) + 1
+      else
+        propertyEnd state (index + 1)
+    mappingColon state finish nesting quote escaped
+  else if quote <> 0 then
+    if quote = 34 && byte = 92 && not escaped then
+      mappingColon state (index + 1) nesting quote true
+    else if byte = quote && not escaped then
+      mappingColon state (index + 1) nesting 0 false
+    else
+      mappingColon state (index + 1) nesting quote false
+  else if (byte = 34 || byte = 39) && (index = state.index || nesting > 0 || space (at state (index - 1))) then
+    mappingColon state (index + 1) nesting byte false
+  else if byte = 91 || byte = 123 then
+    mappingColon state (index + 1) (nesting + 1) 0 false
+  else if (byte = 93 || byte = 125) && nesting > 0 then
+    mappingColon state (index + 1) (nesting - 1) 0 false
+  else if byte = 35 && (index = state.index || space (at state (index - 1))) then
+    None
+  else if nesting = 0 && byte = 58 && separated (at state (index + 1)) && not (current state = 42 && index > state.index && not (space (at state (index - 1)))) then
+    Some index
+  else
+    mappingColon state (index + 1) nesting 0 false
+
+plainEnd : State -> Int -> Bool -> Bool -> Int
+let plainEnd state index flow key =
+  let byte = at state index
+  if byte < 0 || byte = 10 || (flow && flowEnd byte) || (byte = 35 && (index = state.index || space (at state (index - 1)))) || (byte = 58 && (separated (at state (index + 1)) || (flow && flowEnd (at state (index + 1))))) then
+    index
+  else if flow && (byte = 91 || byte = 123) then index else plainEnd state (index + 1) flow key
+
+plainContinue : State -> Int -> Bool -> List String -> (State * List String)
+let plainContinue state parent flow output =
+  let finish = plainEnd state state.index flow false
+  let piece = String.trim (text state state.index finish)
+  let state = { state with index = finish }
+  let output = piece :: output
+  if current state <> 10 then
+    (state, output)
+  else
+    let (following, count) = breaks (next state) 0
+    if current following < 0 || boundary following following.index || current following = 35 || (not flow && column following <= parent) || (flow && flowEnd (current following)) then
+      (state, output)
+    else if not flow && mappingColon following following.index 0 0 false <> None then
+      (state, output)
+    else
+      plainContinue following parent flow (if count = 0 then
+        " " :: output
+      else
+        newlines count output)
+
+plain : State -> Int -> Bool -> Bool -> Int -> Result (State * YamlDocument.Body) YamlTypes.Error
+let plain state parent flow key start =
+  let byte = current state
+  if byte < 0 || byte = 35 || byte = 44 || byte = 91 || byte = 93 || byte = 123 || byte = 125 || byte = 64 || byte = 96 || byte = 37 || ((byte = 45 || byte = 63 || byte = 58) && (separated (at state (state.index + 1)) || (flow && flowEnd (at state (state.index + 1))))) then
+    syntax state "invalid plain scalar start"
+  else if key then
+    let finish = plainEnd state state.index flow true
+    checkedScalar { state with
+      index = finish
+    } YamlDocument.Plain start (String.trim (text state state.index finish))
+  else
+    let (state, output) = plainContinue state parent flow []
+    checkedScalar state YamlDocument.Plain start (trimRight (String.join "" (List.reverse output)))
+
+indentEnd : State -> Int -> Int
+let indentEnd state index = if at state index = 32 then indentEnd state (index + 1) else index
+
+blockIndent : State -> Int -> Int -> Int
+let blockIndent state index parent =
+  if at state index < 0 then
+    parent + 1
+  else
+    let first = indentEnd state index
+    if at state first = 10 then
+      blockIndent state (first + 1) parent
+    else if at state first < 0 then
+      parent + 1
+    else if first - index <= parent then parent + 1 else first - index
+
+let trimBreaks text =
+  if String.length text > 0 && String.substring (String.length text - 1) 1 text = "\n" then
+    trimBreaks (String.take (String.length text - 1) text)
+  else
+    text
+
+type BlockLine = { ended : Bool, more : Bool, text : String }
+
+blockLines : State -> Int -> Bool -> List BlockLine -> Result (State * List BlockLine) YamlTypes.Error
+let blockLines state indent leading output =
+  if current state < 0 || boundary state state.index then
+    Ok (state, List.reverse output)
+  else
+    let start = state.index
+    let first = indentEnd state start
+    let finish = lineEnd state start
+    if first = finish then
+      if leading && first - start > indent && hasBlockContent state (finish + 1) then
+        syntax state "leading empty block line is over-indented"
+      else
+        let piece =
+          if not leading && first - start > indent then text state (start + indent) finish else ""
+        let line = { ended = true, more = piece <> "", text = piece }
+        blockLines { state with
+          index = finish + (if at state finish = 10 then 1 else 0)
+        } indent leading (line :: output)
+    else if first - start < indent then
+      if at state first = 9 then
+        syntax { state with index = first } "tab cannot supply block scalar indentation"
+      else
+        Ok (state, List.reverse output)
+    else
+      let piece = text state (start + indent) finish
+      let more = first - start > indent || at state first = 9
+      let line = { ended = at state finish = 10, more = more, text = piece }
+      blockLines { state with
+        index = finish + (if at state finish = 10 then 1 else 0)
+      } indent false (line :: output)
+
+hasBlockContent : State -> Int -> Bool
+let hasBlockContent state index =
+  if at state index < 0 || boundary state index then
+    false
+  else
+    let first = indentEnd state index
+    let finish = lineEnd state index
+    if first = finish then hasBlockContent state (finish + 1) else true
+
+let renderBlock folded previous lines output =
+  match lines with
+  | [] -> String.join "" (List.reverse output)
+  | line :: rest ->
+    let separator =
+      if not line.ended then
+        ""
+      else if not folded then
+        "\n"
+      else
+        match rest with
+        | [] -> "\n"
+        | following :: _ ->
+          if line.text <> "" && following.text <> "" && not line.more && not following.more then
+            " "
+          else if line.text = "" && following.text <> "" && not following.more && previous = Some false then
+            ""
+          else
+            "\n"
+    let previous = if line.text = "" then previous else Some line.more
+    renderBlock folded previous rest (separator :: line.text :: output)
+
+blockHeader : State -> Int -> Int -> Result (State * Int * Int) YamlTypes.Error
+let blockHeader state chomp indentation =
+  let byte = current state
+  if (byte = 43 || byte = 45) && chomp = 0 then
+    blockHeader (next state) byte indentation
+  else if byte >= 49 && byte <= 57 && indentation = 0 then
+    blockHeader (next state) chomp (byte - 48)
+  else
+    Ok (state, chomp, indentation)
+
+blockScalar : State -> Int -> Int -> Bool -> Result (State * YamlDocument.Body) YamlTypes.Error
+let blockScalar state parent start folded =
+  match blockHeader (next state) 0 0 with
+  | Err error -> Err error
+  | Ok (state, chomp, indication) ->
+    let headerEnd = state.index
+    let header =
+      if current state = 35 && headerEnd > start && not (space (at state (headerEnd - 1))) then
+        syntax state "block header comment requires whitespace"
+      else
+        trailing state
+    match header with
+    | Err error -> Err error
+    | Ok state ->
+      let indent =
+        if indication = 0 then blockIndent state state.index parent else parent + indication
+      match blockLines state indent true [] with
+      | Err error -> Err error
+      | Ok (state, lines) ->
+        let text = renderBlock folded None lines []
+        let text =
+          if chomp = 43 then
+            text
+          else if chomp = 45 then
+            trimBreaks text
+          else
+            let trimmed = trimBreaks text
+            if trimmed = "" then
+              ""
+            else
+              trimmed ++ (if String.substring (String.length text - 1) 1 text = "\n" then
+                "\n"
+              else
+                "")
+        checkedScalar state (if folded then
+          YamlDocument.Folded
+        else
+          YamlDocument.Literal) start text
+
+propertyEnd : State -> Int -> Int
+let propertyEnd state index =
+  let byte = at state index
+  if byte < 0 || separated byte || flowEnd byte || byte = 91 || byte = 123 then
+    index
+  else
+    propertyEnd state (index + 1)
+
+aliasEnd : State -> Int -> Int
+let aliasEnd state index =
+  if at state index < 0 || separated (at state index) || flowEnd (at state index) || at state index = 91 || at state index = 123 then
+    index
+  else
+    aliasEnd state (index + 1)
+
+uriEnd : State -> Int -> Int
+let uriEnd state index =
+  if at state index < 0 || at state index = 62 then index else uriEnd state (index + 1)
+
+uriBytes : State -> Int -> Int -> List Int -> Result String YamlTypes.Error
+let uriBytes state index finish output =
+  if index >= finish then
+    match Bytes.toString (Bytes.fromList (List.reverse output)) with
+    | None -> syntax state "tag URI contains invalid UTF-8"
+    | Some text -> Ok text
+  else if at state index = 37 then
+    if index + 2 >= finish || hex (at state (index + 1)) < 0 || hex (at state (index + 2)) < 0 then
+      fail state YamlTypes.Syntax index (index + 1) "invalid tag URI escape"
+    else
+      uriBytes state (index + 3) finish ((16 * hex (at state (index + 1)) + hex (at state (index + 2))) :: output)
+  else
+    uriBytes state (index + 1) finish (at state index :: output)
+
+uriDecode : State -> Int -> Int -> Result String YamlTypes.Error
+let uriDecode state start finish = uriBytes state start finish []
+
+tag : State -> Result (State * String) YamlTypes.Error
+let tag state =
+  let start = state.index
+  if at state (start + 1) = 60 then
+    let finish = uriEnd state (start + 2)
+    if at state finish <> 62 || finish = start + 2 then
+      syntax state "invalid verbatim tag"
+    else
+      Result.map (fun tag ->
+        ({ state with index = finish + 1 }, tag)) (uriDecode state (start + 2) finish)
+  else
+    let finish = propertyEnd state (start + 1)
+    let raw = text state start finish
+    if raw = "!" then
+      Ok ({ state with index = finish }, "!")
+    else
+      let pieces = String.split "!" (String.drop 1 raw)
+      let (handle, suffix) =
+        match pieces with
+        | [one] -> ("!", one)
+        | [handle, suffix] -> ("!" ++ handle ++ "!", suffix)
+        | _ -> ("", "")
+      match HashDict.get handle state.handles with
+      | None -> syntax state "undefined tag handle"
+      | Some prefix ->
+        if suffix = "" then
+          syntax state "tag suffix is empty"
+        else
+          Result.map (fun suffix ->
+            ({ state with
+              index = finish
+            }, prefix ++ suffix)) (uriDecode state (finish - Bytes.length (Bytes.fromString suffix)) finish)
+
+properties : State -> Option String -> Option String -> Result (State * Option String * Option String) YamlTypes.Error
+let properties state anchor annotation =
+  if current state = 38 then
+    if anchor <> None then
+      syntax state "duplicate anchor property"
+    else
+      let finish = propertyEnd state (state.index + 1)
+      if finish = state.index + 1 then
+        syntax state "empty anchor"
+      else
+        properties (inlineSpace { state with
+          index = finish
+        }) (Some (text state (state.index + 1) finish)) annotation
+  else if current state = 33 then
+    if annotation <> None then
+      syntax state "duplicate tag property"
+    else
+      match tag state with
+      | Err error -> Err error
+      | Ok (state, annotation) -> properties (inlineSpace state) anchor (Some annotation)
+  else
+    Ok (state, anchor, annotation)
+
+prepareProperties : State -> Int -> Bool -> Bool -> Option String -> Option String -> Result (State * Option String * Option String) YamlTypes.Error
+let prepareProperties state parent flow key anchor annotation =
+  match properties state anchor annotation with
+  | Err error -> Err error
+  | Ok (state, anchor, annotation) ->
+    if (anchor <> None || annotation <> None) && (current state = 10 || current state = 35) then
+      let following = blank state
+      if (flow || column following > parent) && (current following = 33 || current following = 38) && (flow || mappingColon following following.index 0 0 false = None) then
+        prepareProperties following parent flow key anchor annotation
+      else
+        Ok (state, anchor, annotation)
+    else
+      Ok (state, anchor, annotation)
+
+reserve : State -> Option String -> Option String -> Int -> Result (State * Int) YamlTypes.Error
+let reserve state anchor tag start =
+  if Array.length state.nodes >= state.options.maxNodes then
+    fail state YamlTypes.LimitExceeded start start "document exceeds node limit"
+  else
+    let id = Array.length state.nodes
+    let node = {
+      anchor = anchor,
+      body = YamlDocument.Scalar YamlDocument.Plain "",
+      span = YamlSource.span state.input start start,
+      tag = tag
+    }
+    Ok ({ state with
+      anchors = match anchor with
+      | None -> state.anchors
+      | Some anchor -> HashDict.insert anchor id state.anchors,
+      nodes = Array.push node state.nodes
+    }, id)
+
+complete : State -> Int -> Int -> YamlDocument.Body -> Result (State * Int) YamlTypes.Error
+let complete state id start body =
+  let original = Array.unsafeGet id state.nodes
+  Ok ({ state with
+    nodes = Array.unsafeSet id { original with
+      body = body,
+      span = YamlSource.span state.input start state.index
+    } state.nodes
+  }, id)
+
+node : State -> Int -> Int -> Bool -> Bool -> Result (State * Int) YamlTypes.Error
+let node state parent depth flow key =
+  if depth > state.options.maxDepth then
+    fail state YamlTypes.LimitExceeded state.index state.index "document exceeds nesting limit"
+  else if at state (indentEnd state (lineStart state state.index)) = 9 && indentEnd state (lineStart state state.index) - lineStart state state.index <= (if flow then
+    state.floor
+  else
+    parent) then
+    syntax state "tab cannot supply indentation"
+  else
+    let start = state.index
+    let originalIndex = state.index
+    let mappingHere =
+      not flow && not key && not (current state = 45 && separated (at state (state.index + 1))) && mappingColon state state.index 0 0 false <> None
+    let prepared =
+      if mappingHere then
+        Ok (state, None, None)
+      else
+        prepareProperties state parent flow key None None
+    match prepared with
+    | Err error -> Err error
+    | Ok (state, anchor, annotation) ->
+      match reserve state anchor annotation start with
+      | Err error -> Err error
+      | Ok (state, id) ->
+        let original = state
+        let state =
+          if not flow && (current state = 10 || current state = 35) then
+            blank state
+          else if flow then flowSpace state else state
+        if (not flow && state.index <> original.index && column state <= parent) || current state < 0 || boundary state state.index || (flow && flowEnd (current state)) || ((key || flow) && current state = 58 && (separated (at state (state.index + 1)) || (flow && flowEnd (at state (state.index + 1))))) then
+          complete (if not flow then
+            original
+          else
+            state) id start (YamlDocument.Scalar YamlDocument.Plain "")
+        else if (anchor <> None || annotation <> None) && current state = 42 && (flow || key || mappingColon state state.index 0 0 false = None) then
+          syntax state "alias cannot carry anchor or tag properties"
+        else if not flow && not key && (anchor <> None || annotation <> None) && lineStart state state.index = lineStart state originalIndex && ((current state = 45 && separated (at state (state.index + 1))) || mappingColon state state.index 0 0 false <> None) then
+          syntax state "block collection properties must appear on a separate line"
+        else
+          match body state parent depth flow key with
+          | Err error -> Err error
+          | Ok (state, body) -> complete state id start body
+
+body : State -> Int -> Int -> Bool -> Bool -> Result (State * YamlDocument.Body) YamlTypes.Error
+let body state parent depth flow key =
+  let byte = current state
+  if not flow && not key && byte = 45 && separated (at state (state.index + 1)) then
+    if parent >= 0 && compactForbidden state then
+      syntax state "block sequence must start on a new line"
+    else
+      blockSequence state (column state) depth Array.empty
+  else if not flow && not key && ((byte = 63 && separated (at state (state.index + 1))) || mappingColon state state.index 0 0 false <> None) then
+    if compactForbidden state then
+      syntax state "block mapping value must start on a new line"
+    else
+      blockMapping state (column state) depth Array.empty
+  else if byte = 42 then
+    let finish = aliasEnd state (state.index + 1)
+    let name = text state (state.index + 1) finish
+    match HashDict.get name state.anchors with
+    | None -> fail state YamlTypes.UnknownAnchor state.index finish "alias has no preceding anchor"
+    | Some id -> Ok ({ state with index = finish }, YamlDocument.Alias name id)
+  else if byte = 91 then
+    Result.map (restoreFloor state.floor) (flowSequence { (next state) with
+      floor = if flow then state.floor else parent
+    } depth Array.empty)
+  else if byte = 123 then
+    Result.map (restoreFloor state.floor) (flowMapping { (next state) with
+      floor = if flow then state.floor else parent
+    } depth Array.empty)
+  else if byte = 34 || byte = 39 then
+    Result.map (restoreFloor state.floor) (quoted { (next state) with
+      floor = if flow then state.floor else parent
+    } (byte = 34) state.index (state.index + 1) [])
+  else if not flow && (byte = 124 || byte = 62) then
+    blockScalar state parent state.index (byte = 62)
+  else
+    plain state parent flow key state.index
+
+restoreFloor : Int -> (State * YamlDocument.Body) -> (State * YamlDocument.Body)
+let restoreFloor floor pair =
+  let (state, body) = pair
+  ({ state with floor = floor }, body)
+
+flowSequence : State -> Int -> Array Int -> Result (State * YamlDocument.Body) YamlTypes.Error
+let flowSequence state depth items =
+  let state = flowSpace state
+  if column state <= state.floor then
+    syntax state "flow collection is not sufficiently indented"
+  else if current state = 93 then
+    Ok (next state, YamlDocument.Sequence items)
+  else if current state = 44 then
+    syntax state "empty flow sequence entry"
+  else
+    let explicit = current state = 63 && separated (at state (state.index + 1))
+    let state = if explicit then flowSpace (next state) else state
+    let begin = state.index
+    match node state (-1) (depth + 1) true false with
+    | Err error -> Err error
+    | Ok (state, id) ->
+      let state = flowSpace state
+      if current state = 58 then
+        if not explicit && lineStart state state.index <> lineStart state begin then
+          syntax state "implicit flow key must stay on one line"
+        else
+          match node (flowSpace (next state)) (-1) (depth + 1) true false with
+          | Err error -> Err error
+          | Ok (state, value) ->
+            match reserve state None None state.index with
+            | Err error -> Err error
+            | Ok (state, pair) ->
+              match complete state pair state.index (YamlDocument.Mapping [| (id, value) |]) with
+              | Err error -> Err error
+              | Ok (state, pair) -> flowSequenceNext state depth (Array.push pair items)
+      else
+        flowSequenceNext state depth (Array.push id items)
+
+flowSequenceNext : State -> Int -> Array Int -> Result (State * YamlDocument.Body) YamlTypes.Error
+let flowSequenceNext state depth items =
+  let before = state.index
+  let state = flowSpace state
+  if current state = 44 && at state (state.index + 1) = 35 then
+    syntax state "comment must be separated from comma"
+  else if current state = 35 && before = state.index then
+    syntax state "comment must be separated from node"
+  else if current state = 44 then
+    flowSequence (next state) depth items
+  else if current state = 93 then
+    Ok (next state, YamlDocument.Sequence items)
+  else
+    syntax state "expected ',' or ']'"
+
+flowMapping : State -> Int -> Array (Int * Int) -> Result (State * YamlDocument.Body) YamlTypes.Error
+let flowMapping state depth fields =
+  let state = flowSpace state
+  if column state <= state.floor then
+    syntax state "flow collection is not sufficiently indented"
+  else if current state = 125 then
+    Ok (next state, YamlDocument.Mapping fields)
+  else if current state = 44 then
+    syntax state "empty flow mapping entry"
+  else
+    let explicit = current state = 63 && separated (at state (state.index + 1))
+    let state = if explicit then flowSpace (next state) else state
+    let plainKey =
+      current state <> 34 && current state <> 39 && current state <> 91 && current state <> 123
+    match node state (if explicit then -1 else state.floor) (depth + 1) true (not plainKey) with
+    | Err error -> Err error
+    | Ok (state, key) ->
+      let state = flowSpace state
+      let value =
+        if current state = 58 then
+          node (flowSpace (next state)) (-1) (depth + 1) true false
+        else
+          match reserve state None None state.index with
+          | Err error -> Err error
+          | Ok (state, id) ->
+            complete state id state.index (YamlDocument.Scalar YamlDocument.Plain "")
+      match value with
+      | Err error -> Err error
+      | Ok (state, value) ->
+        let state = flowSpace state
+        let fields = Array.push (key, value) fields
+        if current state = 44 then
+          flowMapping (next state) depth fields
+        else if current state = 125 then
+          Ok (next state, YamlDocument.Mapping fields)
+        else
+          syntax state "expected ',' or '}'"
+
+blockSequence : State -> Int -> Int -> Array Int -> Result (State * YamlDocument.Body) YamlTypes.Error
+let blockSequence state indent depth items =
+  if current state <> 45 || not (separated (at state (state.index + 1))) then
+    Ok (state, YamlDocument.Sequence items)
+  else
+    match node (inlineSpace (next state)) indent (depth + 1) false false with
+    | Err error -> Err error
+    | Ok (state, id) ->
+      let items = Array.push id items
+      let previous = state.index
+      let rest = inlineSpace state
+      if current rest = 35 && rest.index = previous && previous > 0 && not (space (at rest (previous - 1))) && at rest (previous - 1) <> 10 then
+        syntax rest "comment must be separated from node"
+      else
+        let rest = if current rest = 35 then skipLine rest else rest
+        let rest = if current rest = 10 then next rest else rest
+        let rest = blank rest
+        if current rest >= 0 && not (boundary rest rest.index) && column rest = indent && current rest = 45 && separated (at rest (rest.index + 1)) then
+          blockSequence rest indent depth items
+        else
+          Ok (rest, YamlDocument.Sequence items)
+
+blockMapping : State -> Int -> Int -> Array (Int * Int) -> Result (State * YamlDocument.Body) YamlTypes.Error
+let blockMapping state indent depth fields =
+  let explicit = current state = 63 && separated (at state (state.index + 1))
+  let keyState = if explicit then inlineSpace (next state) else state
+  let following = blank keyState
+  let indentlessKey =
+    explicit && current keyState = 10 && current following = 45 && column following = indent
+  match node keyState (if indentlessKey then
+    indent - 1
+  else
+    indent) (depth + 1) false (not explicit) with
+  | Err error -> Err error
+  | Ok (state, key) ->
+    let state = inlineSpace state
+    let state =
+      if explicit && (current state = 10 || current state = 35) then blank state else state
+    let hasValue =
+      current state = 58 && (not explicit || column state = indent || column state > indent)
+    let value =
+      if hasValue then
+        let after = inlineSpace (next state)
+        let after =
+          // YAML allows an indentless sequence as a mapping value.
+          if current after = 10 || current after = 35 then blank after else after
+        if column after = indent && current after = 45 && separated (at after (after.index + 1)) then
+          node after (indent - 1) (depth + 1) false false
+        else if column after <= indent && after.index = lineStart after after.index + column after then
+          match reserve after None None after.index with
+          | Err error -> Err error
+          | Ok (state, id) ->
+            complete state id state.index (YamlDocument.Scalar YamlDocument.Plain "")
+        else
+          let following = blank (skipLine after)
+          let indentless =
+            (current after = 33 || current after = 38) && current following = 45 && column following = indent
+          node after (if indentless then indent - 1 else indent) (depth + 1) false false
+      else if explicit then
+        match reserve state None None state.index with
+        | Err error -> Err error
+        | Ok (state, id) ->
+          complete state id state.index (YamlDocument.Scalar YamlDocument.Plain "")
+      else
+        syntax state "expected ':' after mapping key"
+    match value with
+    | Err error -> Err error
+    | Ok (state, value) ->
+      let fields = Array.push (key, value) fields
+      let previous = state.index
+      let state = inlineSpace state
+      if current state = 35 && state.index = previous && previous > 0 && not (space (at state (previous - 1))) && at state (previous - 1) <> 10 then
+        syntax state "comment must be separated from node"
+      else
+        let state = if current state = 35 then skipLine state else state
+        let state = if current state = 10 then next state else state
+        let state = blank state
+        if current state >= 0 && not (boundary state state.index) && column state = indent && ((current state = 63 && separated (at state (state.index + 1))) || mappingColon state state.index 0 0 false <> None) then
+          blockMapping state indent depth fields
+        else
+          Ok (state, YamlDocument.Mapping fields)
+
+let defaultHandles = HashDict.fromList [("!", "!"), ("!!", "tag:yaml.org,2002:")]
+
+let wordEnd state index = if separated (at state index) then index else wordEnd state (index + 1)
+
+directive : State -> Result State YamlTypes.Error
+let directive state =
+  let start = state.index
+  let finish = lineEnd state start
+  let source =
+    String.trim (Option.withDefault "" (List.head (String.split " #" (text state (start + 1) finish))))
+  let source = String.join " " (String.split "\t" source)
+  let pieces = List.filter (fun part -> part <> "") (String.split " " source)
+  match pieces with
+  | [] -> syntax state "empty directive"
+  | name :: parameters ->
+    if name = "YAML" && not (match parameters with
+    | [version] ->
+      String.take 2 version = "1." && String.length version >= 3 && version <> "1.0" && List.all (fun byte ->
+        byte >= 48 && byte <= 57) (Bytes.toList (Bytes.fromString (String.drop 2 version)))
+    | _ -> false) then
+      fail state YamlTypes.UnsupportedVersion start finish "only YAML 1.x syntax is supported"
+    else if name = "YAML" && List.any (fun item -> item.name = "YAML") state.directives then
+      syntax state "duplicate YAML directive"
+    else
+      let handles =
+        if name = "TAG" then
+          match parameters with
+          | [handle, prefix] ->
+            if List.any (fun directive ->
+              directive.name = "TAG" && List.head directive.parameters = Some handle) state.directives then
+              syntax state "duplicate tag directive"
+            else if String.take 1 handle = "!" && String.substring (String.length handle - 1) 1 handle = "!" then
+              let handleStart = spaces state (wordEnd state (start + 1))
+              let prefixStart = spaces state (wordEnd state handleStart)
+              Result.map (fun prefix ->
+                HashDict.insert handle prefix state.handles) (uriDecode state prefixStart (wordEnd state prefixStart))
+            else
+              syntax state "invalid tag directive"
+          | _ -> syntax state "invalid tag directive"
+        else
+          Ok state.handles
+      Result.map (fun handles -> { state with
+        directives = {
+          name = name,
+          parameters = parameters,
+          span = YamlSource.span state.input start finish
+        } :: state.directives,
+        handles = handles,
+        index = finish
+      }) handles
+
+directives : State -> Result State YamlTypes.Error
+let directives state =
+  let state = blank state
+  if current state = 37 && column state = 0 then
+    match directive state with
+    | Err error -> Err error
+    | Ok state -> directives state
+  else
+    Ok state
+
+documents : State -> List YamlDocument.Document -> Result (List YamlDocument.Document) YamlTypes.Error
+let documents state output =
+  let state = blank state
+  if current state < 0 then
+    Ok (List.reverse output)
+  else if marker state state.index "..." then
+    documents (skipLine state) output
+  else if state.document >= state.options.maxDocuments then
+    fail state YamlTypes.LimitExceeded state.index state.index "stream exceeds document limit"
+  else
+    let state = { state with
+      anchors = HashDict.empty,
+      directives = [],
+      handles = defaultHandles,
+      nodes = Array.empty
+    }
+    match directives state with
+    | Err error -> Err error
+    | Ok state ->
+      let start = state.index
+      let explicit = marker state state.index "---"
+      if state.directives <> [] && not explicit then
+        syntax state "directives require '---'"
+      else
+        let state = if explicit then blank { state with index = state.index + 3 } else state
+        let root =
+          if explicit && lineStart state state.index = lineStart state start && mappingColon state state.index 0 0 false <> None then
+            syntax state "block mapping cannot follow a document marker on the same line"
+          else
+            node state (-1) 0 false false
+        match root with
+        | Err error -> Err error
+        | Ok (state, root) ->
+          match trailing state with
+          | Err error -> Err error
+          | Ok state ->
+            let finish = state.index
+            let state = blank state
+            let ended = marker state state.index "..."
+            let rest = if ended then trailing { state with index = state.index + 3 } else Ok state
+            match rest with
+            | Err error -> Err error
+            | Ok state ->
+              let state = blank state
+              let document =
+                YamlDocument.create state.document state.nodes root (List.reverse state.directives) (YamlSource.span state.input start finish) state.input.original
+              if current state < 0 then
+                Ok (List.reverse (document :: output))
+              else if marker state state.index "---" || ended then
+                documents { state with document = state.document + 1 } (document :: output)
+              else
+                syntax state "expected document boundary"
+
+internal parse : YamlTypes.Options -> Bytes -> Result (List YamlDocument.Document) YamlTypes.Error
+let parse options bytes =
+  match YamlSource.read options bytes with
+  | Err error -> Err error
+  | Ok input -> documents {
+    anchors = HashDict.empty,
+    directives = [],
+    document = 0,
+    floor = -1,
+    handles = defaultHandles,
+    index = 0,
+    input = input,
+    nodes = Array.empty,
+    options = options
+  } []
