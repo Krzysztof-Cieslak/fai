@@ -1,0 +1,86 @@
+module Unicode
+
+/// The Unicode Character Database and algorithm version used by this package.
+public version : String
+let version = "18.0.0"
+
+/// Zero-based half-open UTF-8 byte coordinates in an original or transformed String.
+public type Span = { end : Int, start : Int }
+
+/// Stable failures for bounded pure text processing.
+public type ErrorKind =
+  | InvalidOptions
+  | InputLimit
+  | OutputLimit
+  | ScalarLimit
+  | SegmentLimit
+  | CombiningLimit
+  | MappingLimit
+  | WorkLimit
+  | InvalidSpan
+
+/// Optional offsets always refer to the original input, in UTF-8 bytes.
+public type Error = { kind : ErrorKind, message : String, offset : Option Int }
+
+/// Deterministic budgets. All fields must be nonnegative; no wall clock is read.
+public type Limits = {
+  maxCombining : Int,
+  maxInputBytes : Int,
+  maxMappings : Int,
+  maxOutputBytes : Int,
+  maxScalars : Int,
+  maxSegments : Int,
+  maxWork : Int
+}
+
+/// Defaults allow 16 MiB text, four million scalars, and one million segments.
+public limits : Limits
+let limits = {
+  maxCombining = 65536,
+  maxInputBytes = 16777216,
+  maxMappings = 4000000,
+  maxOutputBytes = 16777216,
+  maxScalars = 4000000,
+  maxSegments = 1000000,
+  maxWork = 1000000000
+}
+
+/// One output scalar's exact contributing input ranges, sorted and coalesced.
+public type Mapping = { output : Span, sources : Array Span }
+
+/// A transformed String with one mapping entry per output Unicode scalar.
+public type Mapped = { mappings : Array Mapping, text : String }
+
+/// Render a stable failure with its optional original byte offset.
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ (match error.offset with
+  | None -> ""
+  | Some offset -> " at byte " ++ Int.toString offset)
+
+internal error : ErrorKind -> String -> Option Int -> Error
+let error kind message offset = { kind = kind, message = message, offset = offset }
+
+internal validate : Limits -> Result Unit Error
+let validate limits =
+  if limits.maxInputBytes < 0 || limits.maxOutputBytes < 0 || limits.maxScalars < 0 || limits.maxSegments < 0 || limits.maxCombining < 0 || limits.maxMappings < 0 || limits.maxWork < 0 then
+    Err (error InvalidOptions "Unicode limits must be nonnegative" None)
+  else
+    Ok ()
+
+/// Unicode White_Space, independent of the compiler's Unicode tables or locale.
+public isWhitespace : Char -> Bool
+let isWhitespace char =
+  let code = Char.toCode char
+  (code >= 9 && code <= 13) || code = 32 || code = 133 || code = 160 || code = 5760 || (code >= 8192 && code <= 8202) || code = 8232 || code = 8233 || code = 8239 || code = 8287 || code = 12288
+
+/// Copy a byte range, rejecting reversed/out-of-bounds/non-scalar boundaries.
+public slice : Span -> String -> Result String Error
+let slice span text =
+  let bytes = Bytes.fromString text
+  let boundary index =
+    index = Bytes.length bytes || (index >= 0 && index < Bytes.length bytes && Int.and (Bytes.unsafeGet index bytes) 192 <> 128)
+  if span.start < 0 || span.end < span.start || span.end > Bytes.length bytes || not (boundary span.start) || not (boundary span.end) then
+    Err (error InvalidSpan "range must name whole UTF-8 scalars within the input" None)
+  else
+    Ok (Option.withDefault "" (Bytes.toString (Bytes.slice span.start span.end bytes)))

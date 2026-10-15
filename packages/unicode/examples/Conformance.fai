@@ -1,0 +1,122 @@
+module UnicodeConformance
+
+let nibble byte =
+  if byte >= 48 && byte <= 57 then
+    byte - 48
+  else if byte >= 97 && byte <= 102 then byte - 87 else -1
+
+let hexFrom bytes index output =
+  if index = Bytes.length bytes then
+    Bytes.toString (Bytes.fromList (List.reverse output))
+  else if index + 1 >= Bytes.length bytes then
+    None
+  else
+    let a = nibble (Bytes.unsafeGet index bytes)
+    let b = nibble (Bytes.unsafeGet (index + 1) bytes)
+    if a < 0 || b < 0 then None else hexFrom bytes (index + 2) ((a * 16 + b) :: output)
+
+let unhex text = hexFrom (Bytes.fromString text) 0 []
+
+renderBoundaries : Array Unicode.Span -> String
+let renderBoundaries spans =
+  let starts = Array.map (fun span -> span.start) spans
+  let end =
+    match Array.get (Array.length spans - 1) spans with
+    | None -> 0
+    | Some span -> span.end
+  String.joinArray "," (Array.map Int.toString (Array.push end starts))
+
+let boundaries result = Result.map renderBoundaries result
+
+let checkBreak words fields =
+  match fields with
+  | [expected, hex] ->
+    match unhex hex with
+    | None -> false
+    | Some input ->
+      boundaries (if words then
+        UnicodeWord.spans input
+      else
+        UnicodeGrapheme.spans input) = Ok expected
+  | _ -> false
+
+let checkFold fields =
+  match fields with
+  | [left, right] ->
+    match (unhex left, unhex right) with
+    | (Some input, Some expected) -> UnicodeCase.fold input = Ok expected
+    | _ -> false
+  | _ -> false
+
+let norm form input expected = UnicodeNormalize.normalize form input = Ok expected
+
+let checkNormalization fields =
+  match List.map unhex fields with
+  | [Some a, Some b, Some c, Some d, Some e] ->
+    let nfc =
+      norm UnicodeNormalize.NFC a b && norm UnicodeNormalize.NFC b b && norm UnicodeNormalize.NFC c b && norm UnicodeNormalize.NFC d d && norm UnicodeNormalize.NFC e d
+    let nfd =
+      norm UnicodeNormalize.NFD a c && norm UnicodeNormalize.NFD b c && norm UnicodeNormalize.NFD c c && norm UnicodeNormalize.NFD d e && norm UnicodeNormalize.NFD e e
+    let nfkc = List.all (fun input -> norm UnicodeNormalize.NFKC input d) [a, b, c, d, e]
+    let nfkd = List.all (fun input -> norm UnicodeNormalize.NFKD input e) [a, b, c, d, e]
+    nfc && nfd && nfkc && nfkd
+  | _ -> false
+
+runLines : Console -> String -> (List String -> Bool) -> List String -> Int -> Int -> (Int * Int) / { Console }
+let runLines console name check lines count failures =
+  match lines with
+  | [] -> (count, failures)
+  | "" :: rest -> runLines console name check rest count failures
+  | line :: rest ->
+    let good = check (String.split "\t" line)
+    let shown =
+      if not good && failures < 10 then
+        console.writeLine ("FAIL " ++ name ++ ":" ++ Int.toString (count + 1) ++ " " ++ line)
+      else
+        ()
+    runLines console name check rest (count + 1) (failures + if good then 0 else 1)
+
+suite : Runtime -> String -> String -> Int -> (List String -> Bool) -> Bool / { Console, FileSystem }
+let suite env root name expected check =
+  match Path.fromString (root ++ "/" ++ name ++ ".tsv") with
+  | Err error ->
+    let shown = env.console.writeLine (Path.errorToString error)
+    false
+  | Ok path ->
+    match File.readText env.fs 16777216 path with
+    | Err error ->
+      let shown = env.console.writeLine (FileSystem.errorToString error)
+      false
+    | Ok text ->
+      let (count, failures) = runLines env.console name check (String.split "\n" text) 0 0
+      let shown =
+        env.console.writeLine (name ++ ": " ++ Int.toString count ++ " cases, " ++ Int.toString failures ++ " failures")
+      count = expected && failures = 0
+
+public main : Runtime -> Unit / { Console, Env, FileSystem }
+let main env =
+  match env.env.args () with
+  | [root] ->
+    let grapheme = suite env root "grapheme" 853 (checkBreak false)
+    let word = suite env root "word" 1944 (checkBreak true)
+    let folding = suite env root "folding" 1606 checkFold
+    let normalization = suite env root "normalization" 20171 checkNormalization
+    env.console.writeLine (if grapheme && word && folding && normalization then
+      "Unicode conformance passed"
+    else
+      "Unicode conformance FAILED")
+  | [root, name] ->
+    let good =
+      if name = "grapheme" then
+        suite env root name 853 (checkBreak false)
+      else if name = "word" then
+        suite env root name 1944 (checkBreak true)
+      else if name = "folding" then
+        suite env root name 1606 checkFold
+      else
+        suite env root "normalization" 20171 checkNormalization
+    env.console.writeLine (if good then
+      "Unicode conformance passed"
+    else
+      "Unicode conformance FAILED")
+  | _ -> env.console.writeLine "expected data directory and optional suite name"

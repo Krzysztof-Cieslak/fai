@@ -1,0 +1,32 @@
+module UnicodeGrapheme
+
+/// Immutable forward cursor; aliases traverse independently under the same budgets.
+public opaque type Cursor = UnicodeBreak.Cursor
+
+/// Prepare extended grapheme segmentation using Unicode 18.0 rules and data.
+public cursorWith : Unicode.Limits -> String -> Result Cursor Unicode.Error
+let cursorWith limits text = UnicodeBreak.create false limits text
+
+/// Prepare a cursor with default limits. No segment array is materialized.
+public cursor : String -> Result Cursor Unicode.Error
+let cursor text = cursorWith Unicode.limits text
+
+/// Read one nonempty segment span and the successor cursor; None is exhaustion.
+public next : Cursor -> Result (Option (Unicode.Span * Cursor)) Unicode.Error
+let next cursor = UnicodeBreak.next cursor
+
+/// Collect nonempty, adjacent byte ranges covering the original text exactly.
+public spansWith : Unicode.Limits -> String -> Result (Array Unicode.Span) Unicode.Error
+let spansWith limits text = UnicodeBreak.spans false limits text
+
+/// Collect extended-grapheme byte ranges with default budgets.
+public spans : String -> Result (Array Unicode.Span) Unicode.Error
+let spans text = spansWith Unicode.limits text
+
+/// Collect grapheme text without changing any original Unicode scalar.
+public segmentsWith : Unicode.Limits -> String -> Result (Array String) Unicode.Error
+let segmentsWith limits text = UnicodeBreak.segments false limits text
+
+/// Collect grapheme text with default budgets; empty input gives an empty array.
+public segments : String -> Result (Array String) Unicode.Error
+let segments text = segmentsWith Unicode.limits text

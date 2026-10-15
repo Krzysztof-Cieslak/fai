@@ -51,6 +51,14 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- The optional Unicode source package owns its Unicode version and generated
+  tables rather than changing compiler string, regex or terminal behavior.
+  Default grapheme/word segmentation, full case folding and normalization remain
+  pure and bounded. Source-mapped transforms report exact original byte ranges
+  per output scalar, including overlapping and nonmonotonic provenance; ordinary
+  transforms omit that metadata. Official data and conformance inputs are
+  checksum-pinned and shipped with their license.
+
 - Decimal arithmetic normalizes coefficients and zero signs so numerical identity
   agrees with equality/hashing. NaN has one reflexive identity; numerical ordering
   explicitly places it after positive infinity. Exact-first arithmetic never

@@ -59,6 +59,17 @@ path = "toml"
 path = "toml"
 
 [[packages]]
+id = "p-16b7093ed4b9c3c9d4b5053da2dd1aed5eb779955f318e7d885b5dfbb630a372"
+version = "0.1.0"
+manifest-fingerprint = "blake3:a72f40a1ae528b250dbaf4305c667e55f2240ed6405ee47e75db33de120c3fb0"
+
+[packages.logical]
+path = "unicode"
+
+[packages.source]
+path = "unicode"
+
+[[packages]]
 id = "p-1a2340da423b8314601ec98ca742e1d607cb080f95e68925f52c2e7cb3fe368d"
 version = "0.1.0"
 manifest-fingerprint = "blake3:677d75a737e36ad51e76b402d3c1ef3a00510cf5162c5617c98f353e3312ad65"
@@ -3251,6 +3262,39 @@ from = "p-98c860c8c64110a36386d2427cd322d08c0fa283a54351c5f7923d5a9a244699"
 alias = "encoding"
 kind = "normal"
 to = "p-b1faf26774164a1fad217878e7aa719c7ef4dd4a451202461f590791a402bc3f"
+
+[[graphs]]
+id = "g-ee61c8c7d8ac1730168ed37bb3239bd8b67422dede1921c0cd54891ee76a0d54"
+root = "unicode"
+target = "aarch64-apple-darwin"
+root-package = "p-16b7093ed4b9c3c9d4b5053da2dd1aed5eb779955f318e7d885b5dfbb630a372"
+input-fingerprint = "blake3:0467b15bd5cd5d13f42470f9cd05fa478848e4c39f96682087a8ada4ced1a180"
+packages = ["p-16b7093ed4b9c3c9d4b5053da2dd1aed5eb779955f318e7d885b5dfbb630a372"]
+edges = []
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs]]
+id = "g-4e24d5f4e60baead18d072494d9070714216fe4d3f0d5201098c87126e0b44c1"
+root = "unicode"
+target = "x86_64-pc-windows-msvc"
+root-package = "p-16b7093ed4b9c3c9d4b5053da2dd1aed5eb779955f318e7d885b5dfbb630a372"
+input-fingerprint = "blake3:11613da43fc0e4cb114fe13f92c5d1745d69c4a63e5ce617916a365317ad66a2"
+packages = ["p-16b7093ed4b9c3c9d4b5053da2dd1aed5eb779955f318e7d885b5dfbb630a372"]
+edges = []
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs]]
+id = "g-71736b72bf7293956144bdeb68fee20a0cf9835c7ba3a643167e18e5a0ee0f52"
+root = "unicode"
+target = "x86_64-unknown-linux-gnu"
+root-package = "p-16b7093ed4b9c3c9d4b5053da2dd1aed5eb779955f318e7d885b5dfbb630a372"
+input-fingerprint = "blake3:df68e1335f750217d7560aa5a23c53939c2e526e19a7277054d64cd5dc605fdf"
+packages = ["p-16b7093ed4b9c3c9d4b5053da2dd1aed5eb779955f318e7d885b5dfbb630a372"]
+edges = []
+branches = []
+resolved-with = "0.0.1"
 
 [[graphs]]
 id = "g-2cd4e541eb8b16cc41077827dfbbeaf2c276f4ccb6a403301b6c4c2f0f073b95"

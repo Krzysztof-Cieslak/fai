@@ -1,0 +1,157 @@
+module UnicodeInternal
+
+internal type Atom = { code : Int, sources : List Unicode.Span }
+
+internal width : Int -> Int
+let width code = if code < 128 then 1 else if code < 2048 then 2 else if code < 65536 then 3 else 4
+
+// Every input is a Fai String: UTF-8 validity is already guaranteed.
+internal read : Bytes -> Int -> (Int * Int)
+let read bytes index =
+  let first = Bytes.unsafeGet index bytes
+  if first < 128 then
+    (first, index + 1)
+  else
+    let b1 = Bytes.unsafeGet (index + 1) bytes - 128
+    if first < 224 then
+      ((first - 192) * 64 + b1, index + 2)
+    else
+      let b2 = Bytes.unsafeGet (index + 2) bytes - 128
+      if first < 240 then
+        ((first - 224) * 4096 + b1 * 64 + b2, index + 3)
+      else
+        ((first - 240) * 262144 + b1 * 4096 + b2 * 64 + Bytes.unsafeGet (index + 3) bytes - 128, index + 4)
+
+internal field : Bytes -> Int -> Int
+let field table offset =
+  Bytes.unsafeGet offset table - 32 + (Bytes.unsafeGet (offset + 1) table - 32) * 64 + (Bytes.unsafeGet (offset + 2) table - 32) * 4096 + (Bytes.unsafeGet (offset + 3) table - 32) * 262144
+
+let rangeSearch table code low high =
+  if low >= high then
+    0
+  else
+    let middle = low + (high - low) / 2
+    let offset = middle * 12
+    if code < field table offset then
+      rangeSearch table code low middle
+    else if code > field table (offset + 4) then
+      rangeSearch table code (middle + 1) high
+    else
+      field table (offset + 8)
+
+internal property : Bytes -> Int -> Int
+let property table code = rangeSearch table code 0 (Bytes.length table / 12)
+
+let keySearch table stride code low high =
+  if low >= high then
+    -1
+  else
+    let middle = low + (high - low) / 2
+    let key = field table (middle * stride)
+    if code < key then
+      keySearch table stride code low middle
+    else if code > key then keySearch table stride code (middle + 1) high else middle * stride
+
+internal lookup : Bytes -> Int -> Int -> Int
+let lookup table stride code = keySearch table stride code 0 (Bytes.length table / stride)
+
+internal charge : Int -> Int -> Result Int Unicode.Error
+let charge remaining amount =
+  if amount > remaining then
+    Err (Unicode.error Unicode.WorkLimit "Unicode work limit exceeded" None)
+  else
+    Ok (remaining - amount)
+
+internal input : Unicode.Limits -> String -> Result Bytes Unicode.Error
+let input limits text =
+  match Unicode.validate limits with
+  | Err error -> Err error
+  | Ok _ ->
+    let bytes = Bytes.fromString text
+    if Bytes.length bytes > limits.maxInputBytes then
+      Err (Unicode.error Unicode.InputLimit "Unicode input byte limit exceeded" None)
+    else
+      Ok bytes
+
+let decodeFrom limits mapped bytes position remaining output =
+  if position = Bytes.length bytes then
+    Ok (output, remaining)
+  else if Array.length output >= limits.maxScalars then
+    Err (Unicode.error Unicode.ScalarLimit "Unicode scalar limit exceeded" (Some position))
+  else
+    match charge remaining 1 with
+    | Err error -> Err error
+    | Ok remaining ->
+      let (code, finish) = read bytes position
+      let sources = if mapped then [{ end = finish, start = position }] else []
+      decodeFrom limits mapped bytes finish remaining (Array.push {
+        code = code,
+        sources = sources
+      } output)
+
+internal decode : Unicode.Limits -> Bool -> String -> Result (Array Atom * Int) Unicode.Error
+let decode limits mapped text =
+  match input limits text with
+  | Err error -> Err error
+  | Ok bytes -> decodeFrom limits mapped bytes 0 limits.maxWork Array.empty
+
+let appendUtf8 code bytes =
+  if code < 128 then
+    code :: bytes
+  else if code < 2048 then
+    (128 + code % 64) :: (192 + code / 64) :: bytes
+  else if code < 65536 then
+    (128 + code % 64) :: (128 + code / 64 % 64) :: (224 + code / 4096) :: bytes
+  else
+    (128 + code % 64) :: (128 + code / 64 % 64) :: (128 + code / 4096 % 64) :: (240 + code / 262144) :: bytes
+
+mergeSpans : List Unicode.Span -> Unicode.Span -> List Unicode.Span -> Array Unicode.Span
+let mergeSpans rest current output =
+  match rest with
+  | [] -> Array.fromList (List.reverse (current :: output))
+  | span :: tail ->
+    if span.start <= current.end then
+      mergeSpans tail {
+        end = if span.end > current.end then span.end else current.end,
+        start = current.start
+      } output
+    else
+      mergeSpans tail span (current :: output)
+
+sources : List Unicode.Span -> Array Unicode.Span
+let sources spans =
+  match List.sortBy (fun a b -> compare (a.start, a.end) (b.start, b.end)) spans with
+  | [] -> Array.empty
+  | head :: rest -> mergeSpans rest head []
+
+renderFrom : Unicode.Limits -> Bool -> Array Atom -> Int -> Int -> List Int -> Array Unicode.Mapping -> Int -> Int -> Result Unicode.Mapped Unicode.Error
+let renderFrom limits mapped atoms index offset bytes mappings entries remaining =
+  if index = Array.length atoms then
+    Ok {
+      mappings = mappings,
+      text = Option.withDefault "" (Bytes.toString (Bytes.fromList (List.reverse bytes)))
+    }
+  else
+    let atom = Array.unsafeGet index atoms
+    let finish = offset + width atom.code
+    if finish > limits.maxOutputBytes then
+      Err (Unicode.error Unicode.OutputLimit "Unicode output byte limit exceeded" None)
+    else
+      match charge remaining (1 + List.length atom.sources) with
+      | Err error -> Err error
+      | Ok remaining ->
+        let origins = if mapped then sources atom.sources else Array.empty
+        let entries = entries + (if mapped then 1 + Array.length origins else 0)
+        if entries > limits.maxMappings then
+          Err (Unicode.error Unicode.MappingLimit "Unicode source mapping limit exceeded" None)
+        else
+          let mappings =
+            if mapped then
+              Array.push { output = { end = finish, start = offset }, sources = origins } mappings
+            else
+              mappings
+          renderFrom limits mapped atoms (index + 1) finish (appendUtf8 atom.code bytes) mappings entries remaining
+
+internal render : Unicode.Limits -> Bool -> Array Atom -> Int -> Result Unicode.Mapped Unicode.Error
+let render limits mapped atoms remaining =
+  renderFrom limits mapped atoms 0 0 [] Array.empty 0 remaining

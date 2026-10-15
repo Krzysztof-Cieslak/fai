@@ -1,0 +1,60 @@
+module UnicodeCase
+
+emit : Unicode.Limits -> Bytes -> Int -> Int -> List Unicode.Span -> Int -> Array UnicodeInternal.Atom -> Int -> Result (Array UnicodeInternal.Atom * Int) Unicode.Error
+let emit limits values first count source index output remaining =
+  if index = count then
+    Ok (output, remaining)
+  else if Array.length output >= limits.maxScalars then
+    Err (Unicode.error Unicode.ScalarLimit "case folding exceeds scalar limit" None)
+  else
+    match UnicodeInternal.charge remaining 1 with
+    | Err error -> Err error
+    | Ok remaining ->
+      let atom = { code = UnicodeInternal.field values ((first + index) * 4), sources = source }
+      emit limits values first count source (index + 1) (Array.push atom output) remaining
+
+foldAtoms : Unicode.Limits -> Bytes -> Bytes -> Array UnicodeInternal.Atom -> Int -> Array UnicodeInternal.Atom -> Int -> Result (Array UnicodeInternal.Atom * Int) Unicode.Error
+let foldAtoms limits keys values atoms index output remaining =
+  if index = Array.length atoms then
+    Ok (output, remaining)
+  else
+    let atom = Array.unsafeGet index atoms
+    match UnicodeInternal.charge remaining 32 with
+    | Err error -> Err error
+    | Ok remaining ->
+      let found = UnicodeInternal.lookup keys 12 atom.code
+      let next =
+        if found < 0 then
+          if Array.length output >= limits.maxScalars then
+            Err (Unicode.error Unicode.ScalarLimit "case folding exceeds scalar limit" None)
+          else
+            Ok (Array.push atom output, remaining)
+        else
+          emit limits values (UnicodeInternal.field keys (found + 4)) (UnicodeInternal.field keys (found + 8)) atom.sources 0 output remaining
+      match next with
+      | Err error -> Err error
+      | Ok (output, remaining) -> foldAtoms limits keys values atoms (index + 1) output remaining
+
+let transform limits mapped text =
+  match UnicodeInternal.decode limits mapped text with
+  | Err error -> Err error
+  | Ok (atoms, remaining) ->
+    match foldAtoms limits (UnicodeTables.folds ()) (UnicodeTables.folded ()) atoms 0 Array.empty remaining with
+    | Err error -> Err error
+    | Ok (atoms, remaining) -> UnicodeInternal.render limits mapped atoms remaining
+
+/// Unicode default full case folding, without normalization or locale tailoring.
+public foldWith : Unicode.Limits -> String -> Result String Unicode.Error
+let foldWith limits text = Result.map (fun result -> result.text) (transform limits false text)
+
+/// Full case folding with the package's default resource budgets.
+public fold : String -> Result String Unicode.Error
+let fold text = foldWith Unicode.limits text
+
+/// Full case folding with exact original-byte provenance for each output scalar.
+public foldMappedWith : Unicode.Limits -> String -> Result Unicode.Mapped Unicode.Error
+let foldMappedWith limits text = transform limits true text
+
+/// Mapped full case folding with default budgets.
+public foldMapped : String -> Result Unicode.Mapped Unicode.Error
+let foldMapped text = foldMappedWith Unicode.limits text

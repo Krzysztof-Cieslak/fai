@@ -1,0 +1,17 @@
+{
+  "unicodeVersion": "18.0.0",
+  "baseUrl": "https://www.unicode.org/Public/18.0.0/ucd/",
+  "sha256": {
+    "UnicodeData.txt": "0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950",
+    "DerivedCoreProperties.txt": "09c928886a178fcafd93c29e4bd59073a058e5a100b716d425cb563ab50f68c9",
+    "DerivedNormalizationProps.txt": "98ac7f67d985fe781e317f6182e885e94cabb0c314769e6dd73e48b226931ccd",
+    "CaseFolding.txt": "a004797658a457bec4dc11683e39f69249ea3b595b752dbea6721c4c9f587b0d",
+    "PropList.txt": "f438f532e8737bb8a2702126cdf9c4af5e357c58c7acf9d9eb2fc7c1a1d955d6",
+    "auxiliary/GraphemeBreakProperty.txt": "0839dcb79e4ac639ecd538b1abf7c9d22e3f9dd265b7e182d33627aa4d75b45a",
+    "auxiliary/WordBreakProperty.txt": "8dbfa17063e11084201f33c3e76d485d3b9166930c71db8e39ed1c9234171aec",
+    "emoji/emoji-data.txt": "80d00f8e616a0ef27fd6b8de3b758c06383b5d917e2977709578e68baf733bf1",
+    "auxiliary/GraphemeBreakTest.txt": "b0cf047ee94485bbdc846de2b902f5f8a815f6b674f9d04223cddadd91c9df31",
+    "auxiliary/WordBreakTest.txt": "3dd70c071781276067c680d87303f60434adce7b067bd063194af374edad86a5",
+    "NormalizationTest.txt": "25a50d816764b04abfb4a646d3eb2b2a803284c3873d9a06757b94fe4513dde3"
+  }
+}
