@@ -7,10 +7,11 @@ Fai is built around one idea: **code should be easy to reason about and verify**
 — for humans and for AI agents alike. Every design choice serves that goal, from
 effects you can see in a type to specifications the compiler checks for you.
 
-**Early release:** language and library APIs may change. Use a
-[project toolchain pin](docs/INSTALLATION.md#updates-and-side-by-side-compilers)
-to keep a chosen compiler version, and consult the [release notes](changelog.md)
-when upgrading.
+> [!IMPORTANT]
+> **Early release:** language and library APIs may change. Use a
+> [project toolchain pin](docs/INSTALLATION.md#updates-and-side-by-side-compilers)
+> to keep a chosen compiler version, and consult the [release notes](changelog.md)
+> when upgrading.
 
 ## Install
 
