@@ -1,39 +1,27 @@
 # Fai — CLI Reference
 
-> **Status:** `fai check`, `fai fmt`, and the `fai query` family are implemented,
-> as are `fai build` and `fai run` for the native subset (`Int`/`Bool`/`String`,
-> functions, `let`, `if`, arithmetic, and `Console.writeLine` via `main`):
-> `fai build` produces a native executable. The per-workspace **daemon is
-> implemented**: `check`, `query`, `fmt`, and `build` route through a warm
-> `fai-server` (auto-spawned; `--no-daemon` and graceful in-process fallback both
-> work), managed via `fai daemon status|start|stop|restart`, and backed by an
-> on-disk content-addressed object cache. **`fai run` is daemon-supervised**: the
-> warm front end ships a portable IR bundle to an isolated worker that JITs and
-> runs it, with streamed output, a wall-clock timeout (exit `124`), and a
-> self-imposed CPU limit; the daemon survives a runaway worker. Read commands are
-> served **concurrently** (cloned database snapshots run off-lock) and an input
-> change **cancels** in-flight reads, which retry on the new revision. One
-> simplification versus the full spec below: the daemon returns each non-streaming
-> command's **already-rendered** stdout/stderr rather than structured per-method
-> results, so warm output is byte-identical to a one-shot run. **`fai test` is
-> implemented**:
-> it collects the `example`/`forall` contracts, synthesizes a property-testing
-> harness per contract using the dogfooded `std/testing/Test.fai` library, and checks each
-> in a **supervised isolated worker** (the same machinery as `fai run`) — so a
-> generated input that drives a body into a runtime trap (e.g. division by zero)
-> fails *that contract* as a located **`FAI6003`** and the run continues (the
-> supervisor records the abort and resumes after it). Failures are located
-> `FAI6001` diagnostics with a shrunk counterexample (an ungeneratable binder is
-> `FAI6002`); it takes `[path]`/`--match`/`--seed`/`--count`/`--max-size`, and
-> generates values for built-in types, records, and (recursive) ADTs. The daemon
-> serves `fai test`, streaming per-contract results as `$/testEvent`; warm output
-> matches `--no-daemon` apart from elapsed time. `fai daemon tap` streams a live JSON decode
-> of the workspace daemon's traffic for debugging. The daemon and worker run on
-> Linux, macOS, and Windows — each covered in CI, including the named-pipe
-> transport and the daemon end-to-end suite — and the worker's resource limits are
-> enforced by `setrlimit` on Unix and a Job Object on Windows. See `AGENTS.md` for
-> project conventions, `docs/MEMORY.md` for the design decisions, the issue
-> tracker for the roadmap, and the `samples/` directory for the language itself.
+The CLI creates projects, manages dependencies, checks and formats source, builds
+native executables, runs programs and tests, and provides editor intelligence.
+`fai build` uses ahead-of-time compilation; `fai run` and `fai test` use JIT
+compilation in supervised workers. `fai check` also evaluates closed examples by
+default; use `--no-examples` for type checking alone. `fai test` runs both inline
+`example`/`forall` contracts and named test suites, including generated properties
+with shrinking.
+
+Development commands normally share a warm per-workspace daemon and an on-disk
+object cache. `--no-daemon` selects in-process command handling; program and test
+execution still use isolated workers. Read requests use database snapshots, with
+in-flight work cancelled and retried when source changes. The daemon and worker
+support Linux, macOS, and Windows. Non-streaming daemon replies carry rendered
+stdout/stderr; test results stream as `$/testEvent` notifications. The command and
+protocol sections below document flags, outputs, resource limits, and failure
+behavior.
+
+Start with the [README quick start](../README.md#hello-fai),
+[installation guide](INSTALLATION.md), and [language examples](../samples/) if you
+are new to Fai. Compiler upgrades (`fai upgrade`) and launcher management are
+described in the installation guide; `fai update` below updates project
+dependencies.
 
 ---
 
