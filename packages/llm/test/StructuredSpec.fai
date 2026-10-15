@@ -12,23 +12,72 @@ let response text = { LlmTypes.emptyResponse LlmTypes.OpenAI with
   blocks = [LlmTypes.TextBlock "text" text],
   finish = LlmTypes.Completed
 }
-example: (Llm.decodeStructured schema (response "{\"name\":\"test\",\"count\":3}") |> Result.map (fun result ->
-  result.value)) = Ok { count = 3, name = "test" }
-example: Llm.decodeStructured schema (response "{\"name\":\"test\",\"count\":3,\"extra\":true}") |> Result.isErr
-example: Llm.decodeStructured schema (response "{\"name\":\"test\",\"count\":1e100}") |> Result.isErr
-example: Llm.decodeStructured schema { response "{partial" with
-  finish = LlmTypes.Incomplete "max_tokens"
-} |> Result.isErr
-example: Llm.decodeStructured schema { response "refused" with
-  finish = LlmTypes.Refused
-} |> Result.isErr
-example: LlmSchema.decode (LlmSchema.field "optional" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object [
-  ("optional", Json.Null)
-]) = Ok None
-example: LlmSchema.decode (LlmSchema.field "optional" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object []) |> Result.isErr
+
+let case001 _ =
+  let testActual =
+    (Llm.decodeStructured schema (response "{\"name\":\"test\",\"count\":3}") |> Result.map (fun result ->
+      result.value)) = Ok { count = 3, name = "test" }
+  Expect.isTrue "(Llm.decodeStructured schema (response \"{\\\"name\\\":\\\"test\\\",\\\"count\\\":3}\") |> Result.map (fun result -> result.value)) = Ok { count = 3, name = \"test\" }" testActual
+
+let case002 _ =
+  let testActual =
+    Llm.decodeStructured schema (response "{\"name\":\"test\",\"count\":3,\"extra\":true}") |> Result.isErr
+  Expect.isTrue "Llm.decodeStructured schema (response \"{\\\"name\\\":\\\"test\\\",\\\"count\\\":3,\\\"extra\\\":true}\") |> Result.isErr" testActual
+
+let case003 _ =
+  let testActual =
+    Llm.decodeStructured schema (response "{\"name\":\"test\",\"count\":1e100}") |> Result.isErr
+  Expect.isTrue "Llm.decodeStructured schema (response \"{\\\"name\\\":\\\"test\\\",\\\"count\\\":1e100}\") |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual =
+    Llm.decodeStructured schema { response "{partial" with
+      finish = LlmTypes.Incomplete "max_tokens"
+    } |> Result.isErr
+  Expect.isTrue "Llm.decodeStructured schema { response \"{partial\" with finish = LlmTypes.Incomplete \"max_tokens\" } |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    Llm.decodeStructured schema { response "refused" with
+      finish = LlmTypes.Refused
+    } |> Result.isErr
+  Expect.isTrue "Llm.decodeStructured schema { response \"refused\" with finish = LlmTypes.Refused } |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual =
+    LlmSchema.decode (LlmSchema.field "optional" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object [
+      ("optional", Json.Null)
+    ]) = Ok None
+  Expect.isTrue "LlmSchema.decode (LlmSchema.field \"optional\" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object [ (\"optional\", Json.Null) ]) = Ok None" testActual
+
+let case007 _ =
+  let testActual =
+    LlmSchema.decode (LlmSchema.field "optional" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object []) |> Result.isErr
+  Expect.isTrue "LlmSchema.decode (LlmSchema.field \"optional\" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object []) |> Result.isErr" testActual
 
 let positive =
   LlmSchema.field "count" (LlmSchema.refine (fun n ->
     if n > 0 then Ok n else Err "positive count required") LlmSchema.int)
-example: LlmSchema.decode positive (LlmJson.object [("count", LlmJson.integer 0)]) |> Result.isErr
-example: LlmSchema.describe positive = LlmSchema.describe (LlmSchema.field "count" LlmSchema.int)
+
+let case008 _ =
+  let testActual =
+    LlmSchema.decode positive (LlmJson.object [("count", LlmJson.integer 0)]) |> Result.isErr
+  Expect.isTrue "LlmSchema.decode positive (LlmJson.object [(\"count\", LlmJson.integer 0)]) |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual =
+    LlmSchema.describe positive = LlmSchema.describe (LlmSchema.field "count" LlmSchema.int)
+  Expect.isTrue "LlmSchema.describe positive = LlmSchema.describe (LlmSchema.field \"count\" LlmSchema.int)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LlmStructuredSpec" [
+  Test.test "(Llm.decodeStructured schema (response \"{\\\"name\\\":\\\"test\\\",\\\"count\\\":3}\") |> Result.map (fun result -> result.value)) = Ok { count = 3, name = \"test\" }" case001,
+  Test.test "Llm.decodeStructured schema (response \"{\\\"name\\\":\\\"test\\\",\\\"count\\\":3,\\\"extra\\\":true}\") |> Result.isErr" case002,
+  Test.test "Llm.decodeStructured schema (response \"{\\\"name\\\":\\\"test\\\",\\\"count\\\":1e100}\") |> Result.isErr" case003,
+  Test.test "Llm.decodeStructured schema { response \"{partial\" with finish = LlmTypes.Incomplete \"max_tokens\" } |> Result.isErr" case004,
+  Test.test "Llm.decodeStructured schema { response \"refused\" with finish = LlmTypes.Refused } |> Result.isErr" case005,
+  Test.test "LlmSchema.decode (LlmSchema.field \"optional\" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object [ (\"optional\", Json.Null) ]) = Ok None" case006,
+  Test.test "LlmSchema.decode (LlmSchema.field \"optional\" (LlmSchema.nullable LlmSchema.int)) (LlmJson.object []) |> Result.isErr" case007,
+  Test.test "LlmSchema.decode positive (LlmJson.object [(\"count\", LlmJson.integer 0)]) |> Result.isErr" case008,
+  Test.test "LlmSchema.describe positive = LlmSchema.describe (LlmSchema.field \"count\" LlmSchema.int)" case009
+]

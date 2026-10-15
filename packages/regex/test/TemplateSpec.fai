@@ -7,28 +7,78 @@ let replace pattern template input =
     match RegexTemplate.compile regex template with
     | Err error -> Err error
     | Ok template -> RegexTemplate.replaceAll template input
-example: replace "(?<year>[0-9]{4})-([0-9]{2})" "$2/${year}" "2026-10" = Ok "10/2026"
-example: replace "(a)?b" "<$1>$$" "b ab" = Ok "<>$ <a>$"
-example: replace "a" "$0" "abc" = Ok "abc"
-example: replace "a" "${missing}" "no match" |> Result.isErr
-example: replace "a" "${" "a" |> Result.isErr
-example: replace "a" "$" "a" |> Result.isErr
-example: replace "a" "$999999999999999999999999" "a" |> Result.isErr
-example: replace "a" "${18446744073709551616}" "a" |> Result.isErr
-example: replace "a" (RegexTemplate.escape "$1") "a" = Ok "$1"
-example: (match Regex.compile "a" with
-| Err _ -> false
-| Ok regex ->
-  RegexTemplate.compileWith { RegexTemplate.options with
-    maxParts = 0
-  } regex "text" |> Result.isErr)
-example: (match RegexBytes.compile "(.)" with
-| Err _ -> false
-| Ok regex ->
-  (match RegexTemplate.compileBytes regex (Bytes.fromList [255, 36, 49]) with
-  | Err _ -> false
-  | Ok template ->
-    RegexTemplate.replaceAllBytes template (Bytes.fromList [
-      1,
-      2
-    ]) = Ok (Bytes.fromList [255, 1, 255, 2])))
+
+let case001 _ =
+  let testActual = replace "(?<year>[0-9]{4})-([0-9]{2})" "$2/${year}" "2026-10" = Ok "10/2026"
+  Expect.isTrue "replace \"(?<year>[0-9]{4})-([0-9]{2})\" \"$2/${year}\" \"2026-10\" = Ok \"10/2026\"" testActual
+
+let case002 _ =
+  let testActual = replace "(a)?b" "<$1>$$" "b ab" = Ok "<>$ <a>$"
+  Expect.isTrue "replace \"(a)?b\" \"<$1>$$\" \"b ab\" = Ok \"<>$ <a>$\"" testActual
+
+let case003 _ =
+  let testActual = replace "a" "$0" "abc" = Ok "abc"
+  Expect.isTrue "replace \"a\" \"$0\" \"abc\" = Ok \"abc\"" testActual
+
+let case004 _ =
+  let testActual = replace "a" "${missing}" "no match" |> Result.isErr
+  Expect.isTrue "replace \"a\" \"${missing}\" \"no match\" |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual = replace "a" "${" "a" |> Result.isErr
+  Expect.isTrue "replace \"a\" \"${\" \"a\" |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual = replace "a" "$" "a" |> Result.isErr
+  Expect.isTrue "replace \"a\" \"$\" \"a\" |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual = replace "a" "$999999999999999999999999" "a" |> Result.isErr
+  Expect.isTrue "replace \"a\" \"$999999999999999999999999\" \"a\" |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual = replace "a" "${18446744073709551616}" "a" |> Result.isErr
+  Expect.isTrue "replace \"a\" \"${18446744073709551616}\" \"a\" |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual = replace "a" (RegexTemplate.escape "$1") "a" = Ok "$1"
+  Expect.isTrue "replace \"a\" (RegexTemplate.escape \"$1\") \"a\" = Ok \"$1\"" testActual
+
+let case010 _ =
+  let testActual =
+    (match Regex.compile "a" with
+    | Err _ -> false
+    | Ok regex ->
+      RegexTemplate.compileWith { RegexTemplate.options with
+        maxParts = 0
+      } regex "text" |> Result.isErr)
+  Expect.isTrue "(match Regex.compile \"a\" with | Err _ -> false | Ok regex -> RegexTemplate.compileWith { RegexTemplate.options with maxParts = 0 } regex \"text\" |> Result.isErr)" testActual
+
+let case011 _ =
+  let testActual =
+    (match RegexBytes.compile "(.)" with
+    | Err _ -> false
+    | Ok regex ->
+      (match RegexTemplate.compileBytes regex (Bytes.fromList [255, 36, 49]) with
+      | Err _ -> false
+      | Ok template ->
+        RegexTemplate.replaceAllBytes template (Bytes.fromList [
+          1,
+          2
+        ]) = Ok (Bytes.fromList [255, 1, 255, 2])))
+  Expect.isTrue "(match RegexBytes.compile \"(.)\" with | Err _ -> false | Ok regex -> (match RegexTemplate.compileBytes regex (Bytes.fromList [255, 36, 49]) with | Err _ -> fa…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "RegexTemplateSpec" [
+  Test.test "replace \"(?<year>[0-9]{4})-([0-9]{2})\" \"$2/${year}\" \"2026-10\" = Ok \"10/2026\"" case001,
+  Test.test "replace \"(a)?b\" \"<$1>$$\" \"b ab\" = Ok \"<>$ <a>$\"" case002,
+  Test.test "replace \"a\" \"$0\" \"abc\" = Ok \"abc\"" case003,
+  Test.test "replace \"a\" \"${missing}\" \"no match\" |> Result.isErr" case004,
+  Test.test "replace \"a\" \"${\" \"a\" |> Result.isErr" case005,
+  Test.test "replace \"a\" \"$\" \"a\" |> Result.isErr" case006,
+  Test.test "replace \"a\" \"$999999999999999999999999\" \"a\" |> Result.isErr" case007,
+  Test.test "replace \"a\" \"${18446744073709551616}\" \"a\" |> Result.isErr" case008,
+  Test.test "replace \"a\" (RegexTemplate.escape \"$1\") \"a\" = Ok \"$1\"" case009,
+  Test.test "(match Regex.compile \"a\" with | Err _ -> false | Ok regex -> RegexTemplate.compileWith { RegexTemplate.options with maxParts = 0 } regex \"text\" |> Result.isErr)" case010,
+  Test.test "(match RegexBytes.compile \"(.)\" with | Err _ -> false | Ok regex -> (match RegexTemplate.compileBytes regex (Bytes.fromList [255, 36, 49]) with | Err _ -> fa…" case011
+]

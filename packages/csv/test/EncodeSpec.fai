@@ -4,53 +4,98 @@ let render values =
   match Csv.record values with
   | Err error -> Err error
   | Ok record -> CsvEncode.renderRecord record
-example: render [| "a", "b" |] = Ok "a,b\r\n"
-example: render [| "a,b", "a\"b", "line\r\nline" |] = Ok "\"a,b\",\"a\"\"b\",\"line\r\nline\"\r\n"
-example: render [| "" |] = Ok "\r\n"
-example: render [| "\u{feff}literal" |] = Ok "\"\u{feff}literal\"\r\n"
-example: (match Csv.record [| "a" |] with
-| Ok record ->
-  CsvEncode.toStringWith { CsvEncode.options with
-    ending = CsvTypes.Lf,
-    quoting = CsvWrite.Always
-  } [| record |] = Ok "\"a\"\n"
-| _ -> false)
-example: CsvEncode.toStringWith { CsvEncode.options with emitBom = true } [||] = Ok "\u{feff}"
-example: (match Csv.record [| "\"" |] with
-| Ok record ->
-  CsvEncode.toStringWith { CsvEncode.options with
-    limits = { CsvTypes.limits with maxRecordBytes = 3 }
-  } [| record |] |> Result.isErr
-| _ -> false)
-example: (match Csv.record [| "a" |] with
-| Ok record ->
-  CsvEncode.toStringWith { CsvEncode.options with
-    maxBufferedBytes = 2
-  } [| record |] |> Result.isErr
-| _ -> false)
+
+let case001 _ =
+  let testActual = render [| "a", "b" |] = Ok "a,b\r\n"
+  Expect.isTrue "render [| \"a\", \"b\" |] = Ok \"a,b\\r\\n\"" testActual
+
+let case002 _ =
+  let testActual =
+    render [| "a,b", "a\"b", "line\r\nline" |] = Ok "\"a,b\",\"a\"\"b\",\"line\r\nline\"\r\n"
+  Expect.isTrue "render [| \"a,b\", \"a\\\"b\", \"line\\r\\nline\" |] = Ok \"\\\"a,b\\\",\\\"a\\\"\\\"b\\\",\\\"line\\r\\nline\\\"\\r\\n\"" testActual
+
+let case003 _ =
+  let testActual = render [| "" |] = Ok "\r\n"
+  Expect.isTrue "render [| \"\" |] = Ok \"\\r\\n\"" testActual
+
+let case004 _ =
+  let testActual = render [| "\u{feff}literal" |] = Ok "\"\u{feff}literal\"\r\n"
+  Expect.isTrue "render [| \"\\u{feff}literal\" |] = Ok \"\\\"\\u{feff}literal\\\"\\r\\n\"" testActual
+
+let case005 _ =
+  let testActual =
+    (match Csv.record [| "a" |] with
+    | Ok record ->
+      CsvEncode.toStringWith { CsvEncode.options with
+        ending = CsvTypes.Lf,
+        quoting = CsvWrite.Always
+      } [| record |] = Ok "\"a\"\n"
+    | _ -> false)
+  Expect.isTrue "(match Csv.record [| \"a\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with ending = CsvTypes.Lf, quoting = CsvWrite.Always } [| record |…" testActual
+
+let case006 _ =
+  let testActual =
+    CsvEncode.toStringWith { CsvEncode.options with emitBom = true } [||] = Ok "\u{feff}"
+  Expect.isTrue "CsvEncode.toStringWith { CsvEncode.options with emitBom = true } [||] = Ok \"\\u{feff}\"" testActual
+
+let case007 _ =
+  let testActual =
+    (match Csv.record [| "\"" |] with
+    | Ok record ->
+      CsvEncode.toStringWith { CsvEncode.options with
+        limits = { CsvTypes.limits with maxRecordBytes = 3 }
+      } [| record |] |> Result.isErr
+    | _ -> false)
+  Expect.isTrue "(match Csv.record [| \"\\\"\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with limits = { CsvTypes.limits with maxRecordBytes = 3 } } [| re…" testActual
+
+let case008 _ =
+  let testActual =
+    (match Csv.record [| "a" |] with
+    | Ok record ->
+      CsvEncode.toStringWith { CsvEncode.options with
+        maxBufferedBytes = 2
+      } [| record |] |> Result.isErr
+    | _ -> false)
+  Expect.isTrue "(match Csv.record [| \"a\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with maxBufferedBytes = 2 } [| record |] |> Result.isErr | _ -> fa…" testActual
 
 let people = CsvEncode.schema [|
   CsvEncode.column "name" CsvEncode.string (fun person -> person.name),
   CsvEncode.column "age" CsvEncode.int (fun person -> person.age)
 |]
-example: (match people with
-| Ok encoder ->
-  (match CsvEncode.encode encoder { age = 42, name = "A,B" } with
-  | Ok record ->
-    CsvEncode.toString [| CsvEncode.header encoder, record |] = Ok "name,age\r\n\"A,B\",42\r\n"
-  | _ -> false)
-| _ -> false)
-example: CsvEncode.renderValue CsvEncode.float (Float.fromBits 0x7ff0000000000000) |> Result.isErr
-example: CsvEncode.schema [|
-  CsvEncode.column "a" CsvEncode.int identity,
-  CsvEncode.column "a" CsvEncode.int identity
-|] |> Result.isErr
+
+let case009 _ =
+  let testActual =
+    (match people with
+    | Ok encoder ->
+      (match CsvEncode.encode encoder { age = 42, name = "A,B" } with
+      | Ok record ->
+        CsvEncode.toString [| CsvEncode.header encoder, record |] = Ok "name,age\r\n\"A,B\",42\r\n"
+      | _ -> false)
+    | _ -> false)
+  Expect.isTrue "(match people with | Ok encoder -> (match CsvEncode.encode encoder { age = 42, name = \"A,B\" } with | Ok record -> CsvEncode.toString [| CsvEncode.header enco…" testActual
+
+let case010 _ =
+  let testActual =
+    CsvEncode.renderValue CsvEncode.float (Float.fromBits 0x7ff0000000000000) |> Result.isErr
+  Expect.isTrue "CsvEncode.renderValue CsvEncode.float (Float.fromBits 0x7ff0000000000000) |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual =
+    CsvEncode.schema [|
+      CsvEncode.column "a" CsvEncode.int identity,
+      CsvEncode.column "a" CsvEncode.int identity
+    |] |> Result.isErr
+  Expect.isTrue "CsvEncode.schema [| CsvEncode.column \"a\" CsvEncode.int identity, CsvEncode.column \"a\" CsvEncode.int identity |] |> Result.isErr" testActual
 
 let roundTrip text =
   match render [| text |] with
   | Err _ -> false
   | Ok output -> Result.map (Array.map Csv.fields) (Csv.parse output) = Ok [| [| text |] |]
-forall text: roundTrip text
+
+let case012 testInput =
+  let text = testInput
+  let testActual = roundTrip text
+  Expect.isTrue "property: roundTrip text" testActual
 
 let byteRoundTrip values =
   let bytes = Bytes.fromList values
@@ -61,25 +106,41 @@ let byteRoundTrip values =
     | Err _ -> false
     | Ok encoded ->
       Result.map (Array.map CsvBytes.fields) (CsvBytes.parse encoded) = Ok [| [| bytes |] |]
-forall values: byteRoundTrip values
-example: (match Csv.record [| "a" |] with
-| Ok record ->
-  CsvEncode.toStringWith { CsvEncode.options with
-    maxOutputBytes = Some 3
-  } [| record |] = Ok "a\r\n"
-| _ -> false)
-example: (match Csv.record [| "a" |] with
-| Ok record ->
-  CsvEncode.toStringWith { CsvEncode.options with
-    maxOutputBytes = Some 2
-  } [| record |] |> Result.isErr
-| _ -> false)
-example: (match (Csv.record [| "a" |], Csv.record [| "a", "b" |]) with
-| (Ok a, Ok b) ->
-  (match CsvEncode.toString [| a, b |] with
-  | Err error -> error.kind = CsvTypes.ColumnCount && error.recordIndex = Some 1
-  | _ -> false)
-| _ -> false)
+
+let case013 testInput =
+  let values = testInput
+  let testActual = byteRoundTrip values
+  Expect.isTrue "property: byteRoundTrip values" testActual
+
+let case014 _ =
+  let testActual =
+    (match Csv.record [| "a" |] with
+    | Ok record ->
+      CsvEncode.toStringWith { CsvEncode.options with
+        maxOutputBytes = Some 3
+      } [| record |] = Ok "a\r\n"
+    | _ -> false)
+  Expect.isTrue "(match Csv.record [| \"a\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with maxOutputBytes = Some 3 } [| record |] = Ok \"a\\r\\n\" | _ -> fa…" testActual
+
+let case015 _ =
+  let testActual =
+    (match Csv.record [| "a" |] with
+    | Ok record ->
+      CsvEncode.toStringWith { CsvEncode.options with
+        maxOutputBytes = Some 2
+      } [| record |] |> Result.isErr
+    | _ -> false)
+  Expect.isTrue "(match Csv.record [| \"a\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with maxOutputBytes = Some 2 } [| record |] |> Result.isErr | _ ->…" testActual
+
+let case016 _ =
+  let testActual =
+    (match (Csv.record [| "a" |], Csv.record [| "a", "b" |]) with
+    | (Ok a, Ok b) ->
+      (match CsvEncode.toString [| a, b |] with
+      | Err error -> error.kind = CsvTypes.ColumnCount && error.recordIndex = Some 1
+      | _ -> false)
+    | _ -> false)
+  Expect.isTrue "(match (Csv.record [| \"a\" |], Csv.record [| \"a\", \"b\" |]) with | (Ok a, Ok b) -> (match CsvEncode.toString [| a, b |] with | Err error -> error.kind = CsvType…" testActual
 
 let preflight =
   match CsvEncode.schema [|
@@ -88,4 +149,28 @@ let preflight =
   | Err _ -> false
   | Ok encoder ->
     CsvEncode.encodeWith { CsvTypes.limits with maxFields = 0 } encoder () |> Result.isErr
-example: preflight
+
+let case017 _ =
+  let testActual = preflight
+  Expect.isTrue "preflight" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CsvEncodeSpec" [
+  Test.test "render [| \"a\", \"b\" |] = Ok \"a,b\\r\\n\"" case001,
+  Test.test "render [| \"a,b\", \"a\\\"b\", \"line\\r\\nline\" |] = Ok \"\\\"a,b\\\",\\\"a\\\"\\\"b\\\",\\\"line\\r\\nline\\\"\\r\\n\"" case002,
+  Test.test "render [| \"\" |] = Ok \"\\r\\n\"" case003,
+  Test.test "render [| \"\\u{feff}literal\" |] = Ok \"\\\"\\u{feff}literal\\\"\\r\\n\"" case004,
+  Test.test "(match Csv.record [| \"a\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with ending = CsvTypes.Lf, quoting = CsvWrite.Always } [| record |…" case005,
+  Test.test "CsvEncode.toStringWith { CsvEncode.options with emitBom = true } [||] = Ok \"\\u{feff}\"" case006,
+  Test.test "(match Csv.record [| \"\\\"\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with limits = { CsvTypes.limits with maxRecordBytes = 3 } } [| re…" case007,
+  Test.test "(match Csv.record [| \"a\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with maxBufferedBytes = 2 } [| record |] |> Result.isErr | _ -> fa…" case008,
+  Test.test "(match people with | Ok encoder -> (match CsvEncode.encode encoder { age = 42, name = \"A,B\" } with | Ok record -> CsvEncode.toString [| CsvEncode.header enco…" case009,
+  Test.test "CsvEncode.renderValue CsvEncode.float (Float.fromBits 0x7ff0000000000000) |> Result.isErr" case010,
+  Test.test "CsvEncode.schema [| CsvEncode.column \"a\" CsvEncode.int identity, CsvEncode.column \"a\" CsvEncode.int identity |] |> Result.isErr" case011,
+  Test.property "property: roundTrip text" Test.string case012,
+  Test.property "property: byteRoundTrip values" (Test.list Test.int) case013,
+  Test.test "(match Csv.record [| \"a\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with maxOutputBytes = Some 3 } [| record |] = Ok \"a\\r\\n\" | _ -> fa…" case014,
+  Test.test "(match Csv.record [| \"a\" |] with | Ok record -> CsvEncode.toStringWith { CsvEncode.options with maxOutputBytes = Some 2 } [| record |] |> Result.isErr | _ ->…" case015,
+  Test.test "(match (Csv.record [| \"a\" |], Csv.record [| \"a\", \"b\" |]) with | (Ok a, Ok b) -> (match CsvEncode.toString [| a, b |] with | Err error -> error.kind = CsvType…" case016,
+  Test.test "preflight" case017
+]

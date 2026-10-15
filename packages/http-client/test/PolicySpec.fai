@@ -26,62 +26,223 @@ let decision policy method status fields retried redirected =
       method = method,
       url = url
     } status (Headers.fromList fields) retried redirected 0
-example: HttpClientPolicy.validate settings = Ok ()
-example: HttpClientPolicy.validate { settings with
-  maxRedirects = (-1)
-} = Err "redirect limit must be nonnegative"
-example: decision settings Http.GET 503 [] 0 0 = HttpClientPolicy.Return
-example: decision retries Http.GET 503 [] 0 0 = HttpClientPolicy.RetryAfter 100
-example: decision retries Http.HEAD 429 [] 1 0 = HttpClientPolicy.RetryAfter 200
-example: decision retries Http.GET 503 [] 2 0 = HttpClientPolicy.Return
-example: decision retries Http.POST 503 [] 0 0 = HttpClientPolicy.Return
-example: decision retries Http.GET 200 [] 0 0 = HttpClientPolicy.Return
-example: decision retries Http.GET 503 [("Retry-After", "3")] 0 0 = HttpClientPolicy.RetryAfter 3000
-example: decision retries Http.GET 503 [
-  ("Retry-After", "bad")
-] 0 0 = HttpClientPolicy.RetryAfter 100
-example: decision settings Http.GET 302 [] 0 0 = HttpClientPolicy.Return
-example: decision settings Http.GET 302 [
-  ("Location", "/next")
-] 0 10 = HttpClientPolicy.RedirectLimit 10
-example: decision { settings with
-  followRedirects = false
-} Http.GET 302 [("Location", "/next")] 0 0 = HttpClientPolicy.Return
-example: decision settings Http.GET 302 [
-  ("Location", "/a"),
-  ("Location", "/b")
-] 0 0 = HttpClientPolicy.InvalidRedirect "multiple Location headers"
-example: decision settings Http.GET 302 [
-  ("Location", "http://api.test/")
-] 0 0 = HttpClientPolicy.InvalidRedirect "redirect would downgrade HTTPS"
+
+let case001 _ =
+  let testActual = HttpClientPolicy.validate settings
+  let testExpected = Ok ()
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual = HttpClientPolicy.validate { settings with maxRedirects = (-1) }
+  let testExpected = Err "redirect limit must be nonnegative"
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual = decision settings Http.GET 503 [] 0 0 = HttpClientPolicy.Return
+  Expect.isTrue "decision settings Http.GET 503 [] 0 0 = HttpClientPolicy.Return" testActual
+
+let case004 _ =
+  let testActual = decision retries Http.GET 503 [] 0 0 = HttpClientPolicy.RetryAfter 100
+  Expect.isTrue "decision retries Http.GET 503 [] 0 0 = HttpClientPolicy.RetryAfter 100" testActual
+
+let case005 _ =
+  let testActual = decision retries Http.HEAD 429 [] 1 0 = HttpClientPolicy.RetryAfter 200
+  Expect.isTrue "decision retries Http.HEAD 429 [] 1 0 = HttpClientPolicy.RetryAfter 200" testActual
+
+let case006 _ =
+  let testActual = decision retries Http.GET 503 [] 2 0 = HttpClientPolicy.Return
+  Expect.isTrue "decision retries Http.GET 503 [] 2 0 = HttpClientPolicy.Return" testActual
+
+let case007 _ =
+  let testActual = decision retries Http.POST 503 [] 0 0 = HttpClientPolicy.Return
+  Expect.isTrue "decision retries Http.POST 503 [] 0 0 = HttpClientPolicy.Return" testActual
+
+let case008 _ =
+  let testActual = decision retries Http.GET 200 [] 0 0 = HttpClientPolicy.Return
+  Expect.isTrue "decision retries Http.GET 200 [] 0 0 = HttpClientPolicy.Return" testActual
+
+let case009 _ =
+  let testActual =
+    decision retries Http.GET 503 [("Retry-After", "3")] 0 0 = HttpClientPolicy.RetryAfter 3000
+  Expect.isTrue "decision retries Http.GET 503 [(\"Retry-After\", \"3\")] 0 0 = HttpClientPolicy.RetryAfter 3000" testActual
+
+let case010 _ =
+  let testActual =
+    decision retries Http.GET 503 [("Retry-After", "bad")] 0 0 = HttpClientPolicy.RetryAfter 100
+  Expect.isTrue "decision retries Http.GET 503 [ (\"Retry-After\", \"bad\") ] 0 0 = HttpClientPolicy.RetryAfter 100" testActual
+
+let case011 _ =
+  let testActual = decision settings Http.GET 302 [] 0 0 = HttpClientPolicy.Return
+  Expect.isTrue "decision settings Http.GET 302 [] 0 0 = HttpClientPolicy.Return" testActual
+
+let case012 _ =
+  let testActual =
+    decision settings Http.GET 302 [("Location", "/next")] 0 10 = HttpClientPolicy.RedirectLimit 10
+  Expect.isTrue "decision settings Http.GET 302 [ (\"Location\", \"/next\") ] 0 10 = HttpClientPolicy.RedirectLimit 10" testActual
+
+let case013 _ =
+  let testActual =
+    decision { settings with
+      followRedirects = false
+    } Http.GET 302 [("Location", "/next")] 0 0 = HttpClientPolicy.Return
+  Expect.isTrue "decision { settings with followRedirects = false } Http.GET 302 [(\"Location\", \"/next\")] 0 0 = HttpClientPolicy.Return" testActual
+
+let case014 _ =
+  let testActual =
+    decision settings Http.GET 302 [
+      ("Location", "/a"),
+      ("Location", "/b")
+    ] 0 0 = HttpClientPolicy.InvalidRedirect "multiple Location headers"
+  Expect.isTrue "decision settings Http.GET 302 [ (\"Location\", \"/a\"), (\"Location\", \"/b\") ] 0 0 = HttpClientPolicy.InvalidRedirect \"multiple Location headers\"" testActual
+
+let case015 _ =
+  let testActual =
+    decision settings Http.GET 302 [
+      ("Location", "http://api.test/")
+    ] 0 0 = HttpClientPolicy.InvalidRedirect "redirect would downgrade HTTPS"
+  Expect.isTrue "decision settings Http.GET 302 [ (\"Location\", \"http://api.test/\") ] 0 0 = HttpClientPolicy.InvalidRedirect \"redirect would downgrade HTTPS\"" testActual
 
 let followed method status target =
   match decision settings method status [("Location", target)] 0 0 with
   | HttpClientPolicy.Follow request ->
     Some (request.method, Url.toString request.url, request.body, Headers.get "Authorization" request.headers, Headers.get "Content-Type" request.headers)
   | _ -> None
-example: followed Http.POST 302 "/next" = Some (Http.GET, "https://api.test/next", Bytes.empty, Some "secret", None)
-example: followed Http.HEAD 303 "/next" = Some (Http.HEAD, "https://api.test/next", Bytes.fromString "payload", Some "secret", Some "text/plain")
-example: followed Http.PUT 301 "../next" = Some (Http.PUT, "https://api.test/next", Bytes.fromString "payload", Some "secret", Some "text/plain")
-example: followed Http.POST 307 "/next" = Some (Http.POST, "https://api.test/next", Bytes.fromString "payload", Some "secret", Some "text/plain")
-example: followed Http.GET 308 "https://other.test/next" = Some (Http.GET, "https://other.test/next", Bytes.fromString "payload", None, Some "text/plain")
+
+let case016 _ =
+  let testActual =
+    followed Http.POST 302 "/next" = Some (Http.GET, "https://api.test/next", Bytes.empty, Some "secret", None)
+  Expect.isTrue "followed Http.POST 302 \"/next\" = Some (Http.GET, \"https://api.test/next\", Bytes.empty, Some \"secret\", None)" testActual
+
+let case017 _ =
+  let testActual =
+    followed Http.HEAD 303 "/next" = Some (Http.HEAD, "https://api.test/next", Bytes.fromString "payload", Some "secret", Some "text/plain")
+  Expect.isTrue "followed Http.HEAD 303 \"/next\" = Some (Http.HEAD, \"https://api.test/next\", Bytes.fromString \"payload\", Some \"secret\", Some \"text/plain\")" testActual
+
+let case018 _ =
+  let testActual =
+    followed Http.PUT 301 "../next" = Some (Http.PUT, "https://api.test/next", Bytes.fromString "payload", Some "secret", Some "text/plain")
+  Expect.isTrue "followed Http.PUT 301 \"../next\" = Some (Http.PUT, \"https://api.test/next\", Bytes.fromString \"payload\", Some \"secret\", Some \"text/plain\")" testActual
+
+let case019 _ =
+  let testActual =
+    followed Http.POST 307 "/next" = Some (Http.POST, "https://api.test/next", Bytes.fromString "payload", Some "secret", Some "text/plain")
+  Expect.isTrue "followed Http.POST 307 \"/next\" = Some (Http.POST, \"https://api.test/next\", Bytes.fromString \"payload\", Some \"secret\", Some \"text/plain\")" testActual
+
+let case020 _ =
+  let testActual =
+    followed Http.GET 308 "https://other.test/next" = Some (Http.GET, "https://other.test/next", Bytes.fromString "payload", None, Some "text/plain")
+  Expect.isTrue "followed Http.GET 308 \"https://other.test/next\" = Some (Http.GET, \"https://other.test/next\", Bytes.fromString \"payload\", None, Some \"text/plain\")" testActual
 
 let noCredentials =
   match decision settings Http.GET 302 [("Location", "https://other.test/")] 0 0 with
   | HttpClientPolicy.Follow request ->
     Headers.get "Cookie" request.headers = None && Headers.get "X-Api-Key" request.headers = None
   | _ -> false
-example: noCredentials
-example: HttpClientPolicy.retryAfter 0 "3" = Some 3000
-example: HttpClientPolicy.retryAfter 0 " 0 " = Some 0
-example: HttpClientPolicy.retryAfter 0 "-1" = None
-example: HttpClientPolicy.retryAfter 0 "+1" = None
-example: HttpClientPolicy.retryAfter 0 "" = None
-example: HttpClientPolicy.retryAfter 0 "1.5" = None
-example: HttpClientPolicy.retryAfter 0 "99999999999999999999999999" = Some 9223372036854775807
-example: HttpClientPolicy.retryAfter 0 "9223372036854775" = Some 9223372036854775000
-example: HttpClientPolicy.retryAfter 0 "Thu, 01 Jan 1970 00:00:03 GMT" = Some 3000
-example: HttpClientPolicy.retryAfter 10 "Thu, 01 Jan 1970 00:00:03 GMT" = Some 0
-example: HttpClientPolicy.retryAfter 0 "Fri, 01 Jan 1970 00:00:03 GMT" = None
-example: HttpClientPolicy.retryAfter 0 "Thu, 01 Jan 1970 00:00:03 UTC" = None
-forall n: HttpClientPolicy.retryAfter 0 (Int.toString (Int.and n 1048575)) = Some (Int.and n 1048575 * 1000)
+
+let case021 _ =
+  let testActual = noCredentials
+  Expect.isTrue "noCredentials" testActual
+
+let case022 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 "3"
+  let testExpected = Some 3000
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case023 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 " 0 "
+  let testExpected = Some 0
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case024 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 "-1"
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case025 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 "+1"
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case026 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 ""
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case027 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 "1.5"
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case028 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 "99999999999999999999999999"
+  let testExpected = Some 9223372036854775807
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case029 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 "9223372036854775"
+  let testExpected = Some 9223372036854775000
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case030 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 "Thu, 01 Jan 1970 00:00:03 GMT"
+  let testExpected = Some 3000
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case031 _ =
+  let testActual = HttpClientPolicy.retryAfter 10 "Thu, 01 Jan 1970 00:00:03 GMT"
+  let testExpected = Some 0
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case032 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 "Fri, 01 Jan 1970 00:00:03 GMT"
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case033 _ =
+  let testActual = HttpClientPolicy.retryAfter 0 "Thu, 01 Jan 1970 00:00:03 UTC"
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case034 testInput =
+  let n = testInput
+  let testActual = HttpClientPolicy.retryAfter 0 (Int.toString (Int.and n 1048575))
+  let testExpected = Some (Int.and n 1048575 * 1000)
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "PolicySpec" [
+  Test.test "HttpClientPolicy.validate settings = Ok ()" case001,
+  Test.test "HttpClientPolicy.validate { settings with maxRedirects = (-1) } = Err \"redirect limit must be nonnegative\"" case002,
+  Test.test "decision settings Http.GET 503 [] 0 0 = HttpClientPolicy.Return" case003,
+  Test.test "decision retries Http.GET 503 [] 0 0 = HttpClientPolicy.RetryAfter 100" case004,
+  Test.test "decision retries Http.HEAD 429 [] 1 0 = HttpClientPolicy.RetryAfter 200" case005,
+  Test.test "decision retries Http.GET 503 [] 2 0 = HttpClientPolicy.Return" case006,
+  Test.test "decision retries Http.POST 503 [] 0 0 = HttpClientPolicy.Return" case007,
+  Test.test "decision retries Http.GET 200 [] 0 0 = HttpClientPolicy.Return" case008,
+  Test.test "decision retries Http.GET 503 [(\"Retry-After\", \"3\")] 0 0 = HttpClientPolicy.RetryAfter 3000" case009,
+  Test.test "decision retries Http.GET 503 [ (\"Retry-After\", \"bad\") ] 0 0 = HttpClientPolicy.RetryAfter 100" case010,
+  Test.test "decision settings Http.GET 302 [] 0 0 = HttpClientPolicy.Return" case011,
+  Test.test "decision settings Http.GET 302 [ (\"Location\", \"/next\") ] 0 10 = HttpClientPolicy.RedirectLimit 10" case012,
+  Test.test "decision { settings with followRedirects = false } Http.GET 302 [(\"Location\", \"/next\")] 0 0 = HttpClientPolicy.Return" case013,
+  Test.test "decision settings Http.GET 302 [ (\"Location\", \"/a\"), (\"Location\", \"/b\") ] 0 0 = HttpClientPolicy.InvalidRedirect \"multiple Location headers\"" case014,
+  Test.test "decision settings Http.GET 302 [ (\"Location\", \"http://api.test/\") ] 0 0 = HttpClientPolicy.InvalidRedirect \"redirect would downgrade HTTPS\"" case015,
+  Test.test "followed Http.POST 302 \"/next\" = Some (Http.GET, \"https://api.test/next\", Bytes.empty, Some \"secret\", None)" case016,
+  Test.test "followed Http.HEAD 303 \"/next\" = Some (Http.HEAD, \"https://api.test/next\", Bytes.fromString \"payload\", Some \"secret\", Some \"text/plain\")" case017,
+  Test.test "followed Http.PUT 301 \"../next\" = Some (Http.PUT, \"https://api.test/next\", Bytes.fromString \"payload\", Some \"secret\", Some \"text/plain\")" case018,
+  Test.test "followed Http.POST 307 \"/next\" = Some (Http.POST, \"https://api.test/next\", Bytes.fromString \"payload\", Some \"secret\", Some \"text/plain\")" case019,
+  Test.test "followed Http.GET 308 \"https://other.test/next\" = Some (Http.GET, \"https://other.test/next\", Bytes.fromString \"payload\", None, Some \"text/plain\")" case020,
+  Test.test "noCredentials" case021,
+  Test.test "HttpClientPolicy.retryAfter 0 \"3\" = Some 3000" case022,
+  Test.test "HttpClientPolicy.retryAfter 0 \" 0 \" = Some 0" case023,
+  Test.test "HttpClientPolicy.retryAfter 0 \"-1\" = None" case024,
+  Test.test "HttpClientPolicy.retryAfter 0 \"+1\" = None" case025,
+  Test.test "HttpClientPolicy.retryAfter 0 \"\" = None" case026,
+  Test.test "HttpClientPolicy.retryAfter 0 \"1.5\" = None" case027,
+  Test.test "HttpClientPolicy.retryAfter 0 \"99999999999999999999999999\" = Some 9223372036854775807" case028,
+  Test.test "HttpClientPolicy.retryAfter 0 \"9223372036854775\" = Some 9223372036854775000" case029,
+  Test.test "HttpClientPolicy.retryAfter 0 \"Thu, 01 Jan 1970 00:00:03 GMT\" = Some 3000" case030,
+  Test.test "HttpClientPolicy.retryAfter 10 \"Thu, 01 Jan 1970 00:00:03 GMT\" = Some 0" case031,
+  Test.test "HttpClientPolicy.retryAfter 0 \"Fri, 01 Jan 1970 00:00:03 GMT\" = None" case032,
+  Test.test "HttpClientPolicy.retryAfter 0 \"Thu, 01 Jan 1970 00:00:03 UTC\" = None" case033,
+  Test.property "property: HttpClientPolicy.retryAfter 0 (Int.toString (Int.and n 1048575)) = Some (Int.and n 1048575 * 1000)" Test.int case034
+]

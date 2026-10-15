@@ -1,31 +1,72 @@
 module CsvBoundarySpec
 
 let values result = Result.map (Array.map Csv.fields) result
-example: values (Csv.parseWith { Csv.options with
-  dialect = { delimiter = ';', endings = CsvTypes.AnyEnding, quote = '\'' }
-} "a;'b;c';'d''e'") = Ok [| [| "a", "b;c", "d'e" |] |]
-example: values (Csv.parseWith { Csv.options with
-  dialect = { CsvTypes.dialect with delimiter = '\t' }
-} "a\tb") = Ok [| [| "a", "b" |] |]
-example: Csv.parserWith { Csv.options with
-  dialect = { CsvTypes.dialect with delimiter = 'é' }
-} |> Result.isErr
-example: Csv.parserWith { Csv.options with
-  dialect = { CsvTypes.dialect with quote = ',' }
-} |> Result.isErr
-example: Csv.parserWith { Csv.options with width = CsvTypes.Exact 0 } |> Result.isErr
-example: Csv.parserWith { Csv.options with
-  limits = { CsvTypes.limits with maxInputBytes = Some (-1) }
-} |> Result.isErr
-example: values (Csv.parse "\u{feff}") = Ok [||]
-example: values (Csv.parse "\"\u{feff}\"") = Ok [| [| "\u{feff}" |] |]
-example: values (Csv.parse "a\rb\nc\r\nd") = Ok [| [| "a" |], [| "b" |], [| "c" |], [| "d" |] |]
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxInputBytes = Some 1 }
-} "a" |> Result.isOk
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxInputBytes = Some 1 }
-} "a\n" |> Result.isErr
+
+let case001 _ =
+  let testActual =
+    values (Csv.parseWith { Csv.options with
+      dialect = { delimiter = ';', endings = CsvTypes.AnyEnding, quote = '\'' }
+    } "a;'b;c';'d''e'") = Ok [| [| "a", "b;c", "d'e" |] |]
+  Expect.isTrue "values (Csv.parseWith { Csv.options with dialect = { delimiter = ';', endings = CsvTypes.AnyEnding, quote = '\\'' } } \"a;'b;c';'d''e'\") = Ok [| [| \"a\", \"b;c\",…" testActual
+
+let case002 _ =
+  let testActual =
+    values (Csv.parseWith { Csv.options with
+      dialect = { CsvTypes.dialect with delimiter = '\t' }
+    } "a\tb") = Ok [| [| "a", "b" |] |]
+  Expect.isTrue "values (Csv.parseWith { Csv.options with dialect = { CsvTypes.dialect with delimiter = '\\t' } } \"a\\tb\") = Ok [| [| \"a\", \"b\" |] |]" testActual
+
+let case003 _ =
+  let testActual =
+    Csv.parserWith { Csv.options with
+      dialect = { CsvTypes.dialect with delimiter = 'é' }
+    } |> Result.isErr
+  Expect.isTrue "Csv.parserWith { Csv.options with dialect = { CsvTypes.dialect with delimiter = 'é' } } |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual =
+    Csv.parserWith { Csv.options with
+      dialect = { CsvTypes.dialect with quote = ',' }
+    } |> Result.isErr
+  Expect.isTrue "Csv.parserWith { Csv.options with dialect = { CsvTypes.dialect with quote = ',' } } |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual = Csv.parserWith { Csv.options with width = CsvTypes.Exact 0 } |> Result.isErr
+  Expect.isTrue "Csv.parserWith { Csv.options with width = CsvTypes.Exact 0 } |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual =
+    Csv.parserWith { Csv.options with
+      limits = { CsvTypes.limits with maxInputBytes = Some (-1) }
+    } |> Result.isErr
+  Expect.isTrue "Csv.parserWith { Csv.options with limits = { CsvTypes.limits with maxInputBytes = Some (-1) } } |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual = values (Csv.parse "\u{feff}") = Ok [||]
+  Expect.isTrue "values (Csv.parse \"\\u{feff}\") = Ok [||]" testActual
+
+let case008 _ =
+  let testActual = values (Csv.parse "\"\u{feff}\"") = Ok [| [| "\u{feff}" |] |]
+  Expect.isTrue "values (Csv.parse \"\\\"\\u{feff}\\\"\") = Ok [| [| \"\\u{feff}\" |] |]" testActual
+
+let case009 _ =
+  let testActual =
+    values (Csv.parse "a\rb\nc\r\nd") = Ok [| [| "a" |], [| "b" |], [| "c" |], [| "d" |] |]
+  Expect.isTrue "values (Csv.parse \"a\\rb\\nc\\r\\nd\") = Ok [| [| \"a\" |], [| \"b\" |], [| \"c\" |], [| \"d\" |] |]" testActual
+
+let case010 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxInputBytes = Some 1 }
+    } "a" |> Result.isOk
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxInputBytes = Some 1 } } \"a\" |> Result.isOk" testActual
+
+let case011 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxInputBytes = Some 1 }
+    } "a\n" |> Result.isErr
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxInputBytes = Some 1 } } \"a\\n\" |> Result.isErr" testActual
 
 let bomLimit =
   match Csv.parseBytesWith { Csv.options with
@@ -38,25 +79,52 @@ let bomLimit =
       line = 1
     } && error.kind = CsvTypes.InputLimit
   | _ -> false
-example: bomLimit
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxFieldBytes = 0, maxRecordBytes = 0 }
-} "\n" |> Result.isOk
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxFields = 0 }
-} "" |> Result.isOk
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxFields = 0 }
-} "\n" |> Result.isErr
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxRecords = Some 0 }
-} "" |> Result.isOk
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxRecords = Some 0 }
-} "\n" |> Result.isErr
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxCollectedRecords = 0 }
-} "" |> Result.isOk
+
+let case012 _ =
+  let testActual = bomLimit
+  Expect.isTrue "bomLimit" testActual
+
+let case013 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxFieldBytes = 0, maxRecordBytes = 0 }
+    } "\n" |> Result.isOk
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxFieldBytes = 0, maxRecordBytes = 0 } } \"\\n\" |> Result.isOk" testActual
+
+let case014 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxFields = 0 }
+    } "" |> Result.isOk
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxFields = 0 } } \"\" |> Result.isOk" testActual
+
+let case015 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxFields = 0 }
+    } "\n" |> Result.isErr
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxFields = 0 } } \"\\n\" |> Result.isErr" testActual
+
+let case016 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxRecords = Some 0 }
+    } "" |> Result.isOk
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxRecords = Some 0 } } \"\" |> Result.isOk" testActual
+
+let case017 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxRecords = Some 0 }
+    } "\n" |> Result.isErr
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxRecords = Some 0 } } \"\\n\" |> Result.isErr" testActual
+
+let case018 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxCollectedRecords = 0 }
+    } "" |> Result.isOk
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedRecords = 0 } } \"\" |> Result.isOk" testActual
 
 let allBytes =
   let bytes = Bytes.fromList (Array.toList (Array.range 0 256))
@@ -67,7 +135,10 @@ let allBytes =
     | Err _ -> false
     | Ok output ->
       Result.map (Array.map CsvBytes.fields) (CsvBytes.parse output) = Ok [| [| bytes |] |]
-example: allBytes
+
+let case019 _ =
+  let testActual = allBytes
+  Expect.isTrue "allBytes" testActual
 
 let finished =
   match Csv.parser () with
@@ -77,7 +148,10 @@ let finished =
     match (Csv.feed ended.parser (Bytes.fromString "x")).status with
     | Csv.Failed error -> error.kind = CsvTypes.InvalidState
     | _ -> false
-example: finished
+
+let case020 _ =
+  let testActual = finished
+  Expect.isTrue "finished" testActual
 
 let missingSpan =
   match Csv.parse "a" with
@@ -86,7 +160,10 @@ let missingSpan =
     | Err [error] -> error.kind = CsvTypes.MissingColumn && error.position = Some CsvTypes.start
     | _ -> false
   | _ -> false
-example: missingSpan
+
+let case021 _ =
+  let testActual = missingSpan
+  Expect.isTrue "missingSpan" testActual
 
 let suppliedLimit =
   match Csv.record [| "a", "b" |] with
@@ -98,16 +175,55 @@ let suppliedLimit =
       } (Csv.Supplied headers) "" |> Result.isErr
     | _ -> false
   | _ -> false
-example: suppliedLimit
-example: (match Csv.parser () with
-| Ok parser ->
-  (match (Csv.feedFrom parser (Bytes.fromString "a") (-1)).status with
-  | Csv.Failed error -> error.kind = CsvTypes.InvalidOptions
-  | _ -> false)
-| _ -> false)
-example: (match Csv.parser () with
-| Ok parser ->
-  (match (Csv.feedFrom parser (Bytes.fromString "a") 2).status with
-  | Csv.Failed error -> error.kind = CsvTypes.InvalidOptions
-  | _ -> false)
-| _ -> false)
+
+let case022 _ =
+  let testActual = suppliedLimit
+  Expect.isTrue "suppliedLimit" testActual
+
+let case023 _ =
+  let testActual =
+    (match Csv.parser () with
+    | Ok parser ->
+      (match (Csv.feedFrom parser (Bytes.fromString "a") (-1)).status with
+      | Csv.Failed error -> error.kind = CsvTypes.InvalidOptions
+      | _ -> false)
+    | _ -> false)
+  Expect.isTrue "(match Csv.parser () with | Ok parser -> (match (Csv.feedFrom parser (Bytes.fromString \"a\") (-1)).status with | Csv.Failed error -> error.kind = CsvTypes.Inv…" testActual
+
+let case024 _ =
+  let testActual =
+    (match Csv.parser () with
+    | Ok parser ->
+      (match (Csv.feedFrom parser (Bytes.fromString "a") 2).status with
+      | Csv.Failed error -> error.kind = CsvTypes.InvalidOptions
+      | _ -> false)
+    | _ -> false)
+  Expect.isTrue "(match Csv.parser () with | Ok parser -> (match (Csv.feedFrom parser (Bytes.fromString \"a\") 2).status with | Csv.Failed error -> error.kind = CsvTypes.Invali…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CsvBoundarySpec" [
+  Test.test "values (Csv.parseWith { Csv.options with dialect = { delimiter = ';', endings = CsvTypes.AnyEnding, quote = '\\'' } } \"a;'b;c';'d''e'\") = Ok [| [| \"a\", \"b;c\",…" case001,
+  Test.test "values (Csv.parseWith { Csv.options with dialect = { CsvTypes.dialect with delimiter = '\\t' } } \"a\\tb\") = Ok [| [| \"a\", \"b\" |] |]" case002,
+  Test.test "Csv.parserWith { Csv.options with dialect = { CsvTypes.dialect with delimiter = 'é' } } |> Result.isErr" case003,
+  Test.test "Csv.parserWith { Csv.options with dialect = { CsvTypes.dialect with quote = ',' } } |> Result.isErr" case004,
+  Test.test "Csv.parserWith { Csv.options with width = CsvTypes.Exact 0 } |> Result.isErr" case005,
+  Test.test "Csv.parserWith { Csv.options with limits = { CsvTypes.limits with maxInputBytes = Some (-1) } } |> Result.isErr" case006,
+  Test.test "values (Csv.parse \"\\u{feff}\") = Ok [||]" case007,
+  Test.test "values (Csv.parse \"\\\"\\u{feff}\\\"\") = Ok [| [| \"\\u{feff}\" |] |]" case008,
+  Test.test "values (Csv.parse \"a\\rb\\nc\\r\\nd\") = Ok [| [| \"a\" |], [| \"b\" |], [| \"c\" |], [| \"d\" |] |]" case009,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxInputBytes = Some 1 } } \"a\" |> Result.isOk" case010,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxInputBytes = Some 1 } } \"a\\n\" |> Result.isErr" case011,
+  Test.test "bomLimit" case012,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxFieldBytes = 0, maxRecordBytes = 0 } } \"\\n\" |> Result.isOk" case013,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxFields = 0 } } \"\" |> Result.isOk" case014,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxFields = 0 } } \"\\n\" |> Result.isErr" case015,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxRecords = Some 0 } } \"\" |> Result.isOk" case016,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxRecords = Some 0 } } \"\\n\" |> Result.isErr" case017,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedRecords = 0 } } \"\" |> Result.isOk" case018,
+  Test.test "allBytes" case019,
+  Test.test "finished" case020,
+  Test.test "missingSpan" case021,
+  Test.test "suppliedLimit" case022,
+  Test.test "(match Csv.parser () with | Ok parser -> (match (Csv.feedFrom parser (Bytes.fromString \"a\") (-1)).status with | Csv.Failed error -> error.kind = CsvTypes.Inv…" case023,
+  Test.test "(match Csv.parser () with | Ok parser -> (match (Csv.feedFrom parser (Bytes.fromString \"a\") 2).status with | Csv.Failed error -> error.kind = CsvTypes.Invali…" case024
+]

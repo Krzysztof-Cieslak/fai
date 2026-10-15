@@ -11,6 +11,10 @@
   DEFLATE snapshots, backing the optional `compression` source package.
 
 ### Changed
+- Migrate dedicated source-package tests to named cases and properties, keeping
+  inline examples and laws beside library implementations. Runtime scenarios now
+  run through package test discovery, and provisioned PostgreSQL suites publish
+  named JUnit results alongside their JIT/AOT checks.
 - Run logging, regex, JSON, web, LLM, filesystem and process runtime scenarios as
   named Fai tests. Keep Python coverage for compiler diagnostics, independent
   OS/oracle checks, executable backends, relocation and terminal behavior.

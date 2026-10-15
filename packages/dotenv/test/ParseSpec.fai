@@ -2,38 +2,98 @@ module DotenvParseSpec
 
 let value name source =
   Result.map (fun document -> Dict.get name (Dotenv.values document)) (Dotenv.parse source)
-example: value "A" "export A = hello # comment\r\n" = Ok (Some "hello")
-example: value "A" "A=${HOST}\n" = Ok (Some "${HOST}")
-example: value "A" "A='${HOST}\\n'" = Ok (Some "${HOST}\\n")
-example: value "A" "A=\"line\\nline\\t\\\"\\\\\"" = Ok (Some "line\nline\t\"\\")
-example: value "A" "A=\"hé\r\n🙂\" # tail" = Ok (Some "hé\n🙂")
-example: value "A" "A=" = Ok (Some "")
-example: value "A" "A=unquoted#comment" = Ok (Some "unquoted")
-example: value "A" "A=' # '" = Ok (Some " # ")
-example: Dotenv.parse "A=\"bad\\q\"" |> Result.isErr
-example: Dotenv.parse "1A=wrong" |> Result.isErr
-example: Dotenv.parse "A='missing" |> Result.isErr
-example: Dotenv.parse "A='value' junk" |> Result.isErr
-example: Dotenv.parse "A=value\rB=value" |> Result.isErr
-example: Dotenv.parse "A=\u{0}" |> Result.isErr
-example: Dotenv.parseBytes (Bytes.fromList [255]) |> Result.isErr
-example: Dotenv.parseWith { Dotenv.options with maxEntries = 1 } "A=1\nB=2" |> Result.isErr
-example: Dotenv.parseWith { Dotenv.options with maxEntries = 0 } "#none" |> Result.isOk
-example: (match Dotenv.parse "A=é\nA=2" with
-| Err error ->
-  error.kind = Dotenv.DuplicateName && error.primary.startByte = 5 && error.primary.line = 2 && error.secondary = Some {
-    column = 1,
-    endByte = 1,
-    endColumn = 2,
-    endLine = 1,
-    line = 1,
-    startByte = 0
-  }
-| _ -> false)
+
+let case001 _ =
+  let testActual = value "A" "export A = hello # comment\r\n" = Ok (Some "hello")
+  Expect.isTrue "value \"A\" \"export A = hello # comment\\r\\n\" = Ok (Some \"hello\")" testActual
+
+let case002 _ =
+  let testActual = value "A" "A=${HOST}\n" = Ok (Some "${HOST}")
+  Expect.isTrue "value \"A\" \"A=${HOST}\\n\" = Ok (Some \"${HOST}\")" testActual
+
+let case003 _ =
+  let testActual = value "A" "A='${HOST}\\n'" = Ok (Some "${HOST}\\n")
+  Expect.isTrue "value \"A\" \"A='${HOST}\\\\n'\" = Ok (Some \"${HOST}\\\\n\")" testActual
+
+let case004 _ =
+  let testActual = value "A" "A=\"line\\nline\\t\\\"\\\\\"" = Ok (Some "line\nline\t\"\\")
+  Expect.isTrue "value \"A\" \"A=\\\"line\\\\nline\\\\t\\\\\\\"\\\\\\\\\\\"\" = Ok (Some \"line\\nline\\t\\\"\\\\\")" testActual
+
+let case005 _ =
+  let testActual = value "A" "A=\"hé\r\n🙂\" # tail" = Ok (Some "hé\n🙂")
+  Expect.isTrue "value \"A\" \"A=\\\"hé\\r\\n🙂\\\" # tail\" = Ok (Some \"hé\\n🙂\")" testActual
+
+let case006 _ =
+  let testActual = value "A" "A=" = Ok (Some "")
+  Expect.isTrue "value \"A\" \"A=\" = Ok (Some \"\")" testActual
+
+let case007 _ =
+  let testActual = value "A" "A=unquoted#comment" = Ok (Some "unquoted")
+  Expect.isTrue "value \"A\" \"A=unquoted#comment\" = Ok (Some \"unquoted\")" testActual
+
+let case008 _ =
+  let testActual = value "A" "A=' # '" = Ok (Some " # ")
+  Expect.isTrue "value \"A\" \"A=' # '\" = Ok (Some \" # \")" testActual
+
+let case009 _ =
+  let testActual = Dotenv.parse "A=\"bad\\q\"" |> Result.isErr
+  Expect.isTrue "Dotenv.parse \"A=\\\"bad\\\\q\\\"\" |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual = Dotenv.parse "1A=wrong" |> Result.isErr
+  Expect.isTrue "Dotenv.parse \"1A=wrong\" |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = Dotenv.parse "A='missing" |> Result.isErr
+  Expect.isTrue "Dotenv.parse \"A='missing\" |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = Dotenv.parse "A='value' junk" |> Result.isErr
+  Expect.isTrue "Dotenv.parse \"A='value' junk\" |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual = Dotenv.parse "A=value\rB=value" |> Result.isErr
+  Expect.isTrue "Dotenv.parse \"A=value\\rB=value\" |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual = Dotenv.parse "A=\u{0}" |> Result.isErr
+  Expect.isTrue "Dotenv.parse \"A=\\u{0}\" |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual = Dotenv.parseBytes (Bytes.fromList [255]) |> Result.isErr
+  Expect.isTrue "Dotenv.parseBytes (Bytes.fromList [255]) |> Result.isErr" testActual
+
+let case016 _ =
+  let testActual =
+    Dotenv.parseWith { Dotenv.options with maxEntries = 1 } "A=1\nB=2" |> Result.isErr
+  Expect.isTrue "Dotenv.parseWith { Dotenv.options with maxEntries = 1 } \"A=1\\nB=2\" |> Result.isErr" testActual
+
+let case017 _ =
+  let testActual = Dotenv.parseWith { Dotenv.options with maxEntries = 0 } "#none" |> Result.isOk
+  Expect.isTrue "Dotenv.parseWith { Dotenv.options with maxEntries = 0 } \"#none\" |> Result.isOk" testActual
+
+let case018 _ =
+  let testActual =
+    (match Dotenv.parse "A=é\nA=2" with
+    | Err error ->
+      error.kind = Dotenv.DuplicateName && error.primary.startByte = 5 && error.primary.line = 2 && error.secondary = Some {
+        column = 1,
+        endByte = 1,
+        endColumn = 2,
+        endLine = 1,
+        line = 1,
+        startByte = 0
+      }
+    | _ -> false)
+  Expect.isTrue "(match Dotenv.parse \"A=é\\nA=2\" with | Err error -> error.kind = Dotenv.DuplicateName && error.primary.startByte = 5 && error.primary.line = 2 && error.second…" testActual
 
 let sanitized text =
   String.join "" (String.split "'" (String.join "" (String.split "\r" (String.join "" (String.split "\u{0}" text)))))
-forall text: value "A" ("A='" ++ sanitized text ++ "'") = Ok (Some (sanitized text))
+
+let case019 testInput =
+  let text = testInput
+  let testActual = value "A" ("A='" ++ sanitized text ++ "'") = Ok (Some (sanitized text))
+  Expect.isTrue "property: value \"A\" (\"A='\" ++ sanitized text ++ \"'\") = Ok (Some (sanitized text))" testActual
 
 let successiveLocations =
   match Dotenv.parse "# hé\r\nA='é\r\n🙂'\r\nB=2" with
@@ -48,14 +108,51 @@ let successiveLocations =
       startByte = 21
     }
   | Err _ -> false
-example: successiveLocations
-example: (match Dotenv.parse "A=\"\\" with
-| Err error -> error.primary.endByte = 4
-| _ -> false)
+
+let case020 _ =
+  let testActual = successiveLocations
+  Expect.isTrue "successiveLocations" testActual
+
+let case021 _ =
+  let testActual =
+    (match Dotenv.parse "A=\"\\" with
+    | Err error -> error.primary.endByte = 4
+    | _ -> false)
+  Expect.isTrue "(match Dotenv.parse \"A=\\\"\\\\\" with | Err error -> error.primary.endByte = 4 | _ -> false)" testActual
 
 let locatedErrors source =
   match Dotenv.parse source with
   | Ok _ -> true
   | Err error ->
     error.primary.startByte >= 0 && error.primary.endByte >= error.primary.startByte && error.primary.endByte <= Bytes.length (Bytes.fromString source)
-forall source: locatedErrors source
+
+let case022 testInput =
+  let source = testInput
+  let testActual = locatedErrors source
+  Expect.isTrue "property: locatedErrors source" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DotenvParseSpec" [
+  Test.test "value \"A\" \"export A = hello # comment\\r\\n\" = Ok (Some \"hello\")" case001,
+  Test.test "value \"A\" \"A=${HOST}\\n\" = Ok (Some \"${HOST}\")" case002,
+  Test.test "value \"A\" \"A='${HOST}\\\\n'\" = Ok (Some \"${HOST}\\\\n\")" case003,
+  Test.test "value \"A\" \"A=\\\"line\\\\nline\\\\t\\\\\\\"\\\\\\\\\\\"\" = Ok (Some \"line\\nline\\t\\\"\\\\\")" case004,
+  Test.test "value \"A\" \"A=\\\"hé\\r\\n🙂\\\" # tail\" = Ok (Some \"hé\\n🙂\")" case005,
+  Test.test "value \"A\" \"A=\" = Ok (Some \"\")" case006,
+  Test.test "value \"A\" \"A=unquoted#comment\" = Ok (Some \"unquoted\")" case007,
+  Test.test "value \"A\" \"A=' # '\" = Ok (Some \" # \")" case008,
+  Test.test "Dotenv.parse \"A=\\\"bad\\\\q\\\"\" |> Result.isErr" case009,
+  Test.test "Dotenv.parse \"1A=wrong\" |> Result.isErr" case010,
+  Test.test "Dotenv.parse \"A='missing\" |> Result.isErr" case011,
+  Test.test "Dotenv.parse \"A='value' junk\" |> Result.isErr" case012,
+  Test.test "Dotenv.parse \"A=value\\rB=value\" |> Result.isErr" case013,
+  Test.test "Dotenv.parse \"A=\\u{0}\" |> Result.isErr" case014,
+  Test.test "Dotenv.parseBytes (Bytes.fromList [255]) |> Result.isErr" case015,
+  Test.test "Dotenv.parseWith { Dotenv.options with maxEntries = 1 } \"A=1\\nB=2\" |> Result.isErr" case016,
+  Test.test "Dotenv.parseWith { Dotenv.options with maxEntries = 0 } \"#none\" |> Result.isOk" case017,
+  Test.test "(match Dotenv.parse \"A=é\\nA=2\" with | Err error -> error.kind = Dotenv.DuplicateName && error.primary.startByte = 5 && error.primary.line = 2 && error.second…" case018,
+  Test.property "property: value \"A\" (\"A='\" ++ sanitized text ++ \"'\") = Ok (Some (sanitized text))" Test.string case019,
+  Test.test "successiveLocations" case020,
+  Test.test "(match Dotenv.parse \"A=\\\"\\\\\" with | Err error -> error.primary.endByte = 4 | _ -> false)" case021,
+  Test.property "property: locatedErrors source" Test.string case022
+]

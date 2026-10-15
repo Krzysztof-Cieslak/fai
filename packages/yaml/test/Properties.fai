@@ -7,21 +7,33 @@ let quoteRoundtrip text =
   match Yaml.toString (YamlData.String text) with
   | Err _ -> false
   | Ok rendered -> Yaml.load rendered = Ok (YamlData.String text)
-forall text: quoteRoundtrip text
+
+let case001 testInput =
+  let text = testInput
+  let testActual = quoteRoundtrip text
+  Expect.isTrue "property: quoteRoundtrip text" testActual
 
 let intRoundtrip integer =
   let value = YamlData.Integer (YamlNumber.integerFromInt integer)
   match Yaml.toString value with
   | Err _ -> false
   | Ok rendered -> Yaml.load rendered = Ok value
-forall integer: intRoundtrip integer
+
+let case002 testInput =
+  let integer = testInput
+  let testActual = intRoundtrip integer
+  Expect.isTrue "property: intRoundtrip integer" testActual
 
 let finiteFloat value =
   let number = YamlNumber.floatFromFloat value
   match YamlNumber.floatToFloat number with
   | Err _ -> false
   | Ok back -> Float.toBits back = Float.toBits value || (number = YamlNumber.NaN)
-forall value: finiteFloat value
+
+let case003 testInput =
+  let value = testInput
+  let testActual = finiteFloat value
+  Expect.isTrue "property: finiteFloat value" testActual
 
 let total text =
   match Yaml.parse text with
@@ -31,7 +43,11 @@ let total text =
     | None -> error.kind = YamlTypes.LimitExceeded || error.kind = YamlTypes.InvalidOptions
     | Some span ->
       span.start.byte >= 0 && span.start.byte <= Bytes.length (Bytes.fromString text) && span.finish.byte >= span.start.byte && span.finish.byte <= Bytes.length (Bytes.fromString text)
-forall text: total text
+
+let case004 testInput =
+  let text = testInput
+  let testActual = total text
+  Expect.isTrue "property: total text" testActual
 
 let jsonRoundtrip text integer =
   let json = Json.Object [|
@@ -41,22 +57,100 @@ let jsonRoundtrip text integer =
   match YamlJson.fromJson json with
   | Err _ -> false
   | Ok value -> YamlJson.toJson value = Ok json
-forall text integer: jsonRoundtrip text integer
-example: YamlJson.toJson (YamlData.Float YamlNumber.NaN) |> Result.isErr
-example: Yaml.toStringAll [] = Ok ""
-example: (match Yaml.toStringAll [YamlData.Null, YamlData.String "hello"] with
-| Err _ -> false
-| Ok text -> Result.map List.length (Yaml.parseAll text) = Ok 2)
-example: Yaml.parse "key: \t[1, 2]" |> Result.isOk
-example: Yaml.parse "key: [1,\n2]" |> Result.isErr
-example: Yaml.parse "a: 'b': c" |> Result.isErr
-example: Yaml.parse "---\na: b\n... invalid" |> Result.isErr
-example: Yaml.parse "[a,b,#comment\n]" |> Result.isErr
-example: Yaml.parse "a: &x\n!!map\n  b: c" |> Result.isErr
-example: Yaml.parse "a: &x\n  !!map\n  b: c" |> Result.isOk
-example: Yaml.parse "a: 'hello\nworld'" |> Result.isErr
-example: Yaml.parse "a: |\n   \n  text" |> Result.isErr
-example: Yaml.parse "?\n- a\n- b\n:\n- c" |> Result.isOk
-example: Yaml.parse "[a: 1, {b: 2}]" |> Result.isOk
-example: Yaml.load "%YAML 1.1\n---\non" = Ok (YamlData.String "on")
-example: Yaml.parse "%YAML 2.0\n---\na" |> Result.isErr
+
+let case005 testInput =
+  let (text, integer) = testInput
+  let testActual = jsonRoundtrip text integer
+  Expect.isTrue "property: jsonRoundtrip text integer" testActual
+
+let case006 _ =
+  let testActual = YamlJson.toJson (YamlData.Float YamlNumber.NaN) |> Result.isErr
+  Expect.isTrue "YamlJson.toJson (YamlData.Float YamlNumber.NaN) |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual = Yaml.toStringAll [] = Ok ""
+  Expect.isTrue "Yaml.toStringAll [] = Ok \"\"" testActual
+
+let case008 _ =
+  let testActual =
+    (match Yaml.toStringAll [YamlData.Null, YamlData.String "hello"] with
+    | Err _ -> false
+    | Ok text -> Result.map List.length (Yaml.parseAll text) = Ok 2)
+  Expect.isTrue "(match Yaml.toStringAll [YamlData.Null, YamlData.String \"hello\"] with | Err _ -> false | Ok text -> Result.map List.length (Yaml.parseAll text) = Ok 2)" testActual
+
+let case009 _ =
+  let testActual = Yaml.parse "key: \t[1, 2]" |> Result.isOk
+  Expect.isTrue "Yaml.parse \"key: \\t[1, 2]\" |> Result.isOk" testActual
+
+let case010 _ =
+  let testActual = Yaml.parse "key: [1,\n2]" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"key: [1,\\n2]\" |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = Yaml.parse "a: 'b': c" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"a: 'b': c\" |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = Yaml.parse "---\na: b\n... invalid" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"---\\na: b\\n... invalid\" |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual = Yaml.parse "[a,b,#comment\n]" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"[a,b,#comment\\n]\" |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual = Yaml.parse "a: &x\n!!map\n  b: c" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"a: &x\\n!!map\\n b: c\" |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual = Yaml.parse "a: &x\n  !!map\n  b: c" |> Result.isOk
+  Expect.isTrue "Yaml.parse \"a: &x\\n !!map\\n b: c\" |> Result.isOk" testActual
+
+let case016 _ =
+  let testActual = Yaml.parse "a: 'hello\nworld'" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"a: 'hello\\nworld'\" |> Result.isErr" testActual
+
+let case017 _ =
+  let testActual = Yaml.parse "a: |\n   \n  text" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"a: |\\n \\n text\" |> Result.isErr" testActual
+
+let case018 _ =
+  let testActual = Yaml.parse "?\n- a\n- b\n:\n- c" |> Result.isOk
+  Expect.isTrue "Yaml.parse \"?\\n- a\\n- b\\n:\\n- c\" |> Result.isOk" testActual
+
+let case019 _ =
+  let testActual = Yaml.parse "[a: 1, {b: 2}]" |> Result.isOk
+  Expect.isTrue "Yaml.parse \"[a: 1, {b: 2}]\" |> Result.isOk" testActual
+
+let case020 _ =
+  let testActual = Yaml.load "%YAML 1.1\n---\non" = Ok (YamlData.String "on")
+  Expect.isTrue "Yaml.load \"%YAML 1.1\\n---\\non\" = Ok (YamlData.String \"on\")" testActual
+
+let case021 _ =
+  let testActual = Yaml.parse "%YAML 2.0\n---\na" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"%YAML 2.0\\n---\\na\" |> Result.isErr" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "YamlProperties" [
+  Test.property "property: quoteRoundtrip text" Test.string case001,
+  Test.property "property: intRoundtrip integer" Test.int case002,
+  Test.property "property: finiteFloat value" Test.float case003,
+  Test.property "property: total text" Test.string case004,
+  Test.property "property: jsonRoundtrip text integer" (Test.tuple2 Test.string Test.int) case005,
+  Test.test "YamlJson.toJson (YamlData.Float YamlNumber.NaN) |> Result.isErr" case006,
+  Test.test "Yaml.toStringAll [] = Ok \"\"" case007,
+  Test.test "(match Yaml.toStringAll [YamlData.Null, YamlData.String \"hello\"] with | Err _ -> false | Ok text -> Result.map List.length (Yaml.parseAll text) = Ok 2)" case008,
+  Test.test "Yaml.parse \"key: \\t[1, 2]\" |> Result.isOk" case009,
+  Test.test "Yaml.parse \"key: [1,\\n2]\" |> Result.isErr" case010,
+  Test.test "Yaml.parse \"a: 'b': c\" |> Result.isErr" case011,
+  Test.test "Yaml.parse \"---\\na: b\\n... invalid\" |> Result.isErr" case012,
+  Test.test "Yaml.parse \"[a,b,#comment\\n]\" |> Result.isErr" case013,
+  Test.test "Yaml.parse \"a: &x\\n!!map\\n b: c\" |> Result.isErr" case014,
+  Test.test "Yaml.parse \"a: &x\\n !!map\\n b: c\" |> Result.isOk" case015,
+  Test.test "Yaml.parse \"a: 'hello\\nworld'\" |> Result.isErr" case016,
+  Test.test "Yaml.parse \"a: |\\n \\n text\" |> Result.isErr" case017,
+  Test.test "Yaml.parse \"?\\n- a\\n- b\\n:\\n- c\" |> Result.isOk" case018,
+  Test.test "Yaml.parse \"[a: 1, {b: 2}]\" |> Result.isOk" case019,
+  Test.test "Yaml.load \"%YAML 1.1\\n---\\non\" = Ok (YamlData.String \"on\")" case020,
+  Test.test "Yaml.parse \"%YAML 2.0\\n---\\na\" |> Result.isErr" case021
+]

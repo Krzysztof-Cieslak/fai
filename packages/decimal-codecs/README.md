@@ -36,5 +36,5 @@ fai test -C packages --package decimal-codecs --seed 42 --count 128
 python3 scripts/package_integrations.py decimal-codecs --no-dependents --fai /path/to/fai
 ```
 
-Native contracts and JIT/AOT examples test values beyond binary64 precision,
+Named tests and JIT/AOT examples test values beyond binary64 precision,
 normalization, special-value handling, composed decoders and budget failures.

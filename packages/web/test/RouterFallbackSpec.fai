@@ -17,22 +17,38 @@ let prefixFirst = Router.router (Web.text "fallback") [
   Router.route "/user/new/edit" (Web.text "edit"),
   Router.route "/user/{id}" showId
 ]
-example: bodyOn prefixFirst Http.GET "/user/new" = Ok "new"
+
+let case001 _ =
+  let testActual = bodyOn prefixFirst Http.GET "/user/new"
+  let testExpected = Ok "new"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 captureFirst : Web.HttpHandler 'e
 let captureFirst = Router.router (Web.text "fallback") [
   Router.route "/user/{id}" showId,
   Router.route "/user/new/edit" (Web.text "edit")
 ]
-example: bodyOn captureFirst Http.GET "/user/new" = Ok "new"
-example: bodyOn captureFirst Http.GET "/user/new/edit" = Ok "edit"
+
+let case002 _ =
+  let testActual = bodyOn captureFirst Http.GET "/user/new"
+  let testExpected = Ok "new"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual = bodyOn captureFirst Http.GET "/user/new/edit"
+  let testExpected = Ok "edit"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 staticTerminal : Web.HttpHandler 'e
 let staticTerminal = Router.router (Web.text "fallback") [
   Router.route "/user/{id}" showId,
   Router.route "/user/new" (Web.text "static")
 ]
-example: bodyOn staticTerminal Http.GET "/user/new" = Ok "static"
+
+let case004 _ =
+  let testActual = bodyOn staticTerminal Http.GET "/user/new"
+  let testExpected = Ok "static"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 showCleanId : Web.HttpHandler 'e
 let showCleanId ctx =
@@ -43,7 +59,11 @@ let deeperPrefix = Router.router (Web.text "fallback") [
   Router.route "/team/static/{temporary}/extra" (Web.text "extra"),
   Router.route "/team/{id}/view" showCleanId
 ]
-example: bodyOn deeperPrefix Http.GET "/team/static/view" = Ok "static"
+
+let case005 _ =
+  let testActual = bodyOn deeperPrefix Http.GET "/team/static/view"
+  let testExpected = Ok "static"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 // A real static endpoint wins path selection. Its method/Skip rejection goes
 // to the configured fallback rather than changing the chosen path pattern.
@@ -52,13 +72,42 @@ let methodMismatch = Router.router (Web.text "fallback") [
   Router.get [Router.route "/user/new" (Web.text "static")],
   Router.post [Router.route "/user/{id}" showId]
 ]
-example: bodyOn methodMismatch Http.POST "/user/new" = Ok "fallback"
+
+let case006 _ =
+  let testActual = bodyOn methodMismatch Http.POST "/user/new"
+  let testExpected = Ok "fallback"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 skippingTerminal : Web.HttpHandler 'e
 let skippingTerminal = Router.router (Web.text "fallback") [
   Router.route "/user/new" (fun ctx -> Web.Skip),
   Router.route "/user/{id}" showId
 ]
-example: bodyOn skippingTerminal Http.GET "/user/new" = Ok "fallback"
-example: bodyOn prefixFirst Http.GET "/" = Ok "fallback"
-example: bodyOn deeperPrefix Http.GET "/team/other/missing" = Ok "fallback"
+
+let case007 _ =
+  let testActual = bodyOn skippingTerminal Http.GET "/user/new"
+  let testExpected = Ok "fallback"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case008 _ =
+  let testActual = bodyOn prefixFirst Http.GET "/"
+  let testExpected = Ok "fallback"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case009 _ =
+  let testActual = bodyOn deeperPrefix Http.GET "/team/other/missing"
+  let testExpected = Ok "fallback"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "RouterFallbackSpec" [
+  Test.test "bodyOn prefixFirst Http.GET \"/user/new\" = Ok \"new\"" case001,
+  Test.test "bodyOn captureFirst Http.GET \"/user/new\" = Ok \"new\"" case002,
+  Test.test "bodyOn captureFirst Http.GET \"/user/new/edit\" = Ok \"edit\"" case003,
+  Test.test "bodyOn staticTerminal Http.GET \"/user/new\" = Ok \"static\"" case004,
+  Test.test "bodyOn deeperPrefix Http.GET \"/team/static/view\" = Ok \"static\"" case005,
+  Test.test "bodyOn methodMismatch Http.POST \"/user/new\" = Ok \"fallback\"" case006,
+  Test.test "bodyOn skippingTerminal Http.GET \"/user/new\" = Ok \"fallback\"" case007,
+  Test.test "bodyOn prefixFirst Http.GET \"/\" = Ok \"fallback\"" case008,
+  Test.test "bodyOn deeperPrefix Http.GET \"/team/other/missing\" = Ok \"fallback\"" case009
+]

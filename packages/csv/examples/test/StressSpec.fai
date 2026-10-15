@@ -1,0 +1,4 @@
+module CsvStressSpec
+
+tests : Test.Suite Test.Context { }
+let tests = CsvStressChecks.tests

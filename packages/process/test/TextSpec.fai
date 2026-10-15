@@ -19,14 +19,63 @@ let splitDecode bytes index =
       | Err error -> Err error
       | Ok (decoder, second) ->
         Result.map (List.append (List.append first second)) (ProcessText.finish decoder)
-example: decode 20 (Bytes.fromString "one\r\ntwo\n\nlast") = Ok ["one", "two", "", "last"]
-example: decode 0 Bytes.empty = Ok []
-example: decode 0 (Bytes.fromString "\n") = Ok [""]
-example: decode 2 (Bytes.fromString "abc") = Err ProcessText.LineTooLong
-example: decode 2 (Bytes.fromString "ab\ncd\n") = Ok ["ab", "cd"]
-example: decode 20 (Bytes.fromList [255, 10]) = Err ProcessText.InvalidUtf8
-example: decode 20 (Bytes.fromList [195]) = Err ProcessText.InvalidUtf8
-example: splitDecode (Bytes.fromString "é😀\n") 1 = Ok ["é😀"]
-example: splitDecode (Bytes.fromString "é😀\n") 4 = Ok ["é😀"]
-example: decode 20 (Bytes.fromString "a\r") = Ok ["a\r"]
-forall text index: splitDecode (Bytes.fromString text) index = decode 4096 (Bytes.fromString text)
+
+let case001 _ =
+  let testActual = decode 20 (Bytes.fromString "one\r\ntwo\n\nlast") = Ok ["one", "two", "", "last"]
+  Expect.isTrue "decode 20 (Bytes.fromString \"one\\r\\ntwo\\n\\nlast\") = Ok [\"one\", \"two\", \"\", \"last\"]" testActual
+
+let case002 _ =
+  let testActual = decode 0 Bytes.empty = Ok []
+  Expect.isTrue "decode 0 Bytes.empty = Ok []" testActual
+
+let case003 _ =
+  let testActual = decode 0 (Bytes.fromString "\n") = Ok [""]
+  Expect.isTrue "decode 0 (Bytes.fromString \"\\n\") = Ok [\"\"]" testActual
+
+let case004 _ =
+  let testActual = decode 2 (Bytes.fromString "abc") = Err ProcessText.LineTooLong
+  Expect.isTrue "decode 2 (Bytes.fromString \"abc\") = Err ProcessText.LineTooLong" testActual
+
+let case005 _ =
+  let testActual = decode 2 (Bytes.fromString "ab\ncd\n") = Ok ["ab", "cd"]
+  Expect.isTrue "decode 2 (Bytes.fromString \"ab\\ncd\\n\") = Ok [\"ab\", \"cd\"]" testActual
+
+let case006 _ =
+  let testActual = decode 20 (Bytes.fromList [255, 10]) = Err ProcessText.InvalidUtf8
+  Expect.isTrue "decode 20 (Bytes.fromList [255, 10]) = Err ProcessText.InvalidUtf8" testActual
+
+let case007 _ =
+  let testActual = decode 20 (Bytes.fromList [195]) = Err ProcessText.InvalidUtf8
+  Expect.isTrue "decode 20 (Bytes.fromList [195]) = Err ProcessText.InvalidUtf8" testActual
+
+let case008 _ =
+  let testActual = splitDecode (Bytes.fromString "é😀\n") 1 = Ok ["é😀"]
+  Expect.isTrue "splitDecode (Bytes.fromString \"é😀\\n\") 1 = Ok [\"é😀\"]" testActual
+
+let case009 _ =
+  let testActual = splitDecode (Bytes.fromString "é😀\n") 4 = Ok ["é😀"]
+  Expect.isTrue "splitDecode (Bytes.fromString \"é😀\\n\") 4 = Ok [\"é😀\"]" testActual
+
+let case010 _ =
+  let testActual = decode 20 (Bytes.fromString "a\r") = Ok ["a\r"]
+  Expect.isTrue "decode 20 (Bytes.fromString \"a\\r\") = Ok [\"a\\r\"]" testActual
+
+let case011 testInput =
+  let (text, index) = testInput
+  let testActual = splitDecode (Bytes.fromString text) index = decode 4096 (Bytes.fromString text)
+  Expect.isTrue "property: splitDecode (Bytes.fromString text) index = decode 4096 (Bytes.fromString text)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "ProcessTextSpec" [
+  Test.test "decode 20 (Bytes.fromString \"one\\r\\ntwo\\n\\nlast\") = Ok [\"one\", \"two\", \"\", \"last\"]" case001,
+  Test.test "decode 0 Bytes.empty = Ok []" case002,
+  Test.test "decode 0 (Bytes.fromString \"\\n\") = Ok [\"\"]" case003,
+  Test.test "decode 2 (Bytes.fromString \"abc\") = Err ProcessText.LineTooLong" case004,
+  Test.test "decode 2 (Bytes.fromString \"ab\\ncd\\n\") = Ok [\"ab\", \"cd\"]" case005,
+  Test.test "decode 20 (Bytes.fromList [255, 10]) = Err ProcessText.InvalidUtf8" case006,
+  Test.test "decode 20 (Bytes.fromList [195]) = Err ProcessText.InvalidUtf8" case007,
+  Test.test "splitDecode (Bytes.fromString \"é😀\\n\") 1 = Ok [\"é😀\"]" case008,
+  Test.test "splitDecode (Bytes.fromString \"é😀\\n\") 4 = Ok [\"é😀\"]" case009,
+  Test.test "decode 20 (Bytes.fromString \"a\\r\") = Ok [\"a\\r\"]" case010,
+  Test.property "property: splitDecode (Bytes.fromString text) index = decode 4096 (Bytes.fromString text)" (Test.tuple2 Test.string Test.int) case011
+]

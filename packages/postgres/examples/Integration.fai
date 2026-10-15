@@ -310,3 +310,93 @@ let main r =
   | Ok true -> r.console.writeLine "PostgreSQL checks passed"
   | Ok false -> r.console.writeLine "PostgreSQL checks failed"
   | Err error -> r.console.writeLine (Sql.errorToString error)
+
+let singlePool = { Postgres.poolOptions with
+  acquireTimeoutMs = Some 5000,
+  idleTimeoutMs = None,
+  maxConnections = 1,
+  maxLifetimeMs = None
+}
+
+liveCase : String -> (Runtime -> Postgres.Options -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }) -> Test.Suite Test.Context { Clock, Concurrency, Crypto.Entropy, Env, FileSystem, Net, Tls }
+let liveCase name check = Test.test name (runLive name check)
+
+runLive : String -> (Runtime -> Postgres.Options -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }) -> Test.Context -> Test.Check / { Clock, Concurrency, Crypto.Entropy, Env, FileSystem, Net, Tls }
+let runLive name check ctx =
+  let env = {
+    clock = ctx.runtime.clock,
+    concurrency = ctx.runtime.concurrency,
+    console = ctx.runtime.console,
+    entropy = Crypto.systemEntropy,
+    env = ctx.runtime.env,
+    fs = ctx.runtime.fs,
+    net = ctx.runtime.net,
+    tls = ctx.runtime.tls
+  }
+  match env.env.get "FAI_PG_URL" with
+  | None -> Test.error "PostgreSQL integration requires an explicitly provisioned FAI_PG_URL"
+  | Some _ ->
+    match Basic.configuration env with
+    | Err error -> Test.error (Sql.errorToString error)
+    | Ok original ->
+      let options = { original with
+        applicationName = "fai",
+        channelBinding = if original.tls = PgConfig.Disabled then
+          original.channelBinding
+        else
+          PgConfig.RequireBinding,
+        fetchRows = 3
+      }
+      Expect.ok Sql.errorToString (Expect.isTrue name) (check env options)
+
+wrongPassword : Runtime -> Postgres.Options -> Result Bool Sql.Error / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let wrongPassword env options =
+  Ok (resultKind Sql.Authentication (Postgres.withConnection env { options with
+    password = "deliberately-wrong-password"
+  } (fun session -> scalar session "select 1")))
+
+public tests : Test.Suite Test.Context { Clock, Concurrency, Crypto.Entropy, Env, FileSystem, Net, Tls }
+let tests = Test.describe "PostgreSQL database integration" [
+  liveCase "SQL scalar values round trip" (fun env options ->
+    Postgres.withConnection env options values),
+  liveCase "streamed rows and expired cursors" (fun env options ->
+    Postgres.withConnection env options stream),
+  liveCase "nested transactions and failed commits" (fun env options ->
+    Postgres.withConnection env options transactions),
+  liveCase "JSON and temporal infinities" (fun env options ->
+    Postgres.withConnection env options jsonAndSpecial),
+  liveCase "pooled sessions reset state and expire leases" (fun env options ->
+    Postgres.withPool env options singlePool poolReset),
+  liveCase "pool acquisition timeout recovers" (fun env options ->
+    Postgres.withPool env options { singlePool with
+      acquireTimeoutMs = Some 100,
+      minConnections = 1
+    } poolTimeout),
+  liveCase "cancelled queries recover the pool" (fun env options ->
+    Postgres.withPool env options singlePool (cancelled env)),
+  liveCase "parallel leases remain independent" (fun env options ->
+    Postgres.withPool env options { singlePool with
+      acquireTimeoutMs = Some 10000,
+      maxConnections = 2
+    } (parallel env)),
+  liveCase "idle connections expire" (fun env options ->
+    Postgres.withPool env options { singlePool with
+      idleTimeoutMs = Some 30,
+      maintenanceIntervalMs = 10
+    } (expiry env)),
+  liveCase "operation timeouts close the connection" (fun env options ->
+    Postgres.withConnection env { options with operationTimeoutMs = Some 500 } operationTimeout),
+  liveCase "syntax and unsupported-type errors recover" (fun env options ->
+    Postgres.withConnection env options syntaxRecovery),
+  liveCase "batch limits reject oversized rows" (fun env options ->
+    Postgres.withConnection env { options with
+      maxBatchBytes = 200,
+      maxColumnBytes = 100
+    } batchLimit),
+  liveCase "lifetime expiry waits for active leases" (fun env options ->
+    Postgres.withPool env options { singlePool with maxLifetimeMs = Some 30 } (activeExpiry env)),
+  liveCase "shutdown expires pool aliases" (fun env options -> shutdown env options singlePool),
+  liveCase "cancelled waiters preserve pool capacity" (fun env options ->
+    Postgres.withPool env options singlePool (waiterRecovery env)),
+  liveCase "wrong passwords report authentication failures" wrongPassword
+]

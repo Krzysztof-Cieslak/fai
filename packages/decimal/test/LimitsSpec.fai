@@ -6,80 +6,225 @@ let kind expected result =
   match result with
   | Err error -> error.kind = expected
   | _ -> false
-example: kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with maxDigits = 0 } "0")
-example: kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with
-  maxExponent = -1
-} "0")
-example: kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with
-  maxIntermediateDigits = 1
-} "0")
-example: kind Decimal.ResourceLimit (Decimal.parseWith { Decimal.defaults with
-  maxDigits = 2
-} "999")
-example: Decimal.parseWith { Decimal.defaults with maxDigits = 2 } "1000" = Ok (value "1000")
-example: kind Decimal.ResourceLimit (Decimal.parseWith { Decimal.defaults with
-  maxInputBytes = 2
-} "100")
-example: kind Decimal.OutOfRange (Decimal.parseWith { Decimal.defaults with maxExponent = 2 } "1e3")
-example: kind Decimal.OutOfRange (Decimal.parse "1e999999999999999999999")
-example: kind Decimal.ResourceLimit (Decimal.addWith { Decimal.defaults with
-  maxDigits = 2
-} (value "99") (value "2"))
-example: kind Decimal.ResourceLimit (Decimal.add (value "1e1000000") Decimal.one)
-example: kind Decimal.ResourceLimit (Decimal.multiplyWith { Decimal.defaults with
-  maxWork = 0
-} (value "12") (value "13"))
-example: kind Decimal.ResourceLimit (Decimal.divideExactWith { Decimal.defaults with
-  maxWork = 0
-} Decimal.one (value "8"))
-example: kind Decimal.InvalidOptions (Decimal.roundToPrecision 0 Decimal.HalfEven Decimal.one)
-example: kind Decimal.OutOfRange (Decimal.roundToScale (-9223372036854775808) Decimal.HalfEven Decimal.one)
-example: kind Decimal.OutOfRange (Decimal.roundToScale 9223372036854775807 Decimal.HalfEven Decimal.one)
-example: kind Decimal.ResourceLimit (Decimal.toFixed 2000000 Decimal.HalfEven Decimal.one)
-example: kind Decimal.ResourceLimit (Decimal.toStringWith { Decimal.defaults with
-  maxOutputBytes = 0
-} Decimal.one)
-example: Decimal.toStringWith { Decimal.defaults with maxOutputBytes = 1 } Decimal.one = Ok "1"
-example: Decimal.toFixedWith { Decimal.defaults with
-  maxOutputBytes = 4
-} 2 Decimal.HalfEven Decimal.one = Ok ("1.00", false)
-example: kind Decimal.ResourceLimit (Decimal.toFixedWith { Decimal.defaults with
-  maxOutputBytes = 3
-} 2 Decimal.HalfEven Decimal.one)
-example: Decimal.toScientificWith { Decimal.defaults with
-  maxOutputBytes = 3
-} 1 Decimal.HalfEven Decimal.one = Ok ("1e0", false)
-example: kind Decimal.ResourceLimit (Decimal.toScientificWith { Decimal.defaults with
-  maxOutputBytes = 2
-} 1 Decimal.HalfEven Decimal.one)
-example: kind Decimal.ResourceLimit (Decimal.toFloatWith { Decimal.defaults with
-  maxWork = 0
-} (value "0.1"))
-example: (match Decimal.parse "12.3x" with
-| Err error -> error.kind = Decimal.InvalidSyntax && error.offset = Some 4
-| _ -> false)
-example: (match Decimal.parse "1e+" with
-| Err error -> error.kind = Decimal.InvalidSyntax && error.offset = Some 3
-| _ -> false)
-example: (match Decimal.parse "\u{1f600}" with
-| Err error -> error.offset = Some 0
-| _ -> false)
-example: Decimal.divideToScale 2 Decimal.HalfEven (value "1e-1000000") (value "3") = Ok {
-  inexact = true,
-  value = Decimal.zero
-}
-example: Decimal.divideToScale 2 Decimal.Floor (value "-1e-1000000") (value "3") = Ok {
-  inexact = true,
-  value = value "-0.01"
-}
-example: kind Decimal.ResourceLimit (Decimal.divideToScaleWith { Decimal.defaults with
-  maxWork = 0
-} 2 Decimal.HalfEven (value "0.001") (value "2"))
-example: (match Decimal.fromPartsWith { Decimal.defaults with
-  maxExponent = 1000000000
-} { coefficient = "11", exponent = 1000000000, negative = false } with
-| Err _ -> false
-| Ok value ->
-  Decimal.parseWith { Decimal.defaults with
-    maxExponent = 1000000000
-  } (Decimal.toString value) = Ok value)
+
+let case001 _ =
+  let testActual =
+    kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with maxDigits = 0 } "0")
+  Expect.isTrue "kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with maxDigits = 0 } \"0\")" testActual
+
+let case002 _ =
+  let testActual =
+    kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with maxExponent = -1 } "0")
+  Expect.isTrue "kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with maxExponent = -1 } \"0\")" testActual
+
+let case003 _ =
+  let testActual =
+    kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with
+      maxIntermediateDigits = 1
+    } "0")
+  Expect.isTrue "kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with maxIntermediateDigits = 1 } \"0\")" testActual
+
+let case004 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.parseWith { Decimal.defaults with maxDigits = 2 } "999")
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.parseWith { Decimal.defaults with maxDigits = 2 } \"999\")" testActual
+
+let case005 _ =
+  let testActual =
+    Decimal.parseWith { Decimal.defaults with maxDigits = 2 } "1000" = Ok (value "1000")
+  Expect.isTrue "Decimal.parseWith { Decimal.defaults with maxDigits = 2 } \"1000\" = Ok (value \"1000\")" testActual
+
+let case006 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.parseWith { Decimal.defaults with maxInputBytes = 2 } "100")
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.parseWith { Decimal.defaults with maxInputBytes = 2 } \"100\")" testActual
+
+let case007 _ =
+  let testActual =
+    kind Decimal.OutOfRange (Decimal.parseWith { Decimal.defaults with maxExponent = 2 } "1e3")
+  Expect.isTrue "kind Decimal.OutOfRange (Decimal.parseWith { Decimal.defaults with maxExponent = 2 } \"1e3\")" testActual
+
+let case008 _ =
+  let testActual = kind Decimal.OutOfRange (Decimal.parse "1e999999999999999999999")
+  Expect.isTrue "kind Decimal.OutOfRange (Decimal.parse \"1e999999999999999999999\")" testActual
+
+let case009 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.addWith { Decimal.defaults with
+      maxDigits = 2
+    } (value "99") (value "2"))
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.addWith { Decimal.defaults with maxDigits = 2 } (value \"99\") (value \"2\"))" testActual
+
+let case010 _ =
+  let testActual = kind Decimal.ResourceLimit (Decimal.add (value "1e1000000") Decimal.one)
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.add (value \"1e1000000\") Decimal.one)" testActual
+
+let case011 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.multiplyWith { Decimal.defaults with
+      maxWork = 0
+    } (value "12") (value "13"))
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.multiplyWith { Decimal.defaults with maxWork = 0 } (value \"12\") (value \"13\"))" testActual
+
+let case012 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.divideExactWith { Decimal.defaults with
+      maxWork = 0
+    } Decimal.one (value "8"))
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.divideExactWith { Decimal.defaults with maxWork = 0 } Decimal.one (value \"8\"))" testActual
+
+let case013 _ =
+  let testActual =
+    kind Decimal.InvalidOptions (Decimal.roundToPrecision 0 Decimal.HalfEven Decimal.one)
+  Expect.isTrue "kind Decimal.InvalidOptions (Decimal.roundToPrecision 0 Decimal.HalfEven Decimal.one)" testActual
+
+let case014 _ =
+  let testActual =
+    kind Decimal.OutOfRange (Decimal.roundToScale (-9223372036854775808) Decimal.HalfEven Decimal.one)
+  Expect.isTrue "kind Decimal.OutOfRange (Decimal.roundToScale (-9223372036854775808) Decimal.HalfEven Decimal.one)" testActual
+
+let case015 _ =
+  let testActual =
+    kind Decimal.OutOfRange (Decimal.roundToScale 9223372036854775807 Decimal.HalfEven Decimal.one)
+  Expect.isTrue "kind Decimal.OutOfRange (Decimal.roundToScale 9223372036854775807 Decimal.HalfEven Decimal.one)" testActual
+
+let case016 _ =
+  let testActual = kind Decimal.ResourceLimit (Decimal.toFixed 2000000 Decimal.HalfEven Decimal.one)
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.toFixed 2000000 Decimal.HalfEven Decimal.one)" testActual
+
+let case017 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.toStringWith { Decimal.defaults with
+      maxOutputBytes = 0
+    } Decimal.one)
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.toStringWith { Decimal.defaults with maxOutputBytes = 0 } Decimal.one)" testActual
+
+let case018 _ =
+  let testActual =
+    Decimal.toStringWith { Decimal.defaults with maxOutputBytes = 1 } Decimal.one = Ok "1"
+  Expect.isTrue "Decimal.toStringWith { Decimal.defaults with maxOutputBytes = 1 } Decimal.one = Ok \"1\"" testActual
+
+let case019 _ =
+  let testActual =
+    Decimal.toFixedWith { Decimal.defaults with
+      maxOutputBytes = 4
+    } 2 Decimal.HalfEven Decimal.one = Ok ("1.00", false)
+  Expect.isTrue "Decimal.toFixedWith { Decimal.defaults with maxOutputBytes = 4 } 2 Decimal.HalfEven Decimal.one = Ok (\"1.00\", false)" testActual
+
+let case020 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.toFixedWith { Decimal.defaults with
+      maxOutputBytes = 3
+    } 2 Decimal.HalfEven Decimal.one)
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.toFixedWith { Decimal.defaults with maxOutputBytes = 3 } 2 Decimal.HalfEven Decimal.one)" testActual
+
+let case021 _ =
+  let testActual =
+    Decimal.toScientificWith { Decimal.defaults with
+      maxOutputBytes = 3
+    } 1 Decimal.HalfEven Decimal.one = Ok ("1e0", false)
+  Expect.isTrue "Decimal.toScientificWith { Decimal.defaults with maxOutputBytes = 3 } 1 Decimal.HalfEven Decimal.one = Ok (\"1e0\", false)" testActual
+
+let case022 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.toScientificWith { Decimal.defaults with
+      maxOutputBytes = 2
+    } 1 Decimal.HalfEven Decimal.one)
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.toScientificWith { Decimal.defaults with maxOutputBytes = 2 } 1 Decimal.HalfEven Decimal.one)" testActual
+
+let case023 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.toFloatWith { Decimal.defaults with
+      maxWork = 0
+    } (value "0.1"))
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.toFloatWith { Decimal.defaults with maxWork = 0 } (value \"0.1\"))" testActual
+
+let case024 _ =
+  let testActual =
+    (match Decimal.parse "12.3x" with
+    | Err error -> error.kind = Decimal.InvalidSyntax && error.offset = Some 4
+    | _ -> false)
+  Expect.isTrue "(match Decimal.parse \"12.3x\" with | Err error -> error.kind = Decimal.InvalidSyntax && error.offset = Some 4 | _ -> false)" testActual
+
+let case025 _ =
+  let testActual =
+    (match Decimal.parse "1e+" with
+    | Err error -> error.kind = Decimal.InvalidSyntax && error.offset = Some 3
+    | _ -> false)
+  Expect.isTrue "(match Decimal.parse \"1e+\" with | Err error -> error.kind = Decimal.InvalidSyntax && error.offset = Some 3 | _ -> false)" testActual
+
+let case026 _ =
+  let testActual =
+    (match Decimal.parse "\u{1f600}" with
+    | Err error -> error.offset = Some 0
+    | _ -> false)
+  Expect.isTrue "(match Decimal.parse \"\\u{1f600}\" with | Err error -> error.offset = Some 0 | _ -> false)" testActual
+
+let case027 _ =
+  let testActual =
+    Decimal.divideToScale 2 Decimal.HalfEven (value "1e-1000000") (value "3") = Ok {
+      inexact = true,
+      value = Decimal.zero
+    }
+  Expect.isTrue "Decimal.divideToScale 2 Decimal.HalfEven (value \"1e-1000000\") (value \"3\") = Ok { inexact = true, value = Decimal.zero }" testActual
+
+let case028 _ =
+  let testActual =
+    Decimal.divideToScale 2 Decimal.Floor (value "-1e-1000000") (value "3") = Ok {
+      inexact = true,
+      value = value "-0.01"
+    }
+  Expect.isTrue "Decimal.divideToScale 2 Decimal.Floor (value \"-1e-1000000\") (value \"3\") = Ok { inexact = true, value = value \"-0.01\" }" testActual
+
+let case029 _ =
+  let testActual =
+    kind Decimal.ResourceLimit (Decimal.divideToScaleWith { Decimal.defaults with
+      maxWork = 0
+    } 2 Decimal.HalfEven (value "0.001") (value "2"))
+  Expect.isTrue "kind Decimal.ResourceLimit (Decimal.divideToScaleWith { Decimal.defaults with maxWork = 0 } 2 Decimal.HalfEven (value \"0.001\") (value \"2\"))" testActual
+
+let case030 _ =
+  let testActual =
+    (match Decimal.fromPartsWith { Decimal.defaults with
+      maxExponent = 1000000000
+    } { coefficient = "11", exponent = 1000000000, negative = false } with
+    | Err _ -> false
+    | Ok value ->
+      Decimal.parseWith { Decimal.defaults with
+        maxExponent = 1000000000
+      } (Decimal.toString value) = Ok value)
+  Expect.isTrue "(match Decimal.fromPartsWith { Decimal.defaults with maxExponent = 1000000000 } { coefficient = \"11\", exponent = 1000000000, negative = false } with | Err _ …" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DecimalLimitsSpec" [
+  Test.test "kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with maxDigits = 0 } \"0\")" case001,
+  Test.test "kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with maxExponent = -1 } \"0\")" case002,
+  Test.test "kind Decimal.InvalidOptions (Decimal.parseWith { Decimal.defaults with maxIntermediateDigits = 1 } \"0\")" case003,
+  Test.test "kind Decimal.ResourceLimit (Decimal.parseWith { Decimal.defaults with maxDigits = 2 } \"999\")" case004,
+  Test.test "Decimal.parseWith { Decimal.defaults with maxDigits = 2 } \"1000\" = Ok (value \"1000\")" case005,
+  Test.test "kind Decimal.ResourceLimit (Decimal.parseWith { Decimal.defaults with maxInputBytes = 2 } \"100\")" case006,
+  Test.test "kind Decimal.OutOfRange (Decimal.parseWith { Decimal.defaults with maxExponent = 2 } \"1e3\")" case007,
+  Test.test "kind Decimal.OutOfRange (Decimal.parse \"1e999999999999999999999\")" case008,
+  Test.test "kind Decimal.ResourceLimit (Decimal.addWith { Decimal.defaults with maxDigits = 2 } (value \"99\") (value \"2\"))" case009,
+  Test.test "kind Decimal.ResourceLimit (Decimal.add (value \"1e1000000\") Decimal.one)" case010,
+  Test.test "kind Decimal.ResourceLimit (Decimal.multiplyWith { Decimal.defaults with maxWork = 0 } (value \"12\") (value \"13\"))" case011,
+  Test.test "kind Decimal.ResourceLimit (Decimal.divideExactWith { Decimal.defaults with maxWork = 0 } Decimal.one (value \"8\"))" case012,
+  Test.test "kind Decimal.InvalidOptions (Decimal.roundToPrecision 0 Decimal.HalfEven Decimal.one)" case013,
+  Test.test "kind Decimal.OutOfRange (Decimal.roundToScale (-9223372036854775808) Decimal.HalfEven Decimal.one)" case014,
+  Test.test "kind Decimal.OutOfRange (Decimal.roundToScale 9223372036854775807 Decimal.HalfEven Decimal.one)" case015,
+  Test.test "kind Decimal.ResourceLimit (Decimal.toFixed 2000000 Decimal.HalfEven Decimal.one)" case016,
+  Test.test "kind Decimal.ResourceLimit (Decimal.toStringWith { Decimal.defaults with maxOutputBytes = 0 } Decimal.one)" case017,
+  Test.test "Decimal.toStringWith { Decimal.defaults with maxOutputBytes = 1 } Decimal.one = Ok \"1\"" case018,
+  Test.test "Decimal.toFixedWith { Decimal.defaults with maxOutputBytes = 4 } 2 Decimal.HalfEven Decimal.one = Ok (\"1.00\", false)" case019,
+  Test.test "kind Decimal.ResourceLimit (Decimal.toFixedWith { Decimal.defaults with maxOutputBytes = 3 } 2 Decimal.HalfEven Decimal.one)" case020,
+  Test.test "Decimal.toScientificWith { Decimal.defaults with maxOutputBytes = 3 } 1 Decimal.HalfEven Decimal.one = Ok (\"1e0\", false)" case021,
+  Test.test "kind Decimal.ResourceLimit (Decimal.toScientificWith { Decimal.defaults with maxOutputBytes = 2 } 1 Decimal.HalfEven Decimal.one)" case022,
+  Test.test "kind Decimal.ResourceLimit (Decimal.toFloatWith { Decimal.defaults with maxWork = 0 } (value \"0.1\"))" case023,
+  Test.test "(match Decimal.parse \"12.3x\" with | Err error -> error.kind = Decimal.InvalidSyntax && error.offset = Some 4 | _ -> false)" case024,
+  Test.test "(match Decimal.parse \"1e+\" with | Err error -> error.kind = Decimal.InvalidSyntax && error.offset = Some 3 | _ -> false)" case025,
+  Test.test "(match Decimal.parse \"\\u{1f600}\" with | Err error -> error.offset = Some 0 | _ -> false)" case026,
+  Test.test "Decimal.divideToScale 2 Decimal.HalfEven (value \"1e-1000000\") (value \"3\") = Ok { inexact = true, value = Decimal.zero }" case027,
+  Test.test "Decimal.divideToScale 2 Decimal.Floor (value \"-1e-1000000\") (value \"3\") = Ok { inexact = true, value = value \"-0.01\" }" case028,
+  Test.test "kind Decimal.ResourceLimit (Decimal.divideToScaleWith { Decimal.defaults with maxWork = 0 } 2 Decimal.HalfEven (value \"0.001\") (value \"2\"))" case029,
+  Test.test "(match Decimal.fromPartsWith { Decimal.defaults with maxExponent = 1000000000 } { coefficient = \"11\", exponent = 1000000000, negative = false } with | Err _ …" case030
+]

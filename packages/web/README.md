@@ -13,8 +13,8 @@ packages/web/
   src/Router.fai     # the route tree: route / subRoute / verb groupers / router
   examples/Main.fai  # a runnable server
   examples/JsonWebExample.fai  # typed JSON request/response server
-  test/WebSpec.fai   # behavioural contracts
-  test/WebJsonSpec.fai  # JSON request/response contracts
+  test/WebSpec.fai   # named behavioural tests
+  test/WebJsonSpec.fai  # named JSON request/response tests
 ```
 
 ## Using it today
@@ -233,9 +233,9 @@ turning an `HttpHandler` into the request→response function the server expects
 
 `Web.mockContext method target` builds a request context without opening a
 socket, and `Web.outcomeResponse` reads back the response an outcome produced, so
-handlers are testable with ordinary `example` contracts. See `test/WebSpec.fai`.
+handlers are testable with pure named tests and `Expect` checks. See `test/WebSpec.fai`.
 
-The package carries ordinary Fai contracts, runnable directly with an existing compiler:
+The package carries named Fai tests, runnable directly with an existing compiler:
 
 ```sh
 fai test -C packages web

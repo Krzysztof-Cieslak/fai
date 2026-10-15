@@ -78,43 +78,13 @@ let write fs root files =
 let all = patterns ["**"]
 
 basic : Runtime -> Path -> List (String * Bool) / { Concurrency, FileSystem }
-let basic env root =
-  let found = GlobWalk.collect env GlobWalk.defaults 100 root all
-  let filtered =
-    GlobWalk.collect env { GlobWalk.defaults with
-      entries = GlobWalk.FilesOnly
-    } 100 root (patterns ["**/*.fai"])
-  let hidden = GlobWalk.collect env { GlobWalk.defaults with includeHidden = false } 100 root all
-  let raw = GlobWalk.collect env { GlobWalk.defaults with respectIgnore = false } 100 root all
-  let git = GlobWalk.collect env { GlobWalk.defaults with skipGit = false } 100 root all
-  let limited = GlobWalk.collect env GlobWalk.defaults 2 root all
-  let stopped = GlobWalk.fold env GlobWalk.defaults root all 0 stop
-  let failed = GlobWalk.fold env GlobWalk.defaults root all 0 failAfterOne
-  let shallow =
-    GlobWalk.collect env { GlobWalk.defaults with
-      walk = { Directory.walkOptions with maxDepth = 1, order = Directory.SortedOrder }
-    } 100 root all
-  let visited =
-    GlobWalk.collect env { GlobWalk.defaults with
-      walk = { Directory.walkOptions with maxEntries = 3, order = Directory.SortedOrder }
-    } 100 root all
-  let openLimit =
-    GlobWalk.collect env { GlobWalk.defaults with
-      walk = { Directory.walkOptions with maxOpenDirectories = 1 }
-    } 100 root all
-  let ignoreLimit =
-    GlobWalk.collect env { GlobWalk.defaults with
-      ignore = { Ignore.defaults with maxFileBytes = 2 }
-    } 100 root all
-  let activeBudget =
-    GlobWalk.collect env { GlobWalk.defaults with
-      ignore = { Ignore.defaults with maxActiveBytes = 23 }
-    } 100 root all
-  let missing = GlobWalk.collect env GlobWalk.defaults 100 (Path.join root (path "missing")) all
-  let empty =
-    GlobWalk.collect env GlobWalk.defaults 0 (Path.join root (path "missing")) GlobSet.empty
-  [
-    ("sorted nested rules", complete found && names found = [
+let basic env root = List.map (fun name -> (name, basicPassed name env root)) basicNames
+
+basicPassed : String -> Runtime -> Path -> Bool / { Concurrency, FileSystem }
+let basicPassed name env root =
+  if name = "sorted nested rules" then
+    let found = GlobWalk.collect env GlobWalk.defaults 100 root all
+    complete found && names found = [
       ".gitignore",
       ".hidden",
       "keep.fai",
@@ -125,39 +95,77 @@ let basic env root =
       "src/keep.tmp",
       "zother",
       "zother/.gitignore"
-    ] && found.ignored = 6),
-    ("file filtering", complete filtered && names filtered = ["keep.fai", "src/keep.fai"]),
-    ("hidden filtering keeps rules", complete hidden && names hidden = [
+    ] && found.ignored = 6
+  else if name = "file filtering" then
+    let found =
+      GlobWalk.collect env { GlobWalk.defaults with
+        entries = GlobWalk.FilesOnly
+      } 100 root (patterns ["**/*.fai"])
+    complete found && names found = ["keep.fai", "src/keep.fai"]
+  else if name = "hidden filtering keeps rules" then
+    let found = GlobWalk.collect env { GlobWalk.defaults with includeHidden = false } 100 root all
+    complete found && names found = [
       "keep.fai",
       "other",
       "src",
       "src/keep.fai",
       "src/keep.tmp",
       "zother"
-    ]),
-    ("ignore discovery disabled", complete raw && List.member "build/keep.fai" (names raw) && List.member "drop.tmp" (names raw) && not (List.member ".git" (names raw))),
-    ("Git metadata option", complete git && List.member ".git" (names git)),
-    ("result limit retains prefix", limited.outcome = Err GlobWalk.ResultLimit && names limited = [
+    ]
+  else if name = "ignore discovery disabled" then
+    let found = GlobWalk.collect env { GlobWalk.defaults with respectIgnore = false } 100 root all
+    complete found && List.member "build/keep.fai" (names found) && List.member "drop.tmp" (names found) && not (List.member ".git" (names found))
+  else if name = "Git metadata option" then
+    let found = GlobWalk.collect env { GlobWalk.defaults with skipGit = false } 100 root all
+    complete found && List.member ".git" (names found)
+  else if name = "result limit retains prefix" then
+    let found = GlobWalk.collect env GlobWalk.defaults 2 root all
+    found.outcome = Err GlobWalk.ResultLimit && names found = [
       ".gitignore",
       ".hidden"
-    ] && limited.matched = 2 && limited.cleanupError = None),
-    ("early stop", stopped.outcome = Ok Directory.Stopped && stopped.value = 1 && stopped.cleanupError = None),
-    ("callback error retains state", failed.outcome = Err (GlobWalk.CallbackError "callback failure") && failed.value = 1 && failed.cleanupError = None),
-    ("depth limit", complete shallow && names shallow = [
-      ".gitignore",
-      ".hidden",
-      "keep.fai",
-      "other",
-      "src",
-      "zother"
-    ]),
-    ("entry limit", fileError FileSystem.TooLarge visited && visited.cleanupError = None),
-    ("open cursor limit", fileError FileSystem.TooLarge openLimit && openLimit.cleanupError = None),
-    ("ignore byte limit", fileError FileSystem.TooLarge ignoreLimit),
-    ("completed scopes release their rule budget", complete activeBudget),
-    ("missing root", fileError FileSystem.NotFound missing),
-    ("empty set performs no traversal", complete empty && empty.visited = 0)
-  ]
+    ] && found.matched = 2 && found.cleanupError = None
+  else if name = "early stop" then
+    let found = GlobWalk.fold env GlobWalk.defaults root all 0 stop
+    found.outcome = Ok Directory.Stopped && found.value = 1 && found.cleanupError = None
+  else if name = "callback error retains state" then
+    let found = GlobWalk.fold env GlobWalk.defaults root all 0 failAfterOne
+    found.outcome = Err (GlobWalk.CallbackError "callback failure") && found.value = 1 && found.cleanupError = None
+  else if name = "depth limit" then
+    let found =
+      GlobWalk.collect env { GlobWalk.defaults with
+        walk = { Directory.walkOptions with maxDepth = 1, order = Directory.SortedOrder }
+      } 100 root all
+    complete found && names found = [".gitignore", ".hidden", "keep.fai", "other", "src", "zother"]
+  else if name = "entry limit" then
+    let found =
+      GlobWalk.collect env { GlobWalk.defaults with
+        walk = { Directory.walkOptions with maxEntries = 3, order = Directory.SortedOrder }
+      } 100 root all
+    fileError FileSystem.TooLarge found && found.cleanupError = None
+  else if name = "open cursor limit" then
+    let found =
+      GlobWalk.collect env { GlobWalk.defaults with
+        walk = { Directory.walkOptions with maxOpenDirectories = 1 }
+      } 100 root all
+    fileError FileSystem.TooLarge found && found.cleanupError = None
+  else if name = "ignore byte limit" then
+    let found =
+      GlobWalk.collect env { GlobWalk.defaults with
+        ignore = { Ignore.defaults with maxFileBytes = 2 }
+      } 100 root all
+    fileError FileSystem.TooLarge found
+  else if name = "completed scopes release their rule budget" then
+    complete (GlobWalk.collect env { GlobWalk.defaults with
+      ignore = { Ignore.defaults with maxActiveBytes = 23 }
+    } 100 root all)
+  else if name = "missing root" then
+    fileError FileSystem.NotFound (GlobWalk.collect env GlobWalk.defaults 100 (Path.join root (path "missing")) all)
+  else if name = "empty set performs no traversal" then
+    let found =
+      GlobWalk.collect env GlobWalk.defaults 0 (Path.join root (path "missing")) GlobSet.empty
+    complete found && found.visited = 0
+  else
+    false
 
 prefixCheck : Runtime -> Path -> Bool / { Concurrency, FileSystem }
 let prefixCheck env root =
@@ -307,34 +315,18 @@ let cancelled env root =
 checks : Runtime -> Temp.Directory -> Result (List (String * Bool)) String / { Clock, Concurrency, FileSystem, ProcessHost.Process }
 let checks env temporary =
   let root = temporary.path
-  match make env.fs root [".git", "build", "build/.gitignore", "other", "src", "zother"] with
+  match seedFixture env root with
   | Err error -> Err error
   | Ok _ ->
-    match write env.fs root [
-      (".gitignore", "build/\n*.tmp\n"),
-      (".hidden", "hidden"),
-      ("keep.fai", "root"),
-      ("drop.tmp", "drop"),
-      ("build/keep.fai", "ignored"),
-      ("other/keep.tmp", "drop"),
-      ("src/.gitignore", "!keep.tmp\n"),
-      ("src/keep.fai", "keep"),
-      ("src/keep.tmp", "keep"),
-      ("src/drop.tmp", "drop"),
-      ("zother/.gitignore", "*.tmp\n"),
-      ("zother/keep.tmp", "drop")
-    ] with
-    | Err error -> Err error
-    | Ok _ ->
-      let results = basic env root
-      let extra = [
-        ("explicit overrides", overrides env root),
-        ("cancellation cleanup", cancelled env root),
-        ("prefix pruning and skipped errors", prefixCheck env root),
-        ("symlink policy", links env root),
-        ("lossless native names", binary env root)
-      ]
-      Ok (List.append results extra)
+    let results = basic env root
+    let extra = [
+      ("explicit overrides", overrides env root),
+      ("cancellation cleanup", cancelled env root),
+      ("prefix pruning and skipped errors", prefixCheck env root),
+      ("symlink policy", links env root),
+      ("lossless native names", binary env root)
+    ]
+    Ok (List.append results extra)
 
 let failed pair =
   let (_, good) = pair
@@ -363,3 +355,72 @@ let main env =
         "Glob runtime checks FAILED")
     | Err (FileSystem.BodyError error) -> env.console.writeLine error
     | Err _ -> env.console.writeLine "Glob runtime fixture failed during setup or cleanup"
+
+seedFixture : Runtime -> Path -> Result Unit String / { FileSystem }
+let seedFixture env root =
+  match make env.fs root [".git", "build", "build/.gitignore", "other", "src", "zother"] with
+  | Err error -> Err error
+  | Ok _ -> write env.fs root [
+    (".gitignore", "build/\n*.tmp\n"),
+    (".hidden", "hidden"),
+    ("keep.fai", "root"),
+    ("drop.tmp", "drop"),
+    ("build/keep.fai", "ignored"),
+    ("other/keep.tmp", "drop"),
+    ("src/.gitignore", "!keep.tmp\n"),
+    ("src/keep.fai", "keep"),
+    ("src/keep.tmp", "keep"),
+    ("src/drop.tmp", "drop"),
+    ("zother/.gitignore", "*.tmp\n"),
+    ("zother/keep.tmp", "drop")
+  ]
+
+withFiles : (Runtime -> Path -> Test.Check / { Clock, Concurrency, FileSystem, ProcessHost.Process }) -> Test.Context -> Test.Check / { Clock, Concurrency, FileSystem, ProcessHost.Process }
+let withFiles check ctx =
+  let env = {
+    clock = ctx.runtime.clock,
+    concurrency = ctx.runtime.concurrency,
+    console = ctx.runtime.console,
+    fs = ctx.runtime.fs,
+    process = ProcessHost.native
+  }
+  Expect.ok identity (fun _ -> check env ctx.tempRoot) (seedFixture env ctx.tempRoot)
+
+basicCase : String -> Runtime -> Path -> Test.Check / { Concurrency, FileSystem }
+let basicCase name env root = Expect.isTrue name (basicPassed name env root)
+
+let basicNames = [
+  "sorted nested rules",
+  "file filtering",
+  "hidden filtering keeps rules",
+  "ignore discovery disabled",
+  "Git metadata option",
+  "result limit retains prefix",
+  "early stop",
+  "callback error retains state",
+  "depth limit",
+  "entry limit",
+  "open cursor limit",
+  "ignore byte limit",
+  "completed scopes release their rule budget",
+  "missing root",
+  "empty set performs no traversal"
+]
+
+public tests : Test.Suite Test.Context { Clock, Concurrency, FileSystem, ProcessHost.Process }
+let tests =
+  Test.describe "glob traversal" (List.append (List.map (fun name ->
+    Test.test name (withFiles (basicCase name))) basicNames) [
+    Test.test "compiled alternatives" (fun _ ->
+      Expect.isTrue "all matching pattern indexes are retained" check),
+    Test.test "explicit overrides" (withFiles (fun env root ->
+      Expect.isTrue "override rules win" (overrides env root))),
+    Test.test "cancellation cleanup" (withFiles (fun env root ->
+      Expect.isTrue "cancelled traversals release their cursors" (cancelled env root))),
+    Test.test "prefix pruning and skipped errors" (withFiles (fun env root ->
+      Expect.isTrue "irrelevant directories are not visited" (prefixCheck env root))),
+    Test.test "symlink policy" (withFiles (fun env root ->
+      Expect.isTrue "link traversal stays bounded" (links env root))),
+    Test.test "lossless native names" (withFiles (fun env root ->
+      Expect.isTrue "native filenames agree with the independent host probe" (binary env root)))
+  ])

@@ -144,7 +144,7 @@ fai test -C packages logging
 python scripts/tests/logging_toolchain.py --fai /path/to/fai
 ```
 
-Native contracts cover pure fields, filters, rendering, errors and boundaries.
+Named tests and properties cover pure fields, filters, rendering, errors and boundaries.
 The integration script runs the examples through JIT and AOT, checks exact JSON
 line identities/order, mixed-effect signatures, disabled lazy builders, capture
 and best-effort handling, both queue budgets, admission cancellation, close races,

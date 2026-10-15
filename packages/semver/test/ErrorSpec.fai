@@ -4,90 +4,293 @@ let rangeError kind offset text =
   match SemverRange.parse text with
   | Err error -> error.kind = kind && error.offset = Some offset
   | _ -> false
-example: rangeError Semver.InvalidRequirement 0 ""
-example: rangeError Semver.InvalidRequirement 1 " "
-example: rangeError Semver.InvalidRequirement 6 "1.2.3,"
-example: rangeError Semver.InvalidRequirement 9 "^1.0.0 ||"
-example: rangeError Semver.InvalidRequirement 6 "1.2.3 | 2.0.0"
-example: rangeError Semver.InvalidRequirement 0 "||1.2.3"
-example: rangeError Semver.InvalidVersion 3 "1.2"
-example: rangeError Semver.InvalidVersion 4 "^1.2"
-example: rangeError Semver.InvalidComponent 2 "1.x"
-example: rangeError Semver.InvalidComponent 4 "1.2.x"
-example: rangeError Semver.InvalidRequirement 0 "x"
-example: rangeError Semver.InvalidRequirement 0 "v1.2.3"
-example: rangeError Semver.InvalidRequirement 0 "[1.0,2.0)"
-example: rangeError Semver.InvalidVersion 7 ">=1.0.0 <2.0.0"
-example: rangeError Semver.InvalidVersion 5 "1.0.0 - 2.0.0"
-example: rangeError Semver.InvalidComponent 2 ">=\t1.2.3"
-example: rangeError Semver.BuildMetadataNotAllowed 5 "1.2.3+build"
-example: rangeError Semver.BuildMetadataNotAllowed 15 ">=1.0.0, <2.0.0+abc"
-example: rangeError Semver.InvalidComponent 1 "<<1.2.3"
-example: rangeError Semver.InvalidVersion 5 "1.2.3\u{0}"
-example: rangeError Semver.InvalidComponent 5 "\u{2003}>=é.0.0"
+
+let case001 _ =
+  let testActual = rangeError Semver.InvalidRequirement 0 ""
+  Expect.isTrue "rangeError Semver.InvalidRequirement 0 \"\"" testActual
+
+let case002 _ =
+  let testActual = rangeError Semver.InvalidRequirement 1 " "
+  Expect.isTrue "rangeError Semver.InvalidRequirement 1 \" \"" testActual
+
+let case003 _ =
+  let testActual = rangeError Semver.InvalidRequirement 6 "1.2.3,"
+  Expect.isTrue "rangeError Semver.InvalidRequirement 6 \"1.2.3,\"" testActual
+
+let case004 _ =
+  let testActual = rangeError Semver.InvalidRequirement 9 "^1.0.0 ||"
+  Expect.isTrue "rangeError Semver.InvalidRequirement 9 \"^1.0.0 ||\"" testActual
+
+let case005 _ =
+  let testActual = rangeError Semver.InvalidRequirement 6 "1.2.3 | 2.0.0"
+  Expect.isTrue "rangeError Semver.InvalidRequirement 6 \"1.2.3 | 2.0.0\"" testActual
+
+let case006 _ =
+  let testActual = rangeError Semver.InvalidRequirement 0 "||1.2.3"
+  Expect.isTrue "rangeError Semver.InvalidRequirement 0 \"||1.2.3\"" testActual
+
+let case007 _ =
+  let testActual = rangeError Semver.InvalidVersion 3 "1.2"
+  Expect.isTrue "rangeError Semver.InvalidVersion 3 \"1.2\"" testActual
+
+let case008 _ =
+  let testActual = rangeError Semver.InvalidVersion 4 "^1.2"
+  Expect.isTrue "rangeError Semver.InvalidVersion 4 \"^1.2\"" testActual
+
+let case009 _ =
+  let testActual = rangeError Semver.InvalidComponent 2 "1.x"
+  Expect.isTrue "rangeError Semver.InvalidComponent 2 \"1.x\"" testActual
+
+let case010 _ =
+  let testActual = rangeError Semver.InvalidComponent 4 "1.2.x"
+  Expect.isTrue "rangeError Semver.InvalidComponent 4 \"1.2.x\"" testActual
+
+let case011 _ =
+  let testActual = rangeError Semver.InvalidRequirement 0 "x"
+  Expect.isTrue "rangeError Semver.InvalidRequirement 0 \"x\"" testActual
+
+let case012 _ =
+  let testActual = rangeError Semver.InvalidRequirement 0 "v1.2.3"
+  Expect.isTrue "rangeError Semver.InvalidRequirement 0 \"v1.2.3\"" testActual
+
+let case013 _ =
+  let testActual = rangeError Semver.InvalidRequirement 0 "[1.0,2.0)"
+  Expect.isTrue "rangeError Semver.InvalidRequirement 0 \"[1.0,2.0)\"" testActual
+
+let case014 _ =
+  let testActual = rangeError Semver.InvalidVersion 7 ">=1.0.0 <2.0.0"
+  Expect.isTrue "rangeError Semver.InvalidVersion 7 \">=1.0.0 <2.0.0\"" testActual
+
+let case015 _ =
+  let testActual = rangeError Semver.InvalidVersion 5 "1.0.0 - 2.0.0"
+  Expect.isTrue "rangeError Semver.InvalidVersion 5 \"1.0.0 - 2.0.0\"" testActual
+
+let case016 _ =
+  let testActual = rangeError Semver.InvalidComponent 2 ">=\t1.2.3"
+  Expect.isTrue "rangeError Semver.InvalidComponent 2 \">=\\t1.2.3\"" testActual
+
+let case017 _ =
+  let testActual = rangeError Semver.BuildMetadataNotAllowed 5 "1.2.3+build"
+  Expect.isTrue "rangeError Semver.BuildMetadataNotAllowed 5 \"1.2.3+build\"" testActual
+
+let case018 _ =
+  let testActual = rangeError Semver.BuildMetadataNotAllowed 15 ">=1.0.0, <2.0.0+abc"
+  Expect.isTrue "rangeError Semver.BuildMetadataNotAllowed 15 \">=1.0.0, <2.0.0+abc\"" testActual
+
+let case019 _ =
+  let testActual = rangeError Semver.InvalidComponent 1 "<<1.2.3"
+  Expect.isTrue "rangeError Semver.InvalidComponent 1 \"<<1.2.3\"" testActual
+
+let case020 _ =
+  let testActual = rangeError Semver.InvalidVersion 5 "1.2.3\u{0}"
+  Expect.isTrue "rangeError Semver.InvalidVersion 5 \"1.2.3\\u{0}\"" testActual
+
+let case021 _ =
+  let testActual = rangeError Semver.InvalidComponent 5 "\u{2003}>=é.0.0"
+  Expect.isTrue "rangeError Semver.InvalidComponent 5 \"\\u{2003}>=é.0.0\"" testActual
 
 let kind expected result =
   match result with
   | Err error -> error.kind = expected
   | _ -> false
-example: kind Semver.InvalidOptions (Semver.parseWith { maxBytes = -1, maxIdentifiers = 1 } "")
-example: kind Semver.InvalidOptions (Semver.parseWith {
-  maxBytes = 10,
-  maxIdentifiers = -1
-} "0.0.0")
-example: kind Semver.InputLimit (Semver.parseWith { Semver.defaults with maxBytes = 4 } "0.0.0")
-example: Semver.parseWith { Semver.defaults with maxBytes = 5 } "0.0.0" = Semver.parse "0.0.0"
-example: kind Semver.InputLimit (Semver.parseTagWith { Semver.defaults with maxBytes = 5 } "v0.0.0")
-example: Semver.parseTagWith { Semver.defaults with maxBytes = 6 } "v0.0.0" = Semver.parse "0.0.0"
-example: Semver.parseWith { Semver.defaults with maxIdentifiers = 0 } "0.0.0" = Semver.parse "0.0.0"
-example: kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with
-  maxIdentifiers = 0
-} "0.0.0-a")
-example: kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with
-  maxIdentifiers = 2
-} "0.0.0-a.b+c")
-example: Semver.parseWith { Semver.defaults with
-  maxIdentifiers = 3
-} "0.0.0-a.b+c" = Semver.parse "0.0.0-a.b+c"
-example: kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with
-  maxAlternatives = 0
-} "*")
-example: kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with
-  maxComparators = 0
-} "*")
-example: kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with
-  maxBytes = -1
-} "*")
-example: kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with
-  maxBytes = 4
-} "1.2.3")
-example: kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with
-  version = { Semver.defaults with maxBytes = 4 }
-} "1.2.3")
-example: kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with
-  maxComparators = 1
-} "*, *")
-example: kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with
-  maxComparators = 1
-} "1.2.3, 1.2.3")
-example: kind Semver.AlternativeLimit (SemverRange.parseWith { SemverRange.defaults with
-  maxAlternatives = 1
-} "* || *")
-example: SemverRange.parseWith { SemverRange.defaults with
-  maxAlternatives = 2,
-  maxComparators = 2
-} "* || *" = SemverRange.parse "*"
+
+let case022 _ =
+  let testActual =
+    kind Semver.InvalidOptions (Semver.parseWith { maxBytes = -1, maxIdentifiers = 1 } "")
+  Expect.isTrue "kind Semver.InvalidOptions (Semver.parseWith { maxBytes = -1, maxIdentifiers = 1 } \"\")" testActual
+
+let case023 _ =
+  let testActual =
+    kind Semver.InvalidOptions (Semver.parseWith { maxBytes = 10, maxIdentifiers = -1 } "0.0.0")
+  Expect.isTrue "kind Semver.InvalidOptions (Semver.parseWith { maxBytes = 10, maxIdentifiers = -1 } \"0.0.0\")" testActual
+
+let case024 _ =
+  let testActual =
+    kind Semver.InputLimit (Semver.parseWith { Semver.defaults with maxBytes = 4 } "0.0.0")
+  Expect.isTrue "kind Semver.InputLimit (Semver.parseWith { Semver.defaults with maxBytes = 4 } \"0.0.0\")" testActual
+
+let case025 _ =
+  let testActual =
+    Semver.parseWith { Semver.defaults with maxBytes = 5 } "0.0.0" = Semver.parse "0.0.0"
+  Expect.isTrue "Semver.parseWith { Semver.defaults with maxBytes = 5 } \"0.0.0\" = Semver.parse \"0.0.0\"" testActual
+
+let case026 _ =
+  let testActual =
+    kind Semver.InputLimit (Semver.parseTagWith { Semver.defaults with maxBytes = 5 } "v0.0.0")
+  Expect.isTrue "kind Semver.InputLimit (Semver.parseTagWith { Semver.defaults with maxBytes = 5 } \"v0.0.0\")" testActual
+
+let case027 _ =
+  let testActual =
+    Semver.parseTagWith { Semver.defaults with maxBytes = 6 } "v0.0.0" = Semver.parse "0.0.0"
+  Expect.isTrue "Semver.parseTagWith { Semver.defaults with maxBytes = 6 } \"v0.0.0\" = Semver.parse \"0.0.0\"" testActual
+
+let case028 _ =
+  let testActual =
+    Semver.parseWith { Semver.defaults with maxIdentifiers = 0 } "0.0.0" = Semver.parse "0.0.0"
+  Expect.isTrue "Semver.parseWith { Semver.defaults with maxIdentifiers = 0 } \"0.0.0\" = Semver.parse \"0.0.0\"" testActual
+
+let case029 _ =
+  let testActual =
+    kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with
+      maxIdentifiers = 0
+    } "0.0.0-a")
+  Expect.isTrue "kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with maxIdentifiers = 0 } \"0.0.0-a\")" testActual
+
+let case030 _ =
+  let testActual =
+    kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with
+      maxIdentifiers = 2
+    } "0.0.0-a.b+c")
+  Expect.isTrue "kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with maxIdentifiers = 2 } \"0.0.0-a.b+c\")" testActual
+
+let case031 _ =
+  let testActual =
+    Semver.parseWith { Semver.defaults with
+      maxIdentifiers = 3
+    } "0.0.0-a.b+c" = Semver.parse "0.0.0-a.b+c"
+  Expect.isTrue "Semver.parseWith { Semver.defaults with maxIdentifiers = 3 } \"0.0.0-a.b+c\" = Semver.parse \"0.0.0-a.b+c\"" testActual
+
+let case032 _ =
+  let testActual =
+    kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with
+      maxAlternatives = 0
+    } "*")
+  Expect.isTrue "kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with maxAlternatives = 0 } \"*\")" testActual
+
+let case033 _ =
+  let testActual =
+    kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with
+      maxComparators = 0
+    } "*")
+  Expect.isTrue "kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with maxComparators = 0 } \"*\")" testActual
+
+let case034 _ =
+  let testActual =
+    kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with
+      maxBytes = -1
+    } "*")
+  Expect.isTrue "kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with maxBytes = -1 } \"*\")" testActual
+
+let case035 _ =
+  let testActual =
+    kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with
+      maxBytes = 4
+    } "1.2.3")
+  Expect.isTrue "kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with maxBytes = 4 } \"1.2.3\")" testActual
+
+let case036 _ =
+  let testActual =
+    kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with
+      version = { Semver.defaults with maxBytes = 4 }
+    } "1.2.3")
+  Expect.isTrue "kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with version = { Semver.defaults with maxBytes = 4 } } \"1.2.3\")" testActual
+
+let case037 _ =
+  let testActual =
+    kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with
+      maxComparators = 1
+    } "*, *")
+  Expect.isTrue "kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with maxComparators = 1 } \"*, *\")" testActual
+
+let case038 _ =
+  let testActual =
+    kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with
+      maxComparators = 1
+    } "1.2.3, 1.2.3")
+  Expect.isTrue "kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with maxComparators = 1 } \"1.2.3, 1.2.3\")" testActual
+
+let case039 _ =
+  let testActual =
+    kind Semver.AlternativeLimit (SemverRange.parseWith { SemverRange.defaults with
+      maxAlternatives = 1
+    } "* || *")
+  Expect.isTrue "kind Semver.AlternativeLimit (SemverRange.parseWith { SemverRange.defaults with maxAlternatives = 1 } \"* || *\")" testActual
+
+let case040 _ =
+  let testActual =
+    SemverRange.parseWith { SemverRange.defaults with
+      maxAlternatives = 2,
+      maxComparators = 2
+    } "* || *" = SemverRange.parse "*"
+  Expect.isTrue "SemverRange.parseWith { SemverRange.defaults with maxAlternatives = 2, maxComparators = 2 } \"* || *\" = SemverRange.parse \"*\"" testActual
 
 let part = { build = ["b"], major = "0", minor = "0", patch = "0", prerelease = ["a"] }
-example: kind Semver.InputLimit (Semver.fromPartsWith { Semver.defaults with maxBytes = 8 } part)
-example: Semver.fromPartsWith { Semver.defaults with maxBytes = 9 } part = Semver.parse "0.0.0-a+b"
-example: kind Semver.IdentifierLimit (Semver.fromPartsWith { Semver.defaults with
-  maxIdentifiers = 1
-} part)
-example: kind Semver.InvalidOptions (Semver.fromPartsWith { Semver.defaults with
-  maxBytes = -1
-} part)
-example: (match Semver.parse "01.0.0" with
-| Err error ->
-  Semver.errorToString error = "numeric components cannot have leading zeros (major) at byte 1"
-| _ -> false)
+
+let case041 _ =
+  let testActual =
+    kind Semver.InputLimit (Semver.fromPartsWith { Semver.defaults with maxBytes = 8 } part)
+  Expect.isTrue "kind Semver.InputLimit (Semver.fromPartsWith { Semver.defaults with maxBytes = 8 } part)" testActual
+
+let case042 _ =
+  let testActual =
+    Semver.fromPartsWith { Semver.defaults with maxBytes = 9 } part = Semver.parse "0.0.0-a+b"
+  Expect.isTrue "Semver.fromPartsWith { Semver.defaults with maxBytes = 9 } part = Semver.parse \"0.0.0-a+b\"" testActual
+
+let case043 _ =
+  let testActual =
+    kind Semver.IdentifierLimit (Semver.fromPartsWith { Semver.defaults with
+      maxIdentifiers = 1
+    } part)
+  Expect.isTrue "kind Semver.IdentifierLimit (Semver.fromPartsWith { Semver.defaults with maxIdentifiers = 1 } part)" testActual
+
+let case044 _ =
+  let testActual =
+    kind Semver.InvalidOptions (Semver.fromPartsWith { Semver.defaults with maxBytes = -1 } part)
+  Expect.isTrue "kind Semver.InvalidOptions (Semver.fromPartsWith { Semver.defaults with maxBytes = -1 } part)" testActual
+
+let case045 _ =
+  let testActual =
+    (match Semver.parse "01.0.0" with
+    | Err error ->
+      Semver.errorToString error = "numeric components cannot have leading zeros (major) at byte 1"
+    | _ -> false)
+  Expect.isTrue "(match Semver.parse \"01.0.0\" with | Err error -> Semver.errorToString error = \"numeric components cannot have leading zeros (major) at byte 1\" | _ -> false)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SemverErrorSpec" [
+  Test.test "rangeError Semver.InvalidRequirement 0 \"\"" case001,
+  Test.test "rangeError Semver.InvalidRequirement 1 \" \"" case002,
+  Test.test "rangeError Semver.InvalidRequirement 6 \"1.2.3,\"" case003,
+  Test.test "rangeError Semver.InvalidRequirement 9 \"^1.0.0 ||\"" case004,
+  Test.test "rangeError Semver.InvalidRequirement 6 \"1.2.3 | 2.0.0\"" case005,
+  Test.test "rangeError Semver.InvalidRequirement 0 \"||1.2.3\"" case006,
+  Test.test "rangeError Semver.InvalidVersion 3 \"1.2\"" case007,
+  Test.test "rangeError Semver.InvalidVersion 4 \"^1.2\"" case008,
+  Test.test "rangeError Semver.InvalidComponent 2 \"1.x\"" case009,
+  Test.test "rangeError Semver.InvalidComponent 4 \"1.2.x\"" case010,
+  Test.test "rangeError Semver.InvalidRequirement 0 \"x\"" case011,
+  Test.test "rangeError Semver.InvalidRequirement 0 \"v1.2.3\"" case012,
+  Test.test "rangeError Semver.InvalidRequirement 0 \"[1.0,2.0)\"" case013,
+  Test.test "rangeError Semver.InvalidVersion 7 \">=1.0.0 <2.0.0\"" case014,
+  Test.test "rangeError Semver.InvalidVersion 5 \"1.0.0 - 2.0.0\"" case015,
+  Test.test "rangeError Semver.InvalidComponent 2 \">=\\t1.2.3\"" case016,
+  Test.test "rangeError Semver.BuildMetadataNotAllowed 5 \"1.2.3+build\"" case017,
+  Test.test "rangeError Semver.BuildMetadataNotAllowed 15 \">=1.0.0, <2.0.0+abc\"" case018,
+  Test.test "rangeError Semver.InvalidComponent 1 \"<<1.2.3\"" case019,
+  Test.test "rangeError Semver.InvalidVersion 5 \"1.2.3\\u{0}\"" case020,
+  Test.test "rangeError Semver.InvalidComponent 5 \"\\u{2003}>=é.0.0\"" case021,
+  Test.test "kind Semver.InvalidOptions (Semver.parseWith { maxBytes = -1, maxIdentifiers = 1 } \"\")" case022,
+  Test.test "kind Semver.InvalidOptions (Semver.parseWith { maxBytes = 10, maxIdentifiers = -1 } \"0.0.0\")" case023,
+  Test.test "kind Semver.InputLimit (Semver.parseWith { Semver.defaults with maxBytes = 4 } \"0.0.0\")" case024,
+  Test.test "Semver.parseWith { Semver.defaults with maxBytes = 5 } \"0.0.0\" = Semver.parse \"0.0.0\"" case025,
+  Test.test "kind Semver.InputLimit (Semver.parseTagWith { Semver.defaults with maxBytes = 5 } \"v0.0.0\")" case026,
+  Test.test "Semver.parseTagWith { Semver.defaults with maxBytes = 6 } \"v0.0.0\" = Semver.parse \"0.0.0\"" case027,
+  Test.test "Semver.parseWith { Semver.defaults with maxIdentifiers = 0 } \"0.0.0\" = Semver.parse \"0.0.0\"" case028,
+  Test.test "kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with maxIdentifiers = 0 } \"0.0.0-a\")" case029,
+  Test.test "kind Semver.IdentifierLimit (Semver.parseWith { Semver.defaults with maxIdentifiers = 2 } \"0.0.0-a.b+c\")" case030,
+  Test.test "Semver.parseWith { Semver.defaults with maxIdentifiers = 3 } \"0.0.0-a.b+c\" = Semver.parse \"0.0.0-a.b+c\"" case031,
+  Test.test "kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with maxAlternatives = 0 } \"*\")" case032,
+  Test.test "kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with maxComparators = 0 } \"*\")" case033,
+  Test.test "kind Semver.InvalidOptions (SemverRange.parseWith { SemverRange.defaults with maxBytes = -1 } \"*\")" case034,
+  Test.test "kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with maxBytes = 4 } \"1.2.3\")" case035,
+  Test.test "kind Semver.InputLimit (SemverRange.parseWith { SemverRange.defaults with version = { Semver.defaults with maxBytes = 4 } } \"1.2.3\")" case036,
+  Test.test "kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with maxComparators = 1 } \"*, *\")" case037,
+  Test.test "kind Semver.ComparatorLimit (SemverRange.parseWith { SemverRange.defaults with maxComparators = 1 } \"1.2.3, 1.2.3\")" case038,
+  Test.test "kind Semver.AlternativeLimit (SemverRange.parseWith { SemverRange.defaults with maxAlternatives = 1 } \"* || *\")" case039,
+  Test.test "SemverRange.parseWith { SemverRange.defaults with maxAlternatives = 2, maxComparators = 2 } \"* || *\" = SemverRange.parse \"*\"" case040,
+  Test.test "kind Semver.InputLimit (Semver.fromPartsWith { Semver.defaults with maxBytes = 8 } part)" case041,
+  Test.test "Semver.fromPartsWith { Semver.defaults with maxBytes = 9 } part = Semver.parse \"0.0.0-a+b\"" case042,
+  Test.test "kind Semver.IdentifierLimit (Semver.fromPartsWith { Semver.defaults with maxIdentifiers = 1 } part)" case043,
+  Test.test "kind Semver.InvalidOptions (Semver.fromPartsWith { Semver.defaults with maxBytes = -1 } part)" case044,
+  Test.test "(match Semver.parse \"01.0.0\" with | Err error -> Semver.errorToString error = \"numeric components cannot have leading zeros (major) at byte 1\" | _ -> false)" case045
+]

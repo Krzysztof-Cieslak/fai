@@ -5,6 +5,7 @@ name = "csv-examples"
 version = "0.1.0"
 fai-version = "0.0.1 || ^0.1.0"
 source-dir = "."
+test-dir = "test"
 auto-main = false
 
 [dependencies]

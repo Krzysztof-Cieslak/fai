@@ -1,47 +1,101 @@
 module CsvRecordSpec
 
 let parsed source = Result.map (Array.map Csv.fields) (Csv.parse source)
-example: parsed "name,note\r\né,\"🙂\r\nline\"" = Ok [|
-  [| "name", "note" |],
-  [| "é", "🙂\r\nline" |]
-|]
-example: parsed "\u{feff}a" = Ok [| [| "a" |] |]
-example: (Csv.parseWith { Csv.options with
-  bom = CsvTypes.PreserveBom
-} "\u{feff}a" |> Result.map (Array.map Csv.fields)) = Ok [| [| "\u{feff}a" |] |]
-example: Csv.parseBytes (Bytes.fromList [255]) |> Result.isErr
-example: (CsvBytes.parse (Bytes.fromList [
-  255
-]) |> Result.map (Array.map CsvBytes.fields)) = Ok [| [| Bytes.fromList [255] |] |]
-example: (Csv.parseWith { Csv.options with
-  width = CsvTypes.Flexible
-} "a,b\n\n" |> Result.map (Array.map Csv.fields)) = Ok [| [| "a", "b" |], [| "" |] |]
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxCollectedRecords = 1 }
-} "a\n" |> Result.isOk
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxCollectedRecords = 1 }
-} "a\nb" |> Result.isErr
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxCollectedBytes = 2 }
-} "\"é\"" |> Result.isOk
-example: Csv.parseWith { Csv.options with
-  limits = { CsvTypes.limits with maxCollectedBytes = 1 }
-} "\"é\"" |> Result.isErr
-example: Csv.record [||] |> Result.isErr
-example: Csv.parseTable "" |> Result.isErr
-example: Csv.parseTable "a,a\n1,2" |> Result.isErr
-example: Csv.parseTable ",b\n1,2" |> Result.isErr
-example: (match Csv.parseTable "Name, name\nA,B" with
-| Ok table -> Option.map Csv.headerNames table.headers = Some [| "Name", " name" |]
-| _ -> false)
+
+let case001 _ =
+  let testActual =
+    parsed "name,note\r\né,\"🙂\r\nline\"" = Ok [| [| "name", "note" |], [| "é", "🙂\r\nline" |] |]
+  Expect.isTrue "parsed \"name,note\\r\\né,\\\"🙂\\r\\nline\\\"\" = Ok [| [| \"name\", \"note\" |], [| \"é\", \"🙂\\r\\nline\" |] |]" testActual
+
+let case002 _ =
+  let testActual = parsed "\u{feff}a" = Ok [| [| "a" |] |]
+  Expect.isTrue "parsed \"\\u{feff}a\" = Ok [| [| \"a\" |] |]" testActual
+
+let case003 _ =
+  let testActual =
+    (Csv.parseWith { Csv.options with
+      bom = CsvTypes.PreserveBom
+    } "\u{feff}a" |> Result.map (Array.map Csv.fields)) = Ok [| [| "\u{feff}a" |] |]
+  Expect.isTrue "(Csv.parseWith { Csv.options with bom = CsvTypes.PreserveBom } \"\\u{feff}a\" |> Result.map (Array.map Csv.fields)) = Ok [| [| \"\\u{feff}a\" |] |]" testActual
+
+let case004 _ =
+  let testActual = Csv.parseBytes (Bytes.fromList [255]) |> Result.isErr
+  Expect.isTrue "Csv.parseBytes (Bytes.fromList [255]) |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    (CsvBytes.parse (Bytes.fromList [
+      255
+    ]) |> Result.map (Array.map CsvBytes.fields)) = Ok [| [| Bytes.fromList [255] |] |]
+  Expect.isTrue "(CsvBytes.parse (Bytes.fromList [ 255 ]) |> Result.map (Array.map CsvBytes.fields)) = Ok [| [| Bytes.fromList [255] |] |]" testActual
+
+let case006 _ =
+  let testActual =
+    (Csv.parseWith { Csv.options with
+      width = CsvTypes.Flexible
+    } "a,b\n\n" |> Result.map (Array.map Csv.fields)) = Ok [| [| "a", "b" |], [| "" |] |]
+  Expect.isTrue "(Csv.parseWith { Csv.options with width = CsvTypes.Flexible } \"a,b\\n\\n\" |> Result.map (Array.map Csv.fields)) = Ok [| [| \"a\", \"b\" |], [| \"\" |] |]" testActual
+
+let case007 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxCollectedRecords = 1 }
+    } "a\n" |> Result.isOk
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedRecords = 1 } } \"a\\n\" |> Result.isOk" testActual
+
+let case008 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxCollectedRecords = 1 }
+    } "a\nb" |> Result.isErr
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedRecords = 1 } } \"a\\nb\" |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxCollectedBytes = 2 }
+    } "\"é\"" |> Result.isOk
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedBytes = 2 } } \"\\\"é\\\"\" |> Result.isOk" testActual
+
+let case010 _ =
+  let testActual =
+    Csv.parseWith { Csv.options with
+      limits = { CsvTypes.limits with maxCollectedBytes = 1 }
+    } "\"é\"" |> Result.isErr
+  Expect.isTrue "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedBytes = 1 } } \"\\\"é\\\"\" |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = Csv.record [||] |> Result.isErr
+  Expect.isTrue "Csv.record [||] |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = Csv.parseTable "" |> Result.isErr
+  Expect.isTrue "Csv.parseTable \"\" |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual = Csv.parseTable "a,a\n1,2" |> Result.isErr
+  Expect.isTrue "Csv.parseTable \"a,a\\n1,2\" |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual = Csv.parseTable ",b\n1,2" |> Result.isErr
+  Expect.isTrue "Csv.parseTable \",b\\n1,2\" |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual =
+    (match Csv.parseTable "Name, name\nA,B" with
+    | Ok table -> Option.map Csv.headerNames table.headers = Some [| "Name", " name" |]
+    | _ -> false)
+  Expect.isTrue "(match Csv.parseTable \"Name, name\\nA,B\" with | Ok table -> Option.map Csv.headerNames table.headers = Some [| \"Name\", \" name\" |] | _ -> false)" testActual
 
 let normalized =
   match Csv.record [| " Name ", "name" |] with
   | Ok record ->
     Csv.headersWith (fun text -> String.toLower (String.trim text)) record |> Result.isErr
   | _ -> false
-example: normalized
+
+let case016 _ =
+  let testActual = normalized
+  Expect.isTrue "normalized" testActual
 
 let supplied =
   match Csv.record [| "a", "b" |] with
@@ -50,7 +104,10 @@ let supplied =
     match Csv.headers record with
     | Err _ -> false
     | Ok headers -> Csv.parseTableWith Csv.options (Csv.Supplied headers) "one" |> Result.isErr
-example: supplied
+
+let case017 _ =
+  let testActual = supplied
+  Expect.isTrue "supplied" testActual
 
 let named =
   match Csv.parseTable "a,b\n1,2" with
@@ -60,7 +117,10 @@ let named =
       Csv.named "b" headers (Array.unsafeGet 0 table.records) = Ok "2" && (Csv.column "missing" headers |> Result.isErr)
     | _ -> false)
   | _ -> false
-example: named
+
+let case018 _ =
+  let testActual = named
+  Expect.isTrue "named" testActual
 
 let incremental =
   match Csv.parser () with
@@ -71,7 +131,10 @@ let incremental =
     match second.status with
     | Csv.RecordReady record -> Csv.fields record = [| "é" |] && second.next = 2
     | _ -> false
-example: incremental
+
+let case019 _ =
+  let testActual = incremental
+  Expect.isTrue "incremental" testActual
 
 let binaryHeaders =
   match CsvBytes.parseTable (Bytes.fromList [255, 44, 254, 10, 49, 44, 50]) with
@@ -83,4 +146,31 @@ let binaryHeaders =
         254
       ]) headers (Array.unsafeGet 0 table.records) = Ok (Bytes.fromString "2")
     | None -> false
-example: binaryHeaders
+
+let case020 _ =
+  let testActual = binaryHeaders
+  Expect.isTrue "binaryHeaders" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CsvRecordSpec" [
+  Test.test "parsed \"name,note\\r\\né,\\\"🙂\\r\\nline\\\"\" = Ok [| [| \"name\", \"note\" |], [| \"é\", \"🙂\\r\\nline\" |] |]" case001,
+  Test.test "parsed \"\\u{feff}a\" = Ok [| [| \"a\" |] |]" case002,
+  Test.test "(Csv.parseWith { Csv.options with bom = CsvTypes.PreserveBom } \"\\u{feff}a\" |> Result.map (Array.map Csv.fields)) = Ok [| [| \"\\u{feff}a\" |] |]" case003,
+  Test.test "Csv.parseBytes (Bytes.fromList [255]) |> Result.isErr" case004,
+  Test.test "(CsvBytes.parse (Bytes.fromList [ 255 ]) |> Result.map (Array.map CsvBytes.fields)) = Ok [| [| Bytes.fromList [255] |] |]" case005,
+  Test.test "(Csv.parseWith { Csv.options with width = CsvTypes.Flexible } \"a,b\\n\\n\" |> Result.map (Array.map Csv.fields)) = Ok [| [| \"a\", \"b\" |], [| \"\" |] |]" case006,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedRecords = 1 } } \"a\\n\" |> Result.isOk" case007,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedRecords = 1 } } \"a\\nb\" |> Result.isErr" case008,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedBytes = 2 } } \"\\\"é\\\"\" |> Result.isOk" case009,
+  Test.test "Csv.parseWith { Csv.options with limits = { CsvTypes.limits with maxCollectedBytes = 1 } } \"\\\"é\\\"\" |> Result.isErr" case010,
+  Test.test "Csv.record [||] |> Result.isErr" case011,
+  Test.test "Csv.parseTable \"\" |> Result.isErr" case012,
+  Test.test "Csv.parseTable \"a,a\\n1,2\" |> Result.isErr" case013,
+  Test.test "Csv.parseTable \",b\\n1,2\" |> Result.isErr" case014,
+  Test.test "(match Csv.parseTable \"Name, name\\nA,B\" with | Ok table -> Option.map Csv.headerNames table.headers = Some [| \"Name\", \" name\" |] | _ -> false)" case015,
+  Test.test "normalized" case016,
+  Test.test "supplied" case017,
+  Test.test "named" case018,
+  Test.test "incremental" case019,
+  Test.test "binaryHeaders" case020
+]

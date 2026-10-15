@@ -34,13 +34,21 @@ let agrees values input =
   | (Ok compiled, Ok candidate) ->
     Glob.isMatch compiled candidate = reference source (Bytes.toList (Glob.candidateSpelling candidate))
   | _ -> false
-forall values input: agrees values input
+
+let case001 testInput =
+  let (values, input) = testInput
+  let testActual = agrees values input
+  Expect.isTrue "property: agrees values input" testActual
 
 let normalized input =
   match Glob.candidateBytes (Bytes.fromList input) with
   | Err _ -> true
   | Ok candidate -> Glob.candidateBytes (Glob.candidateSpelling candidate) = Ok candidate
-forall input: normalized input
+
+let case002 testInput =
+  let input = testInput
+  let testActual = normalized input
+  Expect.isTrue "property: normalized input" testActual
 
 let total input =
   match Glob.compileBytes (Bytes.fromList input) with
@@ -49,7 +57,11 @@ let total input =
     match error.offset with
     | None -> true
     | Some offset -> offset >= 0 && offset <= List.length input
-forall input: total input
+
+let case003 testInput =
+  let input = testInput
+  let testActual = total input
+  Expect.isTrue "property: total input" testActual
 
 let setExpected patterns candidate index output =
   match patterns with
@@ -68,7 +80,11 @@ let setAgrees first second input =
     | Err _ -> false
     | Ok set -> GlobSet.matches set candidate = setExpected patterns candidate 0 []
   | _ -> false
-forall first second input: setAgrees first second input
+
+let case004 testInput =
+  let (first, second, input) = testInput
+  let testActual = setAgrees first second input
+  Expect.isTrue "property: setAgrees first second input" testActual
 
 let ignoreTotal text =
   let bytes = Bytes.fromString text
@@ -78,12 +94,40 @@ let ignoreTotal text =
     match error.offset with
     | None -> true
     | Some offset -> offset >= 0 && offset <= Bytes.length bytes
-forall text: ignoreTotal text
+
+let case005 testInput =
+  let text = testInput
+  let testActual = ignoreTotal text
+  Expect.isTrue "property: ignoreTotal text" testActual
 
 let matches pattern input =
   match (Glob.compile pattern, Glob.candidateBytes (Bytes.fromString input)) with
   | (Ok pattern, Ok input) -> Glob.isMatch pattern input
   | _ -> false
-example: not (matches (String.joinArray "" (Array.repeat 100 "*a") ++ "b") (String.joinArray "" (Array.repeat 200 "a")))
-example: matches (String.joinArray "" (Array.repeat 100 "{a,b}")) (String.joinArray "" (Array.repeat 100 "a"))
-example: not (matches (String.joinArray "" (Array.repeat 100 "{a,b}")) (String.joinArray "" (Array.repeat 99 "a") ++ "c"))
+
+let case006 _ =
+  let testActual =
+    not (matches (String.joinArray "" (Array.repeat 100 "*a") ++ "b") (String.joinArray "" (Array.repeat 200 "a")))
+  Expect.isTrue "not (matches (String.joinArray \"\" (Array.repeat 100 \"*a\") ++ \"b\") (String.joinArray \"\" (Array.repeat 200 \"a\")))" testActual
+
+let case007 _ =
+  let testActual =
+    matches (String.joinArray "" (Array.repeat 100 "{a,b}")) (String.joinArray "" (Array.repeat 100 "a"))
+  Expect.isTrue "matches (String.joinArray \"\" (Array.repeat 100 \"{a,b}\")) (String.joinArray \"\" (Array.repeat 100 \"a\"))" testActual
+
+let case008 _ =
+  let testActual =
+    not (matches (String.joinArray "" (Array.repeat 100 "{a,b}")) (String.joinArray "" (Array.repeat 99 "a") ++ "c"))
+  Expect.isTrue "not (matches (String.joinArray \"\" (Array.repeat 100 \"{a,b}\")) (String.joinArray \"\" (Array.repeat 99 \"a\") ++ \"c\"))" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "GlobProperties" [
+  Test.property "property: agrees values input" (Test.tuple2 (Test.list Test.int) (Test.list Test.int)) case001,
+  Test.property "property: normalized input" (Test.list Test.int) case002,
+  Test.property "property: total input" (Test.list Test.int) case003,
+  Test.property "property: setAgrees first second input" (Test.tuple3 (Test.list Test.int) (Test.list Test.int) (Test.list Test.int)) case004,
+  Test.property "property: ignoreTotal text" Test.string case005,
+  Test.test "not (matches (String.joinArray \"\" (Array.repeat 100 \"*a\") ++ \"b\") (String.joinArray \"\" (Array.repeat 200 \"a\")))" case006,
+  Test.test "matches (String.joinArray \"\" (Array.repeat 100 \"{a,b}\")) (String.joinArray \"\" (Array.repeat 100 \"a\"))" case007,
+  Test.test "not (matches (String.joinArray \"\" (Array.repeat 100 \"{a,b}\")) (String.joinArray \"\" (Array.repeat 99 \"a\") ++ \"c\"))" case008
+]

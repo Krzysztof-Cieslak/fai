@@ -1,0 +1,4 @@
+module CsvEffectStreamSpec
+
+tests : Test.Suite Test.Context { Clock, Console }
+let tests = CsvStreamChecks.tests

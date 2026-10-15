@@ -3,38 +3,81 @@ module GlobLimitsSpec
 let source = { base = Glob.root, name = "rules" }
 
 let parsed text = Ignore.parse source (Bytes.fromString text)
-example: (match parsed "a\n" with
-| Err _ -> false
-| Ok file ->
-  Ignore.appendWith { Ignore.defaults with maxActiveBytes = 1 } file Ignore.empty |> Result.isErr)
-example: (match parsed "a\n" with
-| Err _ -> false
-| Ok file -> Ignore.ofFilesWith { Ignore.defaults with maxRules = 1 } [file, file] |> Result.isErr)
-example: (match parsed "a\n" with
-| Err _ -> false
-| Ok file -> Ignore.ofFilesWith { Ignore.defaults with maxStates = 3 } [file, file] |> Result.isErr)
-example: Ignore.parseWith { Ignore.defaults with
-  maxFileBytes = -1
-} source Bytes.empty |> Result.isErr
-example: Ignore.parseWith { Ignore.defaults with
-  maxActiveBytes = -1
-} source Bytes.empty |> Result.isErr
-example: Ignore.parseWith { Ignore.defaults with maxStates = 0 } source Bytes.empty |> Result.isErr
-example: (match Ignore.parseWith { Ignore.defaults with
-  glob = { Glob.defaults with maxPatternBytes = 1 }
-} source (Bytes.fromString "# comment\nabc") with
-| Err error -> error.kind = Ignore.CompileLimit && error.line = Some 2 && error.offset = Some 10
-| _ -> false)
-example: (match Ignore.parseWith { Ignore.defaults with
-  maxRules = 0
-} source (Bytes.fromString "a\n") with
-| Err error -> error.kind = Ignore.RuleLimit && error.line = Some 1 && error.offset = Some 0
-| _ -> false)
-example: (match GlobSet.compileWith { Glob.defaults with maxStates = 2 } ["a", "["] with
-| Err error -> error.patternIndex = Some 1
-| _ -> false)
-example: GlobSet.ofPatterns 0 [] |> Result.isErr
-example: GlobSet.compileWith { Glob.defaults with maxPatternBytes = -1 } [] |> Result.isErr
+
+let case001 _ =
+  let testActual =
+    (match parsed "a\n" with
+    | Err _ -> false
+    | Ok file ->
+      Ignore.appendWith { Ignore.defaults with
+        maxActiveBytes = 1
+      } file Ignore.empty |> Result.isErr)
+  Expect.isTrue "(match parsed \"a\\n\" with | Err _ -> false | Ok file -> Ignore.appendWith { Ignore.defaults with maxActiveBytes = 1 } file Ignore.empty |> Result.isErr)" testActual
+
+let case002 _ =
+  let testActual =
+    (match parsed "a\n" with
+    | Err _ -> false
+    | Ok file ->
+      Ignore.ofFilesWith { Ignore.defaults with maxRules = 1 } [file, file] |> Result.isErr)
+  Expect.isTrue "(match parsed \"a\\n\" with | Err _ -> false | Ok file -> Ignore.ofFilesWith { Ignore.defaults with maxRules = 1 } [file, file] |> Result.isErr)" testActual
+
+let case003 _ =
+  let testActual =
+    (match parsed "a\n" with
+    | Err _ -> false
+    | Ok file ->
+      Ignore.ofFilesWith { Ignore.defaults with maxStates = 3 } [file, file] |> Result.isErr)
+  Expect.isTrue "(match parsed \"a\\n\" with | Err _ -> false | Ok file -> Ignore.ofFilesWith { Ignore.defaults with maxStates = 3 } [file, file] |> Result.isErr)" testActual
+
+let case004 _ =
+  let testActual =
+    Ignore.parseWith { Ignore.defaults with maxFileBytes = -1 } source Bytes.empty |> Result.isErr
+  Expect.isTrue "Ignore.parseWith { Ignore.defaults with maxFileBytes = -1 } source Bytes.empty |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    Ignore.parseWith { Ignore.defaults with maxActiveBytes = -1 } source Bytes.empty |> Result.isErr
+  Expect.isTrue "Ignore.parseWith { Ignore.defaults with maxActiveBytes = -1 } source Bytes.empty |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual =
+    Ignore.parseWith { Ignore.defaults with maxStates = 0 } source Bytes.empty |> Result.isErr
+  Expect.isTrue "Ignore.parseWith { Ignore.defaults with maxStates = 0 } source Bytes.empty |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual =
+    (match Ignore.parseWith { Ignore.defaults with
+      glob = { Glob.defaults with maxPatternBytes = 1 }
+    } source (Bytes.fromString "# comment\nabc") with
+    | Err error -> error.kind = Ignore.CompileLimit && error.line = Some 2 && error.offset = Some 10
+    | _ -> false)
+  Expect.isTrue "(match Ignore.parseWith { Ignore.defaults with glob = { Glob.defaults with maxPatternBytes = 1 } } source (Bytes.fromString \"# comment\\nabc\") with | Err erro…" testActual
+
+let case008 _ =
+  let testActual =
+    (match Ignore.parseWith { Ignore.defaults with
+      maxRules = 0
+    } source (Bytes.fromString "a\n") with
+    | Err error -> error.kind = Ignore.RuleLimit && error.line = Some 1 && error.offset = Some 0
+    | _ -> false)
+  Expect.isTrue "(match Ignore.parseWith { Ignore.defaults with maxRules = 0 } source (Bytes.fromString \"a\\n\") with | Err error -> error.kind = Ignore.RuleLimit && error.line…" testActual
+
+let case009 _ =
+  let testActual =
+    (match GlobSet.compileWith { Glob.defaults with maxStates = 2 } ["a", "["] with
+    | Err error -> error.patternIndex = Some 1
+    | _ -> false)
+  Expect.isTrue "(match GlobSet.compileWith { Glob.defaults with maxStates = 2 } [\"a\", \"[\"] with | Err error -> error.patternIndex = Some 1 | _ -> false)" testActual
+
+let case010 _ =
+  let testActual = GlobSet.ofPatterns 0 [] |> Result.isErr
+  Expect.isTrue "GlobSet.ofPatterns 0 [] |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual =
+    GlobSet.compileWith { Glob.defaults with maxPatternBytes = -1 } [] |> Result.isErr
+  Expect.isTrue "GlobSet.compileWith { Glob.defaults with maxPatternBytes = -1 } [] |> Result.isErr" testActual
 
 let aliases =
   match (parsed "*.tmp\n", parsed "!keep.tmp\n", Glob.candidateBytes (Bytes.fromString "keep.tmp")) with
@@ -47,4 +90,23 @@ let aliases =
       | Ok after ->
         Ignore.isIgnored (Ignore.decide before candidate FileSystem.RegularFile) && not (Ignore.isIgnored (Ignore.decide after candidate FileSystem.RegularFile)) && Ignore.ruleCount before = 1 && Ignore.ruleCount after = 2
   | _ -> false
-example: aliases
+
+let case012 _ =
+  let testActual = aliases
+  Expect.isTrue "aliases" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "GlobLimitsSpec" [
+  Test.test "(match parsed \"a\\n\" with | Err _ -> false | Ok file -> Ignore.appendWith { Ignore.defaults with maxActiveBytes = 1 } file Ignore.empty |> Result.isErr)" case001,
+  Test.test "(match parsed \"a\\n\" with | Err _ -> false | Ok file -> Ignore.ofFilesWith { Ignore.defaults with maxRules = 1 } [file, file] |> Result.isErr)" case002,
+  Test.test "(match parsed \"a\\n\" with | Err _ -> false | Ok file -> Ignore.ofFilesWith { Ignore.defaults with maxStates = 3 } [file, file] |> Result.isErr)" case003,
+  Test.test "Ignore.parseWith { Ignore.defaults with maxFileBytes = -1 } source Bytes.empty |> Result.isErr" case004,
+  Test.test "Ignore.parseWith { Ignore.defaults with maxActiveBytes = -1 } source Bytes.empty |> Result.isErr" case005,
+  Test.test "Ignore.parseWith { Ignore.defaults with maxStates = 0 } source Bytes.empty |> Result.isErr" case006,
+  Test.test "(match Ignore.parseWith { Ignore.defaults with glob = { Glob.defaults with maxPatternBytes = 1 } } source (Bytes.fromString \"# comment\\nabc\") with | Err erro…" case007,
+  Test.test "(match Ignore.parseWith { Ignore.defaults with maxRules = 0 } source (Bytes.fromString \"a\\n\") with | Err error -> error.kind = Ignore.RuleLimit && error.line…" case008,
+  Test.test "(match GlobSet.compileWith { Glob.defaults with maxStates = 2 } [\"a\", \"[\"] with | Err error -> error.patternIndex = Some 1 | _ -> false)" case009,
+  Test.test "GlobSet.ofPatterns 0 [] |> Result.isErr" case010,
+  Test.test "GlobSet.compileWith { Glob.defaults with maxPatternBytes = -1 } [] |> Result.isErr" case011,
+  Test.test "aliases" case012
+]

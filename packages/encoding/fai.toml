@@ -9,7 +9,3 @@ test-dir = "."
 [[bin]]
 name = "examples-encoding"
 path = "examples/EncodingExample.fai"
-
-[[bin]]
-name = "examples-runtime-checks"
-path = "examples/RuntimeChecks.fai"

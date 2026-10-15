@@ -99,7 +99,8 @@ fai run -C packages sqlite/examples/UuidChecks.fai
 fai run -C packages sqlite/examples/FileDatabase.fai -- visits.db
 ```
 
-Package contracts cover pure values, decoding, options and fake-session behavior.
+Named package tests and inline library contracts cover pure values, decoding,
+options and fake-session behavior.
 Native in-memory/file-backed tests cover binding, transactions, cancellation,
 cursor lifetime and JIT/AOT execution. The compiler embeds SQLite; applications
 do not need a separately installed SQLite library.

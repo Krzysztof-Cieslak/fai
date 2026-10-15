@@ -9,30 +9,86 @@ let named decoder text =
   match Csv.parseTable text with
   | Err error -> Err [error]
   | Ok table -> CsvDecode.decode decoder table.headers (Array.unsafeGet 0 table.records)
-example: decode (CsvDecode.index 0 CsvDecode.int) [| "42" |] = Ok 42
-example: decode (CsvDecode.index 0 CsvDecode.int) [|
-  "-9223372036854775808"
-|] = Ok (-9223372036854775807 - 1)
-example: decode (CsvDecode.index 0 CsvDecode.int) [| "9223372036854775808" |] |> Result.isErr
-example: decode (CsvDecode.index 0 CsvDecode.int) [| " 42" |] |> Result.isErr
-example: decode (CsvDecode.index 0 (CsvDecode.trim CsvDecode.int)) [| " 42 " |] = Ok 42
-example: decode (CsvDecode.index 0 CsvDecode.int) [| "0x10" |] |> Result.isErr
-example: decode (CsvDecode.index 0 CsvDecode.int) [| "1_000" |] |> Result.isErr
-example: decode (CsvDecode.index 0 CsvDecode.float) [| "1.25e2" |] = Ok 125.0
-example: decode (CsvDecode.index 0 CsvDecode.float) [| "NaN" |] |> Result.isErr
-example: decode (CsvDecode.index 0 CsvDecode.float) [| "1e9999" |] |> Result.isErr
-example: decode (CsvDecode.index 0 CsvDecode.bool) [| "false" |] = Ok false
-example: decode (CsvDecode.index 0 CsvDecode.bool) [| "0" |] |> Result.isErr
-example: decode (CsvDecode.optionalIndex 1 CsvDecode.int) [| "x" |] = Ok None
-example: decode (CsvDecode.optionalIndex 0 CsvDecode.int) [| "" |] |> Result.isErr
-example: decode (CsvDecode.index 0 (CsvDecode.emptyAsNone CsvDecode.int)) [| "" |] = Ok None
-example: decode (CsvDecode.index 0 (CsvDecode.nullToken "NULL" CsvDecode.int)) [|
-  "NULL"
-|] = Ok None
-example: decode (CsvDecode.withDefault 7 (CsvDecode.index 1 CsvDecode.int)) [| "x" |] = Ok 7
-example: decode (CsvDecode.withDefault 7 (CsvDecode.index 0 CsvDecode.int)) [|
-  "bad"
-|] |> Result.isErr
+
+let case001 _ =
+  let testActual = decode (CsvDecode.index 0 CsvDecode.int) [| "42" |] = Ok 42
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.int) [| \"42\" |] = Ok 42" testActual
+
+let case002 _ =
+  let testActual =
+    decode (CsvDecode.index 0 CsvDecode.int) [|
+      "-9223372036854775808"
+    |] = Ok (-9223372036854775807 - 1)
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.int) [| \"-9223372036854775808\" |] = Ok (-9223372036854775807 - 1)" testActual
+
+let case003 _ =
+  let testActual =
+    decode (CsvDecode.index 0 CsvDecode.int) [| "9223372036854775808" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.int) [| \"9223372036854775808\" |] |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual = decode (CsvDecode.index 0 CsvDecode.int) [| " 42" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.int) [| \" 42\" |] |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual = decode (CsvDecode.index 0 (CsvDecode.trim CsvDecode.int)) [| " 42 " |] = Ok 42
+  Expect.isTrue "decode (CsvDecode.index 0 (CsvDecode.trim CsvDecode.int)) [| \" 42 \" |] = Ok 42" testActual
+
+let case006 _ =
+  let testActual = decode (CsvDecode.index 0 CsvDecode.int) [| "0x10" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.int) [| \"0x10\" |] |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual = decode (CsvDecode.index 0 CsvDecode.int) [| "1_000" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.int) [| \"1_000\" |] |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual = decode (CsvDecode.index 0 CsvDecode.float) [| "1.25e2" |] = Ok 125.0
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.float) [| \"1.25e2\" |] = Ok 125.0" testActual
+
+let case009 _ =
+  let testActual = decode (CsvDecode.index 0 CsvDecode.float) [| "NaN" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.float) [| \"NaN\" |] |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual = decode (CsvDecode.index 0 CsvDecode.float) [| "1e9999" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.float) [| \"1e9999\" |] |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = decode (CsvDecode.index 0 CsvDecode.bool) [| "false" |] = Ok false
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.bool) [| \"false\" |] = Ok false" testActual
+
+let case012 _ =
+  let testActual = decode (CsvDecode.index 0 CsvDecode.bool) [| "0" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.index 0 CsvDecode.bool) [| \"0\" |] |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual = decode (CsvDecode.optionalIndex 1 CsvDecode.int) [| "x" |] = Ok None
+  Expect.isTrue "decode (CsvDecode.optionalIndex 1 CsvDecode.int) [| \"x\" |] = Ok None" testActual
+
+let case014 _ =
+  let testActual = decode (CsvDecode.optionalIndex 0 CsvDecode.int) [| "" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.optionalIndex 0 CsvDecode.int) [| \"\" |] |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual =
+    decode (CsvDecode.index 0 (CsvDecode.emptyAsNone CsvDecode.int)) [| "" |] = Ok None
+  Expect.isTrue "decode (CsvDecode.index 0 (CsvDecode.emptyAsNone CsvDecode.int)) [| \"\" |] = Ok None" testActual
+
+let case016 _ =
+  let testActual =
+    decode (CsvDecode.index 0 (CsvDecode.nullToken "NULL" CsvDecode.int)) [| "NULL" |] = Ok None
+  Expect.isTrue "decode (CsvDecode.index 0 (CsvDecode.nullToken \"NULL\" CsvDecode.int)) [| \"NULL\" |] = Ok None" testActual
+
+let case017 _ =
+  let testActual =
+    decode (CsvDecode.withDefault 7 (CsvDecode.index 1 CsvDecode.int)) [| "x" |] = Ok 7
+  Expect.isTrue "decode (CsvDecode.withDefault 7 (CsvDecode.index 1 CsvDecode.int)) [| \"x\" |] = Ok 7" testActual
+
+let case018 _ =
+  let testActual =
+    decode (CsvDecode.withDefault 7 (CsvDecode.index 0 CsvDecode.int)) [| "bad" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.withDefault 7 (CsvDecode.index 0 CsvDecode.int)) [| \"bad\" |] |> Result.isErr" testActual
 
 let person =
   CsvDecode.map3 (fun name age active -> {
@@ -40,12 +96,20 @@ let person =
     age = age,
     name = name
   }) (CsvDecode.field "name" CsvDecode.string) (CsvDecode.field "age" CsvDecode.int) (CsvDecode.field "active" CsvDecode.bool)
-example: named person "name,age,active,extra\nAlice,42,true,ignored" = Ok {
-  active = true,
-  age = 42,
-  name = "Alice"
-}
-example: named (CsvDecode.exactColumns person) "name,age,active,extra\nAlice,42,true,ignored" |> Result.isErr
+
+let case019 _ =
+  let testActual =
+    named person "name,age,active,extra\nAlice,42,true,ignored" = Ok {
+      active = true,
+      age = 42,
+      name = "Alice"
+    }
+  Expect.isTrue "named person \"name,age,active,extra\\nAlice,42,true,ignored\" = Ok { active = true, age = 42, name = \"Alice\" }" testActual
+
+let case020 _ =
+  let testActual =
+    named (CsvDecode.exactColumns person) "name,age,active,extra\nAlice,42,true,ignored" |> Result.isErr
+  Expect.isTrue "named (CsvDecode.exactColumns person) \"name,age,active,extra\\nAlice,42,true,ignored\" |> Result.isErr" testActual
 
 let accumulated =
   match named person "name,age,active\nAlice,bad,bad" with
@@ -56,7 +120,10 @@ let accumulated =
       (Some 2, Some (Bytes.fromString "active"), Some 1)
     ]
   | _ -> false
-example: accumulated
+
+let case021 _ =
+  let testActual = accumulated
+  Expect.isTrue "accumulated" testActual
 
 let capped =
   match Csv.parseTable "name,age,active\nAlice,bad,bad" with
@@ -65,16 +132,31 @@ let capped =
     (match CsvDecode.decodeWith 1 person table.headers (Array.unsafeGet 0 table.records) with
     | Err errors -> List.length errors = 1
     | _ -> false)
-example: capped
+
+let case022 _ =
+  let testActual = capped
+  Expect.isTrue "capped" testActual
 
 let located =
   match named (CsvDecode.field "age" CsvDecode.int) "name,age\r\n\"é\n🙂\",oops" with
   | Err [error] -> error.position = Some { byteColumn = 7, byteOffset = 20, line = 3 }
   | _ -> false
-example: located
-example: decode (CsvDecode.index (-1) CsvDecode.string) [| "x" |] |> Result.isErr
-example: decode (CsvDecode.field "name" CsvDecode.string) [| "x" |] |> Result.isErr
-example: named (CsvDecode.optionalField "absent" CsvDecode.int) "name\nx" = Ok None
+
+let case023 _ =
+  let testActual = located
+  Expect.isTrue "located" testActual
+
+let case024 _ =
+  let testActual = decode (CsvDecode.index (-1) CsvDecode.string) [| "x" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.index (-1) CsvDecode.string) [| \"x\" |] |> Result.isErr" testActual
+
+let case025 _ =
+  let testActual = decode (CsvDecode.field "name" CsvDecode.string) [| "x" |] |> Result.isErr
+  Expect.isTrue "decode (CsvDecode.field \"name\" CsvDecode.string) [| \"x\" |] |> Result.isErr" testActual
+
+let case026 _ =
+  let testActual = named (CsvDecode.optionalField "absent" CsvDecode.int) "name\nx" = Ok None
+  Expect.isTrue "named (CsvDecode.optionalField \"absent\" CsvDecode.int) \"name\\nx\" = Ok None" testActual
 
 let binary =
   match CsvBytes.record [| Bytes.fromList [255], Bytes.fromString "42" |] with
@@ -84,5 +166,44 @@ let binary =
       (raw, number)) (CsvBytesDecode.index 0 CsvBytesDecode.bytes) (CsvBytesDecode.index 1 CsvBytesDecode.int)) None record = Ok (Bytes.fromList [
       255
     ], 42)
-example: binary
-forall number: decode (CsvDecode.index 0 CsvDecode.int) [| Int.toString number |] = Ok number
+
+let case027 _ =
+  let testActual = binary
+  Expect.isTrue "binary" testActual
+
+let case028 testInput =
+  let number = testInput
+  let testActual = decode (CsvDecode.index 0 CsvDecode.int) [| Int.toString number |] = Ok number
+  Expect.isTrue "property: decode (CsvDecode.index 0 CsvDecode.int) [| Int.toString number |] = Ok number" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CsvDecodeSpec" [
+  Test.test "decode (CsvDecode.index 0 CsvDecode.int) [| \"42\" |] = Ok 42" case001,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.int) [| \"-9223372036854775808\" |] = Ok (-9223372036854775807 - 1)" case002,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.int) [| \"9223372036854775808\" |] |> Result.isErr" case003,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.int) [| \" 42\" |] |> Result.isErr" case004,
+  Test.test "decode (CsvDecode.index 0 (CsvDecode.trim CsvDecode.int)) [| \" 42 \" |] = Ok 42" case005,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.int) [| \"0x10\" |] |> Result.isErr" case006,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.int) [| \"1_000\" |] |> Result.isErr" case007,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.float) [| \"1.25e2\" |] = Ok 125.0" case008,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.float) [| \"NaN\" |] |> Result.isErr" case009,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.float) [| \"1e9999\" |] |> Result.isErr" case010,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.bool) [| \"false\" |] = Ok false" case011,
+  Test.test "decode (CsvDecode.index 0 CsvDecode.bool) [| \"0\" |] |> Result.isErr" case012,
+  Test.test "decode (CsvDecode.optionalIndex 1 CsvDecode.int) [| \"x\" |] = Ok None" case013,
+  Test.test "decode (CsvDecode.optionalIndex 0 CsvDecode.int) [| \"\" |] |> Result.isErr" case014,
+  Test.test "decode (CsvDecode.index 0 (CsvDecode.emptyAsNone CsvDecode.int)) [| \"\" |] = Ok None" case015,
+  Test.test "decode (CsvDecode.index 0 (CsvDecode.nullToken \"NULL\" CsvDecode.int)) [| \"NULL\" |] = Ok None" case016,
+  Test.test "decode (CsvDecode.withDefault 7 (CsvDecode.index 1 CsvDecode.int)) [| \"x\" |] = Ok 7" case017,
+  Test.test "decode (CsvDecode.withDefault 7 (CsvDecode.index 0 CsvDecode.int)) [| \"bad\" |] |> Result.isErr" case018,
+  Test.test "named person \"name,age,active,extra\\nAlice,42,true,ignored\" = Ok { active = true, age = 42, name = \"Alice\" }" case019,
+  Test.test "named (CsvDecode.exactColumns person) \"name,age,active,extra\\nAlice,42,true,ignored\" |> Result.isErr" case020,
+  Test.test "accumulated" case021,
+  Test.test "capped" case022,
+  Test.test "located" case023,
+  Test.test "decode (CsvDecode.index (-1) CsvDecode.string) [| \"x\" |] |> Result.isErr" case024,
+  Test.test "decode (CsvDecode.field \"name\" CsvDecode.string) [| \"x\" |] |> Result.isErr" case025,
+  Test.test "named (CsvDecode.optionalField \"absent\" CsvDecode.int) \"name\\nx\" = Ok None" case026,
+  Test.test "binary" case027,
+  Test.property "property: decode (CsvDecode.index 0 CsvDecode.int) [| Int.toString number |] = Ok number" Test.int case028
+]

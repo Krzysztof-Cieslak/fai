@@ -35,16 +35,48 @@ let agrees a b =
   match Diff.diff a b with
   | Err _ -> false
   | Ok result -> reconstruct a b result.edits = b && cost result.edits = distance a b 0 0
-forall a b: agrees a b
-forall a b: agrees (List.map (fun x -> x % 3) a) (List.map (fun x -> x % 3) b)
-example: agrees [1, 2, 3] [3, 2, 1]
-example: agrees [] [1, 2]
-example: agrees [1, 2] []
-example: agrees [1, 2, 1, 2] [2, 1, 2, 1]
-example: agrees [1, 1, 1] [1, 2, 1]
-example: agrees [1, 2, 3, 4, 5] [6, 1, 2, 3, 4]
-example: agrees [1, 2, 3, 4, 5] [2, 3, 4, 5, 6]
-example: agrees [1, 1, 1, 1] [2, 2, 2, 2]
+
+let case001 testInput =
+  let (a, b) = testInput
+  let testActual = agrees a b
+  Expect.isTrue "property: agrees a b" testActual
+
+let case002 testInput =
+  let (a, b) = testInput
+  let testActual = agrees (List.map (fun x -> x % 3) a) (List.map (fun x -> x % 3) b)
+  Expect.isTrue "property: agrees (List.map (fun x -> x % 3) a) (List.map (fun x -> x % 3) b)" testActual
+
+let case003 _ =
+  let testActual = agrees [1, 2, 3] [3, 2, 1]
+  Expect.isTrue "agrees [1, 2, 3] [3, 2, 1]" testActual
+
+let case004 _ =
+  let testActual = agrees [] [1, 2]
+  Expect.isTrue "agrees [] [1, 2]" testActual
+
+let case005 _ =
+  let testActual = agrees [1, 2] []
+  Expect.isTrue "agrees [1, 2] []" testActual
+
+let case006 _ =
+  let testActual = agrees [1, 2, 1, 2] [2, 1, 2, 1]
+  Expect.isTrue "agrees [1, 2, 1, 2] [2, 1, 2, 1]" testActual
+
+let case007 _ =
+  let testActual = agrees [1, 1, 1] [1, 2, 1]
+  Expect.isTrue "agrees [1, 1, 1] [1, 2, 1]" testActual
+
+let case008 _ =
+  let testActual = agrees [1, 2, 3, 4, 5] [6, 1, 2, 3, 4]
+  Expect.isTrue "agrees [1, 2, 3, 4, 5] [6, 1, 2, 3, 4]" testActual
+
+let case009 _ =
+  let testActual = agrees [1, 2, 3, 4, 5] [2, 3, 4, 5, 6]
+  Expect.isTrue "agrees [1, 2, 3, 4, 5] [2, 3, 4, 5, 6]" testActual
+
+let case010 _ =
+  let testActual = agrees [1, 1, 1, 1] [2, 2, 2, 2]
+  Expect.isTrue "agrees [1, 1, 1, 1] [2, 2, 2, 2]" testActual
 
 let patience a b =
   let a = Array.fromList a
@@ -52,24 +84,84 @@ let patience a b =
   match Diff.diffWith Diff.limits { Diff.options with algorithm = Diff.Patience } a b with
   | Err _ -> false
   | Ok result -> reconstruct a b result.edits = b && result.quality = Diff.Anchored
-forall a b: patience a b
-example: patience [1, 2, 3, 4] [4, 3, 2, 1]
-example: patience [1, 1, 1, 1] [2, 2, 2, 2]
-example: patience [] [1, 2]
-example: (match Diff.diffBy (fun value ->
-  value.id) [| { id = 1, name = "a" } |] [| { id = 1, name = "b" } |] with
-| Err _ -> false
-| Ok result -> Array.map (fun item -> item.kind) result.edits = [| Diff.Match |])
-example: (match Diff.diffWith { Diff.limits with
-  maxWork = 0
-} { Diff.options with fallback = Diff.ReplaceRemainder } [| 1 |] [| 2 |] with
-| Err _ -> false
-| Ok result -> result.quality = Diff.Coarse && reconstruct [| 1 |] [| 2 |] result.edits = [| 2 |])
-example: Diff.diffWith { Diff.limits with maxWork = 0 } Diff.options [| 1 |] [| 2 |] |> Result.isErr
-example: Diff.diffWith { Diff.limits with
-  maxScratchItems = 0
-} Diff.options [| 1 |] [| 2 |] |> Result.isErr
-example: Diff.diffWith { Diff.limits with maxEdits = 0 } Diff.options [||] [| 1 |] |> Result.isErr
-example: Diff.diffWith { Diff.limits with
-  maxInputItems = 0
-} Diff.options [| 1 |] [||] |> Result.isErr
+
+let case011 testInput =
+  let (a, b) = testInput
+  let testActual = patience a b
+  Expect.isTrue "property: patience a b" testActual
+
+let case012 _ =
+  let testActual = patience [1, 2, 3, 4] [4, 3, 2, 1]
+  Expect.isTrue "patience [1, 2, 3, 4] [4, 3, 2, 1]" testActual
+
+let case013 _ =
+  let testActual = patience [1, 1, 1, 1] [2, 2, 2, 2]
+  Expect.isTrue "patience [1, 1, 1, 1] [2, 2, 2, 2]" testActual
+
+let case014 _ =
+  let testActual = patience [] [1, 2]
+  Expect.isTrue "patience [] [1, 2]" testActual
+
+let case015 _ =
+  let testActual =
+    (match Diff.diffBy (fun value ->
+      value.id) [| { id = 1, name = "a" } |] [| { id = 1, name = "b" } |] with
+    | Err _ -> false
+    | Ok result -> Array.map (fun item -> item.kind) result.edits = [| Diff.Match |])
+  Expect.isTrue "(match Diff.diffBy (fun value -> value.id) [| { id = 1, name = \"a\" } |] [| { id = 1, name = \"b\" } |] with | Err _ -> false | Ok result -> Array.map (fun item…" testActual
+
+let case016 _ =
+  let testActual =
+    (match Diff.diffWith { Diff.limits with
+      maxWork = 0
+    } { Diff.options with fallback = Diff.ReplaceRemainder } [| 1 |] [| 2 |] with
+    | Err _ -> false
+    | Ok result ->
+      result.quality = Diff.Coarse && reconstruct [| 1 |] [| 2 |] result.edits = [| 2 |])
+  Expect.isTrue "(match Diff.diffWith { Diff.limits with maxWork = 0 } { Diff.options with fallback = Diff.ReplaceRemainder } [| 1 |] [| 2 |] with | Err _ -> false | Ok resul…" testActual
+
+let case017 _ =
+  let testActual =
+    Diff.diffWith { Diff.limits with maxWork = 0 } Diff.options [| 1 |] [| 2 |] |> Result.isErr
+  Expect.isTrue "Diff.diffWith { Diff.limits with maxWork = 0 } Diff.options [| 1 |] [| 2 |] |> Result.isErr" testActual
+
+let case018 _ =
+  let testActual =
+    Diff.diffWith { Diff.limits with
+      maxScratchItems = 0
+    } Diff.options [| 1 |] [| 2 |] |> Result.isErr
+  Expect.isTrue "Diff.diffWith { Diff.limits with maxScratchItems = 0 } Diff.options [| 1 |] [| 2 |] |> Result.isErr" testActual
+
+let case019 _ =
+  let testActual =
+    Diff.diffWith { Diff.limits with maxEdits = 0 } Diff.options [||] [| 1 |] |> Result.isErr
+  Expect.isTrue "Diff.diffWith { Diff.limits with maxEdits = 0 } Diff.options [||] [| 1 |] |> Result.isErr" testActual
+
+let case020 _ =
+  let testActual =
+    Diff.diffWith { Diff.limits with maxInputItems = 0 } Diff.options [| 1 |] [||] |> Result.isErr
+  Expect.isTrue "Diff.diffWith { Diff.limits with maxInputItems = 0 } Diff.options [| 1 |] [||] |> Result.isErr" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DiffSequenceSpec" [
+  Test.property "property: agrees a b" (Test.tuple2 (Test.list Test.int) (Test.list Test.int)) case001,
+  Test.property "property: agrees (List.map (fun x -> x % 3) a) (List.map (fun x -> x % 3) b)" (Test.tuple2 (Test.list Test.int) (Test.list Test.int)) case002,
+  Test.test "agrees [1, 2, 3] [3, 2, 1]" case003,
+  Test.test "agrees [] [1, 2]" case004,
+  Test.test "agrees [1, 2] []" case005,
+  Test.test "agrees [1, 2, 1, 2] [2, 1, 2, 1]" case006,
+  Test.test "agrees [1, 1, 1] [1, 2, 1]" case007,
+  Test.test "agrees [1, 2, 3, 4, 5] [6, 1, 2, 3, 4]" case008,
+  Test.test "agrees [1, 2, 3, 4, 5] [2, 3, 4, 5, 6]" case009,
+  Test.test "agrees [1, 1, 1, 1] [2, 2, 2, 2]" case010,
+  Test.property "property: patience a b" (Test.tuple2 (Test.list Test.int) (Test.list Test.int)) case011,
+  Test.test "patience [1, 2, 3, 4] [4, 3, 2, 1]" case012,
+  Test.test "patience [1, 1, 1, 1] [2, 2, 2, 2]" case013,
+  Test.test "patience [] [1, 2]" case014,
+  Test.test "(match Diff.diffBy (fun value -> value.id) [| { id = 1, name = \"a\" } |] [| { id = 1, name = \"b\" } |] with | Err _ -> false | Ok result -> Array.map (fun item…" case015,
+  Test.test "(match Diff.diffWith { Diff.limits with maxWork = 0 } { Diff.options with fallback = Diff.ReplaceRemainder } [| 1 |] [| 2 |] with | Err _ -> false | Ok resul…" case016,
+  Test.test "Diff.diffWith { Diff.limits with maxWork = 0 } Diff.options [| 1 |] [| 2 |] |> Result.isErr" case017,
+  Test.test "Diff.diffWith { Diff.limits with maxScratchItems = 0 } Diff.options [| 1 |] [| 2 |] |> Result.isErr" case018,
+  Test.test "Diff.diffWith { Diff.limits with maxEdits = 0 } Diff.options [||] [| 1 |] |> Result.isErr" case019,
+  Test.test "Diff.diffWith { Diff.limits with maxInputItems = 0 } Diff.options [| 1 |] [||] |> Result.isErr" case020
+]

@@ -1,64 +1,218 @@
 module UnicodeTransformSpec
 
-example: UnicodeCase.fold "Straße" = Ok "strasse"
-example: UnicodeCase.fold "Σςσ" = Ok "σσσ"
-example: UnicodeCase.fold "İIı" = Ok "i\u{0307}iı"
-example: UnicodeCase.fold "ﬃ" = Ok "ffi"
-example: UnicodeCase.fold "a\u{0301}" = Ok "a\u{0301}"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFC "a\u{0301}" = Ok "á"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFD "á" = Ok "a\u{0301}"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFC "\u{1100}\u{1161}\u{11a8}" = Ok "각"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFD "각" = Ok "\u{1100}\u{1161}\u{11a8}"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFKC "ﬃ①Ａ" = Ok "ffi1A"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFC "ﬃ①Ａ" = Ok "ﬃ①Ａ"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFD "a\u{0315}\u{0300}" = Ok "a\u{0300}\u{0315}"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFC "a\u{0305}\u{0301}" = Ok "a\u{0305}\u{0301}"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFC "a\u{0327}\u{0301}" = Ok "á\u{0327}"
-example: UnicodeNormalize.isNormalized UnicodeNormalize.NFC "á" = Ok true
-example: UnicodeNormalize.isNormalized UnicodeNormalize.NFD "á" = Ok false
-example: UnicodeNormalize.normalize UnicodeNormalize.NFKD "\u{1d400}" = Ok "A"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFD "\u{0344}" = Ok "\u{0308}\u{0301}"
-example: UnicodeNormalize.normalize UnicodeNormalize.NFC "\u{0308}\u{0301}" = Ok "\u{0308}\u{0301}"
-example: Unicode.isWhitespace '\u{00a0}'
-example: not (Unicode.isWhitespace '\u{200b}')
-example: Unicode.isWhitespace '\t'
-example: not (Unicode.isWhitespace '\u{feff}')
-example: UnicodeCase.foldMapped "ß" = Ok {
-  mappings = [|
-    { output = { end = 1, start = 0 }, sources = [| { end = 2, start = 0 } |] },
-    { output = { end = 2, start = 1 }, sources = [| { end = 2, start = 0 } |] }
-  |],
-  text = "ss"
-}
-example: UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC "a\u{0301}" = Ok {
-  mappings = [| { output = { end = 2, start = 0 }, sources = [| { end = 3, start = 0 } |] } |],
-  text = "á"
-}
-example: (match UnicodeNormalize.normalizeMapped UnicodeNormalize.NFD "a\u{0315}\u{0300}" with
-| Err _ -> false
-| Ok result ->
-  result.text = "a\u{0300}\u{0315}" && Array.map (fun mapping ->
-    mapping.sources) result.mappings = [|
-    [| { end = 1, start = 0 } |],
-    [| { end = 5, start = 3 } |],
-    [| { end = 3, start = 1 } |]
-  |])
+let case001 _ =
+  let testActual = UnicodeCase.fold "Straße" = Ok "strasse"
+  Expect.isTrue "UnicodeCase.fold \"Straße\" = Ok \"strasse\"" testActual
+
+let case002 _ =
+  let testActual = UnicodeCase.fold "Σςσ" = Ok "σσσ"
+  Expect.isTrue "UnicodeCase.fold \"Σςσ\" = Ok \"σσσ\"" testActual
+
+let case003 _ =
+  let testActual = UnicodeCase.fold "İIı" = Ok "i\u{0307}iı"
+  Expect.isTrue "UnicodeCase.fold \"İIı\" = Ok \"i\\u{0307}iı\"" testActual
+
+let case004 _ =
+  let testActual = UnicodeCase.fold "ﬃ" = Ok "ffi"
+  Expect.isTrue "UnicodeCase.fold \"ﬃ\" = Ok \"ffi\"" testActual
+
+let case005 _ =
+  let testActual = UnicodeCase.fold "a\u{0301}" = Ok "a\u{0301}"
+  Expect.isTrue "UnicodeCase.fold \"a\\u{0301}\" = Ok \"a\\u{0301}\"" testActual
+
+let case006 _ =
+  let testActual = UnicodeNormalize.normalize UnicodeNormalize.NFC "a\u{0301}" = Ok "á"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFC \"a\\u{0301}\" = Ok \"á\"" testActual
+
+let case007 _ =
+  let testActual = UnicodeNormalize.normalize UnicodeNormalize.NFD "á" = Ok "a\u{0301}"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFD \"á\" = Ok \"a\\u{0301}\"" testActual
+
+let case008 _ =
+  let testActual =
+    UnicodeNormalize.normalize UnicodeNormalize.NFC "\u{1100}\u{1161}\u{11a8}" = Ok "각"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFC \"\\u{1100}\\u{1161}\\u{11a8}\" = Ok \"각\"" testActual
+
+let case009 _ =
+  let testActual =
+    UnicodeNormalize.normalize UnicodeNormalize.NFD "각" = Ok "\u{1100}\u{1161}\u{11a8}"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFD \"각\" = Ok \"\\u{1100}\\u{1161}\\u{11a8}\"" testActual
+
+let case010 _ =
+  let testActual = UnicodeNormalize.normalize UnicodeNormalize.NFKC "ﬃ①Ａ" = Ok "ffi1A"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFKC \"ﬃ①Ａ\" = Ok \"ffi1A\"" testActual
+
+let case011 _ =
+  let testActual = UnicodeNormalize.normalize UnicodeNormalize.NFC "ﬃ①Ａ" = Ok "ﬃ①Ａ"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFC \"ﬃ①Ａ\" = Ok \"ﬃ①Ａ\"" testActual
+
+let case012 _ =
+  let testActual =
+    UnicodeNormalize.normalize UnicodeNormalize.NFD "a\u{0315}\u{0300}" = Ok "a\u{0300}\u{0315}"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFD \"a\\u{0315}\\u{0300}\" = Ok \"a\\u{0300}\\u{0315}\"" testActual
+
+let case013 _ =
+  let testActual =
+    UnicodeNormalize.normalize UnicodeNormalize.NFC "a\u{0305}\u{0301}" = Ok "a\u{0305}\u{0301}"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFC \"a\\u{0305}\\u{0301}\" = Ok \"a\\u{0305}\\u{0301}\"" testActual
+
+let case014 _ =
+  let testActual =
+    UnicodeNormalize.normalize UnicodeNormalize.NFC "a\u{0327}\u{0301}" = Ok "á\u{0327}"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFC \"a\\u{0327}\\u{0301}\" = Ok \"á\\u{0327}\"" testActual
+
+let case015 _ =
+  let testActual = UnicodeNormalize.isNormalized UnicodeNormalize.NFC "á" = Ok true
+  Expect.isTrue "UnicodeNormalize.isNormalized UnicodeNormalize.NFC \"á\" = Ok true" testActual
+
+let case016 _ =
+  let testActual = UnicodeNormalize.isNormalized UnicodeNormalize.NFD "á" = Ok false
+  Expect.isTrue "UnicodeNormalize.isNormalized UnicodeNormalize.NFD \"á\" = Ok false" testActual
+
+let case017 _ =
+  let testActual = UnicodeNormalize.normalize UnicodeNormalize.NFKD "\u{1d400}" = Ok "A"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFKD \"\\u{1d400}\" = Ok \"A\"" testActual
+
+let case018 _ =
+  let testActual =
+    UnicodeNormalize.normalize UnicodeNormalize.NFD "\u{0344}" = Ok "\u{0308}\u{0301}"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFD \"\\u{0344}\" = Ok \"\\u{0308}\\u{0301}\"" testActual
+
+let case019 _ =
+  let testActual =
+    UnicodeNormalize.normalize UnicodeNormalize.NFC "\u{0308}\u{0301}" = Ok "\u{0308}\u{0301}"
+  Expect.isTrue "UnicodeNormalize.normalize UnicodeNormalize.NFC \"\\u{0308}\\u{0301}\" = Ok \"\\u{0308}\\u{0301}\"" testActual
+
+let case020 _ =
+  let testActual = Unicode.isWhitespace '\u{00a0}'
+  Expect.isTrue "Unicode.isWhitespace '\\u{00a0}'" testActual
+
+let case021 _ =
+  let testActual = not (Unicode.isWhitespace '\u{200b}')
+  Expect.isTrue "not (Unicode.isWhitespace '\\u{200b}')" testActual
+
+let case022 _ =
+  let testActual = Unicode.isWhitespace '\t'
+  Expect.isTrue "Unicode.isWhitespace '\\t'" testActual
+
+let case023 _ =
+  let testActual = not (Unicode.isWhitespace '\u{feff}')
+  Expect.isTrue "not (Unicode.isWhitespace '\\u{feff}')" testActual
+
+let case024 _ =
+  let testActual =
+    UnicodeCase.foldMapped "ß" = Ok {
+      mappings = [|
+        { output = { end = 1, start = 0 }, sources = [| { end = 2, start = 0 } |] },
+        { output = { end = 2, start = 1 }, sources = [| { end = 2, start = 0 } |] }
+      |],
+      text = "ss"
+    }
+  Expect.isTrue "UnicodeCase.foldMapped \"ß\" = Ok { mappings = [| { output = { end = 1, start = 0 }, sources = [| { end = 2, start = 0 } |] }, { output = { end = 2, start = 1 …" testActual
+
+let case025 _ =
+  let testActual =
+    UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC "a\u{0301}" = Ok {
+      mappings = [| { output = { end = 2, start = 0 }, sources = [| { end = 3, start = 0 } |] } |],
+      text = "á"
+    }
+  Expect.isTrue "UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC \"a\\u{0301}\" = Ok { mappings = [| { output = { end = 2, start = 0 }, sources = [| { end = 3, start = 0 }…" testActual
+
+let case026 _ =
+  let testActual =
+    (match UnicodeNormalize.normalizeMapped UnicodeNormalize.NFD "a\u{0315}\u{0300}" with
+    | Err _ -> false
+    | Ok result ->
+      result.text = "a\u{0300}\u{0315}" && Array.map (fun mapping ->
+        mapping.sources) result.mappings = [|
+        [| { end = 1, start = 0 } |],
+        [| { end = 5, start = 3 } |],
+        [| { end = 3, start = 1 } |]
+      |])
+  Expect.isTrue "(match UnicodeNormalize.normalizeMapped UnicodeNormalize.NFD \"a\\u{0315}\\u{0300}\" with | Err _ -> false | Ok result -> result.text = \"a\\u{0300}\\u{0315}\" && Ar…" testActual
 
 let idempotent form text =
   match UnicodeNormalize.normalize form text with
   | Err _ -> false
   | Ok normalized -> UnicodeNormalize.normalize form normalized = Ok normalized
-forall text: idempotent UnicodeNormalize.NFC text
-forall text: idempotent UnicodeNormalize.NFD text
-forall text: idempotent UnicodeNormalize.NFKC text
-forall text: idempotent UnicodeNormalize.NFKD text
-forall text: (match UnicodeCase.fold text with
-| Err _ -> false
-| Ok folded -> UnicodeCase.fold folded = Ok folded)
+
+let case027 testInput =
+  let text = testInput
+  let testActual = idempotent UnicodeNormalize.NFC text
+  Expect.isTrue "property: idempotent UnicodeNormalize.NFC text" testActual
+
+let case028 testInput =
+  let text = testInput
+  let testActual = idempotent UnicodeNormalize.NFD text
+  Expect.isTrue "property: idempotent UnicodeNormalize.NFD text" testActual
+
+let case029 testInput =
+  let text = testInput
+  let testActual = idempotent UnicodeNormalize.NFKC text
+  Expect.isTrue "property: idempotent UnicodeNormalize.NFKC text" testActual
+
+let case030 testInput =
+  let text = testInput
+  let testActual = idempotent UnicodeNormalize.NFKD text
+  Expect.isTrue "property: idempotent UnicodeNormalize.NFKD text" testActual
+
+let case031 testInput =
+  let text = testInput
+  let testActual =
+    (match UnicodeCase.fold text with
+    | Err _ -> false
+    | Ok folded -> UnicodeCase.fold folded = Ok folded)
+  Expect.isTrue "property: (match UnicodeCase.fold text with | Err _ -> false | Ok folded -> UnicodeCase.fold folded = Ok folded)" testActual
 
 let sameText mapped plain =
   match mapped with
   | Err _ -> false
   | Ok result -> plain = Ok result.text
-forall text: sameText (UnicodeCase.foldMapped text) (UnicodeCase.fold text)
-forall text: sameText (UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC text) (UnicodeNormalize.normalize UnicodeNormalize.NFC text)
+
+let case032 testInput =
+  let text = testInput
+  let testActual = sameText (UnicodeCase.foldMapped text) (UnicodeCase.fold text)
+  Expect.isTrue "property: sameText (UnicodeCase.foldMapped text) (UnicodeCase.fold text)" testActual
+
+let case033 testInput =
+  let text = testInput
+  let testActual =
+    sameText (UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC text) (UnicodeNormalize.normalize UnicodeNormalize.NFC text)
+  Expect.isTrue "property: sameText (UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC text) (UnicodeNormalize.normalize UnicodeNormalize.NFC text)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "UnicodeTransformSpec" [
+  Test.test "UnicodeCase.fold \"Straße\" = Ok \"strasse\"" case001,
+  Test.test "UnicodeCase.fold \"Σςσ\" = Ok \"σσσ\"" case002,
+  Test.test "UnicodeCase.fold \"İIı\" = Ok \"i\\u{0307}iı\"" case003,
+  Test.test "UnicodeCase.fold \"ﬃ\" = Ok \"ffi\"" case004,
+  Test.test "UnicodeCase.fold \"a\\u{0301}\" = Ok \"a\\u{0301}\"" case005,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFC \"a\\u{0301}\" = Ok \"á\"" case006,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFD \"á\" = Ok \"a\\u{0301}\"" case007,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFC \"\\u{1100}\\u{1161}\\u{11a8}\" = Ok \"각\"" case008,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFD \"각\" = Ok \"\\u{1100}\\u{1161}\\u{11a8}\"" case009,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFKC \"ﬃ①Ａ\" = Ok \"ffi1A\"" case010,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFC \"ﬃ①Ａ\" = Ok \"ﬃ①Ａ\"" case011,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFD \"a\\u{0315}\\u{0300}\" = Ok \"a\\u{0300}\\u{0315}\"" case012,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFC \"a\\u{0305}\\u{0301}\" = Ok \"a\\u{0305}\\u{0301}\"" case013,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFC \"a\\u{0327}\\u{0301}\" = Ok \"á\\u{0327}\"" case014,
+  Test.test "UnicodeNormalize.isNormalized UnicodeNormalize.NFC \"á\" = Ok true" case015,
+  Test.test "UnicodeNormalize.isNormalized UnicodeNormalize.NFD \"á\" = Ok false" case016,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFKD \"\\u{1d400}\" = Ok \"A\"" case017,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFD \"\\u{0344}\" = Ok \"\\u{0308}\\u{0301}\"" case018,
+  Test.test "UnicodeNormalize.normalize UnicodeNormalize.NFC \"\\u{0308}\\u{0301}\" = Ok \"\\u{0308}\\u{0301}\"" case019,
+  Test.test "Unicode.isWhitespace '\\u{00a0}'" case020,
+  Test.test "not (Unicode.isWhitespace '\\u{200b}')" case021,
+  Test.test "Unicode.isWhitespace '\\t'" case022,
+  Test.test "not (Unicode.isWhitespace '\\u{feff}')" case023,
+  Test.test "UnicodeCase.foldMapped \"ß\" = Ok { mappings = [| { output = { end = 1, start = 0 }, sources = [| { end = 2, start = 0 } |] }, { output = { end = 2, start = 1 …" case024,
+  Test.test "UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC \"a\\u{0301}\" = Ok { mappings = [| { output = { end = 2, start = 0 }, sources = [| { end = 3, start = 0 }…" case025,
+  Test.test "(match UnicodeNormalize.normalizeMapped UnicodeNormalize.NFD \"a\\u{0315}\\u{0300}\" with | Err _ -> false | Ok result -> result.text = \"a\\u{0300}\\u{0315}\" && Ar…" case026,
+  Test.property "property: idempotent UnicodeNormalize.NFC text" Test.string case027,
+  Test.property "property: idempotent UnicodeNormalize.NFD text" Test.string case028,
+  Test.property "property: idempotent UnicodeNormalize.NFKC text" Test.string case029,
+  Test.property "property: idempotent UnicodeNormalize.NFKD text" Test.string case030,
+  Test.property "property: (match UnicodeCase.fold text with | Err _ -> false | Ok folded -> UnicodeCase.fold folded = Ok folded)" Test.string case031,
+  Test.property "property: sameText (UnicodeCase.foldMapped text) (UnicodeCase.fold text)" Test.string case032,
+  Test.property "property: sameText (UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC text) (UnicodeNormalize.normalize UnicodeNormalize.NFC text)" Test.string case033
+]

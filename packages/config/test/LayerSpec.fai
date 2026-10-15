@@ -16,41 +16,83 @@ let leaf path config =
 
 let check first second path expected =
   Result.map (leaf path) (merged first second) = Ok (Some expected)
-example: check "a=1\nb=2" "a=3" ["a"] (ConfigTree.Scalar (TomlTypes.Integer 3))
-example: check "[a]\nb=1\nc=2" "[a]\nb=3" ["a", "c"] (ConfigTree.Scalar (TomlTypes.Integer 2))
-example: check "a={b=1}" "a=3" ["a"] (ConfigTree.Scalar (TomlTypes.Integer 3))
-example: check "a=3" "a={b=1}" ["a", "b"] (ConfigTree.Scalar (TomlTypes.Integer 1))
-example: (match merged "a=[1,2]" "a=[3]" with
-| Ok config ->
-  (match leaf ["a"] config with
-  | Some (ConfigTree.Array items) -> Array.length items = 1
-  | _ -> false)
-| _ -> false)
-example: (match merged "[a]\nb=1\nc=2" "[a]\nb=3" with
-| Ok config ->
-  Option.map (fun origin ->
-    origin.label) (Config.origin config [TomlTypes.Key "a", TomlTypes.Key "c"]) = Some "first"
-| _ -> false)
-example: (match merged "a=1" "a=3" with
-| Ok config ->
-  Option.map (fun origin -> origin.label) (Config.origin config [TomlTypes.Key "a"]) = Some "second"
-| _ -> false)
-example: Config.validateBindings Config.limits [
-  { name = "A", path = ["a"] },
-  { name = "B", path = ["a", "b"] }
-] |> Result.isErr
-example: Config.validateBindings Config.limits [
-  { name = "A", path = ["a"] },
-  { name = "A", path = ["b"] }
-] = Ok ()
-example: Config.validateBindings Config.limits [
-  { name = "A", path = ["a.b"] },
-  { name = "B", path = ["a", "b"] }
-] = Ok ()
-example: ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "env") [] [
-  ("A", "1"),
-  ("A", "2")
-] |> Result.isErr
+
+let case001 _ =
+  let testActual = check "a=1\nb=2" "a=3" ["a"] (ConfigTree.Scalar (TomlTypes.Integer 3))
+  Expect.isTrue "check \"a=1\\nb=2\" \"a=3\" [\"a\"] (ConfigTree.Scalar (TomlTypes.Integer 3))" testActual
+
+let case002 _ =
+  let testActual =
+    check "[a]\nb=1\nc=2" "[a]\nb=3" ["a", "c"] (ConfigTree.Scalar (TomlTypes.Integer 2))
+  Expect.isTrue "check \"[a]\\nb=1\\nc=2\" \"[a]\\nb=3\" [\"a\", \"c\"] (ConfigTree.Scalar (TomlTypes.Integer 2))" testActual
+
+let case003 _ =
+  let testActual = check "a={b=1}" "a=3" ["a"] (ConfigTree.Scalar (TomlTypes.Integer 3))
+  Expect.isTrue "check \"a={b=1}\" \"a=3\" [\"a\"] (ConfigTree.Scalar (TomlTypes.Integer 3))" testActual
+
+let case004 _ =
+  let testActual = check "a=3" "a={b=1}" ["a", "b"] (ConfigTree.Scalar (TomlTypes.Integer 1))
+  Expect.isTrue "check \"a=3\" \"a={b=1}\" [\"a\", \"b\"] (ConfigTree.Scalar (TomlTypes.Integer 1))" testActual
+
+let case005 _ =
+  let testActual =
+    (match merged "a=[1,2]" "a=[3]" with
+    | Ok config ->
+      (match leaf ["a"] config with
+      | Some (ConfigTree.Array items) -> Array.length items = 1
+      | _ -> false)
+    | _ -> false)
+  Expect.isTrue "(match merged \"a=[1,2]\" \"a=[3]\" with | Ok config -> (match leaf [\"a\"] config with | Some (ConfigTree.Array items) -> Array.length items = 1 | _ -> false) | _…" testActual
+
+let case006 _ =
+  let testActual =
+    (match merged "[a]\nb=1\nc=2" "[a]\nb=3" with
+    | Ok config ->
+      Option.map (fun origin ->
+        origin.label) (Config.origin config [TomlTypes.Key "a", TomlTypes.Key "c"]) = Some "first"
+    | _ -> false)
+  Expect.isTrue "(match merged \"[a]\\nb=1\\nc=2\" \"[a]\\nb=3\" with | Ok config -> Option.map (fun origin -> origin.label) (Config.origin config [TomlTypes.Key \"a\", TomlTypes.Key …" testActual
+
+let case007 _ =
+  let testActual =
+    (match merged "a=1" "a=3" with
+    | Ok config ->
+      Option.map (fun origin ->
+        origin.label) (Config.origin config [TomlTypes.Key "a"]) = Some "second"
+    | _ -> false)
+  Expect.isTrue "(match merged \"a=1\" \"a=3\" with | Ok config -> Option.map (fun origin -> origin.label) (Config.origin config [TomlTypes.Key \"a\"]) = Some \"second\" | _ -> false)" testActual
+
+let case008 _ =
+  let testActual =
+    Config.validateBindings Config.limits [
+      { name = "A", path = ["a"] },
+      { name = "B", path = ["a", "b"] }
+    ] |> Result.isErr
+  Expect.isTrue "Config.validateBindings Config.limits [ { name = \"A\", path = [\"a\"] }, { name = \"B\", path = [\"a\", \"b\"] } ] |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual =
+    Config.validateBindings Config.limits [
+      { name = "A", path = ["a"] },
+      { name = "A", path = ["b"] }
+    ] = Ok ()
+  Expect.isTrue "Config.validateBindings Config.limits [ { name = \"A\", path = [\"a\"] }, { name = \"A\", path = [\"b\"] } ] = Ok ()" testActual
+
+let case010 _ =
+  let testActual =
+    Config.validateBindings Config.limits [
+      { name = "A", path = ["a.b"] },
+      { name = "B", path = ["a", "b"] }
+    ] = Ok ()
+  Expect.isTrue "Config.validateBindings Config.limits [ { name = \"A\", path = [\"a.b\"] }, { name = \"B\", path = [\"a\", \"b\"] } ] = Ok ()" testActual
+
+let case011 _ =
+  let testActual =
+    ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "env") [] [
+      ("A", "1"),
+      ("A", "2")
+    ] |> Result.isErr
+  Expect.isTrue "ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment \"env\") [] [ (\"A\", \"1\"), (\"A\", \"2\") ] |> Result.isErr" testActual
 
 let emptyOverrides =
   match (layer "file" "a='original'", ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "env") [
@@ -58,7 +100,10 @@ let emptyOverrides =
   ] [("A", "")]) with
   | (Ok a, Ok b) -> Result.map (leaf ["a"]) (Config.merge [a, b]) = Ok (Some (ConfigTree.Text ""))
   | _ -> false
-example: emptyOverrides
+
+let case012 _ =
+  let testActual = emptyOverrides
+  Expect.isTrue "emptyOverrides" testActual
 
 let missingPreserves =
   match (layer "file" "a=42", ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment "env") [
@@ -69,15 +114,51 @@ let missingPreserves =
       "a"
     ]) (Config.merge [a, b]) = Ok (Some (ConfigTree.Scalar (TomlTypes.Integer 42)))
   | _ -> false
-example: missingPreserves
-example: ConfigSource.snapshot { Config.limits with
-  maxInputBytes = 1
-} (ConfigTypes.origin ConfigTypes.Environment "env") [
-  { name = "A", path = ["a"] }
-] [("A", "é")] |> Result.isErr
-example: (match layer "file" "a=1\nb=2" with
-| Ok a -> Config.mergeWith { Config.limits with maxNodes = 2 } [a] |> Result.isErr
-| _ -> false)
-forall earlier later: check ("a=" ++ Int.toString earlier) ("a=" ++ Int.toString later) [
-  "a"
-] (ConfigTree.Scalar (TomlTypes.Integer later))
+
+let case013 _ =
+  let testActual = missingPreserves
+  Expect.isTrue "missingPreserves" testActual
+
+let case014 _ =
+  let testActual =
+    ConfigSource.snapshot { Config.limits with
+      maxInputBytes = 1
+    } (ConfigTypes.origin ConfigTypes.Environment "env") [
+      { name = "A", path = ["a"] }
+    ] [("A", "é")] |> Result.isErr
+  Expect.isTrue "ConfigSource.snapshot { Config.limits with maxInputBytes = 1 } (ConfigTypes.origin ConfigTypes.Environment \"env\") [ { name = \"A\", path = [\"a\"] } ] [(\"A\", \"é\"…" testActual
+
+let case015 _ =
+  let testActual =
+    (match layer "file" "a=1\nb=2" with
+    | Ok a -> Config.mergeWith { Config.limits with maxNodes = 2 } [a] |> Result.isErr
+    | _ -> false)
+  Expect.isTrue "(match layer \"file\" \"a=1\\nb=2\" with | Ok a -> Config.mergeWith { Config.limits with maxNodes = 2 } [a] |> Result.isErr | _ -> false)" testActual
+
+let case016 testInput =
+  let (earlier, later) = testInput
+  let testActual =
+    check ("a=" ++ Int.toString earlier) ("a=" ++ Int.toString later) [
+      "a"
+    ] (ConfigTree.Scalar (TomlTypes.Integer later))
+  Expect.isTrue "property: check (\"a=\" ++ Int.toString earlier) (\"a=\" ++ Int.toString later) [ \"a\" ] (ConfigTree.Scalar (TomlTypes.Integer later))" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "ConfigLayerSpec" [
+  Test.test "check \"a=1\\nb=2\" \"a=3\" [\"a\"] (ConfigTree.Scalar (TomlTypes.Integer 3))" case001,
+  Test.test "check \"[a]\\nb=1\\nc=2\" \"[a]\\nb=3\" [\"a\", \"c\"] (ConfigTree.Scalar (TomlTypes.Integer 2))" case002,
+  Test.test "check \"a={b=1}\" \"a=3\" [\"a\"] (ConfigTree.Scalar (TomlTypes.Integer 3))" case003,
+  Test.test "check \"a=3\" \"a={b=1}\" [\"a\", \"b\"] (ConfigTree.Scalar (TomlTypes.Integer 1))" case004,
+  Test.test "(match merged \"a=[1,2]\" \"a=[3]\" with | Ok config -> (match leaf [\"a\"] config with | Some (ConfigTree.Array items) -> Array.length items = 1 | _ -> false) | _…" case005,
+  Test.test "(match merged \"[a]\\nb=1\\nc=2\" \"[a]\\nb=3\" with | Ok config -> Option.map (fun origin -> origin.label) (Config.origin config [TomlTypes.Key \"a\", TomlTypes.Key …" case006,
+  Test.test "(match merged \"a=1\" \"a=3\" with | Ok config -> Option.map (fun origin -> origin.label) (Config.origin config [TomlTypes.Key \"a\"]) = Some \"second\" | _ -> false)" case007,
+  Test.test "Config.validateBindings Config.limits [ { name = \"A\", path = [\"a\"] }, { name = \"B\", path = [\"a\", \"b\"] } ] |> Result.isErr" case008,
+  Test.test "Config.validateBindings Config.limits [ { name = \"A\", path = [\"a\"] }, { name = \"A\", path = [\"b\"] } ] = Ok ()" case009,
+  Test.test "Config.validateBindings Config.limits [ { name = \"A\", path = [\"a.b\"] }, { name = \"B\", path = [\"a\", \"b\"] } ] = Ok ()" case010,
+  Test.test "ConfigSource.snapshot Config.limits (ConfigTypes.origin ConfigTypes.Environment \"env\") [] [ (\"A\", \"1\"), (\"A\", \"2\") ] |> Result.isErr" case011,
+  Test.test "emptyOverrides" case012,
+  Test.test "missingPreserves" case013,
+  Test.test "ConfigSource.snapshot { Config.limits with maxInputBytes = 1 } (ConfigTypes.origin ConfigTypes.Environment \"env\") [ { name = \"A\", path = [\"a\"] } ] [(\"A\", \"é\"…" case014,
+  Test.test "(match layer \"file\" \"a=1\\nb=2\" with | Ok a -> Config.mergeWith { Config.limits with maxNodes = 2 } [a] |> Result.isErr | _ -> false)" case015,
+  Test.property "property: check (\"a=\" ++ Int.toString earlier) (\"a=\" ++ Int.toString later) [ \"a\" ] (ConfigTree.Scalar (TomlTypes.Integer later))" (Test.tuple2 Test.int Test.int) case016
+]

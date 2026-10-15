@@ -1,0 +1,4 @@
+module CsvRuntimeSpec
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Console, FileSystem }
+let tests = CsvRuntimeChecks.tests

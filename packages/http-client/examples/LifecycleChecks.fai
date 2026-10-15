@@ -190,3 +190,18 @@ let main r =
     "lifecycle checks passed"
   else
     "lifecycle checks failed")
+
+scenario : String -> (Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }) -> Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let scenario name check = Test.test name (fun ctx -> Expect.isTrue name (run ctx.runtime check))
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "HTTP client lifecycle" [
+  scenario "early return closes an unfinished response" earlyInScope,
+  scenario "cancellation closes the transport" cancelInScope,
+  scenario "body reads share the operation deadline" timeoutInScope,
+  scenario "streaming bypasses the buffered limit and invokes the consumer once" streamInScope,
+  scenario "consumer failure is not retried" consumerInScope,
+  scenario "consumer execution shares the operation deadline" callbackTimeoutInScope,
+  scenario "retry backoff shares the operation deadline" backoffTimeoutInScope,
+  scenario "status rejection retains a bounded preview without invoking the consumer" statusInScope
+]

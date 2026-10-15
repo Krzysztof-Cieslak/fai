@@ -11,36 +11,106 @@ let applied mode text patch =
     match Patch.applyFileWith Patch.limits mode (Array.unsafeGet 0 files) (Some text) with
     | Err _ -> None
     | Ok result -> result.text
-example: applied Patch.Strict "a\nb\n" patch = Some "a\nc\n"
-example: applied Patch.Strict "x\na\nb\n" patch = None
-example: applied (Patch.Relocate 3) "x\na\nb\n" patch = Some "x\na\nc\n"
-example: applied (Patch.Relocate 10) "x\na\nb\na\nb\n" patch = None
-example: (match UnifiedDiff.parse patch with
-| Err _ -> false
-| Ok parsed -> Result.isOk (UnifiedDiff.toString parsed))
-example: UnifiedDiff.reverse (UnifiedDiff.reverse (parse patch)) = parse patch
-example: (match UnifiedDiff.toString (UnifiedDiff.reverse (parse patch)) with
-| Err _ -> false
-| Ok reverse -> applied Patch.Strict "a\nc\n" reverse = Some "a\nb\n")
-example: UnifiedDiff.parse "--- a\n+++ b\n@@ -1,2 +1,1 @@\n-x\n+y\n" |> Result.isErr
-example: UnifiedDiff.parse "--- a\n+++ b\n@@ -9223372036854775808 +1 @@\n-x\n+y\n" |> Result.isErr
-example: UnifiedDiff.parse "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n" |> Result.isErr
-example: UnifiedDiff.parse "diff --git a/x b/x\nGIT binary patch\n" |> Result.isErr
-example: UnifiedDiff.parse "garbage\n" |> Result.isErr
-example: UnifiedDiff.parse "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y" |> Result.isErr
-example: applied Patch.Strict "a\r\nb\r\n" "--- a\n+++ b\n@@ -1,2 +1,2 @@\n a\r\n-b\r\n+c\r\n" = Some "a\r\nc\r\n"
-example: applied Patch.Strict "x" "--- a\n+++ b\n@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+y\n\\ No newline at end of file\n" = Some "y"
-example: applied Patch.Strict "x\n" "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n\\ No newline at end of file\n" = Some "y"
-example: (match UnifiedDiff.parse "--- /dev/null\n+++ x\n@@ -0,0 +1 @@\n+a\n" with
-| Err _ -> false
-| Ok files ->
-  Result.map (fun result ->
-    result.text) (Patch.applyFile (Array.unsafeGet 0 files) None) = Ok (Some "a\n"))
-example: (match UnifiedDiff.parse "--- x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n" with
-| Err _ -> false
-| Ok files ->
-  Result.map (fun result ->
-    result.text) (Patch.applyFile (Array.unsafeGet 0 files) (Some "a\n")) = Ok None)
+
+let case001 _ =
+  let testActual = applied Patch.Strict "a\nb\n" patch
+  let testExpected = Some "a\nc\n"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual = applied Patch.Strict "x\na\nb\n" patch
+  let testExpected = None
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual = applied (Patch.Relocate 3) "x\na\nb\n" patch
+  let testExpected = Some "x\na\nc\n"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case004 _ =
+  let testActual = applied (Patch.Relocate 10) "x\na\nb\na\nb\n" patch
+  let testExpected = None
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case005 _ =
+  let testActual =
+    (match UnifiedDiff.parse patch with
+    | Err _ -> false
+    | Ok parsed -> Result.isOk (UnifiedDiff.toString parsed))
+  Expect.isTrue "(match UnifiedDiff.parse patch with | Err _ -> false | Ok parsed -> Result.isOk (UnifiedDiff.toString parsed))" testActual
+
+let case006 _ =
+  let testActual = UnifiedDiff.reverse (UnifiedDiff.reverse (parse patch)) = parse patch
+  Expect.isTrue "UnifiedDiff.reverse (UnifiedDiff.reverse (parse patch)) = parse patch" testActual
+
+let case007 _ =
+  let testActual =
+    (match UnifiedDiff.toString (UnifiedDiff.reverse (parse patch)) with
+    | Err _ -> false
+    | Ok reverse -> applied Patch.Strict "a\nc\n" reverse = Some "a\nb\n")
+  Expect.isTrue "(match UnifiedDiff.toString (UnifiedDiff.reverse (parse patch)) with | Err _ -> false | Ok reverse -> applied Patch.Strict \"a\\nc\\n\" reverse = Some \"a\\nb\\n\")" testActual
+
+let case008 _ =
+  let testActual = UnifiedDiff.parse "--- a\n+++ b\n@@ -1,2 +1,1 @@\n-x\n+y\n" |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parse \"--- a\\n+++ b\\n@@ -1,2 +1,1 @@\\n-x\\n+y\\n\" |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual =
+    UnifiedDiff.parse "--- a\n+++ b\n@@ -9223372036854775808 +1 @@\n-x\n+y\n" |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parse \"--- a\\n+++ b\\n@@ -9223372036854775808 +1 @@\\n-x\\n+y\\n\" |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual =
+    UnifiedDiff.parse "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n" |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parse \"diff --git a/x b/x\\nold mode 100644\\nnew mode 100755\\n\" |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = UnifiedDiff.parse "diff --git a/x b/x\nGIT binary patch\n" |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parse \"diff --git a/x b/x\\nGIT binary patch\\n\" |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = UnifiedDiff.parse "garbage\n" |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parse \"garbage\\n\" |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual = UnifiedDiff.parse "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y" |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parse \"--- a\\n+++ b\\n@@ -1 +1 @@\\n-x\\n+y\" |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual =
+    applied Patch.Strict "a\r\nb\r\n" "--- a\n+++ b\n@@ -1,2 +1,2 @@\n a\r\n-b\r\n+c\r\n"
+  let testExpected = Some "a\r\nc\r\n"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case015 _ =
+  let testActual =
+    applied Patch.Strict "x" "--- a\n+++ b\n@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+y\n\\ No newline at end of file\n"
+  let testExpected = Some "y"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case016 _ =
+  let testActual =
+    applied Patch.Strict "x\n" "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n\\ No newline at end of file\n"
+  let testExpected = Some "y"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case017 _ =
+  let testActual =
+    (match UnifiedDiff.parse "--- /dev/null\n+++ x\n@@ -0,0 +1 @@\n+a\n" with
+    | Err _ -> false
+    | Ok files ->
+      Result.map (fun result ->
+        result.text) (Patch.applyFile (Array.unsafeGet 0 files) None) = Ok (Some "a\n"))
+  Expect.isTrue "(match UnifiedDiff.parse \"--- /dev/null\\n+++ x\\n@@ -0,0 +1 @@\\n+a\\n\" with | Err _ -> false | Ok files -> Result.map (fun result -> result.text) (Patch.applyF…" testActual
+
+let case018 _ =
+  let testActual =
+    (match UnifiedDiff.parse "--- x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n" with
+    | Err _ -> false
+    | Ok files ->
+      Result.map (fun result ->
+        result.text) (Patch.applyFile (Array.unsafeGet 0 files) (Some "a\n")) = Ok None)
+  Expect.isTrue "(match UnifiedDiff.parse \"--- x\\n+++ /dev/null\\n@@ -1 +0,0 @@\\n-a\\n\" with | Err _ -> false | Ok files -> Result.map (fun result -> result.text) (Patch.applyF…" testActual
 
 let roundtrip old new =
   match DiffText.compare old new with
@@ -56,14 +126,41 @@ let roundtrip old new =
         Result.map (fun result ->
           result.text) (Patch.applyFile (Array.unsafeGet 0 (UnifiedDiff.reverse files)) (Some new))
       forward = Ok (Some new) && reverse = Ok (Some old)
-forall old new: roundtrip old new
-forall old new: roundtrip (String.join "\n" (List.take 8 old)) (String.join "\n" (List.take 8 new))
-example: roundtrip "a\nb\nc\n" "a\nx\nc\n"
-example: roundtrip "" "x"
-example: roundtrip "x" ""
-example: roundtrip "\n" ""
-example: roundtrip "" "\n"
-example: roundtrip "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\n" "x\nb\nc\nd\ne\nf\ng\nh\ni\nj\ny\n"
+
+let case019 testInput =
+  let (old, new) = testInput
+  let testActual = roundtrip old new
+  Expect.isTrue "property: roundtrip old new" testActual
+
+let case020 testInput =
+  let (old, new) = testInput
+  let testActual =
+    roundtrip (String.join "\n" (List.take 8 old)) (String.join "\n" (List.take 8 new))
+  Expect.isTrue "property: roundtrip (String.join \"\\n\" (List.take 8 old)) (String.join \"\\n\" (List.take 8 new))" testActual
+
+let case021 _ =
+  let testActual = roundtrip "a\nb\nc\n" "a\nx\nc\n"
+  Expect.isTrue "roundtrip \"a\\nb\\nc\\n\" \"a\\nx\\nc\\n\"" testActual
+
+let case022 _ =
+  let testActual = roundtrip "" "x"
+  Expect.isTrue "roundtrip \"\" \"x\"" testActual
+
+let case023 _ =
+  let testActual = roundtrip "x" ""
+  Expect.isTrue "roundtrip \"x\" \"\"" testActual
+
+let case024 _ =
+  let testActual = roundtrip "\n" ""
+  Expect.isTrue "roundtrip \"\\n\" \"\"" testActual
+
+let case025 _ =
+  let testActual = roundtrip "" "\n"
+  Expect.isTrue "roundtrip \"\" \"\\n\"" testActual
+
+let case026 _ =
+  let testActual = roundtrip "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\n" "x\nb\nc\nd\ne\nf\ng\nh\ni\nj\ny\n"
+  Expect.isTrue "roundtrip \"a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\nk\\n\" \"x\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\ny\\n\"" testActual
 
 let ignoredPatch =
   match DiffText.compareWith DiffText.limits { DiffText.options with
@@ -76,6 +173,48 @@ let ignoredPatch =
     | Ok files ->
       Result.map (fun result ->
         result.text) (Patch.applyFile (Array.unsafeGet 0 files) (Some "Straße\n")) = Ok (Some "STRASSE\n")
-example: ignoredPatch
-example: UnifiedDiff.parse "--- /dev/null\n+++ x\n@@ -1 +1 @@\n-x\n+y\n" |> Result.isErr
-example: UnifiedDiff.parse "--- x\n+++ /dev/null\n@@ -1 +1 @@\n-x\n+y\n" |> Result.isErr
+
+let case027 _ =
+  let testActual = ignoredPatch
+  Expect.isTrue "ignoredPatch" testActual
+
+let case028 _ =
+  let testActual = UnifiedDiff.parse "--- /dev/null\n+++ x\n@@ -1 +1 @@\n-x\n+y\n" |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parse \"--- /dev/null\\n+++ x\\n@@ -1 +1 @@\\n-x\\n+y\\n\" |> Result.isErr" testActual
+
+let case029 _ =
+  let testActual = UnifiedDiff.parse "--- x\n+++ /dev/null\n@@ -1 +1 @@\n-x\n+y\n" |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parse \"--- x\\n+++ /dev/null\\n@@ -1 +1 @@\\n-x\\n+y\\n\" |> Result.isErr" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "PatchSpec" [
+  Test.test "applied Patch.Strict \"a\\nb\\n\" patch = Some \"a\\nc\\n\"" case001,
+  Test.test "applied Patch.Strict \"x\\na\\nb\\n\" patch = None" case002,
+  Test.test "applied (Patch.Relocate 3) \"x\\na\\nb\\n\" patch = Some \"x\\na\\nc\\n\"" case003,
+  Test.test "applied (Patch.Relocate 10) \"x\\na\\nb\\na\\nb\\n\" patch = None" case004,
+  Test.test "(match UnifiedDiff.parse patch with | Err _ -> false | Ok parsed -> Result.isOk (UnifiedDiff.toString parsed))" case005,
+  Test.test "UnifiedDiff.reverse (UnifiedDiff.reverse (parse patch)) = parse patch" case006,
+  Test.test "(match UnifiedDiff.toString (UnifiedDiff.reverse (parse patch)) with | Err _ -> false | Ok reverse -> applied Patch.Strict \"a\\nc\\n\" reverse = Some \"a\\nb\\n\")" case007,
+  Test.test "UnifiedDiff.parse \"--- a\\n+++ b\\n@@ -1,2 +1,1 @@\\n-x\\n+y\\n\" |> Result.isErr" case008,
+  Test.test "UnifiedDiff.parse \"--- a\\n+++ b\\n@@ -9223372036854775808 +1 @@\\n-x\\n+y\\n\" |> Result.isErr" case009,
+  Test.test "UnifiedDiff.parse \"diff --git a/x b/x\\nold mode 100644\\nnew mode 100755\\n\" |> Result.isErr" case010,
+  Test.test "UnifiedDiff.parse \"diff --git a/x b/x\\nGIT binary patch\\n\" |> Result.isErr" case011,
+  Test.test "UnifiedDiff.parse \"garbage\\n\" |> Result.isErr" case012,
+  Test.test "UnifiedDiff.parse \"--- a\\n+++ b\\n@@ -1 +1 @@\\n-x\\n+y\" |> Result.isErr" case013,
+  Test.test "applied Patch.Strict \"a\\r\\nb\\r\\n\" \"--- a\\n+++ b\\n@@ -1,2 +1,2 @@\\n a\\r\\n-b\\r\\n+c\\r\\n\" = Some \"a\\r\\nc\\r\\n\"" case014,
+  Test.test "applied Patch.Strict \"x\" \"--- a\\n+++ b\\n@@ -1 +1 @@\\n-x\\n\\\\ No newline at end of file\\n+y\\n\\\\ No newline at end of file\\n\" = Some \"y\"" case015,
+  Test.test "applied Patch.Strict \"x\\n\" \"--- a\\n+++ b\\n@@ -1 +1 @@\\n-x\\n+y\\n\\\\ No newline at end of file\\n\" = Some \"y\"" case016,
+  Test.test "(match UnifiedDiff.parse \"--- /dev/null\\n+++ x\\n@@ -0,0 +1 @@\\n+a\\n\" with | Err _ -> false | Ok files -> Result.map (fun result -> result.text) (Patch.applyF…" case017,
+  Test.test "(match UnifiedDiff.parse \"--- x\\n+++ /dev/null\\n@@ -1 +0,0 @@\\n-a\\n\" with | Err _ -> false | Ok files -> Result.map (fun result -> result.text) (Patch.applyF…" case018,
+  Test.property "property: roundtrip old new" (Test.tuple2 Test.string Test.string) case019,
+  Test.property "property: roundtrip (String.join \"\\n\" (List.take 8 old)) (String.join \"\\n\" (List.take 8 new))" (Test.tuple2 (Test.list Test.string) (Test.list Test.string)) case020,
+  Test.test "roundtrip \"a\\nb\\nc\\n\" \"a\\nx\\nc\\n\"" case021,
+  Test.test "roundtrip \"\" \"x\"" case022,
+  Test.test "roundtrip \"x\" \"\"" case023,
+  Test.test "roundtrip \"\\n\" \"\"" case024,
+  Test.test "roundtrip \"\" \"\\n\"" case025,
+  Test.test "roundtrip \"a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\nk\\n\" \"x\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\ny\\n\"" case026,
+  Test.test "ignoredPatch" case027,
+  Test.test "UnifiedDiff.parse \"--- /dev/null\\n+++ x\\n@@ -1 +1 @@\\n-x\\n+y\\n\" |> Result.isErr" case028,
+  Test.test "UnifiedDiff.parse \"--- x\\n+++ /dev/null\\n@@ -1 +1 @@\\n-x\\n+y\\n\" |> Result.isErr" case029
+]

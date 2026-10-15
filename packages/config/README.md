@@ -29,7 +29,7 @@ Duplicate target paths and parent/child conflicts in a binding set fail. One
 variable may map to several distinct paths; each mapped value counts toward the
 bound-text budget. Pure merge validates each layer and each intermediate result.
 
-Run native contracts with `fai test -C packages config`.
+Run named tests and properties with `fai test -C packages config`.
 
 ## Typed decoding
 

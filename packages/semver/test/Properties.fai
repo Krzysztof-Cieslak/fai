@@ -19,21 +19,33 @@ let roundTrip values =
   | Err _ -> false
   | Ok version ->
     Semver.parse (Semver.toString version) = Ok version && Semver.fromParts (Semver.parts version) = Ok version && Semver.compare version version = 0
-forall values: roundTrip values
+
+let case001 testInput =
+  let values = testInput
+  let testActual = roundTrip values
+  Expect.isTrue "property: roundTrip values" testActual
 
 let antisymmetric first second =
   match (make first, make second) with
   | (Ok first, Ok second) ->
     sign (Semver.compare first second) = 0 - sign (Semver.compare second first)
   | _ -> false
-forall first second: antisymmetric first second
+
+let case002 testInput =
+  let (first, second) = testInput
+  let testActual = antisymmetric first second
+  Expect.isTrue "property: antisymmetric first second" testActual
 
 let transitive first second third =
   match (make first, make second, make third) with
   | (Ok a, Ok b, Ok c) ->
     if Semver.compare a b <= 0 && Semver.compare b c <= 0 then Semver.compare a c <= 0 else true
   | _ -> false
-forall first second third: transitive first second third
+
+let case003 testInput =
+  let (first, second, third) = testInput
+  let testActual = transitive first second third
+  Expect.isTrue "property: transitive first second third" testActual
 
 let bumps values =
   match make values with
@@ -44,7 +56,11 @@ let bumps values =
     let patch = Semver.bumpPatch version
     let released = Semver.release version
     Semver.compare major version > 0 && Semver.compare minor version > 0 && Semver.compare patch version > 0 && Semver.compare released version > 0 && (Semver.parts major).minor = "0" && (Semver.parts major).patch = "0" && (Semver.parts minor).patch = "0" && (Semver.parts patch).build = [] && (Semver.parts patch).prerelease = [] && Semver.release released = released
-forall values: bumps values
+
+let case004 testInput =
+  let values = testInput
+  let testActual = bumps values
+  Expect.isTrue "property: bumps values" testActual
 
 let metadata values stamp =
   match make values with
@@ -53,7 +69,11 @@ let metadata values stamp =
     match Semver.fromParts { Semver.parts original with build = [Int.toString stamp] } with
     | Err _ -> false
     | Ok changed -> Semver.samePrecedence original changed && Semver.compare original changed = 0
-forall values stamp: metadata values stamp
+
+let case005 testInput =
+  let (values, stamp) = testInput
+  let testActual = metadata values stamp
+  Expect.isTrue "property: metadata values stamp" testActual
 
 let total text =
   match Semver.parse text with
@@ -62,7 +82,11 @@ let total text =
     match error.offset with
     | None -> true
     | Some offset -> offset >= 0 && offset <= Bytes.length (Bytes.fromString text)
-forall text: total text
+
+let case006 testInput =
+  let text = testInput
+  let testActual = total text
+  Expect.isTrue "property: total text" testActual
 
 let rangeTotal text =
   match SemverRange.parse text with
@@ -71,7 +95,11 @@ let rangeTotal text =
     match error.offset with
     | None -> true
     | Some offset -> offset >= 0 && offset <= Bytes.length (Bytes.fromString text)
-forall text: rangeTotal text
+
+let case007 testInput =
+  let text = testInput
+  let testActual = rangeTotal text
+  Expect.isTrue "property: rangeTotal text" testActual
 
 let matching values =
   let core = bigNumber values
@@ -82,7 +110,11 @@ let matching values =
       version
     ] = Some version && not (SemverRange.matches range (Semver.bumpMajor version))
   | _ -> false
-forall values: matching values
+
+let case008 testInput =
+  let values = testInput
+  let testActual = matching values
+  Expect.isTrue "property: matching values" testActual
 
 let machineIntegers major minor patch =
   let major = Int.and major 9223372036854775807
@@ -96,7 +128,11 @@ let machineIntegers major minor patch =
       minor = minor,
       patch = patch
     } && SemverFai.validateVersion version = Ok ()
-forall major minor patch: machineIntegers major minor patch
+
+let case009 testInput =
+  let (major, minor, patch) = testInput
+  let testActual = machineIntegers major minor patch
+  Expect.isTrue "property: machineIntegers major minor patch" testActual
 
 let stableComparisons low high word =
   let low = Int.and low 15
@@ -109,7 +145,11 @@ let stableComparisons low high word =
   | (Ok range, Ok version) ->
     SemverRange.matches range version = ((major, minor, patch) >= (low, 2, 3) && (major, minor, patch) < (high, 4, 5))
   | _ -> false
-forall low high word: stableComparisons low high word
+
+let case010 testInput =
+  let (low, high, word) = testInput
+  let testActual = stableComparisons low high word
+  Expect.isTrue "property: stableComparisons low high word" testActual
 
 let canonicalPreserves low high =
   let low = Int.and low 15
@@ -117,4 +157,23 @@ let canonicalPreserves low high =
   let first = ">=" ++ Int.toString low ++ ".0.0"
   let second = "<" ++ Int.toString high ++ ".0.0"
   SemverRange.parse (first ++ ", " ++ second ++ " || *") = SemverRange.parse ("* || " ++ second ++ ", " ++ first ++ ", " ++ first)
-forall low high: canonicalPreserves low high
+
+let case011 testInput =
+  let (low, high) = testInput
+  let testActual = canonicalPreserves low high
+  Expect.isTrue "property: canonicalPreserves low high" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SemverProperties" [
+  Test.property "property: roundTrip values" (Test.list Test.int) case001,
+  Test.property "property: antisymmetric first second" (Test.tuple2 (Test.list Test.int) (Test.list Test.int)) case002,
+  Test.property "property: transitive first second third" (Test.tuple3 (Test.list Test.int) (Test.list Test.int) (Test.list Test.int)) case003,
+  Test.property "property: bumps values" (Test.list Test.int) case004,
+  Test.property "property: metadata values stamp" (Test.tuple2 (Test.list Test.int) Test.int) case005,
+  Test.property "property: total text" Test.string case006,
+  Test.property "property: rangeTotal text" Test.string case007,
+  Test.property "property: matching values" (Test.list Test.int) case008,
+  Test.property "property: machineIntegers major minor patch" (Test.tuple3 Test.int Test.int Test.int) case009,
+  Test.property "property: stableComparisons low high word" (Test.tuple3 Test.int Test.int Test.int) case010,
+  Test.property "property: canonicalPreserves low high" (Test.tuple2 Test.int Test.int) case011
+]

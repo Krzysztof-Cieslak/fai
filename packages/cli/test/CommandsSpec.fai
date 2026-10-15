@@ -43,67 +43,153 @@ let error words path kind index token message =
     message = message,
     token = token
   }
-example: Args.parse app ["serve"] = parsed false (Serve 8080 [])
-example: Args.parse app ["--verbose", "serve", "--port=80", "one"] = parsed true (Serve 80 ["one"])
-example: Args.parse app ["serve", "--verbose", "one", "-p80"] = parsed true (Serve 80 ["one"])
-example: Args.parse app ["serve", "-vp80", "one"] = parsed true (Serve 80 ["one"])
-example: Args.parse app ["config", "get", "name"] = parsed false (Inspect "name")
-example: Args.parse app ["config", "-v", "get", "name"] = parsed true (Inspect "name")
-example: Args.parse app ["config", "get", "name", "--verbose"] = parsed true (Inspect "name")
-example: Args.parse app ["-v", "config", "set", "name", "é😀"] = parsed true (Set "name" "é😀")
-example: Args.parse app ["config", "set", "name", "-v", "value"] = parsed true (Set "name" "value")
-example: Args.parse app ["serve", "--", "--help", "-v"] = parsed false (Serve 8080 ["--help", "-v"])
-example: Args.parse app ["--", "serve", "--verbose"] = parsed false (Serve 8080 ["--verbose"])
-example: Args.parse app ["config", "--", "get", "--verbose"] = parsed false (Inspect "--verbose")
-example: error [] ["tool"] Args.MissingCommand None None "missing required command"
-example: error ["-v"] ["tool"] Args.MissingCommand None None "missing required command"
-example: error [
-  "config"
-] ["tool", "config"] Args.MissingCommand None None "missing required command"
-example: error [
-  "config",
-  "get"
-] ["tool", "config", "get"] Args.MissingArgument None None "missing required argument KEY"
-example: error [
-  "config",
-  "get",
-  "one",
-  "two"
-] [
-  "tool",
-  "config",
-  "get"
-] Args.UnexpectedArgument (Some 3) (Some "two") "unexpected argument \"two\""
-example: error [
-  "unknown"
-] ["tool"] Args.UnknownCommand (Some 0) (Some "unknown") "unknown command \"unknown\""
-example: error [
-  "config",
-  "unknown"
-] ["tool", "config"] Args.UnknownCommand (Some 1) (Some "unknown") "unknown command \"unknown\""
-example: error [
-  "Serve"
-] ["tool"] Args.UnknownCommand (Some 0) (Some "Serve") "unknown command \"Serve\""
-example: error [
-  "--port=80",
-  "serve"
-] ["tool"] Args.UnknownOption (Some 0) (Some "--port=80") "unknown option --port"
-example: error [
-  "serve",
-  "--missing"
-] ["tool", "serve"] Args.UnknownOption (Some 1) (Some "--missing") "unknown option --missing"
-example: error [
-  "serve",
-  "--port",
-  "bad"
-] [
-  "tool",
-  "serve"
-] Args.InvalidValue (Some 2) (Some "bad") "invalid value \"bad\" for --port: expected a decimal Int"
-example: error [
-  "--",
-  "--help"
-] ["tool"] Args.UnknownCommand (Some 1) (Some "--help") "unknown command \"--help\""
+
+let case001 _ =
+  let testActual = Args.parse app ["serve"] = parsed false (Serve 8080 [])
+  Expect.isTrue "Args.parse app [\"serve\"] = parsed false (Serve 8080 [])" testActual
+
+let case002 _ =
+  let testActual =
+    Args.parse app ["--verbose", "serve", "--port=80", "one"] = parsed true (Serve 80 ["one"])
+  Expect.isTrue "Args.parse app [\"--verbose\", \"serve\", \"--port=80\", \"one\"] = parsed true (Serve 80 [\"one\"])" testActual
+
+let case003 _ =
+  let testActual =
+    Args.parse app ["serve", "--verbose", "one", "-p80"] = parsed true (Serve 80 ["one"])
+  Expect.isTrue "Args.parse app [\"serve\", \"--verbose\", \"one\", \"-p80\"] = parsed true (Serve 80 [\"one\"])" testActual
+
+let case004 _ =
+  let testActual = Args.parse app ["serve", "-vp80", "one"] = parsed true (Serve 80 ["one"])
+  Expect.isTrue "Args.parse app [\"serve\", \"-vp80\", \"one\"] = parsed true (Serve 80 [\"one\"])" testActual
+
+let case005 _ =
+  let testActual = Args.parse app ["config", "get", "name"] = parsed false (Inspect "name")
+  Expect.isTrue "Args.parse app [\"config\", \"get\", \"name\"] = parsed false (Inspect \"name\")" testActual
+
+let case006 _ =
+  let testActual = Args.parse app ["config", "-v", "get", "name"] = parsed true (Inspect "name")
+  Expect.isTrue "Args.parse app [\"config\", \"-v\", \"get\", \"name\"] = parsed true (Inspect \"name\")" testActual
+
+let case007 _ =
+  let testActual =
+    Args.parse app ["config", "get", "name", "--verbose"] = parsed true (Inspect "name")
+  Expect.isTrue "Args.parse app [\"config\", \"get\", \"name\", \"--verbose\"] = parsed true (Inspect \"name\")" testActual
+
+let case008 _ =
+  let testActual =
+    Args.parse app ["-v", "config", "set", "name", "é😀"] = parsed true (Set "name" "é😀")
+  Expect.isTrue "Args.parse app [\"-v\", \"config\", \"set\", \"name\", \"é😀\"] = parsed true (Set \"name\" \"é😀\")" testActual
+
+let case009 _ =
+  let testActual =
+    Args.parse app ["config", "set", "name", "-v", "value"] = parsed true (Set "name" "value")
+  Expect.isTrue "Args.parse app [\"config\", \"set\", \"name\", \"-v\", \"value\"] = parsed true (Set \"name\" \"value\")" testActual
+
+let case010 _ =
+  let testActual =
+    Args.parse app ["serve", "--", "--help", "-v"] = parsed false (Serve 8080 ["--help", "-v"])
+  Expect.isTrue "Args.parse app [\"serve\", \"--\", \"--help\", \"-v\"] = parsed false (Serve 8080 [\"--help\", \"-v\"])" testActual
+
+let case011 _ =
+  let testActual =
+    Args.parse app ["--", "serve", "--verbose"] = parsed false (Serve 8080 ["--verbose"])
+  Expect.isTrue "Args.parse app [\"--\", \"serve\", \"--verbose\"] = parsed false (Serve 8080 [\"--verbose\"])" testActual
+
+let case012 _ =
+  let testActual =
+    Args.parse app ["config", "--", "get", "--verbose"] = parsed false (Inspect "--verbose")
+  Expect.isTrue "Args.parse app [\"config\", \"--\", \"get\", \"--verbose\"] = parsed false (Inspect \"--verbose\")" testActual
+
+let case013 _ =
+  let testActual = error [] ["tool"] Args.MissingCommand None None "missing required command"
+  Expect.isTrue "error [] [\"tool\"] Args.MissingCommand None None \"missing required command\"" testActual
+
+let case014 _ =
+  let testActual = error ["-v"] ["tool"] Args.MissingCommand None None "missing required command"
+  Expect.isTrue "error [\"-v\"] [\"tool\"] Args.MissingCommand None None \"missing required command\"" testActual
+
+let case015 _ =
+  let testActual =
+    error ["config"] ["tool", "config"] Args.MissingCommand None None "missing required command"
+  Expect.isTrue "error [ \"config\" ] [\"tool\", \"config\"] Args.MissingCommand None None \"missing required command\"" testActual
+
+let case016 _ =
+  let testActual =
+    error [
+      "config",
+      "get"
+    ] ["tool", "config", "get"] Args.MissingArgument None None "missing required argument KEY"
+  Expect.isTrue "error [ \"config\", \"get\" ] [\"tool\", \"config\", \"get\"] Args.MissingArgument None None \"missing required argument KEY\"" testActual
+
+let case017 _ =
+  let testActual =
+    error [
+      "config",
+      "get",
+      "one",
+      "two"
+    ] [
+      "tool",
+      "config",
+      "get"
+    ] Args.UnexpectedArgument (Some 3) (Some "two") "unexpected argument \"two\""
+  Expect.isTrue "error [ \"config\", \"get\", \"one\", \"two\" ] [ \"tool\", \"config\", \"get\" ] Args.UnexpectedArgument (Some 3) (Some \"two\") \"unexpected argument \\\"two\\\"\"" testActual
+
+let case018 _ =
+  let testActual =
+    error [
+      "unknown"
+    ] ["tool"] Args.UnknownCommand (Some 0) (Some "unknown") "unknown command \"unknown\""
+  Expect.isTrue "error [ \"unknown\" ] [\"tool\"] Args.UnknownCommand (Some 0) (Some \"unknown\") \"unknown command \\\"unknown\\\"\"" testActual
+
+let case019 _ =
+  let testActual =
+    error [
+      "config",
+      "unknown"
+    ] ["tool", "config"] Args.UnknownCommand (Some 1) (Some "unknown") "unknown command \"unknown\""
+  Expect.isTrue "error [ \"config\", \"unknown\" ] [\"tool\", \"config\"] Args.UnknownCommand (Some 1) (Some \"unknown\") \"unknown command \\\"unknown\\\"\"" testActual
+
+let case020 _ =
+  let testActual =
+    error ["Serve"] ["tool"] Args.UnknownCommand (Some 0) (Some "Serve") "unknown command \"Serve\""
+  Expect.isTrue "error [ \"Serve\" ] [\"tool\"] Args.UnknownCommand (Some 0) (Some \"Serve\") \"unknown command \\\"Serve\\\"\"" testActual
+
+let case021 _ =
+  let testActual =
+    error [
+      "--port=80",
+      "serve"
+    ] ["tool"] Args.UnknownOption (Some 0) (Some "--port=80") "unknown option --port"
+  Expect.isTrue "error [ \"--port=80\", \"serve\" ] [\"tool\"] Args.UnknownOption (Some 0) (Some \"--port=80\") \"unknown option --port\"" testActual
+
+let case022 _ =
+  let testActual =
+    error [
+      "serve",
+      "--missing"
+    ] ["tool", "serve"] Args.UnknownOption (Some 1) (Some "--missing") "unknown option --missing"
+  Expect.isTrue "error [ \"serve\", \"--missing\" ] [\"tool\", \"serve\"] Args.UnknownOption (Some 1) (Some \"--missing\") \"unknown option --missing\"" testActual
+
+let case023 _ =
+  let testActual =
+    error [
+      "serve",
+      "--port",
+      "bad"
+    ] [
+      "tool",
+      "serve"
+    ] Args.InvalidValue (Some 2) (Some "bad") "invalid value \"bad\" for --port: expected a decimal Int"
+  Expect.isTrue "error [ \"serve\", \"--port\", \"bad\" ] [ \"tool\", \"serve\" ] Args.InvalidValue (Some 2) (Some \"bad\") \"invalid value \\\"bad\\\" for --port: expected a decimal Int\"" testActual
+
+let case024 _ =
+  let testActual =
+    error [
+      "--",
+      "--help"
+    ] ["tool"] Args.UnknownCommand (Some 1) (Some "--help") "unknown command \"--help\""
+  Expect.isTrue "error [ \"--\", \"--help\" ] [\"tool\"] Args.UnknownCommand (Some 1) (Some \"--help\") \"unknown command \\\"--help\\\"\"" testActual
 
 let middle =
   Args.map2 (fun format key ->
@@ -116,59 +202,74 @@ let nested =
     (verbose, result)) (Args.flag (Args.short 'v' (Args.named "verbose" ""))) (Args.commands [
     Args.command "config" "" middle
   ]))
-example: Args.parse nested [
-  "config",
-  "get",
-  "-vfraw",
-  "key"
-] = Ok (Args.Parsed (true, ("raw", "key")))
-example: Args.parse nested [
-  "config",
-  "--format=json",
-  "get",
-  "key",
-  "-v"
-] = Ok (Args.Parsed (true, ("json", "key")))
+
+let case025 _ =
+  let testActual =
+    Args.parse nested ["config", "get", "-vfraw", "key"] = Ok (Args.Parsed (true, ("raw", "key")))
+  Expect.isTrue "Args.parse nested [ \"config\", \"get\", \"-vfraw\", \"key\" ] = Ok (Args.Parsed (true, (\"raw\", \"key\")))" testActual
+
+let case026 _ =
+  let testActual =
+    Args.parse nested [
+      "config",
+      "--format=json",
+      "get",
+      "key",
+      "-v"
+    ] = Ok (Args.Parsed (true, ("json", "key")))
+  Expect.isTrue "Args.parse nested [ \"config\", \"--format=json\", \"get\", \"key\", \"-v\" ] = Ok (Args.Parsed (true, (\"json\", \"key\")))" testActual
 
 let tags =
   Args.program (Args.described "tool" "") (Args.map2 (fun tags action ->
     (tags, action)) (Args.options Args.string (Args.named "tag" "Tag")) routes)
-example: Args.parse tags [
-  "--tag=a",
-  "config",
-  "get",
-  "--tag=b",
-  "key"
-] = Ok (Args.Parsed (["a", "b"], Inspect "key"))
+
+let case027 _ =
+  let testActual =
+    Args.parse tags [
+      "--tag=a",
+      "config",
+      "get",
+      "--tag=b",
+      "key"
+    ] = Ok (Args.Parsed (["a", "b"], Inspect "key"))
+  Expect.isTrue "Args.parse tags [ \"--tag=a\", \"config\", \"get\", \"--tag=b\", \"key\" ] = Ok (Args.Parsed ([\"a\", \"b\"], Inspect \"key\"))" testActual
 
 let labeled =
   Args.program (Args.described "tool" "") (Args.map2 (fun label action ->
     (label, action)) (Args.requiredOption Args.string (Args.named "label" "Label")) routes)
-example: Args.parse labeled [
-  "--label",
-  "serve",
-  "serve"
-] = Ok (Args.Parsed ("serve", Serve 8080 []))
-example: Args.parse labeled [
-  "--label=a",
-  "serve",
-  "--label=b"
-] = Err {
-  command = ["tool", "serve"],
-  index = Some 2,
-  kind = Args.DuplicateOption,
-  message = "option --label may only occur once",
-  token = Some "--label=b"
-}
-example: Args.parse labeled [
-  "serve"
-] = Err {
-  command = ["tool"],
-  index = None,
-  kind = Args.MissingArgument,
-  message = "missing required option --label",
-  token = None
-}
+
+let case028 _ =
+  let testActual =
+    Args.parse labeled ["--label", "serve", "serve"] = Ok (Args.Parsed ("serve", Serve 8080 []))
+  Expect.isTrue "Args.parse labeled [ \"--label\", \"serve\", \"serve\" ] = Ok (Args.Parsed (\"serve\", Serve 8080 []))" testActual
+
+let case029 _ =
+  let testActual =
+    Args.parse labeled [
+      "--label=a",
+      "serve",
+      "--label=b"
+    ] = Err {
+      command = ["tool", "serve"],
+      index = Some 2,
+      kind = Args.DuplicateOption,
+      message = "option --label may only occur once",
+      token = Some "--label=b"
+    }
+  Expect.isTrue "Args.parse labeled [ \"--label=a\", \"serve\", \"--label=b\" ] = Err { command = [\"tool\", \"serve\"], index = Some 2, kind = Args.DuplicateOption, message = \"option …" testActual
+
+let case030 _ =
+  let testActual =
+    Args.parse labeled [
+      "serve"
+    ] = Err {
+      command = ["tool"],
+      index = None,
+      kind = Args.MissingArgument,
+      message = "missing required option --label",
+      token = None
+    }
+  Expect.isTrue "Args.parse labeled [ \"serve\" ] = Err { command = [\"tool\"], index = None, kind = Args.MissingArgument, message = \"missing required option --label\", token = No…" testActual
 
 type Choice =
   | Integer Int
@@ -179,14 +280,23 @@ let siblings =
     Args.command "integer" "" (Args.map Integer (Args.requiredOption Args.int (Args.short 'x' (Args.named "value" "")))),
     Args.command "text" "" (Args.map Text (Args.requiredOption Args.string (Args.short 'x' (Args.named "value" ""))))
   ])
-example: Args.parse siblings ["integer", "-x42"] = Ok (Args.Parsed (Integer 42))
-example: Args.parse siblings ["text", "-xhello"] = Ok (Args.Parsed (Text "hello"))
+
+let case031 _ =
+  let testActual = Args.parse siblings ["integer", "-x42"] = Ok (Args.Parsed (Integer 42))
+  Expect.isTrue "Args.parse siblings [\"integer\", \"-x42\"] = Ok (Args.Parsed (Integer 42))" testActual
+
+let case032 _ =
+  let testActual = Args.parse siblings ["text", "-xhello"] = Ok (Args.Parsed (Text "hello"))
+  Expect.isTrue "Args.parse siblings [\"text\", \"-xhello\"] = Ok (Args.Parsed (Text \"hello\"))" testActual
 
 let helpCommand =
   Args.program (Args.described "tool" "") (Args.commands [
     Args.command "help" "A real command" (Args.succeed 7)
   ])
-example: Args.parse helpCommand ["help"] = Ok (Args.Parsed 7)
+
+let case033 _ =
+  let testActual = Args.parse helpCommand ["help"] = Ok (Args.Parsed 7)
+  Expect.isTrue "Args.parse helpCommand [\"help\"] = Ok (Args.Parsed 7)" testActual
 
 let nest count parser =
   if count <= 0 then
@@ -195,57 +305,86 @@ let nest count parser =
     Args.commands [Args.command "sub" "Nested" (nest (count - 1) parser)]
 
 let deep = Args.program (Args.described "deep" "") (nest 50 (Args.succeed 7))
-example: Args.parse deep (Array.toList (Array.repeat 50 "sub")) = Ok (Args.Parsed 7)
-forall files: Args.parse app (List.append ["serve", "--"] files) = parsed false (Serve 8080 files)
-forall port: Args.parse app ["serve", "--port", Int.toString port] = parsed false (Serve port [])
+
+let case034 _ =
+  let testActual = Args.parse deep (Array.toList (Array.repeat 50 "sub")) = Ok (Args.Parsed 7)
+  Expect.isTrue "Args.parse deep (Array.toList (Array.repeat 50 \"sub\")) = Ok (Args.Parsed 7)" testActual
+
+let case035 testInput =
+  let files = testInput
+  let testActual =
+    Args.parse app (List.append ["serve", "--"] files) = parsed false (Serve 8080 files)
+  Expect.isTrue "property: Args.parse app (List.append [\"serve\", \"--\"] files) = parsed false (Serve 8080 files)" testActual
+
+let case036 testInput =
+  let port = testInput
+  let testActual =
+    Args.parse app ["serve", "--port", Int.toString port] = parsed false (Serve port [])
+  Expect.isTrue "property: Args.parse app [\"serve\", \"--port\", Int.toString port] = parsed false (Serve port [])" testActual
 
 let level =
   Args.program (Args.described "tool" "") (Args.map2 (fun level action ->
     (level, action)) (Args.requiredOption Args.int (Args.short 'l' (Args.named "level" "Level"))) routes)
-example: Args.parse level [
-  "config",
-  "get",
-  "key",
-  "--level",
-  "bad"
-] = Err {
-  command = ["tool", "config", "get"],
-  index = Some 4,
-  kind = Args.InvalidValue,
-  message = "invalid value \"bad\" for --level: expected a decimal Int",
-  token = Some "bad"
-}
-example: Args.parse level [
-  "--level",
-  "bad",
-  "config",
-  "get",
-  "key"
-] = Err {
-  command = ["tool"],
-  index = Some 1,
-  kind = Args.InvalidValue,
-  message = "invalid value \"bad\" for --level: expected a decimal Int",
-  token = Some "bad"
-}
-example: Args.parse level [
-  "--level=1",
-  "config",
-  "get",
-  "key",
-  "-l2"
-] = Err {
-  command = ["tool", "config", "get"],
-  index = Some 4,
-  kind = Args.DuplicateOption,
-  message = "option --level may only occur once",
-  token = Some "-l2"
-}
+
+let case037 _ =
+  let testActual =
+    Args.parse level [
+      "config",
+      "get",
+      "key",
+      "--level",
+      "bad"
+    ] = Err {
+      command = ["tool", "config", "get"],
+      index = Some 4,
+      kind = Args.InvalidValue,
+      message = "invalid value \"bad\" for --level: expected a decimal Int",
+      token = Some "bad"
+    }
+  Expect.isTrue "Args.parse level [ \"config\", \"get\", \"key\", \"--level\", \"bad\" ] = Err { command = [\"tool\", \"config\", \"get\"], index = Some 4, kind = Args.InvalidValue, message …" testActual
+
+let case038 _ =
+  let testActual =
+    Args.parse level [
+      "--level",
+      "bad",
+      "config",
+      "get",
+      "key"
+    ] = Err {
+      command = ["tool"],
+      index = Some 1,
+      kind = Args.InvalidValue,
+      message = "invalid value \"bad\" for --level: expected a decimal Int",
+      token = Some "bad"
+    }
+  Expect.isTrue "Args.parse level [ \"--level\", \"bad\", \"config\", \"get\", \"key\" ] = Err { command = [\"tool\"], index = Some 1, kind = Args.InvalidValue, message = \"invalid value …" testActual
+
+let case039 _ =
+  let testActual =
+    Args.parse level [
+      "--level=1",
+      "config",
+      "get",
+      "key",
+      "-l2"
+    ] = Err {
+      command = ["tool", "config", "get"],
+      index = Some 4,
+      kind = Args.DuplicateOption,
+      message = "option --level may only occur once",
+      token = Some "-l2"
+    }
+  Expect.isTrue "Args.parse level [ \"--level=1\", \"config\", \"get\", \"key\", \"-l2\" ] = Err { command = [\"tool\", \"config\", \"get\"], index = Some 4, kind = Args.DuplicateOption, mes…" testActual
 
 let reversed =
   Args.program (Args.described "tool" "") (Args.map2 (fun action verbose ->
     (action, verbose)) routes (Args.flag (Args.named "verbose" "")))
-example: Args.parse reversed ["--verbose", "serve"] = Ok (Args.Parsed (Serve 8080 [], true))
+
+let case040 _ =
+  let testActual =
+    Args.parse reversed ["--verbose", "serve"] = Ok (Args.Parsed (Serve 8080 [], true))
+  Expect.isTrue "Args.parse reversed [\"--verbose\", \"serve\"] = Ok (Args.Parsed (Serve 8080 [], true))" testActual
 
 let positiveReader =
   Args.validateWith (fun value ->
@@ -258,13 +397,62 @@ let positive =
   Args.program (Args.described "tool" "") (Args.commands [
     Args.command "positive" "" positiveReader
   ])
-example: Args.parse positive [
-  "positive",
-  "0"
-] = Err {
-  command = ["tool", "positive"],
-  index = None,
-  kind = Args.ValidationFailed,
-  message = "must be positive",
-  token = None
-}
+
+let case041 _ =
+  let testActual =
+    Args.parse positive [
+      "positive",
+      "0"
+    ] = Err {
+      command = ["tool", "positive"],
+      index = None,
+      kind = Args.ValidationFailed,
+      message = "must be positive",
+      token = None
+    }
+  Expect.isTrue "Args.parse positive [ \"positive\", \"0\" ] = Err { command = [\"tool\", \"positive\"], index = None, kind = Args.ValidationFailed, message = \"must be positive\", tok…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CommandsSpec" [
+  Test.test "Args.parse app [\"serve\"] = parsed false (Serve 8080 [])" case001,
+  Test.test "Args.parse app [\"--verbose\", \"serve\", \"--port=80\", \"one\"] = parsed true (Serve 80 [\"one\"])" case002,
+  Test.test "Args.parse app [\"serve\", \"--verbose\", \"one\", \"-p80\"] = parsed true (Serve 80 [\"one\"])" case003,
+  Test.test "Args.parse app [\"serve\", \"-vp80\", \"one\"] = parsed true (Serve 80 [\"one\"])" case004,
+  Test.test "Args.parse app [\"config\", \"get\", \"name\"] = parsed false (Inspect \"name\")" case005,
+  Test.test "Args.parse app [\"config\", \"-v\", \"get\", \"name\"] = parsed true (Inspect \"name\")" case006,
+  Test.test "Args.parse app [\"config\", \"get\", \"name\", \"--verbose\"] = parsed true (Inspect \"name\")" case007,
+  Test.test "Args.parse app [\"-v\", \"config\", \"set\", \"name\", \"é😀\"] = parsed true (Set \"name\" \"é😀\")" case008,
+  Test.test "Args.parse app [\"config\", \"set\", \"name\", \"-v\", \"value\"] = parsed true (Set \"name\" \"value\")" case009,
+  Test.test "Args.parse app [\"serve\", \"--\", \"--help\", \"-v\"] = parsed false (Serve 8080 [\"--help\", \"-v\"])" case010,
+  Test.test "Args.parse app [\"--\", \"serve\", \"--verbose\"] = parsed false (Serve 8080 [\"--verbose\"])" case011,
+  Test.test "Args.parse app [\"config\", \"--\", \"get\", \"--verbose\"] = parsed false (Inspect \"--verbose\")" case012,
+  Test.test "error [] [\"tool\"] Args.MissingCommand None None \"missing required command\"" case013,
+  Test.test "error [\"-v\"] [\"tool\"] Args.MissingCommand None None \"missing required command\"" case014,
+  Test.test "error [ \"config\" ] [\"tool\", \"config\"] Args.MissingCommand None None \"missing required command\"" case015,
+  Test.test "error [ \"config\", \"get\" ] [\"tool\", \"config\", \"get\"] Args.MissingArgument None None \"missing required argument KEY\"" case016,
+  Test.test "error [ \"config\", \"get\", \"one\", \"two\" ] [ \"tool\", \"config\", \"get\" ] Args.UnexpectedArgument (Some 3) (Some \"two\") \"unexpected argument \\\"two\\\"\"" case017,
+  Test.test "error [ \"unknown\" ] [\"tool\"] Args.UnknownCommand (Some 0) (Some \"unknown\") \"unknown command \\\"unknown\\\"\"" case018,
+  Test.test "error [ \"config\", \"unknown\" ] [\"tool\", \"config\"] Args.UnknownCommand (Some 1) (Some \"unknown\") \"unknown command \\\"unknown\\\"\"" case019,
+  Test.test "error [ \"Serve\" ] [\"tool\"] Args.UnknownCommand (Some 0) (Some \"Serve\") \"unknown command \\\"Serve\\\"\"" case020,
+  Test.test "error [ \"--port=80\", \"serve\" ] [\"tool\"] Args.UnknownOption (Some 0) (Some \"--port=80\") \"unknown option --port\"" case021,
+  Test.test "error [ \"serve\", \"--missing\" ] [\"tool\", \"serve\"] Args.UnknownOption (Some 1) (Some \"--missing\") \"unknown option --missing\"" case022,
+  Test.test "error [ \"serve\", \"--port\", \"bad\" ] [ \"tool\", \"serve\" ] Args.InvalidValue (Some 2) (Some \"bad\") \"invalid value \\\"bad\\\" for --port: expected a decimal Int\"" case023,
+  Test.test "error [ \"--\", \"--help\" ] [\"tool\"] Args.UnknownCommand (Some 1) (Some \"--help\") \"unknown command \\\"--help\\\"\"" case024,
+  Test.test "Args.parse nested [ \"config\", \"get\", \"-vfraw\", \"key\" ] = Ok (Args.Parsed (true, (\"raw\", \"key\")))" case025,
+  Test.test "Args.parse nested [ \"config\", \"--format=json\", \"get\", \"key\", \"-v\" ] = Ok (Args.Parsed (true, (\"json\", \"key\")))" case026,
+  Test.test "Args.parse tags [ \"--tag=a\", \"config\", \"get\", \"--tag=b\", \"key\" ] = Ok (Args.Parsed ([\"a\", \"b\"], Inspect \"key\"))" case027,
+  Test.test "Args.parse labeled [ \"--label\", \"serve\", \"serve\" ] = Ok (Args.Parsed (\"serve\", Serve 8080 []))" case028,
+  Test.test "Args.parse labeled [ \"--label=a\", \"serve\", \"--label=b\" ] = Err { command = [\"tool\", \"serve\"], index = Some 2, kind = Args.DuplicateOption, message = \"option …" case029,
+  Test.test "Args.parse labeled [ \"serve\" ] = Err { command = [\"tool\"], index = None, kind = Args.MissingArgument, message = \"missing required option --label\", token = No…" case030,
+  Test.test "Args.parse siblings [\"integer\", \"-x42\"] = Ok (Args.Parsed (Integer 42))" case031,
+  Test.test "Args.parse siblings [\"text\", \"-xhello\"] = Ok (Args.Parsed (Text \"hello\"))" case032,
+  Test.test "Args.parse helpCommand [\"help\"] = Ok (Args.Parsed 7)" case033,
+  Test.test "Args.parse deep (Array.toList (Array.repeat 50 \"sub\")) = Ok (Args.Parsed 7)" case034,
+  Test.property "property: Args.parse app (List.append [\"serve\", \"--\"] files) = parsed false (Serve 8080 files)" (Test.list Test.string) case035,
+  Test.property "property: Args.parse app [\"serve\", \"--port\", Int.toString port] = parsed false (Serve port [])" Test.int case036,
+  Test.test "Args.parse level [ \"config\", \"get\", \"key\", \"--level\", \"bad\" ] = Err { command = [\"tool\", \"config\", \"get\"], index = Some 4, kind = Args.InvalidValue, message …" case037,
+  Test.test "Args.parse level [ \"--level\", \"bad\", \"config\", \"get\", \"key\" ] = Err { command = [\"tool\"], index = Some 1, kind = Args.InvalidValue, message = \"invalid value …" case038,
+  Test.test "Args.parse level [ \"--level=1\", \"config\", \"get\", \"key\", \"-l2\" ] = Err { command = [\"tool\", \"config\", \"get\"], index = Some 4, kind = Args.DuplicateOption, mes…" case039,
+  Test.test "Args.parse reversed [\"--verbose\", \"serve\"] = Ok (Args.Parsed (Serve 8080 [], true))" case040,
+  Test.test "Args.parse positive [ \"positive\", \"0\" ] = Err { command = [\"tool\", \"positive\"], index = None, kind = Args.ValidationFailed, message = \"must be positive\", tok…" case041
+]

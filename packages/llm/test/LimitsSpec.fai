@@ -3,35 +3,106 @@ module LlmLimitsSpec
 import llm_examples.LlmFixtures
 
 let request = Llm.request "fixture"
-example: LlmOpenAI.encode Llm.limits (request |> Llm.topP 1.1) |> Result.isErr
-example: LlmOpenAI.encode Llm.limits (request |> Llm.temperature (-0.1)) |> Result.isErr
-example: LlmAnthropic.encode Llm.limits (request |> Llm.temperature 1.5) |> Result.isErr
-example: LlmOpenAI.encode Llm.limits (request |> Llm.stopSequences ["stop"]) |> Result.isErr
-example: LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences ["stop"]) |> Result.isOk
-example: LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences [""]) |> Result.isErr
-example: LlmOpenAI.encode { Llm.limits with maxRequestBytes = 4 } request |> Result.isErr
-example: LlmOpenAI.encode Llm.limits (request |> Llm.user [
-  LlmMessage.imageBytes "image/png" Bytes.empty
-]) |> Result.isErr
-example: LlmOpenAI.encode Llm.limits (request |> Llm.user [
-  LlmMessage.imageUrl "file:///private/image.png"
-]) |> Result.isErr
-example: LlmOpenAI.encode { Llm.limits with
-  maxImageBytes = 1
-} (request |> Llm.user [LlmMessage.imageBytes "image/png" (Bytes.fromList [1, 2])]) |> Result.isErr
-example: LlmValidate.limits { Llm.limits with maxEvents = 0 } |> Result.isErr
-example: LlmReplay.fromChunks LlmTypes.OpenAI { Llm.limits with
-  maxToolCalls = 1
-} [Bytes.fromString (LlmFixtures.openai false)] |> Result.isErr
-example: LlmReplay.fromChunks LlmTypes.Anthropic { Llm.limits with
-  maxToolArgumentBytes = 1
-} [Bytes.fromString (LlmFixtures.anthropic false)] |> Result.isErr
+
+let case001 _ =
+  let testActual = LlmOpenAI.encode Llm.limits (request |> Llm.topP 1.1) |> Result.isErr
+  Expect.isTrue "LlmOpenAI.encode Llm.limits (request |> Llm.topP 1.1) |> Result.isErr" testActual
+
+let case002 _ =
+  let testActual = LlmOpenAI.encode Llm.limits (request |> Llm.temperature (-0.1)) |> Result.isErr
+  Expect.isTrue "LlmOpenAI.encode Llm.limits (request |> Llm.temperature (-0.1)) |> Result.isErr" testActual
+
+let case003 _ =
+  let testActual = LlmAnthropic.encode Llm.limits (request |> Llm.temperature 1.5) |> Result.isErr
+  Expect.isTrue "LlmAnthropic.encode Llm.limits (request |> Llm.temperature 1.5) |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual =
+    LlmOpenAI.encode Llm.limits (request |> Llm.stopSequences ["stop"]) |> Result.isErr
+  Expect.isTrue "LlmOpenAI.encode Llm.limits (request |> Llm.stopSequences [\"stop\"]) |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences ["stop"]) |> Result.isOk
+  Expect.isTrue "LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences [\"stop\"]) |> Result.isOk" testActual
+
+let case006 _ =
+  let testActual =
+    LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences [""]) |> Result.isErr
+  Expect.isTrue "LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences [\"\"]) |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual = LlmOpenAI.encode { Llm.limits with maxRequestBytes = 4 } request |> Result.isErr
+  Expect.isTrue "LlmOpenAI.encode { Llm.limits with maxRequestBytes = 4 } request |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual =
+    LlmOpenAI.encode Llm.limits (request |> Llm.user [
+      LlmMessage.imageBytes "image/png" Bytes.empty
+    ]) |> Result.isErr
+  Expect.isTrue "LlmOpenAI.encode Llm.limits (request |> Llm.user [ LlmMessage.imageBytes \"image/png\" Bytes.empty ]) |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual =
+    LlmOpenAI.encode Llm.limits (request |> Llm.user [
+      LlmMessage.imageUrl "file:///private/image.png"
+    ]) |> Result.isErr
+  Expect.isTrue "LlmOpenAI.encode Llm.limits (request |> Llm.user [ LlmMessage.imageUrl \"file:///private/image.png\" ]) |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual =
+    LlmOpenAI.encode { Llm.limits with
+      maxImageBytes = 1
+    } (request |> Llm.user [
+      LlmMessage.imageBytes "image/png" (Bytes.fromList [1, 2])
+    ]) |> Result.isErr
+  Expect.isTrue "LlmOpenAI.encode { Llm.limits with maxImageBytes = 1 } (request |> Llm.user [LlmMessage.imageBytes \"image/png\" (Bytes.fromList [1, 2])]) |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = LlmValidate.limits { Llm.limits with maxEvents = 0 } |> Result.isErr
+  Expect.isTrue "LlmValidate.limits { Llm.limits with maxEvents = 0 } |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual =
+    LlmReplay.fromChunks LlmTypes.OpenAI { Llm.limits with
+      maxToolCalls = 1
+    } [Bytes.fromString (LlmFixtures.openai false)] |> Result.isErr
+  Expect.isTrue "LlmReplay.fromChunks LlmTypes.OpenAI { Llm.limits with maxToolCalls = 1 } [Bytes.fromString (LlmFixtures.openai false)] |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual =
+    LlmReplay.fromChunks LlmTypes.Anthropic { Llm.limits with
+      maxToolArgumentBytes = 1
+    } [Bytes.fromString (LlmFixtures.anthropic false)] |> Result.isErr
+  Expect.isTrue "LlmReplay.fromChunks LlmTypes.Anthropic { Llm.limits with maxToolArgumentBytes = 1 } [Bytes.fromString (LlmFixtures.anthropic false)] |> Result.isErr" testActual
 
 let prefix =
   Bytes.fromString "data: {\"type\":\"response.created\",\"response\":{\"id\":\"partial\",\"model\":\"fixture\"}}\n\n"
-example: (match LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [prefix] with
-| Err error ->
-  (match error.partial with
-  | Some response -> response.id = "partial"
-  | None -> false)
-| Ok _ -> false)
+
+let case014 _ =
+  let testActual =
+    (match LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [prefix] with
+    | Err error ->
+      (match error.partial with
+      | Some response -> response.id = "partial"
+      | None -> false)
+    | Ok _ -> false)
+  Expect.isTrue "(match LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [prefix] with | Err error -> (match error.partial with | Some response -> response.id = \"partial\" | No…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LlmLimitsSpec" [
+  Test.test "LlmOpenAI.encode Llm.limits (request |> Llm.topP 1.1) |> Result.isErr" case001,
+  Test.test "LlmOpenAI.encode Llm.limits (request |> Llm.temperature (-0.1)) |> Result.isErr" case002,
+  Test.test "LlmAnthropic.encode Llm.limits (request |> Llm.temperature 1.5) |> Result.isErr" case003,
+  Test.test "LlmOpenAI.encode Llm.limits (request |> Llm.stopSequences [\"stop\"]) |> Result.isErr" case004,
+  Test.test "LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences [\"stop\"]) |> Result.isOk" case005,
+  Test.test "LlmAnthropic.encode Llm.limits (request |> Llm.stopSequences [\"\"]) |> Result.isErr" case006,
+  Test.test "LlmOpenAI.encode { Llm.limits with maxRequestBytes = 4 } request |> Result.isErr" case007,
+  Test.test "LlmOpenAI.encode Llm.limits (request |> Llm.user [ LlmMessage.imageBytes \"image/png\" Bytes.empty ]) |> Result.isErr" case008,
+  Test.test "LlmOpenAI.encode Llm.limits (request |> Llm.user [ LlmMessage.imageUrl \"file:///private/image.png\" ]) |> Result.isErr" case009,
+  Test.test "LlmOpenAI.encode { Llm.limits with maxImageBytes = 1 } (request |> Llm.user [LlmMessage.imageBytes \"image/png\" (Bytes.fromList [1, 2])]) |> Result.isErr" case010,
+  Test.test "LlmValidate.limits { Llm.limits with maxEvents = 0 } |> Result.isErr" case011,
+  Test.test "LlmReplay.fromChunks LlmTypes.OpenAI { Llm.limits with maxToolCalls = 1 } [Bytes.fromString (LlmFixtures.openai false)] |> Result.isErr" case012,
+  Test.test "LlmReplay.fromChunks LlmTypes.Anthropic { Llm.limits with maxToolArgumentBytes = 1 } [Bytes.fromString (LlmFixtures.anthropic false)] |> Result.isErr" case013,
+  Test.test "(match LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [prefix] with | Err error -> (match error.partial with | Some response -> response.id = \"partial\" | No…" case014
+]

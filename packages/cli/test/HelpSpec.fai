@@ -8,15 +8,42 @@ let app = Args.program (Args.version "tool 1.0" (Args.described "tool" "Example 
 
 let expected =
   "Usage: tool [OPTIONS]\n\nExample tool\n\nOptions:\n  -v, --verbose  Verbose output\n  -p, --port PORT  TCP port (default: 8080)\n  -h, --help  Show this help\n  -V, --version  Show version\n"
-example: Args.help app = Ok expected
-example: Args.parse app ["--help"] = Ok (Args.Help expected)
-example: Args.parse app ["-vh"] = Ok (Args.Help expected)
-example: Args.parse app ["--help", "--unknown"] = Ok (Args.Help expected)
-example: Args.parse app ["--port=bad", "--help"] = Ok (Args.Help expected)
-example: Args.parse app ["--version"] = Ok (Args.Version "tool 1.0")
-example: Args.parse app ["-V"] = Ok (Args.Version "tool 1.0")
-example: Result.isErr (Args.parse app ["--version=bad"])
-example: Result.isErr (Args.parse app ["--unknown", "--help"])
+
+let case001 _ =
+  let testActual = Args.help app = Ok expected
+  Expect.isTrue "Args.help app = Ok expected" testActual
+
+let case002 _ =
+  let testActual = Args.parse app ["--help"] = Ok (Args.Help expected)
+  Expect.isTrue "Args.parse app [\"--help\"] = Ok (Args.Help expected)" testActual
+
+let case003 _ =
+  let testActual = Args.parse app ["-vh"] = Ok (Args.Help expected)
+  Expect.isTrue "Args.parse app [\"-vh\"] = Ok (Args.Help expected)" testActual
+
+let case004 _ =
+  let testActual = Args.parse app ["--help", "--unknown"] = Ok (Args.Help expected)
+  Expect.isTrue "Args.parse app [\"--help\", \"--unknown\"] = Ok (Args.Help expected)" testActual
+
+let case005 _ =
+  let testActual = Args.parse app ["--port=bad", "--help"] = Ok (Args.Help expected)
+  Expect.isTrue "Args.parse app [\"--port=bad\", \"--help\"] = Ok (Args.Help expected)" testActual
+
+let case006 _ =
+  let testActual = Args.parse app ["--version"] = Ok (Args.Version "tool 1.0")
+  Expect.isTrue "Args.parse app [\"--version\"] = Ok (Args.Version \"tool 1.0\")" testActual
+
+let case007 _ =
+  let testActual = Args.parse app ["-V"] = Ok (Args.Version "tool 1.0")
+  Expect.isTrue "Args.parse app [\"-V\"] = Ok (Args.Version \"tool 1.0\")" testActual
+
+let case008 _ =
+  let testActual = Result.isErr (Args.parse app ["--version=bad"])
+  Expect.isTrue "Result.isErr (Args.parse app [\"--version=bad\"])" testActual
+
+let case009 _ =
+  let testActual = Result.isErr (Args.parse app ["--unknown", "--help"])
+  Expect.isTrue "Result.isErr (Args.parse app [\"--unknown\", \"--help\"])" testActual
 
 let required =
   Args.program (Args.described "copy" "") (Args.map2 (fun a b ->
@@ -24,25 +51,62 @@ let required =
     "one",
     "two"
   ]) (Args.positional "FILES" "Inputs")))
-example: Args.help required = Ok "Usage: copy [OPTIONS] --output TEXT [FILES...]\n\nArguments:\n  [FILES...]  Inputs (choices: \"one\", \"two\")\n\nOptions:\n  --output TEXT  Destination (required)\n  -h, --help  Show this help\n"
-example: Result.isOk (Args.parse required ["--help"])
+
+let case010 _ =
+  let testActual =
+    Args.help required = Ok "Usage: copy [OPTIONS] --output TEXT [FILES...]\n\nArguments:\n  [FILES...]  Inputs (choices: \"one\", \"two\")\n\nOptions:\n  --output TEXT  Destination (required)\n  -h, --help  Show this help\n"
+  Expect.isTrue "Args.help required = Ok \"Usage: copy [OPTIONS] --output TEXT [FILES...]\\n\\nArguments:\\n [FILES...] Inputs (choices: \\\"one\\\", \\\"two\\\")\\n\\nOptions:\\n --output …" testActual
+
+let case011 _ =
+  let testActual = Result.isOk (Args.parse required ["--help"])
+  Expect.isTrue "Result.isOk (Args.parse required [\"--help\"])" testActual
 
 let defaultText =
   Args.program (Args.described "text" "") (Args.optionWithDefault "a\n\"b\\c" Args.string (Args.named "text" ""))
-example: Args.help defaultText = Ok "Usage: text [OPTIONS]\n\nOptions:\n  --text TEXT  (default: \"a\\n\\\"b\\\\c\")\n  -h, --help  Show this help\n"
+
+let case012 _ =
+  let testActual =
+    Args.help defaultText = Ok "Usage: text [OPTIONS]\n\nOptions:\n  --text TEXT  (default: \"a\\n\\\"b\\\\c\")\n  -h, --help  Show this help\n"
+  Expect.isTrue "Args.help defaultText = Ok \"Usage: text [OPTIONS]\\n\\nOptions:\\n --text TEXT (default: \\\"a\\\\n\\\\\\\"b\\\\\\\\c\\\")\\n -h, --help Show this help\\n\"" testActual
 
 let explosive text = if text = "boom" then Ok (1 / 0) else Ok 0
 
 let deferred =
   Args.program (Args.described "tool" "") (Args.requiredOption (Args.custom "N" explosive Int.toString) (Args.named "number" ""))
-example: Args.parse deferred [
-  "--number=boom",
-  "--help"
-] = Result.map (fun text -> Args.Help text) (Args.help deferred)
-example: Args.errorToString {
-  command = ["tool"],
-  index = Some 1,
-  kind = Args.InvalidValue,
-  message = "bad input",
-  token = Some "x"
-} = "tool (argument 2): bad input"
+
+let case013 _ =
+  let testActual =
+    Args.parse deferred [
+      "--number=boom",
+      "--help"
+    ] = Result.map (fun text -> Args.Help text) (Args.help deferred)
+  Expect.isTrue "Args.parse deferred [ \"--number=boom\", \"--help\" ] = Result.map (fun text -> Args.Help text) (Args.help deferred)" testActual
+
+let case014 _ =
+  let testActual = Args.errorToString {
+    command = ["tool"],
+    index = Some 1,
+    kind = Args.InvalidValue,
+    message = "bad input",
+    token = Some "x"
+  }
+  let testExpected = "tool (argument 2): bad input"
+  Expect.equal (Test.string).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "HelpSpec" [
+  Test.test "Args.help app = Ok expected" case001,
+  Test.test "Args.parse app [\"--help\"] = Ok (Args.Help expected)" case002,
+  Test.test "Args.parse app [\"-vh\"] = Ok (Args.Help expected)" case003,
+  Test.test "Args.parse app [\"--help\", \"--unknown\"] = Ok (Args.Help expected)" case004,
+  Test.test "Args.parse app [\"--port=bad\", \"--help\"] = Ok (Args.Help expected)" case005,
+  Test.test "Args.parse app [\"--version\"] = Ok (Args.Version \"tool 1.0\")" case006,
+  Test.test "Args.parse app [\"-V\"] = Ok (Args.Version \"tool 1.0\")" case007,
+  Test.test "Result.isErr (Args.parse app [\"--version=bad\"])" case008,
+  Test.test "Result.isErr (Args.parse app [\"--unknown\", \"--help\"])" case009,
+  Test.test "Args.help required = Ok \"Usage: copy [OPTIONS] --output TEXT [FILES...]\\n\\nArguments:\\n [FILES...] Inputs (choices: \\\"one\\\", \\\"two\\\")\\n\\nOptions:\\n --output …" case010,
+  Test.test "Result.isOk (Args.parse required [\"--help\"])" case011,
+  Test.test "Args.help defaultText = Ok \"Usage: text [OPTIONS]\\n\\nOptions:\\n --text TEXT (default: \\\"a\\\\n\\\\\\\"b\\\\\\\\c\\\")\\n -h, --help Show this help\\n\"" case012,
+  Test.test "Args.parse deferred [ \"--number=boom\", \"--help\" ] = Result.map (fun text -> Args.Help text) (Args.help deferred)" case013,
+  Test.test "Args.errorToString { command = [\"tool\"], index = Some 1, kind = Args.InvalidValue, message = \"bad input\", token = Some \"x\" } = \"tool (argument 2): bad input\"" case014
+]

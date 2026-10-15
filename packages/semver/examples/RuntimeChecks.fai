@@ -84,3 +84,21 @@ let main env =
     "Semver runtime checks passed"
   else
     "Semver runtime checks FAILED")
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SemVer large inputs" [
+  Test.test "metadata and precedence" (fun _ ->
+    Expect.isTrue "release retains core precedence" valid),
+  Test.test "unbounded numeric carry" (fun _ ->
+    Expect.isTrue "large numeric components carry exactly" hugeNumbers),
+  Test.test "long identifier lists" (fun _ ->
+    Expect.isTrue "all identifiers round trip" manyIdentifiers),
+  Test.test "comparator canonicalization" (fun _ ->
+    Expect.isTrue "duplicate comparators collapse" manyComparators),
+  Test.test "alternative canonicalization" (fun _ ->
+    Expect.isTrue "duplicate alternatives collapse" manyAlternatives),
+  Test.test "stable version selection" (fun _ ->
+    Expect.isTrue "all selected versions satisfy the range" selection),
+  Test.test "machine integer boundaries" (fun _ ->
+    Expect.isTrue "checked conversions reject overflow" boundaries)
+]

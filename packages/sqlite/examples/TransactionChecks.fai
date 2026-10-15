@@ -64,3 +64,63 @@ let main env =
     "transaction checks passed"
   else
     "transaction checks failed")
+
+transactions : Sql.Session { Clock, Concurrency, SqliteHost.Sqlite } -> Result Test.Check Sql.Error / { Clock, Concurrency, SqliteHost.Sqlite }
+let transactions session =
+  let created = Sql.execute session (Sql.text "create table items(value integer unique)")
+  let committed = Sql.transaction Sql.Serializable session nested
+  let rows = read session
+  Ok (Expect.all [
+    Expect.ok Sql.errorToString (fun _ -> Test.pass) created,
+    Expect.ok Sql.errorToString (fun _ -> Test.pass) committed,
+    Expect.ok Sql.errorToString (fun values ->
+      Expect.isTrue "only the outer insertion is committed" (values = [| 1 |])) rows
+  ])
+
+streaming : Sql.Session { Clock, Concurrency, SqliteHost.Sqlite } -> Result Test.Check Sql.Error / { Clock, Concurrency, SqliteHost.Sqlite }
+let streaming session =
+  let total =
+    Sql.withRows session (Sql.text "with recursive n(x) as (values(1) union all select x+1 from n where x < 10000) select x from n") (Sql.fold (fun sum row ->
+      Result.map (fun value ->
+        sum + value) (SqlDecode.decode (SqlDecode.index 0 SqlDecode.int) row)) 0)
+  Ok (Expect.ok Sql.errorToString (Expect.equal Int.toString 50005000) total)
+
+cancelledQuery : Runtime -> Sql.Session { Clock, Concurrency, SqliteHost.Sqlite } -> Result Test.Check Sql.Error / { Clock, Concurrency, SqliteHost.Sqlite }
+let cancelledQuery env session =
+  let interrupted =
+    Async.timeout env.concurrency env.clock 50 (fun _ ->
+      Sql.query session (Sql.text "with recursive n(x) as (values(1) union all select x+1 from n) select sum(x) from n"))
+  let recovered = SqlDecode.query (SqlDecode.index 0 SqlDecode.int) session (Sql.text "select 42")
+  Ok (Expect.all [
+    Expect.isTrue "the running query is cancelled" (interrupted = None),
+    Expect.ok Sql.errorToString (fun values ->
+      Expect.isTrue "the session remains usable" (values = [| 42 |])) recovered
+  ])
+
+expiredCursor : Sql.Session { Clock, Concurrency, SqliteHost.Sqlite } -> Result Test.Check Sql.Error / { Clock, Concurrency, SqliteHost.Sqlite }
+let expiredCursor session =
+  match Sql.withRows session (Sql.text "select 1") (fun rows -> Ok rows) with
+  | Err error -> Err error
+  | Ok rows ->
+    Ok (Expect.isTrue "retained cursors expire when their scope ends" (Result.isErr (Sql.next rows)))
+
+scenario : String -> (Runtime -> Sql.Session { Clock, Concurrency, SqliteHost.Sqlite } -> Result Test.Check Sql.Error / { Clock, Concurrency, SqliteHost.Sqlite }) -> Test.Suite Test.Context { Clock, Concurrency, SqliteHost.Sqlite }
+let scenario name check = Test.test name (fun ctx -> runScenario check ctx)
+
+runScenario : (Runtime -> Sql.Session { Clock, Concurrency, SqliteHost.Sqlite } -> Result Test.Check Sql.Error / { Clock, Concurrency, SqliteHost.Sqlite }) -> Test.Context -> Test.Check / { Clock, Concurrency, SqliteHost.Sqlite }
+let runScenario check ctx =
+  let env = {
+    clock = ctx.runtime.clock,
+    concurrency = ctx.runtime.concurrency,
+    console = ctx.runtime.console,
+    sqlite = SqliteHost.native
+  }
+  Expect.ok Sql.errorToString identity (Sqlite.withMemory env (check env))
+
+tests : Test.Suite Test.Context { Clock, Concurrency, SqliteHost.Sqlite }
+let tests = Test.describe "SQLite scoped sessions" [
+  scenario "nested rollback preserves the outer transaction" (fun _ -> transactions),
+  scenario "a cursor streams ten thousand rows" (fun _ -> streaming),
+  scenario "cancelled queries recover their session" cancelledQuery,
+  scenario "retained cursor aliases expire" (fun _ -> expiredCursor)
+]

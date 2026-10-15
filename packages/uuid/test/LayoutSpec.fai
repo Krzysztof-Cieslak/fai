@@ -24,29 +24,90 @@ let v4Vector = Bytes.fromList [
 ]
 
 let v7Vector = Bytes.fromList [12, 195, 24, 196, 220, 12, 12, 7, 57, 143]
-example: Result.map Uuid.toString (Uuid.v4FromRandom v4Vector) = Ok "919108f7-52d1-4320-9bac-f847db4148a8"
-example: Result.map Uuid.toString (Uuid.v7FromRandom 1645557742000 v7Vector) = Ok "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
-example: Result.map Uuid.toString (Uuid.v7FromRandom 0 zeros) = Ok "00000000-0000-7000-8000-000000000000"
-example: Result.map Uuid.toString (Uuid.v7FromRandom 281474976710655 ones) = Ok "ffffffff-ffff-7fff-bfff-ffffffffffff"
-example: Uuid.v7FromRandom (-1) zeros |> Result.isErr
-example: Uuid.v7FromRandom 281474976710656 zeros |> Result.isErr
-example: Uuid.v7FromRandom 9223372036854775807 zeros |> Result.isErr
-example: Uuid.v7FromRandom (-9223372036854775807 - 1) zeros |> Result.isErr
-example: Uuid.v7FromRandom 0 (Bytes.fromList (List.range 0 9)) |> Result.isErr
-example: Uuid.v7FromRandom 0 (Bytes.fromList (List.range 0 11)) |> Result.isErr
-example: Uuid.v4FromRandom (Bytes.fromList (List.range 0 15)) |> Result.isErr
-example: Uuid.v4FromRandom (Bytes.fromList (List.range 0 17)) |> Result.isErr
-example: Result.map Uuid.isV4 (Uuid.v4FromRandom v4Vector) = Ok true
-example: Result.map Uuid.isV7 (Uuid.v7FromRandom 0 zeros) = Ok true
-example: Result.map Uuid.v7UnixMillis (Uuid.v7FromRandom 1645557742000 v7Vector) = Ok (Some 1645557742000)
-example: Result.map Uuid.v7Instant (Uuid.v7FromRandom 281474976710655 ones) = Ok (Some (Instant.fromUnixTimeMillis 281474976710655))
-example: Result.map Uuid.v7UnixMillis (Uuid.parse "017f22e2-79b0-7cc3-d8c4-dc0c0c07398f") = Ok None
+
+let case001 _ =
+  let testActual =
+    Result.map Uuid.toString (Uuid.v4FromRandom v4Vector) = Ok "919108f7-52d1-4320-9bac-f847db4148a8"
+  Expect.isTrue "Result.map Uuid.toString (Uuid.v4FromRandom v4Vector) = Ok \"919108f7-52d1-4320-9bac-f847db4148a8\"" testActual
+
+let case002 _ =
+  let testActual =
+    Result.map Uuid.toString (Uuid.v7FromRandom 1645557742000 v7Vector) = Ok "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
+  Expect.isTrue "Result.map Uuid.toString (Uuid.v7FromRandom 1645557742000 v7Vector) = Ok \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\"" testActual
+
+let case003 _ =
+  let testActual =
+    Result.map Uuid.toString (Uuid.v7FromRandom 0 zeros) = Ok "00000000-0000-7000-8000-000000000000"
+  Expect.isTrue "Result.map Uuid.toString (Uuid.v7FromRandom 0 zeros) = Ok \"00000000-0000-7000-8000-000000000000\"" testActual
+
+let case004 _ =
+  let testActual =
+    Result.map Uuid.toString (Uuid.v7FromRandom 281474976710655 ones) = Ok "ffffffff-ffff-7fff-bfff-ffffffffffff"
+  Expect.isTrue "Result.map Uuid.toString (Uuid.v7FromRandom 281474976710655 ones) = Ok \"ffffffff-ffff-7fff-bfff-ffffffffffff\"" testActual
+
+let case005 _ =
+  let testActual = Uuid.v7FromRandom (-1) zeros |> Result.isErr
+  Expect.isTrue "Uuid.v7FromRandom (-1) zeros |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual = Uuid.v7FromRandom 281474976710656 zeros |> Result.isErr
+  Expect.isTrue "Uuid.v7FromRandom 281474976710656 zeros |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual = Uuid.v7FromRandom 9223372036854775807 zeros |> Result.isErr
+  Expect.isTrue "Uuid.v7FromRandom 9223372036854775807 zeros |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual = Uuid.v7FromRandom (-9223372036854775807 - 1) zeros |> Result.isErr
+  Expect.isTrue "Uuid.v7FromRandom (-9223372036854775807 - 1) zeros |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual = Uuid.v7FromRandom 0 (Bytes.fromList (List.range 0 9)) |> Result.isErr
+  Expect.isTrue "Uuid.v7FromRandom 0 (Bytes.fromList (List.range 0 9)) |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual = Uuid.v7FromRandom 0 (Bytes.fromList (List.range 0 11)) |> Result.isErr
+  Expect.isTrue "Uuid.v7FromRandom 0 (Bytes.fromList (List.range 0 11)) |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = Uuid.v4FromRandom (Bytes.fromList (List.range 0 15)) |> Result.isErr
+  Expect.isTrue "Uuid.v4FromRandom (Bytes.fromList (List.range 0 15)) |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = Uuid.v4FromRandom (Bytes.fromList (List.range 0 17)) |> Result.isErr
+  Expect.isTrue "Uuid.v4FromRandom (Bytes.fromList (List.range 0 17)) |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual = Result.map Uuid.isV4 (Uuid.v4FromRandom v4Vector) = Ok true
+  Expect.isTrue "Result.map Uuid.isV4 (Uuid.v4FromRandom v4Vector) = Ok true" testActual
+
+let case014 _ =
+  let testActual = Result.map Uuid.isV7 (Uuid.v7FromRandom 0 zeros) = Ok true
+  Expect.isTrue "Result.map Uuid.isV7 (Uuid.v7FromRandom 0 zeros) = Ok true" testActual
+
+let case015 _ =
+  let testActual =
+    Result.map Uuid.v7UnixMillis (Uuid.v7FromRandom 1645557742000 v7Vector) = Ok (Some 1645557742000)
+  Expect.isTrue "Result.map Uuid.v7UnixMillis (Uuid.v7FromRandom 1645557742000 v7Vector) = Ok (Some 1645557742000)" testActual
+
+let case016 _ =
+  let testActual =
+    Result.map Uuid.v7Instant (Uuid.v7FromRandom 281474976710655 ones) = Ok (Some (Instant.fromUnixTimeMillis 281474976710655))
+  Expect.isTrue "Result.map Uuid.v7Instant (Uuid.v7FromRandom 281474976710655 ones) = Ok (Some (Instant.fromUnixTimeMillis 281474976710655))" testActual
+
+let case017 _ =
+  let testActual =
+    Result.map Uuid.v7UnixMillis (Uuid.parse "017f22e2-79b0-7cc3-d8c4-dc0c0c07398f") = Ok None
+  Expect.isTrue "Result.map Uuid.v7UnixMillis (Uuid.parse \"017f22e2-79b0-7cc3-d8c4-dc0c0c07398f\") = Ok None" testActual
 
 let timestampOrder =
   match (Uuid.v7FromRandom 0 ones, Uuid.v7FromRandom 1 zeros) with
   | (Ok a, Ok b) -> a < b
   | _ -> false
-example: timestampOrder
+
+let case018 _ =
+  let testActual = timestampOrder
+  Expect.isTrue "timestampOrder" testActual
 
 let v4Mask input =
   let bytes =
@@ -63,15 +124,27 @@ let v4ByteMatches bytes actual index =
   Bytes.unsafeGet index actual = (if index = 6 then
     Int.or 64 (Int.and expected 15)
   else if index = 8 then Int.or 128 (Int.and expected 63) else expected)
-forall input: v4Mask input
+
+let case019 testInput =
+  let input = testInput
+  let testActual = v4Mask input
+  Expect.isTrue "property: v4Mask input" testActual
 
 let timestampRoundTrip input =
   let millis = Int.and input 281474976710655
   Result.map Uuid.v7UnixMillis (Uuid.v7FromRandom millis v7Vector) = Ok (Some millis)
-forall input: timestampRoundTrip input
-example: (match Uuid.v7FromRandom (-1) Bytes.empty with
-| Err error -> error.kind = Uuid.TimestampOutOfRange && error.actual = Some (-1)
-| _ -> false)
+
+let case020 testInput =
+  let input = testInput
+  let testActual = timestampRoundTrip input
+  Expect.isTrue "property: timestampRoundTrip input" testActual
+
+let case021 _ =
+  let testActual =
+    (match Uuid.v7FromRandom (-1) Bytes.empty with
+    | Err error -> error.kind = Uuid.TimestampOutOfRange && error.actual = Some (-1)
+    | _ -> false)
+  Expect.isTrue "(match Uuid.v7FromRandom (-1) Bytes.empty with | Err error -> error.kind = Uuid.TimestampOutOfRange && error.actual = Some (-1) | _ -> false)" testActual
 
 let v7Mask input =
   let bytes =
@@ -82,4 +155,34 @@ let v7Mask input =
   | Ok uuid ->
     let actual = Uuid.toBytes uuid
     Uuid.isV7 uuid && Int.and (Bytes.unsafeGet 6 actual) 15 = Int.and (Bytes.unsafeGet 0 bytes) 15 && Bytes.unsafeGet 7 actual = Bytes.unsafeGet 1 bytes && Int.and (Bytes.unsafeGet 8 actual) 63 = Int.and (Bytes.unsafeGet 2 bytes) 63 && Bytes.slice 9 16 actual = Bytes.slice 3 10 bytes
-forall input: v7Mask input
+
+let case022 testInput =
+  let input = testInput
+  let testActual = v7Mask input
+  Expect.isTrue "property: v7Mask input" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "UuidLayoutSpec" [
+  Test.test "Result.map Uuid.toString (Uuid.v4FromRandom v4Vector) = Ok \"919108f7-52d1-4320-9bac-f847db4148a8\"" case001,
+  Test.test "Result.map Uuid.toString (Uuid.v7FromRandom 1645557742000 v7Vector) = Ok \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\"" case002,
+  Test.test "Result.map Uuid.toString (Uuid.v7FromRandom 0 zeros) = Ok \"00000000-0000-7000-8000-000000000000\"" case003,
+  Test.test "Result.map Uuid.toString (Uuid.v7FromRandom 281474976710655 ones) = Ok \"ffffffff-ffff-7fff-bfff-ffffffffffff\"" case004,
+  Test.test "Uuid.v7FromRandom (-1) zeros |> Result.isErr" case005,
+  Test.test "Uuid.v7FromRandom 281474976710656 zeros |> Result.isErr" case006,
+  Test.test "Uuid.v7FromRandom 9223372036854775807 zeros |> Result.isErr" case007,
+  Test.test "Uuid.v7FromRandom (-9223372036854775807 - 1) zeros |> Result.isErr" case008,
+  Test.test "Uuid.v7FromRandom 0 (Bytes.fromList (List.range 0 9)) |> Result.isErr" case009,
+  Test.test "Uuid.v7FromRandom 0 (Bytes.fromList (List.range 0 11)) |> Result.isErr" case010,
+  Test.test "Uuid.v4FromRandom (Bytes.fromList (List.range 0 15)) |> Result.isErr" case011,
+  Test.test "Uuid.v4FromRandom (Bytes.fromList (List.range 0 17)) |> Result.isErr" case012,
+  Test.test "Result.map Uuid.isV4 (Uuid.v4FromRandom v4Vector) = Ok true" case013,
+  Test.test "Result.map Uuid.isV7 (Uuid.v7FromRandom 0 zeros) = Ok true" case014,
+  Test.test "Result.map Uuid.v7UnixMillis (Uuid.v7FromRandom 1645557742000 v7Vector) = Ok (Some 1645557742000)" case015,
+  Test.test "Result.map Uuid.v7Instant (Uuid.v7FromRandom 281474976710655 ones) = Ok (Some (Instant.fromUnixTimeMillis 281474976710655))" case016,
+  Test.test "Result.map Uuid.v7UnixMillis (Uuid.parse \"017f22e2-79b0-7cc3-d8c4-dc0c0c07398f\") = Ok None" case017,
+  Test.test "timestampOrder" case018,
+  Test.property "property: v4Mask input" Test.int case019,
+  Test.property "property: timestampRoundTrip input" Test.int case020,
+  Test.test "(match Uuid.v7FromRandom (-1) Bytes.empty with | Err error -> error.kind = Uuid.TimestampOutOfRange && error.actual = Some (-1) | _ -> false)" case021,
+  Test.property "property: v7Mask input" Test.int case022
+]

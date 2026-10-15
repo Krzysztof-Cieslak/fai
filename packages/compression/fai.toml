@@ -4,8 +4,4 @@ manifest-version = 1
 name = "compression"
 version = "0.1.0"
 fai-version = "0.0.1 || ^0.1.0"
-test-dir = "test"
-
-[[bin]]
-name = "runtime-checks"
-path = "examples/RuntimeChecks.fai"
+test-dir = "."

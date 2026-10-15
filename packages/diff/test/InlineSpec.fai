@@ -6,33 +6,77 @@ let kinds options granularity old new =
   Result.map (fun detail ->
     Array.map (fun change ->
       change.kind) detail.changes) (DiffInline.compareWith DiffText.limits options granularity old new)
-example: kinds DiffText.options DiffInline.Graphemes "a👩‍💻b" "a👩‍💻c" = Ok [|
-  DiffText.Equal,
-  DiffText.Deleted,
-  DiffText.Inserted
-|]
-example: kinds { DiffText.options with
-  case = DiffText.UnicodeInsensitive
-} DiffInline.Graphemes "ß" "ss" = Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  normalization = Some UnicodeNormalize.NFC
-} DiffInline.Graphemes "á" "a\u{301}" = Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  whitespace = DiffText.CollapseRuns
-} DiffInline.Words "a  b" "a b" = Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  whitespace = DiffText.IgnoreTrailing
-} DiffInline.Graphemes "a \n" "a\n" = Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  whitespace = DiffText.IgnoreAll
-} DiffInline.Graphemes "a\r\n" "a\n" <> Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  whitespace = DiffText.IgnoreAll
-} DiffInline.Graphemes "  " "" = Ok [| DiffText.Equivalent |]
-example: (match DiffInline.compareWith { DiffText.limits with
-  sequence = { Diff.limits with maxWork = 0 }
-} { DiffText.options with
-  sequence = { Diff.options with fallback = Diff.ReplaceRemainder }
-} DiffInline.Graphemes "a" "b" with
-| Err _ -> false
-| Ok detail -> detail.quality = Diff.Coarse)
+
+let case001 _ =
+  let testActual =
+    kinds DiffText.options DiffInline.Graphemes "a👩‍💻b" "a👩‍💻c" = Ok [|
+      DiffText.Equal,
+      DiffText.Deleted,
+      DiffText.Inserted
+    |]
+  Expect.isTrue "kinds DiffText.options DiffInline.Graphemes \"a👩‍💻b\" \"a👩‍💻c\" = Ok [| DiffText.Equal, DiffText.Deleted, DiffText.Inserted |]" testActual
+
+let case002 _ =
+  let testActual =
+    kinds { DiffText.options with
+      case = DiffText.UnicodeInsensitive
+    } DiffInline.Graphemes "ß" "ss" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with case = DiffText.UnicodeInsensitive } DiffInline.Graphemes \"ß\" \"ss\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case003 _ =
+  let testActual =
+    kinds { DiffText.options with
+      normalization = Some UnicodeNormalize.NFC
+    } DiffInline.Graphemes "á" "a\u{301}" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with normalization = Some UnicodeNormalize.NFC } DiffInline.Graphemes \"á\" \"a\\u{301}\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case004 _ =
+  let testActual =
+    kinds { DiffText.options with
+      whitespace = DiffText.CollapseRuns
+    } DiffInline.Words "a  b" "a b" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with whitespace = DiffText.CollapseRuns } DiffInline.Words \"a b\" \"a b\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case005 _ =
+  let testActual =
+    kinds { DiffText.options with
+      whitespace = DiffText.IgnoreTrailing
+    } DiffInline.Graphemes "a \n" "a\n" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with whitespace = DiffText.IgnoreTrailing } DiffInline.Graphemes \"a \\n\" \"a\\n\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case006 _ =
+  let testActual =
+    kinds { DiffText.options with
+      whitespace = DiffText.IgnoreAll
+    } DiffInline.Graphemes "a\r\n" "a\n" <> Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with whitespace = DiffText.IgnoreAll } DiffInline.Graphemes \"a\\r\\n\" \"a\\n\" <> Ok [| DiffText.Equivalent |]" testActual
+
+let case007 _ =
+  let testActual =
+    kinds { DiffText.options with
+      whitespace = DiffText.IgnoreAll
+    } DiffInline.Graphemes "  " "" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with whitespace = DiffText.IgnoreAll } DiffInline.Graphemes \" \" \"\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case008 _ =
+  let testActual =
+    (match DiffInline.compareWith { DiffText.limits with
+      sequence = { Diff.limits with maxWork = 0 }
+    } { DiffText.options with
+      sequence = { Diff.options with fallback = Diff.ReplaceRemainder }
+    } DiffInline.Graphemes "a" "b" with
+    | Err _ -> false
+    | Ok detail -> detail.quality = Diff.Coarse)
+  Expect.isTrue "(match DiffInline.compareWith { DiffText.limits with sequence = { Diff.limits with maxWork = 0 } } { DiffText.options with sequence = { Diff.options with fal…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DiffInlineSpec" [
+  Test.test "kinds DiffText.options DiffInline.Graphemes \"a👩‍💻b\" \"a👩‍💻c\" = Ok [| DiffText.Equal, DiffText.Deleted, DiffText.Inserted |]" case001,
+  Test.test "kinds { DiffText.options with case = DiffText.UnicodeInsensitive } DiffInline.Graphemes \"ß\" \"ss\" = Ok [| DiffText.Equivalent |]" case002,
+  Test.test "kinds { DiffText.options with normalization = Some UnicodeNormalize.NFC } DiffInline.Graphemes \"á\" \"a\\u{301}\" = Ok [| DiffText.Equivalent |]" case003,
+  Test.test "kinds { DiffText.options with whitespace = DiffText.CollapseRuns } DiffInline.Words \"a b\" \"a b\" = Ok [| DiffText.Equivalent |]" case004,
+  Test.test "kinds { DiffText.options with whitespace = DiffText.IgnoreTrailing } DiffInline.Graphemes \"a \\n\" \"a\\n\" = Ok [| DiffText.Equivalent |]" case005,
+  Test.test "kinds { DiffText.options with whitespace = DiffText.IgnoreAll } DiffInline.Graphemes \"a\\r\\n\" \"a\\n\" <> Ok [| DiffText.Equivalent |]" case006,
+  Test.test "kinds { DiffText.options with whitespace = DiffText.IgnoreAll } DiffInline.Graphemes \" \" \"\" = Ok [| DiffText.Equivalent |]" case007,
+  Test.test "(match DiffInline.compareWith { DiffText.limits with sequence = { Diff.limits with maxWork = 0 } } { DiffText.options with sequence = { Diff.options with fal…" case008
+]

@@ -1,12 +1,31 @@
 module LogErrorSpec
 
 let native = FileSystem.error FileSystem.IoFailure "flushWriter" None "flush failed"
-example: List.all (fun failure ->
-  failure.uncertain && failure.native = Some native) (LogTypes.nativeError LogTypes.Flush "file" native).failures
-example: List.all (fun failure ->
-  failure.kind = LogTypes.Closed) (LogTypes.nativeError LogTypes.Write "file" (FileSystem.error FileSystem.Closed "write" None "closed")).failures
-example: (match LogBudget.textBytes 1 "large" with
-| Err error ->
-  error.failures <> [] && List.all (fun failure ->
-    failure.kind = LogTypes.LimitExceeded) error.failures
-| Ok _ -> false)
+
+let case001 _ =
+  let testActual =
+    List.all (fun failure ->
+      failure.uncertain && failure.native = Some native) (LogTypes.nativeError LogTypes.Flush "file" native).failures
+  Expect.isTrue "List.all (fun failure -> failure.uncertain && failure.native = Some native) (LogTypes.nativeError LogTypes.Flush \"file\" native).failures" testActual
+
+let case002 _ =
+  let testActual =
+    List.all (fun failure ->
+      failure.kind = LogTypes.Closed) (LogTypes.nativeError LogTypes.Write "file" (FileSystem.error FileSystem.Closed "write" None "closed")).failures
+  Expect.isTrue "List.all (fun failure -> failure.kind = LogTypes.Closed) (LogTypes.nativeError LogTypes.Write \"file\" (FileSystem.error FileSystem.Closed \"write\" None \"closed…" testActual
+
+let case003 _ =
+  let testActual =
+    (match LogBudget.textBytes 1 "large" with
+    | Err error ->
+      error.failures <> [] && List.all (fun failure ->
+        failure.kind = LogTypes.LimitExceeded) error.failures
+    | Ok _ -> false)
+  Expect.isTrue "(match LogBudget.textBytes 1 \"large\" with | Err error -> error.failures <> [] && List.all (fun failure -> failure.kind = LogTypes.LimitExceeded) error.failur…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LogErrorSpec" [
+  Test.test "List.all (fun failure -> failure.uncertain && failure.native = Some native) (LogTypes.nativeError LogTypes.Flush \"file\" native).failures" case001,
+  Test.test "List.all (fun failure -> failure.kind = LogTypes.Closed) (LogTypes.nativeError LogTypes.Write \"file\" (FileSystem.error FileSystem.Closed \"write\" None \"closed…" case002,
+  Test.test "(match LogBudget.textBytes 1 \"large\" with | Err error -> error.failures <> [] && List.all (fun failure -> failure.kind = LogTypes.LimitExceeded) error.failur…" case003
+]

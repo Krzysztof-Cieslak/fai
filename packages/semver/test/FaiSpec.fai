@@ -1,46 +1,134 @@
 module SemverFaiSpec
 
-example: SemverFai.parseVersion "18446744073709551615.18446744073709551615.18446744073709551615" |> Result.isOk
-example: SemverFai.parseVersion "18446744073709551616.0.0" |> Result.isErr
-example: Semver.parse "18446744073709551616.0.0" |> Result.isOk
-example: SemverFai.parseVersion "1.2.3+build" |> Result.isErr
-example: SemverFai.parseVersion "v1.2.3" |> Result.isErr
-example: SemverFai.parseVersion "1.2.3-999999999999999999999999999999999999" |> Result.isOk
-example: SemverFai.parseRequirement "^18446744073709551615.0.0" |> Result.isOk
-example: SemverFai.parseRequirement "^18446744073709551616.0.0" |> Result.isErr
-example: SemverRange.parse "^18446744073709551616.0.0" |> Result.isOk
-example: SemverFai.parseRequirement "1.2" |> Result.isErr
-example: SemverFai.parseRequirement "1.2.3+build" |> Result.isErr
-example: SemverFai.parseRequirement "*" |> Result.isOk
-example: (match SemverFai.parseVersion "1.18446744073709551616.0" with
-| Err error ->
-  error.kind = Semver.OutOfRange && error.offset = Some 2 && error.component = Some "minor"
-| _ -> false)
-example: (match SemverFai.parseVersion "1.2.18446744073709551616" with
-| Err error ->
-  error.kind = Semver.OutOfRange && error.offset = Some 4 && error.component = Some "patch"
-| _ -> false)
-example: (match SemverFai.parseVersion "1.2.3-alpha+build" with
-| Err error ->
-  error.kind = Semver.BuildMetadataNotAllowed && error.offset = Some 11 && error.component = Some "build"
-| _ -> false)
-example: (match SemverFai.parseRequirement ">=2.0.0 || ^0.18446744073709551616.0" with
-| Err error ->
-  error.kind = Semver.OutOfRange && error.offset = Some 14 && error.component = Some "minor"
-| _ -> false)
-example: (match Semver.parse "18446744073709551615.0.0" with
-| Err _ -> false
-| Ok version ->
-  SemverFai.validateVersion version = Ok () && Result.isErr (SemverFai.validateVersion (Semver.bumpMajor version)))
-example: (match SemverRange.parse "^0.18446744073709551616.0" with
-| Err _ -> false
-| Ok range ->
-  (match SemverFai.validateRequirement range with
-  | Err error -> error.offset = None && error.component = Some "minor"
-  | _ -> false))
-example: (match Semver.parse "1.2.3+build" with
-| Err _ -> false
-| Ok version ->
-  (match SemverFai.validateVersion version with
-  | Err error -> error.offset = None && error.kind = Semver.BuildMetadataNotAllowed
-  | _ -> false))
+let case001 _ =
+  let testActual =
+    SemverFai.parseVersion "18446744073709551615.18446744073709551615.18446744073709551615" |> Result.isOk
+  Expect.isTrue "SemverFai.parseVersion \"18446744073709551615.18446744073709551615.18446744073709551615\" |> Result.isOk" testActual
+
+let case002 _ =
+  let testActual = SemverFai.parseVersion "18446744073709551616.0.0" |> Result.isErr
+  Expect.isTrue "SemverFai.parseVersion \"18446744073709551616.0.0\" |> Result.isErr" testActual
+
+let case003 _ =
+  let testActual = Semver.parse "18446744073709551616.0.0" |> Result.isOk
+  Expect.isTrue "Semver.parse \"18446744073709551616.0.0\" |> Result.isOk" testActual
+
+let case004 _ =
+  let testActual = SemverFai.parseVersion "1.2.3+build" |> Result.isErr
+  Expect.isTrue "SemverFai.parseVersion \"1.2.3+build\" |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual = SemverFai.parseVersion "v1.2.3" |> Result.isErr
+  Expect.isTrue "SemverFai.parseVersion \"v1.2.3\" |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual =
+    SemverFai.parseVersion "1.2.3-999999999999999999999999999999999999" |> Result.isOk
+  Expect.isTrue "SemverFai.parseVersion \"1.2.3-999999999999999999999999999999999999\" |> Result.isOk" testActual
+
+let case007 _ =
+  let testActual = SemverFai.parseRequirement "^18446744073709551615.0.0" |> Result.isOk
+  Expect.isTrue "SemverFai.parseRequirement \"^18446744073709551615.0.0\" |> Result.isOk" testActual
+
+let case008 _ =
+  let testActual = SemverFai.parseRequirement "^18446744073709551616.0.0" |> Result.isErr
+  Expect.isTrue "SemverFai.parseRequirement \"^18446744073709551616.0.0\" |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual = SemverRange.parse "^18446744073709551616.0.0" |> Result.isOk
+  Expect.isTrue "SemverRange.parse \"^18446744073709551616.0.0\" |> Result.isOk" testActual
+
+let case010 _ =
+  let testActual = SemverFai.parseRequirement "1.2" |> Result.isErr
+  Expect.isTrue "SemverFai.parseRequirement \"1.2\" |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = SemverFai.parseRequirement "1.2.3+build" |> Result.isErr
+  Expect.isTrue "SemverFai.parseRequirement \"1.2.3+build\" |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = SemverFai.parseRequirement "*" |> Result.isOk
+  Expect.isTrue "SemverFai.parseRequirement \"*\" |> Result.isOk" testActual
+
+let case013 _ =
+  let testActual =
+    (match SemverFai.parseVersion "1.18446744073709551616.0" with
+    | Err error ->
+      error.kind = Semver.OutOfRange && error.offset = Some 2 && error.component = Some "minor"
+    | _ -> false)
+  Expect.isTrue "(match SemverFai.parseVersion \"1.18446744073709551616.0\" with | Err error -> error.kind = Semver.OutOfRange && error.offset = Some 2 && error.component = Som…" testActual
+
+let case014 _ =
+  let testActual =
+    (match SemverFai.parseVersion "1.2.18446744073709551616" with
+    | Err error ->
+      error.kind = Semver.OutOfRange && error.offset = Some 4 && error.component = Some "patch"
+    | _ -> false)
+  Expect.isTrue "(match SemverFai.parseVersion \"1.2.18446744073709551616\" with | Err error -> error.kind = Semver.OutOfRange && error.offset = Some 4 && error.component = Som…" testActual
+
+let case015 _ =
+  let testActual =
+    (match SemverFai.parseVersion "1.2.3-alpha+build" with
+    | Err error ->
+      error.kind = Semver.BuildMetadataNotAllowed && error.offset = Some 11 && error.component = Some "build"
+    | _ -> false)
+  Expect.isTrue "(match SemverFai.parseVersion \"1.2.3-alpha+build\" with | Err error -> error.kind = Semver.BuildMetadataNotAllowed && error.offset = Some 11 && error.componen…" testActual
+
+let case016 _ =
+  let testActual =
+    (match SemverFai.parseRequirement ">=2.0.0 || ^0.18446744073709551616.0" with
+    | Err error ->
+      error.kind = Semver.OutOfRange && error.offset = Some 14 && error.component = Some "minor"
+    | _ -> false)
+  Expect.isTrue "(match SemverFai.parseRequirement \">=2.0.0 || ^0.18446744073709551616.0\" with | Err error -> error.kind = Semver.OutOfRange && error.offset = Some 14 && erro…" testActual
+
+let case017 _ =
+  let testActual =
+    (match Semver.parse "18446744073709551615.0.0" with
+    | Err _ -> false
+    | Ok version ->
+      SemverFai.validateVersion version = Ok () && Result.isErr (SemverFai.validateVersion (Semver.bumpMajor version)))
+  Expect.isTrue "(match Semver.parse \"18446744073709551615.0.0\" with | Err _ -> false | Ok version -> SemverFai.validateVersion version = Ok () && Result.isErr (SemverFai.val…" testActual
+
+let case018 _ =
+  let testActual =
+    (match SemverRange.parse "^0.18446744073709551616.0" with
+    | Err _ -> false
+    | Ok range ->
+      (match SemverFai.validateRequirement range with
+      | Err error -> error.offset = None && error.component = Some "minor"
+      | _ -> false))
+  Expect.isTrue "(match SemverRange.parse \"^0.18446744073709551616.0\" with | Err _ -> false | Ok range -> (match SemverFai.validateRequirement range with | Err error -> error…" testActual
+
+let case019 _ =
+  let testActual =
+    (match Semver.parse "1.2.3+build" with
+    | Err _ -> false
+    | Ok version ->
+      (match SemverFai.validateVersion version with
+      | Err error -> error.offset = None && error.kind = Semver.BuildMetadataNotAllowed
+      | _ -> false))
+  Expect.isTrue "(match Semver.parse \"1.2.3+build\" with | Err _ -> false | Ok version -> (match SemverFai.validateVersion version with | Err error -> error.offset = None && e…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SemverFaiSpec" [
+  Test.test "SemverFai.parseVersion \"18446744073709551615.18446744073709551615.18446744073709551615\" |> Result.isOk" case001,
+  Test.test "SemverFai.parseVersion \"18446744073709551616.0.0\" |> Result.isErr" case002,
+  Test.test "Semver.parse \"18446744073709551616.0.0\" |> Result.isOk" case003,
+  Test.test "SemverFai.parseVersion \"1.2.3+build\" |> Result.isErr" case004,
+  Test.test "SemverFai.parseVersion \"v1.2.3\" |> Result.isErr" case005,
+  Test.test "SemverFai.parseVersion \"1.2.3-999999999999999999999999999999999999\" |> Result.isOk" case006,
+  Test.test "SemverFai.parseRequirement \"^18446744073709551615.0.0\" |> Result.isOk" case007,
+  Test.test "SemverFai.parseRequirement \"^18446744073709551616.0.0\" |> Result.isErr" case008,
+  Test.test "SemverRange.parse \"^18446744073709551616.0.0\" |> Result.isOk" case009,
+  Test.test "SemverFai.parseRequirement \"1.2\" |> Result.isErr" case010,
+  Test.test "SemverFai.parseRequirement \"1.2.3+build\" |> Result.isErr" case011,
+  Test.test "SemverFai.parseRequirement \"*\" |> Result.isOk" case012,
+  Test.test "(match SemverFai.parseVersion \"1.18446744073709551616.0\" with | Err error -> error.kind = Semver.OutOfRange && error.offset = Some 2 && error.component = Som…" case013,
+  Test.test "(match SemverFai.parseVersion \"1.2.18446744073709551616\" with | Err error -> error.kind = Semver.OutOfRange && error.offset = Some 4 && error.component = Som…" case014,
+  Test.test "(match SemverFai.parseVersion \"1.2.3-alpha+build\" with | Err error -> error.kind = Semver.BuildMetadataNotAllowed && error.offset = Some 11 && error.componen…" case015,
+  Test.test "(match SemverFai.parseRequirement \">=2.0.0 || ^0.18446744073709551616.0\" with | Err error -> error.kind = Semver.OutOfRange && error.offset = Some 14 && erro…" case016,
+  Test.test "(match Semver.parse \"18446744073709551615.0.0\" with | Err _ -> false | Ok version -> SemverFai.validateVersion version = Ok () && Result.isErr (SemverFai.val…" case017,
+  Test.test "(match SemverRange.parse \"^0.18446744073709551616.0\" with | Err _ -> false | Ok range -> (match SemverFai.validateRequirement range with | Err error -> error…" case018,
+  Test.test "(match Semver.parse \"1.2.3+build\" with | Err _ -> false | Ok version -> (match SemverFai.validateVersion version with | Err error -> error.offset = None && e…" case019
+]

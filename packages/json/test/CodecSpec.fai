@@ -14,49 +14,129 @@ let encodeUser user = JsonEncode.object [
   ("id", JsonEncode.int user.id),
   ("name", JsonEncode.string user.name)
 ]
-example: JsonDecode.fromString userDecoder "{\"name\":\"Ada\",\"id\":42,\"extra\":true}" = Ok {
-  id = 42,
-  name = "Ada"
-}
-example: JsonEncode.toString encodeUser {
-  id = 42,
-  name = "Ada"
-} = Ok "{\"id\":42,\"name\":\"Ada\"}"
+
+let case001 _ =
+  let testActual =
+    JsonDecode.fromString userDecoder "{\"name\":\"Ada\",\"id\":42,\"extra\":true}" = Ok {
+      id = 42,
+      name = "Ada"
+    }
+  Expect.isTrue "JsonDecode.fromString userDecoder \"{\\\"name\\\":\\\"Ada\\\",\\\"id\\\":42,\\\"extra\\\":true}\" = Ok { id = 42, name = \"Ada\" }" testActual
+
+let case002 _ =
+  let testActual =
+    JsonEncode.toString encodeUser { id = 42, name = "Ada" } = Ok "{\"id\":42,\"name\":\"Ada\"}"
+  Expect.isTrue "JsonEncode.toString encodeUser { id = 42, name = \"Ada\" } = Ok \"{\\\"id\\\":42,\\\"name\\\":\\\"Ada\\\"}\"" testActual
 
 let userRoundTrip id name =
   match JsonEncode.toString encodeUser { id = id, name = name } with
   | Err _ -> false
   | Ok document -> JsonDecode.fromString userDecoder document = Ok { id = id, name = name }
-forall id name: userRoundTrip id name
+
+let case003 testInput =
+  let (id, name) = testInput
+  let testActual = userRoundTrip id name
+  Expect.isTrue "property: userRoundTrip id name" testActual
 
 let decodeError decoder text =
   match JsonDecode.fromString decoder text with
   | Ok _ -> "accepted"
   | Err error -> JsonDecode.readErrorToString error
-example: decodeError userDecoder "{\"id\":42}" = "$[\"name\"]: missing required field"
-example: decodeError (JsonDecode.field "items" (JsonDecode.list userDecoder)) "{\"items\":[{\"id\":1,\"name\":false}]}" = "$[\"items\"][0][\"name\"]: expected string, got boolean"
-example: decodeError userDecoder "{\"id\":1,\"id\":2,\"name\":\"Ada\"}" = "$[\"id\"]: duplicate object member"
-example: decodeError JsonDecode.value "{\"a\":1,\"\\u0061\":2}" = "$[\"a\"]: duplicate object member"
-example: decodeError (JsonDecode.succeed 1) "{\"unknown\":{\"x\":1,\"x\":2}}" = "$[\"unknown\"][\"x\"]: duplicate object member"
-example: JsonDecode.fromString (JsonDecode.optionalField "x" JsonDecode.int) "{}" = Ok None
-example: JsonDecode.fromString (JsonDecode.optionalField "x" JsonDecode.int) "{\"x\":1}" = Ok (Some 1)
-example: Result.isErr (JsonDecode.fromString (JsonDecode.optionalField "x" JsonDecode.int) "{\"x\":null}")
-example: JsonDecode.fromString (JsonDecode.optionalField "x" (JsonDecode.nullable JsonDecode.int)) "{\"x\":null}" = Ok (Some None)
-example: JsonDecode.fromString (JsonDecode.nullable JsonDecode.string) "null" = Ok None
-example: Result.isErr (JsonDecode.fromString (JsonDecode.nullable JsonDecode.int) "false")
-example: JsonDecode.fromString (JsonDecode.index 1 JsonDecode.string) "[0,\"one\"]" = Ok "one"
-example: decodeError (JsonDecode.index (-1) JsonDecode.int) "[]" = "$[-1]: array index is out of bounds"
-example: JsonDecode.fromString (JsonDecode.at [
-  "a",
-  "b"
-] JsonDecode.bool) "{\"a\":{\"b\":true}}" = Ok true
-example: JsonDecode.fromString (JsonDecode.array JsonDecode.int) "[1,2,3]" = Ok [| 1, 2, 3 |]
-example: JsonDecode.fromString (JsonDecode.keyValuePairs JsonDecode.int) "{\"b\":2,\"a\":1}" = Ok [
-  ("b", 2),
-  ("a", 1)
-]
-example: Result.map (HashDict.get "a") (JsonDecode.fromString (JsonDecode.dict JsonDecode.int) "{\"a\":1}") = Ok (Some 1)
-example: JsonDecode.fromBytes JsonDecode.string (Bytes.fromString "\"hello\"") = Ok "hello"
+
+let case004 _ =
+  let testActual = decodeError userDecoder "{\"id\":42}"
+  let testExpected = "$[\"name\"]: missing required field"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case005 _ =
+  let testActual =
+    decodeError (JsonDecode.field "items" (JsonDecode.list userDecoder)) "{\"items\":[{\"id\":1,\"name\":false}]}"
+  let testExpected = "$[\"items\"][0][\"name\"]: expected string, got boolean"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case006 _ =
+  let testActual = decodeError userDecoder "{\"id\":1,\"id\":2,\"name\":\"Ada\"}"
+  let testExpected = "$[\"id\"]: duplicate object member"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case007 _ =
+  let testActual = decodeError JsonDecode.value "{\"a\":1,\"\\u0061\":2}"
+  let testExpected = "$[\"a\"]: duplicate object member"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case008 _ =
+  let testActual = decodeError (JsonDecode.succeed 1) "{\"unknown\":{\"x\":1,\"x\":2}}"
+  let testExpected = "$[\"unknown\"][\"x\"]: duplicate object member"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case009 _ =
+  let testActual =
+    JsonDecode.fromString (JsonDecode.optionalField "x" JsonDecode.int) "{}" = Ok None
+  Expect.isTrue "JsonDecode.fromString (JsonDecode.optionalField \"x\" JsonDecode.int) \"{}\" = Ok None" testActual
+
+let case010 _ =
+  let testActual =
+    JsonDecode.fromString (JsonDecode.optionalField "x" JsonDecode.int) "{\"x\":1}" = Ok (Some 1)
+  Expect.isTrue "JsonDecode.fromString (JsonDecode.optionalField \"x\" JsonDecode.int) \"{\\\"x\\\":1}\" = Ok (Some 1)" testActual
+
+let case011 _ =
+  let testActual =
+    Result.isErr (JsonDecode.fromString (JsonDecode.optionalField "x" JsonDecode.int) "{\"x\":null}")
+  Expect.isTrue "Result.isErr (JsonDecode.fromString (JsonDecode.optionalField \"x\" JsonDecode.int) \"{\\\"x\\\":null}\")" testActual
+
+let case012 _ =
+  let testActual =
+    JsonDecode.fromString (JsonDecode.optionalField "x" (JsonDecode.nullable JsonDecode.int)) "{\"x\":null}" = Ok (Some None)
+  Expect.isTrue "JsonDecode.fromString (JsonDecode.optionalField \"x\" (JsonDecode.nullable JsonDecode.int)) \"{\\\"x\\\":null}\" = Ok (Some None)" testActual
+
+let case013 _ =
+  let testActual = JsonDecode.fromString (JsonDecode.nullable JsonDecode.string) "null" = Ok None
+  Expect.isTrue "JsonDecode.fromString (JsonDecode.nullable JsonDecode.string) \"null\" = Ok None" testActual
+
+let case014 _ =
+  let testActual = Result.isErr (JsonDecode.fromString (JsonDecode.nullable JsonDecode.int) "false")
+  Expect.isTrue "Result.isErr (JsonDecode.fromString (JsonDecode.nullable JsonDecode.int) \"false\")" testActual
+
+let case015 _ =
+  let testActual =
+    JsonDecode.fromString (JsonDecode.index 1 JsonDecode.string) "[0,\"one\"]" = Ok "one"
+  Expect.isTrue "JsonDecode.fromString (JsonDecode.index 1 JsonDecode.string) \"[0,\\\"one\\\"]\" = Ok \"one\"" testActual
+
+let case016 _ =
+  let testActual = decodeError (JsonDecode.index (-1) JsonDecode.int) "[]"
+  let testExpected = "$[-1]: array index is out of bounds"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case017 _ =
+  let testActual =
+    JsonDecode.fromString (JsonDecode.at [
+      "a",
+      "b"
+    ] JsonDecode.bool) "{\"a\":{\"b\":true}}" = Ok true
+  Expect.isTrue "JsonDecode.fromString (JsonDecode.at [ \"a\", \"b\" ] JsonDecode.bool) \"{\\\"a\\\":{\\\"b\\\":true}}\" = Ok true" testActual
+
+let case018 _ =
+  let testActual =
+    JsonDecode.fromString (JsonDecode.array JsonDecode.int) "[1,2,3]" = Ok [| 1, 2, 3 |]
+  Expect.isTrue "JsonDecode.fromString (JsonDecode.array JsonDecode.int) \"[1,2,3]\" = Ok [| 1, 2, 3 |]" testActual
+
+let case019 _ =
+  let testActual =
+    JsonDecode.fromString (JsonDecode.keyValuePairs JsonDecode.int) "{\"b\":2,\"a\":1}" = Ok [
+      ("b", 2),
+      ("a", 1)
+    ]
+  Expect.isTrue "JsonDecode.fromString (JsonDecode.keyValuePairs JsonDecode.int) \"{\\\"b\\\":2,\\\"a\\\":1}\" = Ok [ (\"b\", 2), (\"a\", 1) ]" testActual
+
+let case020 _ =
+  let testActual =
+    Result.map (HashDict.get "a") (JsonDecode.fromString (JsonDecode.dict JsonDecode.int) "{\"a\":1}") = Ok (Some 1)
+  Expect.isTrue "Result.map (HashDict.get \"a\") (JsonDecode.fromString (JsonDecode.dict JsonDecode.int) \"{\\\"a\\\":1}\") = Ok (Some 1)" testActual
+
+let case021 _ =
+  let testActual =
+    JsonDecode.fromBytes JsonDecode.string (Bytes.fromString "\"hello\"") = Ok "hello"
+  Expect.isTrue "JsonDecode.fromBytes JsonDecode.string (Bytes.fromString \"\\\"hello\\\"\") = Ok \"hello\"" testActual
 
 type Choice =
   | Text String
@@ -70,15 +150,37 @@ let choice =
       JsonDecode.map Count (JsonDecode.field "value" JsonDecode.int)
     else
       JsonDecode.fail "unknown choice tag") (JsonDecode.field "tag" JsonDecode.string)
-example: JsonDecode.fromString choice "{\"tag\":\"text\",\"value\":\"hello\"}" = Ok (Text "hello")
-example: JsonDecode.fromString choice "{\"tag\":\"count\",\"value\":12}" = Ok (Count 12)
-example: decodeError choice "{\"tag\":\"other\"}" = "$: unknown choice tag"
-example: JsonDecode.fromString (JsonDecode.oneOf [JsonDecode.int, JsonDecode.null 0]) "null" = Ok 0
-example: Result.isErr (JsonDecode.fromString (JsonDecode.oneOf [
-  JsonDecode.int,
-  JsonDecode.null 0
-]) "true")
-example: Result.isErr (JsonDecode.fromString (JsonDecode.oneOf []) "1")
+
+let case022 _ =
+  let testActual =
+    JsonDecode.fromString choice "{\"tag\":\"text\",\"value\":\"hello\"}" = Ok (Text "hello")
+  Expect.isTrue "JsonDecode.fromString choice \"{\\\"tag\\\":\\\"text\\\",\\\"value\\\":\\\"hello\\\"}\" = Ok (Text \"hello\")" testActual
+
+let case023 _ =
+  let testActual = JsonDecode.fromString choice "{\"tag\":\"count\",\"value\":12}" = Ok (Count 12)
+  Expect.isTrue "JsonDecode.fromString choice \"{\\\"tag\\\":\\\"count\\\",\\\"value\\\":12}\" = Ok (Count 12)" testActual
+
+let case024 _ =
+  let testActual = decodeError choice "{\"tag\":\"other\"}"
+  let testExpected = "$: unknown choice tag"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case025 _ =
+  let testActual =
+    JsonDecode.fromString (JsonDecode.oneOf [JsonDecode.int, JsonDecode.null 0]) "null" = Ok 0
+  Expect.isTrue "JsonDecode.fromString (JsonDecode.oneOf [JsonDecode.int, JsonDecode.null 0]) \"null\" = Ok 0" testActual
+
+let case026 _ =
+  let testActual =
+    Result.isErr (JsonDecode.fromString (JsonDecode.oneOf [
+      JsonDecode.int,
+      JsonDecode.null 0
+    ]) "true")
+  Expect.isTrue "Result.isErr (JsonDecode.fromString (JsonDecode.oneOf [ JsonDecode.int, JsonDecode.null 0 ]) \"true\")" testActual
+
+let case027 _ =
+  let testActual = Result.isErr (JsonDecode.fromString (JsonDecode.oneOf []) "1")
+  Expect.isTrue "Result.isErr (JsonDecode.fromString (JsonDecode.oneOf []) \"1\")" testActual
 
 type Tree =
   | Leaf Int
@@ -96,62 +198,243 @@ let encodeTree tree =
   match tree with
   | Leaf n -> JsonEncode.int n
   | Branch trees -> JsonEncode.list encodeTree trees
-example: JsonDecode.fromString treeDecoder "[1,[2,3]]" = Ok (Branch [
-  Leaf 1,
-  Branch [Leaf 2, Leaf 3]
-])
-example: JsonEncode.toString encodeTree (Branch [Leaf 1, Branch [Leaf 2, Leaf 3]]) = Ok "[1,[2,3]]"
+
+let case028 _ =
+  let testActual =
+    JsonDecode.fromString treeDecoder "[1,[2,3]]" = Ok (Branch [Leaf 1, Branch [Leaf 2, Leaf 3]])
+  Expect.isTrue "JsonDecode.fromString treeDecoder \"[1,[2,3]]\" = Ok (Branch [ Leaf 1, Branch [Leaf 2, Leaf 3] ])" testActual
+
+let case029 _ =
+  let testActual =
+    JsonEncode.toString encodeTree (Branch [Leaf 1, Branch [Leaf 2, Leaf 3]]) = Ok "[1,[2,3]]"
+  Expect.isTrue "JsonEncode.toString encodeTree (Branch [Leaf 1, Branch [Leaf 2, Leaf 3]]) = Ok \"[1,[2,3]]\"" testActual
 
 let pipeline =
   JsonDecode.succeed (fun id name -> {
     id = id,
     name = name
   }) |> JsonDecode.andMap (JsonDecode.field "id" JsonDecode.int) |> JsonDecode.andMap (JsonDecode.field "name" JsonDecode.string)
-example: JsonDecode.fromString pipeline "{\"id\":7,\"name\":\"P\"}" = Ok { id = 7, name = "P" }
+
+let case030 _ =
+  let testActual =
+    JsonDecode.fromString pipeline "{\"id\":7,\"name\":\"P\"}" = Ok { id = 7, name = "P" }
+  Expect.isTrue "JsonDecode.fromString pipeline \"{\\\"id\\\":7,\\\"name\\\":\\\"P\\\"}\" = Ok { id = 7, name = \"P\" }" testActual
 
 let positive =
   JsonDecode.andThen (fun n ->
     if n > 0 then JsonDecode.succeed n else JsonDecode.fail "must be positive") JsonDecode.int
-example: decodeError (JsonDecode.field "n" positive) "{\"n\":0}" = "$[\"n\"]: must be positive"
-example: JsonEncode.toString (JsonEncode.array JsonEncode.int) [| 1, 2 |] = Ok "[1,2]"
-example: JsonEncode.toString (JsonEncode.nullable JsonEncode.string) None = Ok "null"
-example: JsonEncode.toString (JsonEncode.nullable JsonEncode.string) (Some "ok") = Ok "\"ok\""
-example: JsonEncode.toString (JsonEncode.dict JsonEncode.int) (HashDict.fromList [
-  ("b", 2),
-  ("a", 1)
-]) = Ok "{\"a\":1,\"b\":2}"
-example: JsonEncode.toString (JsonEncode.contramap (fun u ->
-  u.id) JsonEncode.int) { id = 7, name = "P" } = Ok "7"
-example: JsonEncode.object [
-  ("x", JsonEncode.int 1),
-  ("x", JsonEncode.int 2)
-] = Err { message = "duplicate object member", path = [JsonEncode.Field "x"] }
-example: JsonEncode.list JsonEncode.float [
-  1.0,
-  Float.fromBits 0x7ff0000000000000
-] = Err { message = "non-finite Float is not a JSON number", path = [JsonEncode.Index 1] }
-example: JsonEncode.object [
-  ("n", JsonEncode.float (Float.fromBits 0x7ff8000000000000))
-] = Err { message = "non-finite Float is not a JSON number", path = [JsonEncode.Field "n"] }
-example: JsonEncode.toPrettyString (JsonEncode.list JsonEncode.bool) [true] = Ok "[\n  true\n]"
+
+let case031 _ =
+  let testActual = decodeError (JsonDecode.field "n" positive) "{\"n\":0}"
+  let testExpected = "$[\"n\"]: must be positive"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case032 _ =
+  let testActual = JsonEncode.toString (JsonEncode.array JsonEncode.int) [| 1, 2 |] = Ok "[1,2]"
+  Expect.isTrue "JsonEncode.toString (JsonEncode.array JsonEncode.int) [| 1, 2 |] = Ok \"[1,2]\"" testActual
+
+let case033 _ =
+  let testActual = JsonEncode.toString (JsonEncode.nullable JsonEncode.string) None = Ok "null"
+  Expect.isTrue "JsonEncode.toString (JsonEncode.nullable JsonEncode.string) None = Ok \"null\"" testActual
+
+let case034 _ =
+  let testActual =
+    JsonEncode.toString (JsonEncode.nullable JsonEncode.string) (Some "ok") = Ok "\"ok\""
+  Expect.isTrue "JsonEncode.toString (JsonEncode.nullable JsonEncode.string) (Some \"ok\") = Ok \"\\\"ok\\\"\"" testActual
+
+let case035 _ =
+  let testActual =
+    JsonEncode.toString (JsonEncode.dict JsonEncode.int) (HashDict.fromList [
+      ("b", 2),
+      ("a", 1)
+    ]) = Ok "{\"a\":1,\"b\":2}"
+  Expect.isTrue "JsonEncode.toString (JsonEncode.dict JsonEncode.int) (HashDict.fromList [ (\"b\", 2), (\"a\", 1) ]) = Ok \"{\\\"a\\\":1,\\\"b\\\":2}\"" testActual
+
+let case036 _ =
+  let testActual =
+    JsonEncode.toString (JsonEncode.contramap (fun u ->
+      u.id) JsonEncode.int) { id = 7, name = "P" } = Ok "7"
+  Expect.isTrue "JsonEncode.toString (JsonEncode.contramap (fun u -> u.id) JsonEncode.int) { id = 7, name = \"P\" } = Ok \"7\"" testActual
+
+let case037 _ =
+  let testActual =
+    JsonEncode.object [
+      ("x", JsonEncode.int 1),
+      ("x", JsonEncode.int 2)
+    ] = Err { message = "duplicate object member", path = [JsonEncode.Field "x"] }
+  Expect.isTrue "JsonEncode.object [ (\"x\", JsonEncode.int 1), (\"x\", JsonEncode.int 2) ] = Err { message = \"duplicate object member\", path = [JsonEncode.Field \"x\"] }" testActual
+
+let case038 _ =
+  let testActual =
+    JsonEncode.list JsonEncode.float [
+      1.0,
+      Float.fromBits 0x7ff0000000000000
+    ] = Err { message = "non-finite Float is not a JSON number", path = [JsonEncode.Index 1] }
+  Expect.isTrue "JsonEncode.list JsonEncode.float [ 1.0, Float.fromBits 0x7ff0000000000000 ] = Err { message = \"non-finite Float is not a JSON number\", path = [JsonEncode.Ind…" testActual
+
+let case039 _ =
+  let testActual =
+    JsonEncode.object [
+      ("n", JsonEncode.float (Float.fromBits 0x7ff8000000000000))
+    ] = Err { message = "non-finite Float is not a JSON number", path = [JsonEncode.Field "n"] }
+  Expect.isTrue "JsonEncode.object [ (\"n\", JsonEncode.float (Float.fromBits 0x7ff8000000000000)) ] = Err { message = \"non-finite Float is not a JSON number\", path = [JsonEnco…" testActual
+
+let case040 _ =
+  let testActual =
+    JsonEncode.toPrettyString (JsonEncode.list JsonEncode.bool) [true] = Ok "[\n  true\n]"
+  Expect.isTrue "JsonEncode.toPrettyString (JsonEncode.list JsonEncode.bool) [true] = Ok \"[\\n true\\n]\"" testActual
 
 let treeRoundTrip tree =
   match JsonEncode.toString encodeTree tree with
   | Err _ -> false
   | Ok text -> JsonDecode.fromString treeDecoder text = Ok tree
-forall tree: treeRoundTrip tree
-example: JsonDecode.decode (JsonDecode.fromFunction (fun _ -> Ok 7)) Json.Null = Ok 7
-example: decodeError (JsonDecode.field "x" (JsonDecode.oneOf [])) "{\"x\":true}" = "$[\"x\"]: no decoders supplied"
-example: decodeError (JsonDecode.field "x" (JsonDecode.oneOf [
-  JsonDecode.int,
-  JsonDecode.null 0
-])) "{\"x\":true}" = "no alternative matched: $[\"x\"]: expected integer, got boolean; $[\"x\"]: expected null, got boolean"
-example: JsonDecode.fromString JsonDecode.int "9223372036854775808" = Err (JsonDecode.Data (JsonDecode.Failure [] "number is outside Int range"))
-example: Result.map Float.toBits (JsonDecode.fromString JsonDecode.float "-0.0") = Ok 0x8000000000000000
-example: Result.map JsonNumber.toString (JsonDecode.fromString JsonDecode.number "1e99999") = Ok "1e99999"
-example: JsonEncode.object [
-  ("items", JsonEncode.list JsonEncode.float [1.0, Float.fromBits 0x7ff0000000000000])
-] = Err {
-  message = "non-finite Float is not a JSON number",
-  path = [JsonEncode.Field "items", JsonEncode.Index 1]
-}
+
+let case041 testInput =
+  let tree = testInput
+  let testActual = treeRoundTrip tree
+  Expect.isTrue "property: treeRoundTrip tree" testActual
+
+let case042 _ =
+  let testActual = JsonDecode.decode (JsonDecode.fromFunction (fun _ -> Ok 7)) Json.Null = Ok 7
+  Expect.isTrue "JsonDecode.decode (JsonDecode.fromFunction (fun _ -> Ok 7)) Json.Null = Ok 7" testActual
+
+let case043 _ =
+  let testActual = decodeError (JsonDecode.field "x" (JsonDecode.oneOf [])) "{\"x\":true}"
+  let testExpected = "$[\"x\"]: no decoders supplied"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case044 _ =
+  let testActual =
+    decodeError (JsonDecode.field "x" (JsonDecode.oneOf [
+      JsonDecode.int,
+      JsonDecode.null 0
+    ])) "{\"x\":true}"
+  let testExpected =
+    "no alternative matched: $[\"x\"]: expected integer, got boolean; $[\"x\"]: expected null, got boolean"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case045 _ =
+  let testActual =
+    JsonDecode.fromString JsonDecode.int "9223372036854775808" = Err (JsonDecode.Data (JsonDecode.Failure [] "number is outside Int range"))
+  Expect.isTrue "JsonDecode.fromString JsonDecode.int \"9223372036854775808\" = Err (JsonDecode.Data (JsonDecode.Failure [] \"number is outside Int range\"))" testActual
+
+let case046 _ =
+  let testActual =
+    Result.map Float.toBits (JsonDecode.fromString JsonDecode.float "-0.0") = Ok 0x8000000000000000
+  Expect.isTrue "Result.map Float.toBits (JsonDecode.fromString JsonDecode.float \"-0.0\") = Ok 0x8000000000000000" testActual
+
+let case047 _ =
+  let testActual =
+    Result.map JsonNumber.toString (JsonDecode.fromString JsonDecode.number "1e99999") = Ok "1e99999"
+  Expect.isTrue "Result.map JsonNumber.toString (JsonDecode.fromString JsonDecode.number \"1e99999\") = Ok \"1e99999\"" testActual
+
+let case048 _ =
+  let testActual =
+    JsonEncode.object [
+      ("items", JsonEncode.list JsonEncode.float [1.0, Float.fromBits 0x7ff0000000000000])
+    ] = Err {
+      message = "non-finite Float is not a JSON number",
+      path = [JsonEncode.Field "items", JsonEncode.Index 1]
+    }
+  Expect.isTrue "JsonEncode.object [ (\"items\", JsonEncode.list JsonEncode.float [1.0, Float.fromBits 0x7ff0000000000000]) ] = Err { message = \"non-finite Float is not a JSON …" testActual
+
+treeArbitrary : Test.Arbitrary Tree
+let treeArbitrary = { gen = treeGen, show = treeShow, shrink = treeShrink }
+
+treeChildren : Int -> Int -> Test.Seed -> (List Tree * Test.Seed)
+let treeChildren size count seed =
+  if count <= 0 then
+    ([], seed)
+  else
+    let (first, next) = treeGen size seed
+    let (rest, final) = treeChildren size (count - 1) next
+    (first :: rest, final)
+
+childTrees : Int -> Test.Seed -> (List Tree * Test.Seed)
+let childTrees size seed =
+  let (raw, next) = Test.int.gen size seed
+  let count = if raw < 0 then -raw else raw
+  treeChildren ((size - 1) / (count + 1)) count next
+
+treeGen : Test.Gen Tree
+let treeGen size seed =
+  if size <= 0 then
+    (Leaf 0, seed)
+  else
+    let (choice, next) = Test.bool.gen size seed
+    if choice then
+      let (value, final) = Test.int.gen size next
+      (Leaf value, final)
+    else
+      let (children, final) = childTrees size next
+      (Branch children, final)
+
+treeShow : Tree -> String
+let treeShow tree =
+  match JsonEncode.toString encodeTree tree with
+  | Ok text -> text
+  | Err error -> JsonEncode.errorToString error
+
+treeShrink : Tree -> List Tree
+let treeShrink tree =
+  match tree with
+  | Leaf n -> List.map Leaf (Test.int.shrink n)
+  | Branch children -> Leaf 0 :: List.append children (List.map Branch (shrinkTrees children))
+
+shrinkTrees : List Tree -> List (List Tree)
+let shrinkTrees children =
+  match children with
+  | [] -> []
+  | first :: rest -> rest :: [] :: List.map (fun smaller -> smaller :: rest) (treeShrink first)
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CodecSpec" [
+  Test.test "JsonDecode.fromString userDecoder \"{\\\"name\\\":\\\"Ada\\\",\\\"id\\\":42,\\\"extra\\\":true}\" = Ok { id = 42, name = \"Ada\" }" case001,
+  Test.test "JsonEncode.toString encodeUser { id = 42, name = \"Ada\" } = Ok \"{\\\"id\\\":42,\\\"name\\\":\\\"Ada\\\"}\"" case002,
+  Test.property "property: userRoundTrip id name" (Test.tuple2 Test.int Test.string) case003,
+  Test.test "decodeError userDecoder \"{\\\"id\\\":42}\" = \"$[\\\"name\\\"]: missing required field\"" case004,
+  Test.test "decodeError (JsonDecode.field \"items\" (JsonDecode.list userDecoder)) \"{\\\"items\\\":[{\\\"id\\\":1,\\\"name\\\":false}]}\" = \"$[\\\"items\\\"][0][\\\"name\\\"]: expected string,…" case005,
+  Test.test "decodeError userDecoder \"{\\\"id\\\":1,\\\"id\\\":2,\\\"name\\\":\\\"Ada\\\"}\" = \"$[\\\"id\\\"]: duplicate object member\"" case006,
+  Test.test "decodeError JsonDecode.value \"{\\\"a\\\":1,\\\"\\\\u0061\\\":2}\" = \"$[\\\"a\\\"]: duplicate object member\"" case007,
+  Test.test "decodeError (JsonDecode.succeed 1) \"{\\\"unknown\\\":{\\\"x\\\":1,\\\"x\\\":2}}\" = \"$[\\\"unknown\\\"][\\\"x\\\"]: duplicate object member\"" case008,
+  Test.test "JsonDecode.fromString (JsonDecode.optionalField \"x\" JsonDecode.int) \"{}\" = Ok None" case009,
+  Test.test "JsonDecode.fromString (JsonDecode.optionalField \"x\" JsonDecode.int) \"{\\\"x\\\":1}\" = Ok (Some 1)" case010,
+  Test.test "Result.isErr (JsonDecode.fromString (JsonDecode.optionalField \"x\" JsonDecode.int) \"{\\\"x\\\":null}\")" case011,
+  Test.test "JsonDecode.fromString (JsonDecode.optionalField \"x\" (JsonDecode.nullable JsonDecode.int)) \"{\\\"x\\\":null}\" = Ok (Some None)" case012,
+  Test.test "JsonDecode.fromString (JsonDecode.nullable JsonDecode.string) \"null\" = Ok None" case013,
+  Test.test "Result.isErr (JsonDecode.fromString (JsonDecode.nullable JsonDecode.int) \"false\")" case014,
+  Test.test "JsonDecode.fromString (JsonDecode.index 1 JsonDecode.string) \"[0,\\\"one\\\"]\" = Ok \"one\"" case015,
+  Test.test "decodeError (JsonDecode.index (-1) JsonDecode.int) \"[]\" = \"$[-1]: array index is out of bounds\"" case016,
+  Test.test "JsonDecode.fromString (JsonDecode.at [ \"a\", \"b\" ] JsonDecode.bool) \"{\\\"a\\\":{\\\"b\\\":true}}\" = Ok true" case017,
+  Test.test "JsonDecode.fromString (JsonDecode.array JsonDecode.int) \"[1,2,3]\" = Ok [| 1, 2, 3 |]" case018,
+  Test.test "JsonDecode.fromString (JsonDecode.keyValuePairs JsonDecode.int) \"{\\\"b\\\":2,\\\"a\\\":1}\" = Ok [ (\"b\", 2), (\"a\", 1) ]" case019,
+  Test.test "Result.map (HashDict.get \"a\") (JsonDecode.fromString (JsonDecode.dict JsonDecode.int) \"{\\\"a\\\":1}\") = Ok (Some 1)" case020,
+  Test.test "JsonDecode.fromBytes JsonDecode.string (Bytes.fromString \"\\\"hello\\\"\") = Ok \"hello\"" case021,
+  Test.test "JsonDecode.fromString choice \"{\\\"tag\\\":\\\"text\\\",\\\"value\\\":\\\"hello\\\"}\" = Ok (Text \"hello\")" case022,
+  Test.test "JsonDecode.fromString choice \"{\\\"tag\\\":\\\"count\\\",\\\"value\\\":12}\" = Ok (Count 12)" case023,
+  Test.test "decodeError choice \"{\\\"tag\\\":\\\"other\\\"}\" = \"$: unknown choice tag\"" case024,
+  Test.test "JsonDecode.fromString (JsonDecode.oneOf [JsonDecode.int, JsonDecode.null 0]) \"null\" = Ok 0" case025,
+  Test.test "Result.isErr (JsonDecode.fromString (JsonDecode.oneOf [ JsonDecode.int, JsonDecode.null 0 ]) \"true\")" case026,
+  Test.test "Result.isErr (JsonDecode.fromString (JsonDecode.oneOf []) \"1\")" case027,
+  Test.test "JsonDecode.fromString treeDecoder \"[1,[2,3]]\" = Ok (Branch [ Leaf 1, Branch [Leaf 2, Leaf 3] ])" case028,
+  Test.test "JsonEncode.toString encodeTree (Branch [Leaf 1, Branch [Leaf 2, Leaf 3]]) = Ok \"[1,[2,3]]\"" case029,
+  Test.test "JsonDecode.fromString pipeline \"{\\\"id\\\":7,\\\"name\\\":\\\"P\\\"}\" = Ok { id = 7, name = \"P\" }" case030,
+  Test.test "decodeError (JsonDecode.field \"n\" positive) \"{\\\"n\\\":0}\" = \"$[\\\"n\\\"]: must be positive\"" case031,
+  Test.test "JsonEncode.toString (JsonEncode.array JsonEncode.int) [| 1, 2 |] = Ok \"[1,2]\"" case032,
+  Test.test "JsonEncode.toString (JsonEncode.nullable JsonEncode.string) None = Ok \"null\"" case033,
+  Test.test "JsonEncode.toString (JsonEncode.nullable JsonEncode.string) (Some \"ok\") = Ok \"\\\"ok\\\"\"" case034,
+  Test.test "JsonEncode.toString (JsonEncode.dict JsonEncode.int) (HashDict.fromList [ (\"b\", 2), (\"a\", 1) ]) = Ok \"{\\\"a\\\":1,\\\"b\\\":2}\"" case035,
+  Test.test "JsonEncode.toString (JsonEncode.contramap (fun u -> u.id) JsonEncode.int) { id = 7, name = \"P\" } = Ok \"7\"" case036,
+  Test.test "JsonEncode.object [ (\"x\", JsonEncode.int 1), (\"x\", JsonEncode.int 2) ] = Err { message = \"duplicate object member\", path = [JsonEncode.Field \"x\"] }" case037,
+  Test.test "JsonEncode.list JsonEncode.float [ 1.0, Float.fromBits 0x7ff0000000000000 ] = Err { message = \"non-finite Float is not a JSON number\", path = [JsonEncode.Ind…" case038,
+  Test.test "JsonEncode.object [ (\"n\", JsonEncode.float (Float.fromBits 0x7ff8000000000000)) ] = Err { message = \"non-finite Float is not a JSON number\", path = [JsonEnco…" case039,
+  Test.test "JsonEncode.toPrettyString (JsonEncode.list JsonEncode.bool) [true] = Ok \"[\\n true\\n]\"" case040,
+  Test.property "property: treeRoundTrip tree" treeArbitrary case041,
+  Test.test "JsonDecode.decode (JsonDecode.fromFunction (fun _ -> Ok 7)) Json.Null = Ok 7" case042,
+  Test.test "decodeError (JsonDecode.field \"x\" (JsonDecode.oneOf [])) \"{\\\"x\\\":true}\" = \"$[\\\"x\\\"]: no decoders supplied\"" case043,
+  Test.test "decodeError (JsonDecode.field \"x\" (JsonDecode.oneOf [ JsonDecode.int, JsonDecode.null 0 ])) \"{\\\"x\\\":true}\" = \"no alternative matched: $[\\\"x\\\"]: expected inte…" case044,
+  Test.test "JsonDecode.fromString JsonDecode.int \"9223372036854775808\" = Err (JsonDecode.Data (JsonDecode.Failure [] \"number is outside Int range\"))" case045,
+  Test.test "Result.map Float.toBits (JsonDecode.fromString JsonDecode.float \"-0.0\") = Ok 0x8000000000000000" case046,
+  Test.test "Result.map JsonNumber.toString (JsonDecode.fromString JsonDecode.number \"1e99999\") = Ok \"1e99999\"" case047,
+  Test.test "JsonEncode.object [ (\"items\", JsonEncode.list JsonEncode.float [1.0, Float.fromBits 0x7ff0000000000000]) ] = Err { message = \"non-finite Float is not a JSON …" case048
+]

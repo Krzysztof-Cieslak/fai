@@ -14,7 +14,7 @@ let handleDestination r count received request =
   else
     Ok (Http.response 204 Http.emptyBody)
 
-session : Runtime -> Listener -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, Net, Tls }
+session : Runtime -> Listener -> Listener -> Nursery -> Test.Check / { Clock, Concurrency, Net, Tls }
 let session r origin destination nursery =
   let count = r.concurrency.channel 1
   let received = r.concurrency.channel 1
@@ -46,22 +46,38 @@ let session r origin destination nursery =
   let headers = List.reverse (Option.withDefault [] (r.concurrency.recv received))
   let stopA = r.concurrency.cancel serverA
   let stopB = r.concurrency.cancel serverB
-  r.console.writeLine (if Result.isOk result && headers = [
-    (None, None),
-    (None, Some "destination")
-  ] then
-    "redirect cursor check passed"
-  else
-    "redirect cursor check failed")
+  Expect.all [
+    Expect.ok HttpClient.errorToString (fun _ -> Test.pass) result,
+    Expect.isTrue "cross-origin redirects discard credentials and origin-specific resume IDs" (headers = [
+      (None, None),
+      (None, Some "destination")
+    ])
+  ]
 
-start : Runtime -> Listener -> Unit / { Clock, Concurrency, Console, Net, Tls }
+start : Runtime -> Listener -> Test.Check / { Clock, Concurrency, Net, Tls }
 let start r origin =
   match r.net.listen 0 with
-  | Err error -> r.console.writeLine error
+  | Err error -> Test.error error
   | Ok destination -> r.concurrency.scope (session r origin destination)
 
 public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
 let main r =
   match r.net.listen 0 with
   | Err error -> r.console.writeLine error
-  | Ok origin -> start r origin
+  | Ok origin ->
+    let checked = start r origin
+    r.console.writeLine (if checked = Test.pass then
+      "redirect cursor check passed"
+    else
+      "redirect cursor check failed")
+
+redirect : Test.Context -> Test.Check / { Clock, Concurrency, Net, Tls }
+let redirect ctx =
+  match ctx.runtime.net.listen 0 with
+  | Err error -> Test.error error
+  | Ok origin -> start ctx.runtime origin
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "SSE redirects" [
+  Test.test "reconnections use the destination's committed ID" redirect
+]

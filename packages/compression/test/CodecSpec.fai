@@ -10,72 +10,178 @@ let bind f result =
   | Err error -> Err error
 
 let roundTrip compress decompress input = bind decompress (compress input) = Ok input
-example: roundTrip Gzip.compress Gzip.decompress input
-example: roundTrip Zlib.compress Zlib.decompress input
-example: roundTrip Deflate.compress Deflate.decompress input
-example: roundTrip Gzip.compress Gzip.decompress Bytes.empty
-example: roundTrip Zlib.compress Zlib.decompress Bytes.empty
-example: roundTrip Deflate.compress Deflate.decompress Bytes.empty
-example: roundTrip Gzip.compress Gzip.decompress (Bytes.fromList (Array.toList (Array.range 0 256)))
+
+let case001 _ =
+  let testActual = roundTrip Gzip.compress Gzip.decompress input
+  Expect.isTrue "roundTrip Gzip.compress Gzip.decompress input" testActual
+
+let case002 _ =
+  let testActual = roundTrip Zlib.compress Zlib.decompress input
+  Expect.isTrue "roundTrip Zlib.compress Zlib.decompress input" testActual
+
+let case003 _ =
+  let testActual = roundTrip Deflate.compress Deflate.decompress input
+  Expect.isTrue "roundTrip Deflate.compress Deflate.decompress input" testActual
+
+let case004 _ =
+  let testActual = roundTrip Gzip.compress Gzip.decompress Bytes.empty
+  Expect.isTrue "roundTrip Gzip.compress Gzip.decompress Bytes.empty" testActual
+
+let case005 _ =
+  let testActual = roundTrip Zlib.compress Zlib.decompress Bytes.empty
+  Expect.isTrue "roundTrip Zlib.compress Zlib.decompress Bytes.empty" testActual
+
+let case006 _ =
+  let testActual = roundTrip Deflate.compress Deflate.decompress Bytes.empty
+  Expect.isTrue "roundTrip Deflate.compress Deflate.decompress Bytes.empty" testActual
+
+let case007 _ =
+  let testActual =
+    roundTrip Gzip.compress Gzip.decompress (Bytes.fromList (Array.toList (Array.range 0 256)))
+  Expect.isTrue "roundTrip Gzip.compress Gzip.decompress (Bytes.fromList (Array.toList (Array.range 0 256)))" testActual
 
 let kind result =
   match result with
   | Err error -> Some error.kind
   | Ok _ -> None
-example: kind (Gzip.decompress Bytes.empty) = Some Compression.TruncatedInput
-example: kind (Zlib.decompress Bytes.empty) = Some Compression.TruncatedInput
-example: kind (Deflate.decompress Bytes.empty) = Some Compression.TruncatedInput
-example: kind (Gzip.decompress (bytes "not gzip")) = Some Compression.InvalidHeader
-example: (match Gzip.decompress (bytes "x") with
-| Err error ->
-  error.offset = Some 1 && error.member = Some 0 && error.inputBytes = 1 && error.outputBytes = 0
-| Ok _ -> false)
-example: kind (Zlib.decompress (bytes "not zlib")) = Some Compression.InvalidHeader
-example: kind (Deflate.decompress (Bytes.fromList [7])) = Some Compression.CorruptData
-example: kind (Deflate.decompress (Bytes.fromList [3, 2, 0])) = Some Compression.CorruptData
+
+let case008 _ =
+  let testActual = kind (Gzip.decompress Bytes.empty) = Some Compression.TruncatedInput
+  Expect.isTrue "kind (Gzip.decompress Bytes.empty) = Some Compression.TruncatedInput" testActual
+
+let case009 _ =
+  let testActual = kind (Zlib.decompress Bytes.empty) = Some Compression.TruncatedInput
+  Expect.isTrue "kind (Zlib.decompress Bytes.empty) = Some Compression.TruncatedInput" testActual
+
+let case010 _ =
+  let testActual = kind (Deflate.decompress Bytes.empty) = Some Compression.TruncatedInput
+  Expect.isTrue "kind (Deflate.decompress Bytes.empty) = Some Compression.TruncatedInput" testActual
+
+let case011 _ =
+  let testActual = kind (Gzip.decompress (bytes "not gzip")) = Some Compression.InvalidHeader
+  Expect.isTrue "kind (Gzip.decompress (bytes \"not gzip\")) = Some Compression.InvalidHeader" testActual
+
+let case012 _ =
+  let testActual =
+    (match Gzip.decompress (bytes "x") with
+    | Err error ->
+      error.offset = Some 1 && error.member = Some 0 && error.inputBytes = 1 && error.outputBytes = 0
+    | Ok _ -> false)
+  Expect.isTrue "(match Gzip.decompress (bytes \"x\") with | Err error -> error.offset = Some 1 && error.member = Some 0 && error.inputBytes = 1 && error.outputBytes = 0 | Ok _…" testActual
+
+let case013 _ =
+  let testActual = kind (Zlib.decompress (bytes "not zlib")) = Some Compression.InvalidHeader
+  Expect.isTrue "kind (Zlib.decompress (bytes \"not zlib\")) = Some Compression.InvalidHeader" testActual
+
+let case014 _ =
+  let testActual = kind (Deflate.decompress (Bytes.fromList [7])) = Some Compression.CorruptData
+  Expect.isTrue "kind (Deflate.decompress (Bytes.fromList [7])) = Some Compression.CorruptData" testActual
+
+let case015 _ =
+  let testActual =
+    kind (Deflate.decompress (Bytes.fromList [3, 2, 0])) = Some Compression.CorruptData
+  Expect.isTrue "kind (Deflate.decompress (Bytes.fromList [3, 2, 0])) = Some Compression.CorruptData" testActual
 
 let options limits = { Compression.decodeOptions with limits = limits }
 
 let packed = Result.withDefault Bytes.empty (Gzip.compress input)
-example: kind (Gzip.decompressWith (options { Compression.limits with
-  maxOutputBytes = 1
-}) packed) = Some Compression.OutputLimit
-example: kind (Gzip.decompressWith (options { Compression.limits with
-  maxInputBytes = 1
-}) packed) = Some Compression.InputLimit
-example: kind (Gzip.decompressWith (options { Compression.limits with
-  maxHeaderBytes = 9
-}) packed) = Some Compression.HeaderLimit
-example: kind (Gzip.decompressWith (options { Compression.limits with
-  maxMembers = 0
-}) packed) = Some Compression.MemberLimit
-example: kind (Gzip.decompressWith (options { Compression.limits with
-  chunkBytes = 0
-}) packed) = Some Compression.InvalidOptions
-example: kind (Gzip.decompressWith (options { Compression.limits with
-  maxOutputBytes = -1
-}) packed) = Some Compression.InvalidOptions
-example: Gzip.decompressWith (options { Compression.limits with
-  maxInputBytes = Bytes.length packed,
-  maxOutputBytes = Bytes.length input
-}) packed = Ok input
-example: kind (Gzip.decompressWith (options { Compression.limits with
-  chunkBytes = 1048577
-}) packed) = Some Compression.InvalidOptions
-example: kind (Gzip.compressWith { Compression.encodeOptions with
-  level = 10
-} input) = Some Compression.InvalidOptions
-example: (match Gzip.encoder { Compression.encodeOptions with level = -1 } with
-| Err error -> error.kind = Compression.InvalidOptions && error.offset = None && error.member = None
-| Ok _ -> false)
-example: kind (Gzip.decompress (Bytes.slice 0 (Bytes.length packed - 1) packed)) = Some Compression.TruncatedInput
-example: kind (Gzip.decompress (Bytes.concat packed (bytes "junk"))) = Some Compression.TrailingData
+
+let case016 _ =
+  let testActual =
+    kind (Gzip.decompressWith (options { Compression.limits with
+      maxOutputBytes = 1
+    }) packed) = Some Compression.OutputLimit
+  Expect.isTrue "kind (Gzip.decompressWith (options { Compression.limits with maxOutputBytes = 1 }) packed) = Some Compression.OutputLimit" testActual
+
+let case017 _ =
+  let testActual =
+    kind (Gzip.decompressWith (options { Compression.limits with
+      maxInputBytes = 1
+    }) packed) = Some Compression.InputLimit
+  Expect.isTrue "kind (Gzip.decompressWith (options { Compression.limits with maxInputBytes = 1 }) packed) = Some Compression.InputLimit" testActual
+
+let case018 _ =
+  let testActual =
+    kind (Gzip.decompressWith (options { Compression.limits with
+      maxHeaderBytes = 9
+    }) packed) = Some Compression.HeaderLimit
+  Expect.isTrue "kind (Gzip.decompressWith (options { Compression.limits with maxHeaderBytes = 9 }) packed) = Some Compression.HeaderLimit" testActual
+
+let case019 _ =
+  let testActual =
+    kind (Gzip.decompressWith (options { Compression.limits with
+      maxMembers = 0
+    }) packed) = Some Compression.MemberLimit
+  Expect.isTrue "kind (Gzip.decompressWith (options { Compression.limits with maxMembers = 0 }) packed) = Some Compression.MemberLimit" testActual
+
+let case020 _ =
+  let testActual =
+    kind (Gzip.decompressWith (options { Compression.limits with
+      chunkBytes = 0
+    }) packed) = Some Compression.InvalidOptions
+  Expect.isTrue "kind (Gzip.decompressWith (options { Compression.limits with chunkBytes = 0 }) packed) = Some Compression.InvalidOptions" testActual
+
+let case021 _ =
+  let testActual =
+    kind (Gzip.decompressWith (options { Compression.limits with
+      maxOutputBytes = -1
+    }) packed) = Some Compression.InvalidOptions
+  Expect.isTrue "kind (Gzip.decompressWith (options { Compression.limits with maxOutputBytes = -1 }) packed) = Some Compression.InvalidOptions" testActual
+
+let case022 _ =
+  let testActual =
+    Gzip.decompressWith (options { Compression.limits with
+      maxInputBytes = Bytes.length packed,
+      maxOutputBytes = Bytes.length input
+    }) packed = Ok input
+  Expect.isTrue "Gzip.decompressWith (options { Compression.limits with maxInputBytes = Bytes.length packed, maxOutputBytes = Bytes.length input }) packed = Ok input" testActual
+
+let case023 _ =
+  let testActual =
+    kind (Gzip.decompressWith (options { Compression.limits with
+      chunkBytes = 1048577
+    }) packed) = Some Compression.InvalidOptions
+  Expect.isTrue "kind (Gzip.decompressWith (options { Compression.limits with chunkBytes = 1048577 }) packed) = Some Compression.InvalidOptions" testActual
+
+let case024 _ =
+  let testActual =
+    kind (Gzip.compressWith { Compression.encodeOptions with
+      level = 10
+    } input) = Some Compression.InvalidOptions
+  Expect.isTrue "kind (Gzip.compressWith { Compression.encodeOptions with level = 10 } input) = Some Compression.InvalidOptions" testActual
+
+let case025 _ =
+  let testActual =
+    (match Gzip.encoder { Compression.encodeOptions with level = -1 } with
+    | Err error ->
+      error.kind = Compression.InvalidOptions && error.offset = None && error.member = None
+    | Ok _ -> false)
+  Expect.isTrue "(match Gzip.encoder { Compression.encodeOptions with level = -1 } with | Err error -> error.kind = Compression.InvalidOptions && error.offset = None && error…" testActual
+
+let case026 _ =
+  let testActual =
+    kind (Gzip.decompress (Bytes.slice 0 (Bytes.length packed - 1) packed)) = Some Compression.TruncatedInput
+  Expect.isTrue "kind (Gzip.decompress (Bytes.slice 0 (Bytes.length packed - 1) packed)) = Some Compression.TruncatedInput" testActual
+
+let case027 _ =
+  let testActual =
+    kind (Gzip.decompress (Bytes.concat packed (bytes "junk"))) = Some Compression.TrailingData
+  Expect.isTrue "kind (Gzip.decompress (Bytes.concat packed (bytes \"junk\"))) = Some Compression.TrailingData" testActual
 
 let concatenated =
   bind (fun a -> Result.map (Bytes.concat a) (Gzip.compress (bytes "second"))) (Gzip.compress input)
-example: bind Gzip.decompress concatenated = Ok (Bytes.concat input (bytes "second"))
-example: Bytes.slice 0 10 packed = Bytes.fromList [31, 139, 8, 0, 0, 0, 0, 0, 0, 255]
-example: Gzip.compress input = Gzip.compress input
+
+let case028 _ =
+  let testActual = bind Gzip.decompress concatenated = Ok (Bytes.concat input (bytes "second"))
+  Expect.isTrue "bind Gzip.decompress concatenated = Ok (Bytes.concat input (bytes \"second\"))" testActual
+
+let case029 _ =
+  let testActual = Bytes.slice 0 10 packed = Bytes.fromList [31, 139, 8, 0, 0, 0, 0, 0, 0, 255]
+  Expect.isTrue "Bytes.slice 0 10 packed = Bytes.fromList [31, 139, 8, 0, 0, 0, 0, 0, 0, 255]" testActual
+
+let case030 _ =
+  let testActual = Gzip.compress input = Gzip.compress input
+  Expect.isTrue "Gzip.compress input = Gzip.compress input" testActual
 
 let corrupted =
   Bytes.concat (Bytes.slice 0 (Bytes.length packed - 8) packed) (Bytes.fromList [
@@ -88,14 +194,90 @@ let corrupted =
     0,
     0
   ])
-example: kind (Gzip.decompress corrupted) = Some Compression.ChecksumMismatch
+
+let case031 _ =
+  let testActual = kind (Gzip.decompress corrupted) = Some Compression.ChecksumMismatch
+  Expect.isTrue "kind (Gzip.decompress corrupted) = Some Compression.ChecksumMismatch" testActual
 
 let storedZlib = Bytes.fromList [120, 1, 1, 3, 0, 252, 255, 97, 98, 99, 2, 77, 1, 39]
-example: Zlib.decompress storedZlib = Ok (bytes "abc")
-example: kind (Zlib.decompress (Bytes.concat storedZlib (bytes "x"))) = Some Compression.TrailingData
-example: Deflate.decompress (Bytes.slice 2 10 storedZlib) = Ok (bytes "abc")
-example: kind (Zlib.decompress (Bytes.fromList [120, 32])) = Some Compression.DictionaryRequired
-example: kind (Deflate.decompress (Bytes.concat (Bytes.slice 2 10 storedZlib) (bytes "x"))) = Some Compression.TrailingData
-forall text: roundTrip Gzip.compress Gzip.decompress (bytes text)
-forall text: roundTrip Zlib.compress Zlib.decompress (bytes text)
-forall text: roundTrip Deflate.compress Deflate.decompress (bytes text)
+
+let case032 _ =
+  let testActual = Zlib.decompress storedZlib = Ok (bytes "abc")
+  Expect.isTrue "Zlib.decompress storedZlib = Ok (bytes \"abc\")" testActual
+
+let case033 _ =
+  let testActual =
+    kind (Zlib.decompress (Bytes.concat storedZlib (bytes "x"))) = Some Compression.TrailingData
+  Expect.isTrue "kind (Zlib.decompress (Bytes.concat storedZlib (bytes \"x\"))) = Some Compression.TrailingData" testActual
+
+let case034 _ =
+  let testActual = Deflate.decompress (Bytes.slice 2 10 storedZlib) = Ok (bytes "abc")
+  Expect.isTrue "Deflate.decompress (Bytes.slice 2 10 storedZlib) = Ok (bytes \"abc\")" testActual
+
+let case035 _ =
+  let testActual =
+    kind (Zlib.decompress (Bytes.fromList [120, 32])) = Some Compression.DictionaryRequired
+  Expect.isTrue "kind (Zlib.decompress (Bytes.fromList [120, 32])) = Some Compression.DictionaryRequired" testActual
+
+let case036 _ =
+  let testActual =
+    kind (Deflate.decompress (Bytes.concat (Bytes.slice 2 10 storedZlib) (bytes "x"))) = Some Compression.TrailingData
+  Expect.isTrue "kind (Deflate.decompress (Bytes.concat (Bytes.slice 2 10 storedZlib) (bytes \"x\"))) = Some Compression.TrailingData" testActual
+
+let case037 testInput =
+  let text = testInput
+  let testActual = roundTrip Gzip.compress Gzip.decompress (bytes text)
+  Expect.isTrue "property: roundTrip Gzip.compress Gzip.decompress (bytes text)" testActual
+
+let case038 testInput =
+  let text = testInput
+  let testActual = roundTrip Zlib.compress Zlib.decompress (bytes text)
+  Expect.isTrue "property: roundTrip Zlib.compress Zlib.decompress (bytes text)" testActual
+
+let case039 testInput =
+  let text = testInput
+  let testActual = roundTrip Deflate.compress Deflate.decompress (bytes text)
+  Expect.isTrue "property: roundTrip Deflate.compress Deflate.decompress (bytes text)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CompressionCodecSpec" [
+  Test.test "roundTrip Gzip.compress Gzip.decompress input" case001,
+  Test.test "roundTrip Zlib.compress Zlib.decompress input" case002,
+  Test.test "roundTrip Deflate.compress Deflate.decompress input" case003,
+  Test.test "roundTrip Gzip.compress Gzip.decompress Bytes.empty" case004,
+  Test.test "roundTrip Zlib.compress Zlib.decompress Bytes.empty" case005,
+  Test.test "roundTrip Deflate.compress Deflate.decompress Bytes.empty" case006,
+  Test.test "roundTrip Gzip.compress Gzip.decompress (Bytes.fromList (Array.toList (Array.range 0 256)))" case007,
+  Test.test "kind (Gzip.decompress Bytes.empty) = Some Compression.TruncatedInput" case008,
+  Test.test "kind (Zlib.decompress Bytes.empty) = Some Compression.TruncatedInput" case009,
+  Test.test "kind (Deflate.decompress Bytes.empty) = Some Compression.TruncatedInput" case010,
+  Test.test "kind (Gzip.decompress (bytes \"not gzip\")) = Some Compression.InvalidHeader" case011,
+  Test.test "(match Gzip.decompress (bytes \"x\") with | Err error -> error.offset = Some 1 && error.member = Some 0 && error.inputBytes = 1 && error.outputBytes = 0 | Ok _…" case012,
+  Test.test "kind (Zlib.decompress (bytes \"not zlib\")) = Some Compression.InvalidHeader" case013,
+  Test.test "kind (Deflate.decompress (Bytes.fromList [7])) = Some Compression.CorruptData" case014,
+  Test.test "kind (Deflate.decompress (Bytes.fromList [3, 2, 0])) = Some Compression.CorruptData" case015,
+  Test.test "kind (Gzip.decompressWith (options { Compression.limits with maxOutputBytes = 1 }) packed) = Some Compression.OutputLimit" case016,
+  Test.test "kind (Gzip.decompressWith (options { Compression.limits with maxInputBytes = 1 }) packed) = Some Compression.InputLimit" case017,
+  Test.test "kind (Gzip.decompressWith (options { Compression.limits with maxHeaderBytes = 9 }) packed) = Some Compression.HeaderLimit" case018,
+  Test.test "kind (Gzip.decompressWith (options { Compression.limits with maxMembers = 0 }) packed) = Some Compression.MemberLimit" case019,
+  Test.test "kind (Gzip.decompressWith (options { Compression.limits with chunkBytes = 0 }) packed) = Some Compression.InvalidOptions" case020,
+  Test.test "kind (Gzip.decompressWith (options { Compression.limits with maxOutputBytes = -1 }) packed) = Some Compression.InvalidOptions" case021,
+  Test.test "Gzip.decompressWith (options { Compression.limits with maxInputBytes = Bytes.length packed, maxOutputBytes = Bytes.length input }) packed = Ok input" case022,
+  Test.test "kind (Gzip.decompressWith (options { Compression.limits with chunkBytes = 1048577 }) packed) = Some Compression.InvalidOptions" case023,
+  Test.test "kind (Gzip.compressWith { Compression.encodeOptions with level = 10 } input) = Some Compression.InvalidOptions" case024,
+  Test.test "(match Gzip.encoder { Compression.encodeOptions with level = -1 } with | Err error -> error.kind = Compression.InvalidOptions && error.offset = None && error…" case025,
+  Test.test "kind (Gzip.decompress (Bytes.slice 0 (Bytes.length packed - 1) packed)) = Some Compression.TruncatedInput" case026,
+  Test.test "kind (Gzip.decompress (Bytes.concat packed (bytes \"junk\"))) = Some Compression.TrailingData" case027,
+  Test.test "bind Gzip.decompress concatenated = Ok (Bytes.concat input (bytes \"second\"))" case028,
+  Test.test "Bytes.slice 0 10 packed = Bytes.fromList [31, 139, 8, 0, 0, 0, 0, 0, 0, 255]" case029,
+  Test.test "Gzip.compress input = Gzip.compress input" case030,
+  Test.test "kind (Gzip.decompress corrupted) = Some Compression.ChecksumMismatch" case031,
+  Test.test "Zlib.decompress storedZlib = Ok (bytes \"abc\")" case032,
+  Test.test "kind (Zlib.decompress (Bytes.concat storedZlib (bytes \"x\"))) = Some Compression.TrailingData" case033,
+  Test.test "Deflate.decompress (Bytes.slice 2 10 storedZlib) = Ok (bytes \"abc\")" case034,
+  Test.test "kind (Zlib.decompress (Bytes.fromList [120, 32])) = Some Compression.DictionaryRequired" case035,
+  Test.test "kind (Deflate.decompress (Bytes.concat (Bytes.slice 2 10 storedZlib) (bytes \"x\"))) = Some Compression.TrailingData" case036,
+  Test.property "property: roundTrip Gzip.compress Gzip.decompress (bytes text)" Test.string case037,
+  Test.property "property: roundTrip Zlib.compress Zlib.decompress (bytes text)" Test.string case038,
+  Test.property "property: roundTrip Deflate.compress Deflate.decompress (bytes text)" Test.string case039
+]

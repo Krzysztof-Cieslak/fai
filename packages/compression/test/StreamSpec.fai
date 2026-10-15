@@ -16,14 +16,20 @@ let decoded =
   | Ok reader ->
     let result = collect reader
     Some (result.state, result.complete, Result.isOk result.outcome)
-example: decoded = Some (input, true, true)
+
+let case001 _ =
+  let testActual = decoded = Some (input, true, true)
+  Expect.isTrue "decoded = Some (input, true, true)" testActual
 
 let stopped =
   match CompressionStream.decoder Compression.Gzip Compression.decodeOptions (Stream.fromList chunks) with
   | Err _ -> true
   | Ok reader ->
     (CompressionStream.fold reader () (fun _ _ -> Ok ((), CompressionStream.Stop))).complete
-example: not stopped
+
+let case002 _ =
+  let testActual = not stopped
+  Expect.isTrue "not stopped" testActual
 
 let sourceError state = if state = 0 then Ok (Some (Bytes.empty, 1)) else Err 42
 
@@ -34,10 +40,16 @@ let sourceFailure _ =
     match CompressionStream.next reader with
     | Err (CompressionStream.SourceError 42) -> true
     | _ -> false
-example: sourceFailure ()
+
+let case003 _ =
+  let testActual = sourceFailure ()
+  Expect.isTrue "sourceFailure ()" testActual
 
 let snapshot = Gzip.decoder Compression.decodeOptions
-example: snapshot = Gzip.decoder Compression.decodeOptions
+
+let case004 _ =
+  let testActual = snapshot = Gzip.decoder Compression.decodeOptions
+  Expect.isTrue "snapshot = Gzip.decoder Compression.decodeOptions" testActual
 
 let branched _ =
   match snapshot with
@@ -46,10 +58,16 @@ let branched _ =
     let a = Compression.feedDecoder decoder packed 0
     let b = Compression.feedDecoder decoder packed 0
     a = b && decoder = Result.withDefault decoder snapshot
-example: branched ()
+
+let case005 _ =
+  let testActual = branched ()
+  Expect.isTrue "branched ()" testActual
 
 let tiny = { Compression.decodeOptions with limits = { Compression.limits with chunkBytes = 1 } }
-example: Gzip.decompressWith tiny packed = Ok input
+
+let case006 _ =
+  let testActual = Gzip.decompressWith tiny packed = Ok input
+  Expect.isTrue "Gzip.decompressWith tiny packed = Ok input" testActual
 
 let emptyChunks = Stream.fromList [Bytes.empty, packed, Bytes.empty]
 
@@ -59,7 +77,10 @@ let withEmptyChunks _ =
   | Ok reader ->
     let result = collect reader
     result.state = input && result.complete
-example: withEmptyChunks ()
+
+let case007 _ =
+  let testActual = withEmptyChunks ()
+  Expect.isTrue "withEmptyChunks ()" testActual
 
 let callbackFailure _ =
   match CompressionStream.decoder Compression.Gzip Compression.decodeOptions (Stream.singleton packed) with
@@ -67,7 +88,10 @@ let callbackFailure _ =
   | Ok reader ->
     let result = CompressionStream.fold reader 7 (fun _ _ -> Err "callback stopped")
     result.state = 7 && not result.complete && result.deliveredBytes = 0 && result.outcome = Err (CompressionStream.CallbackFailure "callback stopped")
-example: callbackFailure ()
+
+let case008 _ =
+  let testActual = callbackFailure ()
+  Expect.isTrue "callbackFailure ()" testActual
 
 let truncated _ =
   match CompressionStream.decoder Compression.Gzip Compression.decodeOptions (Stream.singleton (Bytes.slice 0 (Bytes.length packed - 1) packed)) with
@@ -75,4 +99,20 @@ let truncated _ =
   | Ok reader ->
     let result = collect reader
     result.state = input && not result.complete && Result.isErr result.outcome
-example: truncated ()
+
+let case009 _ =
+  let testActual = truncated ()
+  Expect.isTrue "truncated ()" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CompressionStreamSpec" [
+  Test.test "decoded = Some (input, true, true)" case001,
+  Test.test "not stopped" case002,
+  Test.test "sourceFailure ()" case003,
+  Test.test "snapshot = Gzip.decoder Compression.decodeOptions" case004,
+  Test.test "branched ()" case005,
+  Test.test "Gzip.decompressWith tiny packed = Ok input" case006,
+  Test.test "withEmptyChunks ()" case007,
+  Test.test "callbackFailure ()" case008,
+  Test.test "truncated ()" case009
+]

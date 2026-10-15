@@ -8,7 +8,7 @@ fai run -C packages/json examples/JsonExample.fai
 fai test -C packages/json
 ```
 
-The package tests are Fai `example`/`forall` declarations and run directly with
+The package tests are named `Test.test` cases and `Test.property` laws, run directly with
 `fai test`. From the shared source-package workspace, use
 `fai test -C packages --package json`; repeated calls reuse the warm daemon. The
 package can move to another repository together with its manifest and `.fai`
@@ -16,7 +16,7 @@ tests. Repository CI reads the same `fai.toml` dependency declarations.
 
 Repository CI checks both JSON and its Web dependent when this package changes.
 It restores the matching compiler and runs native Fai checks; a compiler-cache
-hit requires no Rust build or Rust test suite. The equivalent contract checks
+hit requires no Rust build or Rust test suite. The equivalent package checks
 locally are:
 
 ```sh

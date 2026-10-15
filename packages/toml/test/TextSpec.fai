@@ -5,12 +5,53 @@ let first pair =
   value
 
 let quoted text = Result.map first (TomlText.quoted (Bytes.fromString text) 0 true)
-example: quoted "\"abc\"" = Ok "abc"
-example: quoted "\"\\u00E9\\U0001F642\"" = Ok "é🙂"
-example: quoted "\"\\x41\\e\"" = Ok ("A" ++ Char.toString (Option.withDefault ' ' (Char.fromCode 27)))
-example: quoted "\"\"\"\r\na\r\nb\"\"\"" = Ok "a\nb"
-example: quoted "\"\"\"a\\  \r\n \t b\"\"\"" = Ok "ab"
-example: quoted "'''${HOST}\\n'''" = Ok "${HOST}\\n"
-example: quoted "\"\\uD800\"" |> Result.isErr
-example: quoted "\"line\nline\"" |> Result.isErr
-example: quoted "\"\"\"x\"\"\"\"\"" = Ok "x\"\""
+
+let case001 _ =
+  let testActual = quoted "\"abc\"" = Ok "abc"
+  Expect.isTrue "quoted \"\\\"abc\\\"\" = Ok \"abc\"" testActual
+
+let case002 _ =
+  let testActual = quoted "\"\\u00E9\\U0001F642\"" = Ok "é🙂"
+  Expect.isTrue "quoted \"\\\"\\\\u00E9\\\\U0001F642\\\"\" = Ok \"é🙂\"" testActual
+
+let case003 _ =
+  let testActual =
+    quoted "\"\\x41\\e\"" = Ok ("A" ++ Char.toString (Option.withDefault ' ' (Char.fromCode 27)))
+  Expect.isTrue "quoted \"\\\"\\\\x41\\\\e\\\"\" = Ok (\"A\" ++ Char.toString (Option.withDefault ' ' (Char.fromCode 27)))" testActual
+
+let case004 _ =
+  let testActual = quoted "\"\"\"\r\na\r\nb\"\"\"" = Ok "a\nb"
+  Expect.isTrue "quoted \"\\\"\\\"\\\"\\r\\na\\r\\nb\\\"\\\"\\\"\" = Ok \"a\\nb\"" testActual
+
+let case005 _ =
+  let testActual = quoted "\"\"\"a\\  \r\n \t b\"\"\"" = Ok "ab"
+  Expect.isTrue "quoted \"\\\"\\\"\\\"a\\\\ \\r\\n \\t b\\\"\\\"\\\"\" = Ok \"ab\"" testActual
+
+let case006 _ =
+  let testActual = quoted "'''${HOST}\\n'''" = Ok "${HOST}\\n"
+  Expect.isTrue "quoted \"'''${HOST}\\\\n'''\" = Ok \"${HOST}\\\\n\"" testActual
+
+let case007 _ =
+  let testActual = quoted "\"\\uD800\"" |> Result.isErr
+  Expect.isTrue "quoted \"\\\"\\\\uD800\\\"\" |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual = quoted "\"line\nline\"" |> Result.isErr
+  Expect.isTrue "quoted \"\\\"line\\nline\\\"\" |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual = quoted "\"\"\"x\"\"\"\"\"" = Ok "x\"\""
+  Expect.isTrue "quoted \"\\\"\\\"\\\"x\\\"\\\"\\\"\\\"\\\"\" = Ok \"x\\\"\\\"\"" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "TomlTextSpec" [
+  Test.test "quoted \"\\\"abc\\\"\" = Ok \"abc\"" case001,
+  Test.test "quoted \"\\\"\\\\u00E9\\\\U0001F642\\\"\" = Ok \"é🙂\"" case002,
+  Test.test "quoted \"\\\"\\\\x41\\\\e\\\"\" = Ok (\"A\" ++ Char.toString (Option.withDefault ' ' (Char.fromCode 27)))" case003,
+  Test.test "quoted \"\\\"\\\"\\\"\\r\\na\\r\\nb\\\"\\\"\\\"\" = Ok \"a\\nb\"" case004,
+  Test.test "quoted \"\\\"\\\"\\\"a\\\\ \\r\\n \\t b\\\"\\\"\\\"\" = Ok \"ab\"" case005,
+  Test.test "quoted \"'''${HOST}\\\\n'''\" = Ok \"${HOST}\\\\n\"" case006,
+  Test.test "quoted \"\\\"\\\\uD800\\\"\" |> Result.isErr" case007,
+  Test.test "quoted \"\\\"line\\nline\\\"\" |> Result.isErr" case008,
+  Test.test "quoted \"\\\"\\\"\\\"x\\\"\\\"\\\"\\\"\\\"\" = Ok \"x\\\"\\\"\"" case009
+]

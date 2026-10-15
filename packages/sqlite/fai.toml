@@ -17,15 +17,3 @@ path = "examples/FileDatabase.fai"
 [[bin]]
 name = "examples-sqlite-example"
 path = "examples/SqliteExample.fai"
-
-[[bin]]
-name = "examples-transaction-checks"
-path = "examples/TransactionChecks.fai"
-
-[[bin]]
-name = "examples-value-checks"
-path = "examples/ValueChecks.fai"
-
-[[bin]]
-name = "examples-uuid-checks"
-path = "examples/UuidChecks.fai"

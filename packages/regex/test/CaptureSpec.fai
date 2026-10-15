@@ -15,28 +15,56 @@ let run =
         startChar = 2
       } && (Regex.groupNamed "b" first |> Result.map (Option.map Regex.text)) = Ok (Some "🙂") && Regex.groupNamed "b" second = Ok None && (Regex.groupNamed "missing" first |> Result.isErr)
     | Err _ -> false
-example: run
-example: (match Regex.compile "(a)(b)" with
-| Err _ -> false
-| Ok regex ->
-  Regex.capturesAllWithLimits { Regex.limits with
-    maxCaptureSlots = 5
-  } regex "abab" |> Result.isErr)
-example: (match Regex.compile "(a)(b)" with
-| Err _ -> false
-| Ok regex ->
-  (Regex.capturesAllWithLimits { Regex.limits with
-    maxCaptureSlots = 6
-  } regex "abab" |> Result.map Array.length) = Ok 2)
-example: (match Regex.compile "(?:a)(?<b>b)" with
-| Err _ -> false
-| Ok regex -> Regex.captureCount regex = 2 && Regex.captureNames regex = [| None, Some "b" |])
-example: (match RegexBytes.compile "(.)" with
-| Err _ -> false
-| Ok regex ->
-  (match RegexBytes.captures regex (Bytes.fromList [255]) with
-  | Ok (Some found) ->
-    (RegexBytes.group 1 found |> Result.map (Option.map RegexBytes.bytes)) = Ok (Some (Bytes.fromList [
-      255
-    ]))
-  | _ -> false))
+
+let case001 _ =
+  let testActual = run
+  Expect.isTrue "run" testActual
+
+let case002 _ =
+  let testActual =
+    (match Regex.compile "(a)(b)" with
+    | Err _ -> false
+    | Ok regex ->
+      Regex.capturesAllWithLimits { Regex.limits with
+        maxCaptureSlots = 5
+      } regex "abab" |> Result.isErr)
+  Expect.isTrue "(match Regex.compile \"(a)(b)\" with | Err _ -> false | Ok regex -> Regex.capturesAllWithLimits { Regex.limits with maxCaptureSlots = 5 } regex \"abab\" |> Resul…" testActual
+
+let case003 _ =
+  let testActual =
+    (match Regex.compile "(a)(b)" with
+    | Err _ -> false
+    | Ok regex ->
+      (Regex.capturesAllWithLimits { Regex.limits with
+        maxCaptureSlots = 6
+      } regex "abab" |> Result.map Array.length) = Ok 2)
+  Expect.isTrue "(match Regex.compile \"(a)(b)\" with | Err _ -> false | Ok regex -> (Regex.capturesAllWithLimits { Regex.limits with maxCaptureSlots = 6 } regex \"abab\" |> Resu…" testActual
+
+let case004 _ =
+  let testActual =
+    (match Regex.compile "(?:a)(?<b>b)" with
+    | Err _ -> false
+    | Ok regex -> Regex.captureCount regex = 2 && Regex.captureNames regex = [| None, Some "b" |])
+  Expect.isTrue "(match Regex.compile \"(?:a)(?<b>b)\" with | Err _ -> false | Ok regex -> Regex.captureCount regex = 2 && Regex.captureNames regex = [| None, Some \"b\" |])" testActual
+
+let case005 _ =
+  let testActual =
+    (match RegexBytes.compile "(.)" with
+    | Err _ -> false
+    | Ok regex ->
+      (match RegexBytes.captures regex (Bytes.fromList [255]) with
+      | Ok (Some found) ->
+        (RegexBytes.group 1 found |> Result.map (Option.map RegexBytes.bytes)) = Ok (Some (Bytes.fromList [
+          255
+        ]))
+      | _ -> false))
+  Expect.isTrue "(match RegexBytes.compile \"(.)\" with | Err _ -> false | Ok regex -> (match RegexBytes.captures regex (Bytes.fromList [255]) with | Ok (Some found) -> (RegexB…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "RegexCaptureSpec" [
+  Test.test "run" case001,
+  Test.test "(match Regex.compile \"(a)(b)\" with | Err _ -> false | Ok regex -> Regex.capturesAllWithLimits { Regex.limits with maxCaptureSlots = 5 } regex \"abab\" |> Resul…" case002,
+  Test.test "(match Regex.compile \"(a)(b)\" with | Err _ -> false | Ok regex -> (Regex.capturesAllWithLimits { Regex.limits with maxCaptureSlots = 6 } regex \"abab\" |> Resu…" case003,
+  Test.test "(match Regex.compile \"(?:a)(?<b>b)\" with | Err _ -> false | Ok regex -> Regex.captureCount regex = 2 && Regex.captureNames regex = [| None, Some \"b\" |])" case004,
+  Test.test "(match RegexBytes.compile \"(.)\" with | Err _ -> false | Ok regex -> (match RegexBytes.captures regex (Bytes.fromList [255]) with | Ok (Some found) -> (RegexB…" case005
+]

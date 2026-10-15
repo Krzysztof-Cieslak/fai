@@ -40,66 +40,162 @@ let headersOn handler verb target =
     match Web.outcomeResponse (handler ctx) with
     | None -> Headers.empty
     | Some response -> response.headers
-example: Headers.get "X-Request-Id" (headersOn (Web.chain [
-  Web.setHeader "X-Request-Id" "abc",
-  Web.text "ok"
-]) Http.GET "/") = Some "abc"
-example: Headers.getAll "X-Value" (headersOn (Web.chain [
-  Web.setHeader "X-Value" "old",
-  Web.setHeader "x-value" "new",
-  Web.text "ok"
-]) Http.GET "/") = ["new"]
-example: Headers.getAll "Set-Cookie" (headersOn (Web.chain [
-  Web.addHeader "Set-Cookie" "a=1",
-  Web.addHeader "set-cookie" "b=2",
-  Web.text "ok"
-]) Http.GET "/") = ["a=1", "b=2"]
-example: Headers.get "Content-Type" (headersOn (Web.chain [
-  Web.setHeader "Content-Type" "old",
-  Web.html "<p>ok</p>"
-]) Http.GET "/") = Some "text/html; charset=utf-8"
-example: Headers.get "Content-Type" (headersOn (Web.chain [
-  Web.setHeader "Content-Type" "old",
-  Web.bytes (Bytes.fromString "binary")
-]) Http.GET "/") = Some "application/octet-stream"
-example: Headers.get "Content-Length" (headersOn (Web.chain [
-  Web.setHeader "Content-Length" "999",
-  Web.text "new body"
-]) Http.GET "/") = None
-example: Headers.get "Content-Type" (headersOn (Web.chain [
-  Web.setHeader "Content-Type" "old",
-  Web.noContent
-]) Http.GET "/") = None
-example: Headers.get "X-Request-Id" (headersOn (Web.chain [
-  Web.setHeader "X-Request-Id" "abc",
-  Web.noContent
-]) Http.GET "/") = Some "abc"
-example: Headers.get "X-Request-Id" (headersOn (Web.chain [
-  Web.setHeader "X-Request-Id" "abc",
-  Web.serverError "oops"
-]) Http.GET "/") = Some "abc"
-example: Headers.get "Location" (headersOn (Web.chain [
-  Web.setHeader "Location" "/old",
-  Web.redirect "/new"
-]) Http.GET "/") = Some "/new"
-example: Headers.get "X-Request-Id" (headersOn (Web.chain [
-  Web.setHeader "X-Request-Id" "abc",
-  Web.redirect "/new"
-]) Http.GET "/") = Some "abc"
+
+let case001 _ =
+  let testActual =
+    Headers.get "X-Request-Id" (headersOn (Web.chain [
+      Web.setHeader "X-Request-Id" "abc",
+      Web.text "ok"
+    ]) Http.GET "/")
+  let testExpected = Some "abc"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual =
+    Headers.getAll "X-Value" (headersOn (Web.chain [
+      Web.setHeader "X-Value" "old",
+      Web.setHeader "x-value" "new",
+      Web.text "ok"
+    ]) Http.GET "/")
+  let testExpected = ["new"]
+  Expect.equal ((Test.list Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual =
+    Headers.getAll "Set-Cookie" (headersOn (Web.chain [
+      Web.addHeader "Set-Cookie" "a=1",
+      Web.addHeader "set-cookie" "b=2",
+      Web.text "ok"
+    ]) Http.GET "/")
+  let testExpected = ["a=1", "b=2"]
+  Expect.equal ((Test.list Test.string)).show testExpected testActual
+
+let case004 _ =
+  let testActual =
+    Headers.get "Content-Type" (headersOn (Web.chain [
+      Web.setHeader "Content-Type" "old",
+      Web.html "<p>ok</p>"
+    ]) Http.GET "/")
+  let testExpected = Some "text/html; charset=utf-8"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case005 _ =
+  let testActual =
+    Headers.get "Content-Type" (headersOn (Web.chain [
+      Web.setHeader "Content-Type" "old",
+      Web.bytes (Bytes.fromString "binary")
+    ]) Http.GET "/")
+  let testExpected = Some "application/octet-stream"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case006 _ =
+  let testActual =
+    Headers.get "Content-Length" (headersOn (Web.chain [
+      Web.setHeader "Content-Length" "999",
+      Web.text "new body"
+    ]) Http.GET "/")
+  let testExpected = None
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case007 _ =
+  let testActual =
+    Headers.get "Content-Type" (headersOn (Web.chain [
+      Web.setHeader "Content-Type" "old",
+      Web.noContent
+    ]) Http.GET "/")
+  let testExpected = None
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case008 _ =
+  let testActual =
+    Headers.get "X-Request-Id" (headersOn (Web.chain [
+      Web.setHeader "X-Request-Id" "abc",
+      Web.noContent
+    ]) Http.GET "/")
+  let testExpected = Some "abc"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case009 _ =
+  let testActual =
+    Headers.get "X-Request-Id" (headersOn (Web.chain [
+      Web.setHeader "X-Request-Id" "abc",
+      Web.serverError "oops"
+    ]) Http.GET "/")
+  let testExpected = Some "abc"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case010 _ =
+  let testActual =
+    Headers.get "Location" (headersOn (Web.chain [
+      Web.setHeader "Location" "/old",
+      Web.redirect "/new"
+    ]) Http.GET "/")
+  let testExpected = Some "/new"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case011 _ =
+  let testActual =
+    Headers.get "X-Request-Id" (headersOn (Web.chain [
+      Web.setHeader "X-Request-Id" "abc",
+      Web.redirect "/new"
+    ]) Http.GET "/")
+  let testExpected = Some "abc"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
 // --- Core handler behaviour ------------------------------------------------
-example: runOn (Web.text "hi") Http.GET "/x" = 200
-example: runOn (Web.html "<p>hi</p>") Http.GET "/x" = 200
-example: runOn (Web.notFound "no") Http.GET "/x" = 404
-example: runOn (Web.respond 201 "made") Http.GET "/x" = 201
-example: runOn (Web.badRequest "bad") Http.GET "/x" = 400
-example: runOn (Web.redirect "/elsewhere") Http.GET "/x" = 302
-example: bodyOn (Web.text "hello") Http.GET "/x" = Ok "hello"
+let case012 _ =
+  let testActual = runOn (Web.text "hi") Http.GET "/x"
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
+let case013 _ =
+  let testActual = runOn (Web.html "<p>hi</p>") Http.GET "/x"
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
+let case014 _ =
+  let testActual = runOn (Web.notFound "no") Http.GET "/x"
+  let testExpected = 404
+  Expect.equal (Test.int).show testExpected testActual
+
+let case015 _ =
+  let testActual = runOn (Web.respond 201 "made") Http.GET "/x"
+  let testExpected = 201
+  Expect.equal (Test.int).show testExpected testActual
+
+let case016 _ =
+  let testActual = runOn (Web.badRequest "bad") Http.GET "/x"
+  let testExpected = 400
+  Expect.equal (Test.int).show testExpected testActual
+
+let case017 _ =
+  let testActual = runOn (Web.redirect "/elsewhere") Http.GET "/x"
+  let testExpected = 302
+  Expect.equal (Test.int).show testExpected testActual
+
+let case018 _ =
+  let testActual = bodyOn (Web.text "hello") Http.GET "/x"
+  let testExpected = Ok "hello"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
 // `requireMethod` continues on a match (so the chain reaches `text`) and skips
 // otherwise (so the chain stops with no response).
-example: runOn (Web.chain [Web.requireMethod Http.GET, Web.text "ok"]) Http.GET "/x" = 200
-example: runOn (Web.chain [Web.requireMethod Http.POST, Web.text "ok"]) Http.GET "/x" = 0
+let case019 _ =
+  let testActual = runOn (Web.chain [Web.requireMethod Http.GET, Web.text "ok"]) Http.GET "/x"
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
+let case020 _ =
+  let testActual = runOn (Web.chain [Web.requireMethod Http.POST, Web.text "ok"]) Http.GET "/x"
+  let testExpected = 0
+  Expect.equal (Test.int).show testExpected testActual
+
 // `choose` tries alternatives until one does not skip.
-example: runOn (Web.choose [Web.requireMethod Http.POST, Web.text "fallback"]) Http.GET "/x" = 200
+let case021 _ =
+  let testActual =
+    runOn (Web.choose [Web.requireMethod Http.POST, Web.text "fallback"]) Http.GET "/x"
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
 
 // --- A sample application ---------------------------------------------------
 showUser : Web.HttpHandler 'e
@@ -124,29 +220,140 @@ let app = Router.router (Web.notFound "Not Found") [
   Router.post [Router.route "/submit" (Web.text "created")],
   Router.subRoute "/api" [Router.get [Router.route "/ping" (Web.text "pong")]]
 ]
+
 // Static routes.
-example: runOn app Http.GET "/" = 200
-example: bodyOn app Http.GET "/" = Ok "index"
-example: runOn app Http.POST "/submit" = 200
-example: bodyOn app Http.POST "/submit" = Ok "created"
+let case022 _ =
+  let testActual = runOn app Http.GET "/"
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
+let case023 _ =
+  let testActual = bodyOn app Http.GET "/"
+  let testExpected = Ok "index"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case024 _ =
+  let testActual = runOn app Http.POST "/submit"
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
+let case025 _ =
+  let testActual = bodyOn app Http.POST "/submit"
+  let testExpected = Ok "created"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
 // Nested routes via `subRoute`.
-example: runOn app Http.GET "/api/ping" = 200
-example: bodyOn app Http.GET "/api/ping" = Ok "pong"
+let case026 _ =
+  let testActual = runOn app Http.GET "/api/ping"
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
+let case027 _ =
+  let testActual = bodyOn app Http.GET "/api/ping"
+  let testExpected = Ok "pong"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
 // A trailing slash is ignored.
-example: runOn app Http.GET "/api/ping/" = 200
+let case028 _ =
+  let testActual = runOn app Http.GET "/api/ping/"
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
 // Captured path parameters.
-example: bodyOn app Http.GET "/user/42" = Ok "42"
-example: bodyOn app Http.GET "/user/abc" = Ok "abc"
+let case029 _ =
+  let testActual = bodyOn app Http.GET "/user/42"
+  let testExpected = Ok "42"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case030 _ =
+  let testActual = bodyOn app Http.GET "/user/abc"
+  let testExpected = Ok "abc"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
 // Query-string access.
-example: bodyOn app Http.GET "/search?q=fai" = Ok "fai"
-example: bodyOn app Http.GET "/search?q=café%20😀" = Ok "café 😀"
-example: bodyOn app Http.GET "/search?q=%GG" = Ok "%GG"
-example: bodyOn app Http.GET "/search" = Ok "none"
+let case031 _ =
+  let testActual = bodyOn app Http.GET "/search?q=fai"
+  let testExpected = Ok "fai"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case032 _ =
+  let testActual = bodyOn app Http.GET "/search?q=café%20😀"
+  let testExpected = Ok "café 😀"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case033 _ =
+  let testActual = bodyOn app Http.GET "/search?q=%GG"
+  let testExpected = Ok "%GG"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case034 _ =
+  let testActual = bodyOn app Http.GET "/search"
+  let testExpected = Ok "none"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
 // Fallbacks: unknown path, and a known path with an unregistered method.
-example: runOn app Http.GET "/missing" = 404
-example: runOn app Http.POST "/" = 404
-example: runOn app Http.DELETE "/user/42" = 404
-example: Headers.get "X-Request-Id" (headersOn (Web.chain [
-  Web.setHeader "X-Request-Id" "abc",
-  app
-]) Http.GET "/user/42") = Some "abc"
+let case035 _ =
+  let testActual = runOn app Http.GET "/missing"
+  let testExpected = 404
+  Expect.equal (Test.int).show testExpected testActual
+
+let case036 _ =
+  let testActual = runOn app Http.POST "/"
+  let testExpected = 404
+  Expect.equal (Test.int).show testExpected testActual
+
+let case037 _ =
+  let testActual = runOn app Http.DELETE "/user/42"
+  let testExpected = 404
+  Expect.equal (Test.int).show testExpected testActual
+
+let case038 _ =
+  let testActual =
+    Headers.get "X-Request-Id" (headersOn (Web.chain [
+      Web.setHeader "X-Request-Id" "abc",
+      app
+    ]) Http.GET "/user/42")
+  let testExpected = Some "abc"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "WebSpec" [
+  Test.test "Headers.get \"X-Request-Id\" (headersOn (Web.chain [ Web.setHeader \"X-Request-Id\" \"abc\", Web.text \"ok\" ]) Http.GET \"/\") = Some \"abc\"" case001,
+  Test.test "Headers.getAll \"X-Value\" (headersOn (Web.chain [ Web.setHeader \"X-Value\" \"old\", Web.setHeader \"x-value\" \"new\", Web.text \"ok\" ]) Http.GET \"/\") = [\"new\"]" case002,
+  Test.test "Headers.getAll \"Set-Cookie\" (headersOn (Web.chain [ Web.addHeader \"Set-Cookie\" \"a=1\", Web.addHeader \"set-cookie\" \"b=2\", Web.text \"ok\" ]) Http.GET \"/\") = [\"a=…" case003,
+  Test.test "Headers.get \"Content-Type\" (headersOn (Web.chain [ Web.setHeader \"Content-Type\" \"old\", Web.html \"<p>ok</p>\" ]) Http.GET \"/\") = Some \"text/html; charset=utf-8\"" case004,
+  Test.test "Headers.get \"Content-Type\" (headersOn (Web.chain [ Web.setHeader \"Content-Type\" \"old\", Web.bytes (Bytes.fromString \"binary\") ]) Http.GET \"/\") = Some \"applica…" case005,
+  Test.test "Headers.get \"Content-Length\" (headersOn (Web.chain [ Web.setHeader \"Content-Length\" \"999\", Web.text \"new body\" ]) Http.GET \"/\") = None" case006,
+  Test.test "Headers.get \"Content-Type\" (headersOn (Web.chain [ Web.setHeader \"Content-Type\" \"old\", Web.noContent ]) Http.GET \"/\") = None" case007,
+  Test.test "Headers.get \"X-Request-Id\" (headersOn (Web.chain [ Web.setHeader \"X-Request-Id\" \"abc\", Web.noContent ]) Http.GET \"/\") = Some \"abc\"" case008,
+  Test.test "Headers.get \"X-Request-Id\" (headersOn (Web.chain [ Web.setHeader \"X-Request-Id\" \"abc\", Web.serverError \"oops\" ]) Http.GET \"/\") = Some \"abc\"" case009,
+  Test.test "Headers.get \"Location\" (headersOn (Web.chain [ Web.setHeader \"Location\" \"/old\", Web.redirect \"/new\" ]) Http.GET \"/\") = Some \"/new\"" case010,
+  Test.test "Headers.get \"X-Request-Id\" (headersOn (Web.chain [ Web.setHeader \"X-Request-Id\" \"abc\", Web.redirect \"/new\" ]) Http.GET \"/\") = Some \"abc\"" case011,
+  Test.test "runOn (Web.text \"hi\") Http.GET \"/x\" = 200" case012,
+  Test.test "runOn (Web.html \"<p>hi</p>\") Http.GET \"/x\" = 200" case013,
+  Test.test "runOn (Web.notFound \"no\") Http.GET \"/x\" = 404" case014,
+  Test.test "runOn (Web.respond 201 \"made\") Http.GET \"/x\" = 201" case015,
+  Test.test "runOn (Web.badRequest \"bad\") Http.GET \"/x\" = 400" case016,
+  Test.test "runOn (Web.redirect \"/elsewhere\") Http.GET \"/x\" = 302" case017,
+  Test.test "bodyOn (Web.text \"hello\") Http.GET \"/x\" = Ok \"hello\"" case018,
+  Test.test "runOn (Web.chain [Web.requireMethod Http.GET, Web.text \"ok\"]) Http.GET \"/x\" = 200" case019,
+  Test.test "runOn (Web.chain [Web.requireMethod Http.POST, Web.text \"ok\"]) Http.GET \"/x\" = 0" case020,
+  Test.test "runOn (Web.choose [Web.requireMethod Http.POST, Web.text \"fallback\"]) Http.GET \"/x\" = 200" case021,
+  Test.test "runOn app Http.GET \"/\" = 200" case022,
+  Test.test "bodyOn app Http.GET \"/\" = Ok \"index\"" case023,
+  Test.test "runOn app Http.POST \"/submit\" = 200" case024,
+  Test.test "bodyOn app Http.POST \"/submit\" = Ok \"created\"" case025,
+  Test.test "runOn app Http.GET \"/api/ping\" = 200" case026,
+  Test.test "bodyOn app Http.GET \"/api/ping\" = Ok \"pong\"" case027,
+  Test.test "runOn app Http.GET \"/api/ping/\" = 200" case028,
+  Test.test "bodyOn app Http.GET \"/user/42\" = Ok \"42\"" case029,
+  Test.test "bodyOn app Http.GET \"/user/abc\" = Ok \"abc\"" case030,
+  Test.test "bodyOn app Http.GET \"/search?q=fai\" = Ok \"fai\"" case031,
+  Test.test "bodyOn app Http.GET \"/search?q=café%20😀\" = Ok \"café 😀\"" case032,
+  Test.test "bodyOn app Http.GET \"/search?q=%GG\" = Ok \"%GG\"" case033,
+  Test.test "bodyOn app Http.GET \"/search\" = Ok \"none\"" case034,
+  Test.test "runOn app Http.GET \"/missing\" = 404" case035,
+  Test.test "runOn app Http.POST \"/\" = 404" case036,
+  Test.test "runOn app Http.DELETE \"/user/42\" = 404" case037,
+  Test.test "Headers.get \"X-Request-Id\" (headersOn (Web.chain [ Web.setHeader \"X-Request-Id\" \"abc\", app ]) Http.GET \"/user/42\") = Some \"abc\"" case038
+]

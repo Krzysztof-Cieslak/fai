@@ -297,3 +297,32 @@ let main env =
     | Err (FileSystem.BodyError error) -> env.console.writeLine error
     | Err _ ->
       env.console.writeLine "Git ignore compatibility checks FAILED during setup or cleanup"
+
+withRepository : (Services -> Path -> Result Unit String / { Concurrency, FileSystem, ProcessHost.Process }) -> Test.Context -> Test.Check / { Concurrency, FileSystem, ProcessHost.Process }
+let withRepository check ctx =
+  let env = {
+    concurrency = ctx.runtime.concurrency,
+    console = ctx.runtime.console,
+    fs = ctx.runtime.fs,
+    process = ProcessHost.native
+  }
+  let root = ctx.tempRoot
+  let config = env.fs.writeBytes (Path.join root (path "empty-config")) Bytes.empty
+  let initialized = git env root ["init", "--quiet", "--template="] ""
+  let made = makeDirectories env.fs root directories
+  match (config, initialized, made) with
+  | (Ok _, Ok output, Ok _) ->
+    if output.exits <> [Some (ProcessHost.Exited 0)] then
+      Test.error (processDiagnostic output)
+    else
+      Expect.ok identity (fun _ -> Test.pass) (check env root)
+  | _ -> Test.error "could not prepare Git comparison repository"
+
+public tests : Test.Suite Test.Context { Concurrency, FileSystem, ProcessHost.Process }
+let tests = Test.describe "Git ignore compatibility" [
+  Test.test "case-sensitive patterns match Git" (withRepository (fun env root ->
+    compareAll env root false (List.append patterns edgePatterns))),
+  Test.test "case-insensitive patterns match Git" (withRepository (fun env root ->
+    compareAll env root true (List.append patterns edgePatterns))),
+  Test.test "nested ignore rules match Git" (withRepository nestedCheck)
+]

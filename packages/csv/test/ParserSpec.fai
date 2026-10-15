@@ -24,39 +24,131 @@ let values records =
 let text source = Result.map values (parse CsvTypes.byteOptions (Bytes.fromString source))
 
 let b text = Bytes.fromString text
-example: text "" = Ok [||]
-example: text "\n" = Ok [| [| Bytes.empty |] |]
-example: text "a,b\r\n" = Ok [| [| b "a", b "b" |] |]
-example: text "a," = Ok [| [| b "a", Bytes.empty |] |]
-example: text "\"\"" = Ok [| [| Bytes.empty |] |]
-example: text "\"a,b\",\"a\"\"b\"" = Ok [| [| b "a,b", b "a\"b" |] |]
-example: text "\"a\r\nb\",x" = Ok [| [| b "a\r\nb", b "x" |] |]
-example: text " a , b " = Ok [| [| b " a ", b " b " |] |]
-example: text "a,b\n\n" |> Result.isErr
-example: text "a\"b" |> Result.isErr
-example: text "\"a\" " |> Result.isErr
-example: text "\"unterminated" |> Result.isErr
-example: parse { CsvTypes.byteOptions with
-  dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly }
-} (b "a\r") |> Result.isErr
-example: parse { CsvTypes.byteOptions with
-  dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly }
-} (b "a\n") |> Result.isErr
-example: parse { CsvTypes.byteOptions with
-  limits = { CsvTypes.limits with maxFieldBytes = 1 }
-} (b "\"aa\"") |> Result.isErr
-example: parse { CsvTypes.byteOptions with
-  limits = { CsvTypes.limits with maxRecordBytes = 3 }
-} (b "\"a\"") |> Result.isOk
-example: parse { CsvTypes.byteOptions with
-  limits = { CsvTypes.limits with maxFields = 1 }
-} (b "a,") |> Result.isErr
-example: parse { CsvTypes.byteOptions with
-  limits = { CsvTypes.limits with maxRecords = Some 1 }
-} (b "a\r\n") |> Result.isOk
-example: parse { CsvTypes.byteOptions with
-  limits = { CsvTypes.limits with maxRecords = Some 1 }
-} (b "a\r\nb") |> Result.isErr
-example: parse { CsvTypes.byteOptions with
-  width = CsvTypes.Flexible
-} (Bytes.fromList [0, 255, 10, 44]) |> Result.isOk
+
+let case001 _ =
+  let testActual = text "" = Ok [||]
+  Expect.isTrue "text \"\" = Ok [||]" testActual
+
+let case002 _ =
+  let testActual = text "\n" = Ok [| [| Bytes.empty |] |]
+  Expect.isTrue "text \"\\n\" = Ok [| [| Bytes.empty |] |]" testActual
+
+let case003 _ =
+  let testActual = text "a,b\r\n" = Ok [| [| b "a", b "b" |] |]
+  Expect.isTrue "text \"a,b\\r\\n\" = Ok [| [| b \"a\", b \"b\" |] |]" testActual
+
+let case004 _ =
+  let testActual = text "a," = Ok [| [| b "a", Bytes.empty |] |]
+  Expect.isTrue "text \"a,\" = Ok [| [| b \"a\", Bytes.empty |] |]" testActual
+
+let case005 _ =
+  let testActual = text "\"\"" = Ok [| [| Bytes.empty |] |]
+  Expect.isTrue "text \"\\\"\\\"\" = Ok [| [| Bytes.empty |] |]" testActual
+
+let case006 _ =
+  let testActual = text "\"a,b\",\"a\"\"b\"" = Ok [| [| b "a,b", b "a\"b" |] |]
+  Expect.isTrue "text \"\\\"a,b\\\",\\\"a\\\"\\\"b\\\"\" = Ok [| [| b \"a,b\", b \"a\\\"b\" |] |]" testActual
+
+let case007 _ =
+  let testActual = text "\"a\r\nb\",x" = Ok [| [| b "a\r\nb", b "x" |] |]
+  Expect.isTrue "text \"\\\"a\\r\\nb\\\",x\" = Ok [| [| b \"a\\r\\nb\", b \"x\" |] |]" testActual
+
+let case008 _ =
+  let testActual = text " a , b " = Ok [| [| b " a ", b " b " |] |]
+  Expect.isTrue "text \" a , b \" = Ok [| [| b \" a \", b \" b \" |] |]" testActual
+
+let case009 _ =
+  let testActual = text "a,b\n\n" |> Result.isErr
+  Expect.isTrue "text \"a,b\\n\\n\" |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual = text "a\"b" |> Result.isErr
+  Expect.isTrue "text \"a\\\"b\" |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = text "\"a\" " |> Result.isErr
+  Expect.isTrue "text \"\\\"a\\\" \" |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = text "\"unterminated" |> Result.isErr
+  Expect.isTrue "text \"\\\"unterminated\" |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual =
+    parse { CsvTypes.byteOptions with
+      dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly }
+    } (b "a\r") |> Result.isErr
+  Expect.isTrue "parse { CsvTypes.byteOptions with dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly } } (b \"a\\r\") |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual =
+    parse { CsvTypes.byteOptions with
+      dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly }
+    } (b "a\n") |> Result.isErr
+  Expect.isTrue "parse { CsvTypes.byteOptions with dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly } } (b \"a\\n\") |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual =
+    parse { CsvTypes.byteOptions with
+      limits = { CsvTypes.limits with maxFieldBytes = 1 }
+    } (b "\"aa\"") |> Result.isErr
+  Expect.isTrue "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxFieldBytes = 1 } } (b \"\\\"aa\\\"\") |> Result.isErr" testActual
+
+let case016 _ =
+  let testActual =
+    parse { CsvTypes.byteOptions with
+      limits = { CsvTypes.limits with maxRecordBytes = 3 }
+    } (b "\"a\"") |> Result.isOk
+  Expect.isTrue "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxRecordBytes = 3 } } (b \"\\\"a\\\"\") |> Result.isOk" testActual
+
+let case017 _ =
+  let testActual =
+    parse { CsvTypes.byteOptions with
+      limits = { CsvTypes.limits with maxFields = 1 }
+    } (b "a,") |> Result.isErr
+  Expect.isTrue "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxFields = 1 } } (b \"a,\") |> Result.isErr" testActual
+
+let case018 _ =
+  let testActual =
+    parse { CsvTypes.byteOptions with
+      limits = { CsvTypes.limits with maxRecords = Some 1 }
+    } (b "a\r\n") |> Result.isOk
+  Expect.isTrue "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxRecords = Some 1 } } (b \"a\\r\\n\") |> Result.isOk" testActual
+
+let case019 _ =
+  let testActual =
+    parse { CsvTypes.byteOptions with
+      limits = { CsvTypes.limits with maxRecords = Some 1 }
+    } (b "a\r\nb") |> Result.isErr
+  Expect.isTrue "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxRecords = Some 1 } } (b \"a\\r\\nb\") |> Result.isErr" testActual
+
+let case020 _ =
+  let testActual =
+    parse { CsvTypes.byteOptions with
+      width = CsvTypes.Flexible
+    } (Bytes.fromList [0, 255, 10, 44]) |> Result.isOk
+  Expect.isTrue "parse { CsvTypes.byteOptions with width = CsvTypes.Flexible } (Bytes.fromList [0, 255, 10, 44]) |> Result.isOk" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CsvParserSpec" [
+  Test.test "text \"\" = Ok [||]" case001,
+  Test.test "text \"\\n\" = Ok [| [| Bytes.empty |] |]" case002,
+  Test.test "text \"a,b\\r\\n\" = Ok [| [| b \"a\", b \"b\" |] |]" case003,
+  Test.test "text \"a,\" = Ok [| [| b \"a\", Bytes.empty |] |]" case004,
+  Test.test "text \"\\\"\\\"\" = Ok [| [| Bytes.empty |] |]" case005,
+  Test.test "text \"\\\"a,b\\\",\\\"a\\\"\\\"b\\\"\" = Ok [| [| b \"a,b\", b \"a\\\"b\" |] |]" case006,
+  Test.test "text \"\\\"a\\r\\nb\\\",x\" = Ok [| [| b \"a\\r\\nb\", b \"x\" |] |]" case007,
+  Test.test "text \" a , b \" = Ok [| [| b \" a \", b \" b \" |] |]" case008,
+  Test.test "text \"a,b\\n\\n\" |> Result.isErr" case009,
+  Test.test "text \"a\\\"b\" |> Result.isErr" case010,
+  Test.test "text \"\\\"a\\\" \" |> Result.isErr" case011,
+  Test.test "text \"\\\"unterminated\" |> Result.isErr" case012,
+  Test.test "parse { CsvTypes.byteOptions with dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly } } (b \"a\\r\") |> Result.isErr" case013,
+  Test.test "parse { CsvTypes.byteOptions with dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly } } (b \"a\\n\") |> Result.isErr" case014,
+  Test.test "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxFieldBytes = 1 } } (b \"\\\"aa\\\"\") |> Result.isErr" case015,
+  Test.test "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxRecordBytes = 3 } } (b \"\\\"a\\\"\") |> Result.isOk" case016,
+  Test.test "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxFields = 1 } } (b \"a,\") |> Result.isErr" case017,
+  Test.test "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxRecords = Some 1 } } (b \"a\\r\\n\") |> Result.isOk" case018,
+  Test.test "parse { CsvTypes.byteOptions with limits = { CsvTypes.limits with maxRecords = Some 1 } } (b \"a\\r\\nb\") |> Result.isErr" case019,
+  Test.test "parse { CsvTypes.byteOptions with width = CsvTypes.Flexible } (Bytes.fromList [0, 255, 10, 44]) |> Result.isOk" case020
+]

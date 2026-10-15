@@ -28,44 +28,71 @@ let missingLocation =
         startByte = 0
       }
     | _ -> false
-example: missingLocation
+
+let case001 _ =
+  let testActual = missingLocation
+  Expect.isTrue "missingLocation" testActual
 
 let dependent =
   ConfigDecode.field "type" ConfigDecode.string |> ConfigDecode.andThen (fun kind ->
     if kind = "number" then ConfigDecode.field "value" ConfigDecode.int else ConfigDecode.succeed 0)
-example: (match configured "type='number'\nvalue=7" with
-| Ok config -> ConfigDecode.decode dependent config = Ok 7
-| _ -> false)
-example: (match configured "type='none'\nvalue=7" with
-| Ok config -> ConfigDecode.decode dependent config |> Result.isErr
-| _ -> false)
-example: (match configured "value='bad'" with
-| Ok config ->
-  ConfigDecode.decode (ConfigDecode.field "value" (ConfigDecode.oneOf [
-    ConfigDecode.map (fun _ -> ()) ConfigDecode.int,
-    ConfigDecode.map (fun _ -> ()) ConfigDecode.bool
-  ])) config |> Result.isErr
-| _ -> false)
-example: (match configured "values=[{x=1,unknown=2},{x='bad'}]" with
-| Ok config ->
-  (match ConfigDecode.decode (ConfigDecode.field "values" (ConfigDecode.array (ConfigDecode.field "x" ConfigDecode.int))) config with
-  | Err errors ->
-    List.map (fun error ->
-      error.path) errors = [
-      [TomlTypes.Key "values", TomlTypes.Index 0, TomlTypes.Key "unknown"],
-      [TomlTypes.Key "values", TomlTypes.Index 1, TomlTypes.Key "x"]
-    ]
-  | _ -> false)
-| _ -> false)
-example: (match configured "date=2026-10-12\ntime=12:30\nlocal=2026-10-12T12:30\noffset=2026-10-12T12:30Z" with
-| Ok config ->
-  ConfigDecode.decode (ConfigDecode.succeed (fun a b c d ->
-    ()) |> ConfigDecode.andMap (ConfigDecode.field "date" ConfigDecode.date) |> ConfigDecode.andMap (ConfigDecode.field "time" ConfigDecode.time) |> ConfigDecode.andMap (ConfigDecode.field "local" ConfigDecode.localDateTime) |> ConfigDecode.andMap (ConfigDecode.field "offset" ConfigDecode.offsetDateTime)) config = Ok ()
-| _ -> false)
-example: (match configured "time=12:30:00.1234567891" with
-| Ok config ->
-  ConfigDecode.decode (ConfigDecode.field "time" ConfigDecode.time) config |> Result.isErr
-| _ -> false)
+
+let case002 _ =
+  let testActual =
+    (match configured "type='number'\nvalue=7" with
+    | Ok config -> ConfigDecode.decode dependent config = Ok 7
+    | _ -> false)
+  Expect.isTrue "(match configured \"type='number'\\nvalue=7\" with | Ok config -> ConfigDecode.decode dependent config = Ok 7 | _ -> false)" testActual
+
+let case003 _ =
+  let testActual =
+    (match configured "type='none'\nvalue=7" with
+    | Ok config -> ConfigDecode.decode dependent config |> Result.isErr
+    | _ -> false)
+  Expect.isTrue "(match configured \"type='none'\\nvalue=7\" with | Ok config -> ConfigDecode.decode dependent config |> Result.isErr | _ -> false)" testActual
+
+let case004 _ =
+  let testActual =
+    (match configured "value='bad'" with
+    | Ok config ->
+      ConfigDecode.decode (ConfigDecode.field "value" (ConfigDecode.oneOf [
+        ConfigDecode.map (fun _ -> ()) ConfigDecode.int,
+        ConfigDecode.map (fun _ -> ()) ConfigDecode.bool
+      ])) config |> Result.isErr
+    | _ -> false)
+  Expect.isTrue "(match configured \"value='bad'\" with | Ok config -> ConfigDecode.decode (ConfigDecode.field \"value\" (ConfigDecode.oneOf [ ConfigDecode.map (fun _ -> ()) Conf…" testActual
+
+let case005 _ =
+  let testActual =
+    (match configured "values=[{x=1,unknown=2},{x='bad'}]" with
+    | Ok config ->
+      (match ConfigDecode.decode (ConfigDecode.field "values" (ConfigDecode.array (ConfigDecode.field "x" ConfigDecode.int))) config with
+      | Err errors ->
+        List.map (fun error ->
+          error.path) errors = [
+          [TomlTypes.Key "values", TomlTypes.Index 0, TomlTypes.Key "unknown"],
+          [TomlTypes.Key "values", TomlTypes.Index 1, TomlTypes.Key "x"]
+        ]
+      | _ -> false)
+    | _ -> false)
+  Expect.isTrue "(match configured \"values=[{x=1,unknown=2},{x='bad'}]\" with | Ok config -> (match ConfigDecode.decode (ConfigDecode.field \"values\" (ConfigDecode.array (Confi…" testActual
+
+let case006 _ =
+  let testActual =
+    (match configured "date=2026-10-12\ntime=12:30\nlocal=2026-10-12T12:30\noffset=2026-10-12T12:30Z" with
+    | Ok config ->
+      ConfigDecode.decode (ConfigDecode.succeed (fun a b c d ->
+        ()) |> ConfigDecode.andMap (ConfigDecode.field "date" ConfigDecode.date) |> ConfigDecode.andMap (ConfigDecode.field "time" ConfigDecode.time) |> ConfigDecode.andMap (ConfigDecode.field "local" ConfigDecode.localDateTime) |> ConfigDecode.andMap (ConfigDecode.field "offset" ConfigDecode.offsetDateTime)) config = Ok ()
+    | _ -> false)
+  Expect.isTrue "(match configured \"date=2026-10-12\\ntime=12:30\\nlocal=2026-10-12T12:30\\noffset=2026-10-12T12:30Z\" with | Ok config -> ConfigDecode.decode (ConfigDecode.succe…" testActual
+
+let case007 _ =
+  let testActual =
+    (match configured "time=12:30:00.1234567891" with
+    | Ok config ->
+      ConfigDecode.decode (ConfigDecode.field "time" ConfigDecode.time) config |> Result.isErr
+    | _ -> false)
+  Expect.isTrue "(match configured \"time=12:30:00.1234567891\" with | Ok config -> ConfigDecode.decode (ConfigDecode.field \"time\" ConfigDecode.time) config |> Result.isErr | _…" testActual
 
 let leadingZeros =
   let text = String.joinArray "" (Array.repeat 20000 "0") ++ "42"
@@ -77,5 +104,24 @@ let leadingZeros =
     (match Config.merge [layer] with
     | Ok config -> ConfigDecode.decode (ConfigDecode.field "n" ConfigDecode.int) config = Ok 42
     | _ -> false)
-example: leadingZeros
-example: ConfigExampleSettings.cli [] = Ok []
+
+let case008 _ =
+  let testActual = leadingZeros
+  Expect.isTrue "leadingZeros" testActual
+
+let case009 _ =
+  let testActual = ConfigExampleSettings.cli [] = Ok []
+  Expect.isTrue "ConfigExampleSettings.cli [] = Ok []" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "ConfigBoundarySpec" [
+  Test.test "missingLocation" case001,
+  Test.test "(match configured \"type='number'\\nvalue=7\" with | Ok config -> ConfigDecode.decode dependent config = Ok 7 | _ -> false)" case002,
+  Test.test "(match configured \"type='none'\\nvalue=7\" with | Ok config -> ConfigDecode.decode dependent config |> Result.isErr | _ -> false)" case003,
+  Test.test "(match configured \"value='bad'\" with | Ok config -> ConfigDecode.decode (ConfigDecode.field \"value\" (ConfigDecode.oneOf [ ConfigDecode.map (fun _ -> ()) Conf…" case004,
+  Test.test "(match configured \"values=[{x=1,unknown=2},{x='bad'}]\" with | Ok config -> (match ConfigDecode.decode (ConfigDecode.field \"values\" (ConfigDecode.array (Confi…" case005,
+  Test.test "(match configured \"date=2026-10-12\\ntime=12:30\\nlocal=2026-10-12T12:30\\noffset=2026-10-12T12:30Z\" with | Ok config -> ConfigDecode.decode (ConfigDecode.succe…" case006,
+  Test.test "(match configured \"time=12:30:00.1234567891\" with | Ok config -> ConfigDecode.decode (ConfigDecode.field \"time\" ConfigDecode.time) config |> Result.isErr | _…" case007,
+  Test.test "leadingZeros" case008,
+  Test.test "ConfigExampleSettings.cli [] = Ok []" case009
+]

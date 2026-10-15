@@ -7,18 +7,44 @@ let roundTrip source =
     match Toml.toString (Toml.value document) with
     | Err _ -> false
     | Ok text -> Result.map Toml.value (Toml.parse text) = Ok (Toml.value document)
-example: roundTrip "x = [1, 2, { a = 'b', c = [false, 3.0] }]\n[[items]]\na=2"
-example: roundTrip "x=+inf\ny=-nan\nz=-0.0\na=1979-05-27T07:32Z"
-example: roundTrip "'a.b'='literal'\nempty={}"
-example: (match Toml.parse "x=1\ny='two'" with
-| Ok document ->
-  TomlDecode.decode (TomlDecode.map2 (fun x y ->
-    (x, y)) (TomlDecode.field "x" TomlDecode.int) (TomlDecode.field "y" TomlDecode.string)) (Toml.value document) = Ok (1, "two")
-| _ -> false)
+
+let case001 _ =
+  let testActual = roundTrip "x = [1, 2, { a = 'b', c = [false, 3.0] }]\n[[items]]\na=2"
+  Expect.isTrue "roundTrip \"x = [1, 2, { a = 'b', c = [false, 3.0] }]\\n[[items]]\\na=2\"" testActual
+
+let case002 _ =
+  let testActual = roundTrip "x=+inf\ny=-nan\nz=-0.0\na=1979-05-27T07:32Z"
+  Expect.isTrue "roundTrip \"x=+inf\\ny=-nan\\nz=-0.0\\na=1979-05-27T07:32Z\"" testActual
+
+let case003 _ =
+  let testActual = roundTrip "'a.b'='literal'\nempty={}"
+  Expect.isTrue "roundTrip \"'a.b'='literal'\\nempty={}\"" testActual
+
+let case004 _ =
+  let testActual =
+    (match Toml.parse "x=1\ny='two'" with
+    | Ok document ->
+      TomlDecode.decode (TomlDecode.map2 (fun x y ->
+        (x, y)) (TomlDecode.field "x" TomlDecode.int) (TomlDecode.field "y" TomlDecode.string)) (Toml.value document) = Ok (1, "two")
+    | _ -> false)
+  Expect.isTrue "(match Toml.parse \"x=1\\ny='two'\" with | Ok document -> TomlDecode.decode (TomlDecode.map2 (fun x y -> (x, y)) (TomlDecode.field \"x\" TomlDecode.int) (TomlDeco…" testActual
 
 let stringRoundTrip text =
   let value = TomlTypes.Table (Dict.singleton "x" (TomlTypes.String text))
   match Toml.toString value with
   | Ok source -> Result.map Toml.value (Toml.parse source) = Ok value
   | _ -> false
-forall text: stringRoundTrip text
+
+let case005 testInput =
+  let text = testInput
+  let testActual = stringRoundTrip text
+  Expect.isTrue "property: stringRoundTrip text" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "TomlCodecSpec" [
+  Test.test "roundTrip \"x = [1, 2, { a = 'b', c = [false, 3.0] }]\\n[[items]]\\na=2\"" case001,
+  Test.test "roundTrip \"x=+inf\\ny=-nan\\nz=-0.0\\na=1979-05-27T07:32Z\"" case002,
+  Test.test "roundTrip \"'a.b'='literal'\\nempty={}\"" case003,
+  Test.test "(match Toml.parse \"x=1\\ny='two'\" with | Ok document -> TomlDecode.decode (TomlDecode.map2 (fun x y -> (x, y)) (TomlDecode.field \"x\" TomlDecode.int) (TomlDeco…" case004,
+  Test.property "property: stringRoundTrip text" Test.string case005
+]

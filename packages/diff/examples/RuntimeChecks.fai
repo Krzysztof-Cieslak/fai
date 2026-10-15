@@ -89,3 +89,24 @@ let main env =
     "Diff runtime checks passed"
   else
     "Diff runtime checks FAILED")
+
+parallelChecks : Test.Context -> Test.Check / { Concurrency }
+let parallelChecks ctx =
+  Expect.isTrue "independent tasks retain patch results" (Async.parallel ctx.runtime.concurrency [
+    shared,
+    shared
+  ] = [true, true])
+
+tests : Test.Suite Test.Context { Concurrency }
+let tests = Test.describe "diff runtime" [
+  Test.test "exhaustive small sequences match edit distance" (fun _ ->
+    Expect.isTrue "minimal edit cost" exhaustive),
+  Test.test "large sparse edits remain small" (fun _ -> Expect.isTrue "two edits suffice" big),
+  Test.test "repeated Unicode patch round trips" (fun _ ->
+    Expect.isTrue "patch output reconstructs its target" (repeated 0)),
+  Test.test "work limits produce an explicit coarse fallback" (fun _ ->
+    Expect.isTrue "coarse quality is marked" boundedFallback),
+  Test.test "parallel immutable comparisons" parallelChecks,
+  Test.test "inline detail handles grapheme changes" (fun _ ->
+    Expect.isTrue "inline comparison succeeds" (Result.isOk (DiffInline.compare "a👩‍💻b" "a👨‍💻b")))
+]

@@ -2,53 +2,222 @@ module EncodingBase64Spec
 
 let vector plain encoded =
   Base64.encode (Bytes.fromString plain) = encoded && Base64.decode encoded = Ok (Bytes.fromString plain)
-example: vector "" ""
-example: vector "f" "Zg=="
-example: vector "fo" "Zm8="
-example: vector "foo" "Zm9v"
-example: vector "foob" "Zm9vYg=="
-example: vector "fooba" "Zm9vYmE="
-example: vector "foobar" "Zm9vYmFy"
-example: Base64.encode (Bytes.fromList [251, 255]) = "+/8="
-example: Base64.decode "+/8=" = Ok (Bytes.fromList [251, 255])
-example: Base64.decode "AA==" = Ok (Bytes.fromList [0])
-example: Base64.decode "aa==" |> Result.isErr
-example: Base64.decodeBytes (Bytes.fromString "Zm9v") = Ok (Bytes.fromString "foo")
-example: Base64.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString "f") = "Zg"
-example: Base64.decodeWith { padding = Encoding.ForbidPadding } "Zg" = Ok (Bytes.fromString "f")
-example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zg" = Ok (Bytes.fromString "f")
-example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zg==" = Ok (Bytes.fromString "f")
-example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zm8" = Ok (Bytes.fromString "fo")
-example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zm8=" = Ok (Bytes.fromString "fo")
-example: Base64.decodeWith { padding = Encoding.AllowPadding } "Zg=" |> Result.isErr
-example: Base64.decodeWith { padding = Encoding.ForbidPadding } "Zg==" |> Result.isErr
-example: Base64.decodeWith { padding = Encoding.ForbidPadding } "Zh" |> Result.isErr
-example: Base64.decodeWith { padding = Encoding.ForbidPadding } "Zm9" |> Result.isErr
+
+let case001 _ =
+  let testActual = vector "" ""
+  Expect.isTrue "vector \"\" \"\"" testActual
+
+let case002 _ =
+  let testActual = vector "f" "Zg=="
+  Expect.isTrue "vector \"f\" \"Zg==\"" testActual
+
+let case003 _ =
+  let testActual = vector "fo" "Zm8="
+  Expect.isTrue "vector \"fo\" \"Zm8=\"" testActual
+
+let case004 _ =
+  let testActual = vector "foo" "Zm9v"
+  Expect.isTrue "vector \"foo\" \"Zm9v\"" testActual
+
+let case005 _ =
+  let testActual = vector "foob" "Zm9vYg=="
+  Expect.isTrue "vector \"foob\" \"Zm9vYg==\"" testActual
+
+let case006 _ =
+  let testActual = vector "fooba" "Zm9vYmE="
+  Expect.isTrue "vector \"fooba\" \"Zm9vYmE=\"" testActual
+
+let case007 _ =
+  let testActual = vector "foobar" "Zm9vYmFy"
+  Expect.isTrue "vector \"foobar\" \"Zm9vYmFy\"" testActual
+
+let case008 _ =
+  let testActual = Base64.encode (Bytes.fromList [251, 255])
+  let testExpected = "+/8="
+  Expect.equal (Test.string).show testExpected testActual
+
+let case009 _ =
+  let testActual = Base64.decode "+/8=" = Ok (Bytes.fromList [251, 255])
+  Expect.isTrue "Base64.decode \"+/8=\" = Ok (Bytes.fromList [251, 255])" testActual
+
+let case010 _ =
+  let testActual = Base64.decode "AA==" = Ok (Bytes.fromList [0])
+  Expect.isTrue "Base64.decode \"AA==\" = Ok (Bytes.fromList [0])" testActual
+
+let case011 _ =
+  let testActual = Base64.decode "aa==" |> Result.isErr
+  Expect.isTrue "Base64.decode \"aa==\" |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = Base64.decodeBytes (Bytes.fromString "Zm9v") = Ok (Bytes.fromString "foo")
+  Expect.isTrue "Base64.decodeBytes (Bytes.fromString \"Zm9v\") = Ok (Bytes.fromString \"foo\")" testActual
+
+let case013 _ =
+  let testActual = Base64.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString "f")
+  let testExpected = "Zg"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case014 _ =
+  let testActual =
+    Base64.decodeWith { padding = Encoding.ForbidPadding } "Zg" = Ok (Bytes.fromString "f")
+  Expect.isTrue "Base64.decodeWith { padding = Encoding.ForbidPadding } \"Zg\" = Ok (Bytes.fromString \"f\")" testActual
+
+let case015 _ =
+  let testActual =
+    Base64.decodeWith { padding = Encoding.AllowPadding } "Zg" = Ok (Bytes.fromString "f")
+  Expect.isTrue "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zg\" = Ok (Bytes.fromString \"f\")" testActual
+
+let case016 _ =
+  let testActual =
+    Base64.decodeWith { padding = Encoding.AllowPadding } "Zg==" = Ok (Bytes.fromString "f")
+  Expect.isTrue "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zg==\" = Ok (Bytes.fromString \"f\")" testActual
+
+let case017 _ =
+  let testActual =
+    Base64.decodeWith { padding = Encoding.AllowPadding } "Zm8" = Ok (Bytes.fromString "fo")
+  Expect.isTrue "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zm8\" = Ok (Bytes.fromString \"fo\")" testActual
+
+let case018 _ =
+  let testActual =
+    Base64.decodeWith { padding = Encoding.AllowPadding } "Zm8=" = Ok (Bytes.fromString "fo")
+  Expect.isTrue "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zm8=\" = Ok (Bytes.fromString \"fo\")" testActual
+
+let case019 _ =
+  let testActual = Base64.decodeWith { padding = Encoding.AllowPadding } "Zg=" |> Result.isErr
+  Expect.isTrue "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zg=\" |> Result.isErr" testActual
+
+let case020 _ =
+  let testActual = Base64.decodeWith { padding = Encoding.ForbidPadding } "Zg==" |> Result.isErr
+  Expect.isTrue "Base64.decodeWith { padding = Encoding.ForbidPadding } \"Zg==\" |> Result.isErr" testActual
+
+let case021 _ =
+  let testActual = Base64.decodeWith { padding = Encoding.ForbidPadding } "Zh" |> Result.isErr
+  Expect.isTrue "Base64.decodeWith { padding = Encoding.ForbidPadding } \"Zh\" |> Result.isErr" testActual
+
+let case022 _ =
+  let testActual = Base64.decodeWith { padding = Encoding.ForbidPadding } "Zm9" |> Result.isErr
+  Expect.isTrue "Base64.decodeWith { padding = Encoding.ForbidPadding } \"Zm9\" |> Result.isErr" testActual
 
 let urlVector plain encoded =
   Base64Url.encode (Bytes.fromString plain) = encoded && Base64Url.decode encoded = Ok (Bytes.fromString plain)
-example: urlVector "" ""
-example: urlVector "f" "Zg"
-example: urlVector "fo" "Zm8"
-example: urlVector "foo" "Zm9v"
-example: urlVector "foob" "Zm9vYg"
-example: urlVector "fooba" "Zm9vYmE"
-example: urlVector "foobar" "Zm9vYmFy"
-example: Base64Url.encode (Bytes.fromList [251, 255]) = "-_8"
-example: Base64Url.decode "-_8" = Ok (Bytes.fromList [251, 255])
-example: Base64Url.decode "+/8" |> Result.isErr
-example: Base64.decode "-_8=" |> Result.isErr
-example: Base64Url.decode "Zg==" |> Result.isErr
-example: Base64Url.encodeWith { padding = Encoding.Padded } (Bytes.fromList [251, 255]) = "-_8="
-example: Base64Url.decodeWith {
-  padding = Encoding.RequirePadding
-} "-_8=" = Ok (Bytes.fromList [251, 255])
-example: Base64Url.decodeWith {
-  padding = Encoding.AllowPadding
-} "-_8=" = Ok (Bytes.fromList [251, 255])
-example: Base64Url.decodeWith {
-  padding = Encoding.AllowPadding
-} "-_8" = Ok (Bytes.fromList [251, 255])
-example: Base64Url.decodeBytesWith {
-  padding = Encoding.RequirePadding
-} (Bytes.fromString "Zg==") = Ok (Bytes.fromString "f")
+
+let case023 _ =
+  let testActual = urlVector "" ""
+  Expect.isTrue "urlVector \"\" \"\"" testActual
+
+let case024 _ =
+  let testActual = urlVector "f" "Zg"
+  Expect.isTrue "urlVector \"f\" \"Zg\"" testActual
+
+let case025 _ =
+  let testActual = urlVector "fo" "Zm8"
+  Expect.isTrue "urlVector \"fo\" \"Zm8\"" testActual
+
+let case026 _ =
+  let testActual = urlVector "foo" "Zm9v"
+  Expect.isTrue "urlVector \"foo\" \"Zm9v\"" testActual
+
+let case027 _ =
+  let testActual = urlVector "foob" "Zm9vYg"
+  Expect.isTrue "urlVector \"foob\" \"Zm9vYg\"" testActual
+
+let case028 _ =
+  let testActual = urlVector "fooba" "Zm9vYmE"
+  Expect.isTrue "urlVector \"fooba\" \"Zm9vYmE\"" testActual
+
+let case029 _ =
+  let testActual = urlVector "foobar" "Zm9vYmFy"
+  Expect.isTrue "urlVector \"foobar\" \"Zm9vYmFy\"" testActual
+
+let case030 _ =
+  let testActual = Base64Url.encode (Bytes.fromList [251, 255])
+  let testExpected = "-_8"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case031 _ =
+  let testActual = Base64Url.decode "-_8" = Ok (Bytes.fromList [251, 255])
+  Expect.isTrue "Base64Url.decode \"-_8\" = Ok (Bytes.fromList [251, 255])" testActual
+
+let case032 _ =
+  let testActual = Base64Url.decode "+/8" |> Result.isErr
+  Expect.isTrue "Base64Url.decode \"+/8\" |> Result.isErr" testActual
+
+let case033 _ =
+  let testActual = Base64.decode "-_8=" |> Result.isErr
+  Expect.isTrue "Base64.decode \"-_8=\" |> Result.isErr" testActual
+
+let case034 _ =
+  let testActual = Base64Url.decode "Zg==" |> Result.isErr
+  Expect.isTrue "Base64Url.decode \"Zg==\" |> Result.isErr" testActual
+
+let case035 _ =
+  let testActual = Base64Url.encodeWith { padding = Encoding.Padded } (Bytes.fromList [251, 255])
+  let testExpected = "-_8="
+  Expect.equal (Test.string).show testExpected testActual
+
+let case036 _ =
+  let testActual =
+    Base64Url.decodeWith {
+      padding = Encoding.RequirePadding
+    } "-_8=" = Ok (Bytes.fromList [251, 255])
+  Expect.isTrue "Base64Url.decodeWith { padding = Encoding.RequirePadding } \"-_8=\" = Ok (Bytes.fromList [251, 255])" testActual
+
+let case037 _ =
+  let testActual =
+    Base64Url.decodeWith { padding = Encoding.AllowPadding } "-_8=" = Ok (Bytes.fromList [251, 255])
+  Expect.isTrue "Base64Url.decodeWith { padding = Encoding.AllowPadding } \"-_8=\" = Ok (Bytes.fromList [251, 255])" testActual
+
+let case038 _ =
+  let testActual =
+    Base64Url.decodeWith { padding = Encoding.AllowPadding } "-_8" = Ok (Bytes.fromList [251, 255])
+  Expect.isTrue "Base64Url.decodeWith { padding = Encoding.AllowPadding } \"-_8\" = Ok (Bytes.fromList [251, 255])" testActual
+
+let case039 _ =
+  let testActual =
+    Base64Url.decodeBytesWith {
+      padding = Encoding.RequirePadding
+    } (Bytes.fromString "Zg==") = Ok (Bytes.fromString "f")
+  Expect.isTrue "Base64Url.decodeBytesWith { padding = Encoding.RequirePadding } (Bytes.fromString \"Zg==\") = Ok (Bytes.fromString \"f\")" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "EncodingBase64Spec" [
+  Test.test "vector \"\" \"\"" case001,
+  Test.test "vector \"f\" \"Zg==\"" case002,
+  Test.test "vector \"fo\" \"Zm8=\"" case003,
+  Test.test "vector \"foo\" \"Zm9v\"" case004,
+  Test.test "vector \"foob\" \"Zm9vYg==\"" case005,
+  Test.test "vector \"fooba\" \"Zm9vYmE=\"" case006,
+  Test.test "vector \"foobar\" \"Zm9vYmFy\"" case007,
+  Test.test "Base64.encode (Bytes.fromList [251, 255]) = \"+/8=\"" case008,
+  Test.test "Base64.decode \"+/8=\" = Ok (Bytes.fromList [251, 255])" case009,
+  Test.test "Base64.decode \"AA==\" = Ok (Bytes.fromList [0])" case010,
+  Test.test "Base64.decode \"aa==\" |> Result.isErr" case011,
+  Test.test "Base64.decodeBytes (Bytes.fromString \"Zm9v\") = Ok (Bytes.fromString \"foo\")" case012,
+  Test.test "Base64.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString \"f\") = \"Zg\"" case013,
+  Test.test "Base64.decodeWith { padding = Encoding.ForbidPadding } \"Zg\" = Ok (Bytes.fromString \"f\")" case014,
+  Test.test "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zg\" = Ok (Bytes.fromString \"f\")" case015,
+  Test.test "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zg==\" = Ok (Bytes.fromString \"f\")" case016,
+  Test.test "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zm8\" = Ok (Bytes.fromString \"fo\")" case017,
+  Test.test "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zm8=\" = Ok (Bytes.fromString \"fo\")" case018,
+  Test.test "Base64.decodeWith { padding = Encoding.AllowPadding } \"Zg=\" |> Result.isErr" case019,
+  Test.test "Base64.decodeWith { padding = Encoding.ForbidPadding } \"Zg==\" |> Result.isErr" case020,
+  Test.test "Base64.decodeWith { padding = Encoding.ForbidPadding } \"Zh\" |> Result.isErr" case021,
+  Test.test "Base64.decodeWith { padding = Encoding.ForbidPadding } \"Zm9\" |> Result.isErr" case022,
+  Test.test "urlVector \"\" \"\"" case023,
+  Test.test "urlVector \"f\" \"Zg\"" case024,
+  Test.test "urlVector \"fo\" \"Zm8\"" case025,
+  Test.test "urlVector \"foo\" \"Zm9v\"" case026,
+  Test.test "urlVector \"foob\" \"Zm9vYg\"" case027,
+  Test.test "urlVector \"fooba\" \"Zm9vYmE\"" case028,
+  Test.test "urlVector \"foobar\" \"Zm9vYmFy\"" case029,
+  Test.test "Base64Url.encode (Bytes.fromList [251, 255]) = \"-_8\"" case030,
+  Test.test "Base64Url.decode \"-_8\" = Ok (Bytes.fromList [251, 255])" case031,
+  Test.test "Base64Url.decode \"+/8\" |> Result.isErr" case032,
+  Test.test "Base64.decode \"-_8=\" |> Result.isErr" case033,
+  Test.test "Base64Url.decode \"Zg==\" |> Result.isErr" case034,
+  Test.test "Base64Url.encodeWith { padding = Encoding.Padded } (Bytes.fromList [251, 255]) = \"-_8=\"" case035,
+  Test.test "Base64Url.decodeWith { padding = Encoding.RequirePadding } \"-_8=\" = Ok (Bytes.fromList [251, 255])" case036,
+  Test.test "Base64Url.decodeWith { padding = Encoding.AllowPadding } \"-_8=\" = Ok (Bytes.fromList [251, 255])" case037,
+  Test.test "Base64Url.decodeWith { padding = Encoding.AllowPadding } \"-_8\" = Ok (Bytes.fromList [251, 255])" case038,
+  Test.test "Base64Url.decodeBytesWith { padding = Encoding.RequirePadding } (Bytes.fromString \"Zg==\") = Ok (Bytes.fromString \"f\")" case039
+]

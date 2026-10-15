@@ -3,11 +3,31 @@ module EncodingPropertySpec
 let roundTrip encode decode values =
   let bytes = Bytes.fromList values
   decode (encode bytes) = Ok bytes
-forall values: roundTrip Hex.encode Hex.decode values
-forall values: roundTrip Base64.encode Base64.decode values
-forall values: roundTrip Base64Url.encode Base64Url.decode values
-forall values: roundTrip Base32.encode Base32.decode values
-forall values: roundTrip Base32Hex.encode Base32Hex.decode values
+
+let case001 testInput =
+  let values = testInput
+  let testActual = roundTrip Hex.encode Hex.decode values
+  Expect.isTrue "property: roundTrip Hex.encode Hex.decode values" testActual
+
+let case002 testInput =
+  let values = testInput
+  let testActual = roundTrip Base64.encode Base64.decode values
+  Expect.isTrue "property: roundTrip Base64.encode Base64.decode values" testActual
+
+let case003 testInput =
+  let values = testInput
+  let testActual = roundTrip Base64Url.encode Base64Url.decode values
+  Expect.isTrue "property: roundTrip Base64Url.encode Base64Url.decode values" testActual
+
+let case004 testInput =
+  let values = testInput
+  let testActual = roundTrip Base32.encode Base32.decode values
+  Expect.isTrue "property: roundTrip Base32.encode Base32.decode values" testActual
+
+let case005 testInput =
+  let values = testInput
+  let testActual = roundTrip Base32Hex.encode Base32Hex.decode values
+  Expect.isTrue "property: roundTrip Base32Hex.encode Base32Hex.decode values" testActual
 
 let unpadded64 = Base64.encodeWith { padding = Encoding.Unpadded }
 
@@ -24,26 +44,72 @@ let raw32 = Base32.decodeWith { caseInsensitive = false, padding = Encoding.Forb
 let unpadded32Hex = Base32Hex.encodeWith { padding = Encoding.Unpadded }
 
 let raw32Hex = Base32Hex.decodeWith { caseInsensitive = false, padding = Encoding.ForbidPadding }
-forall values: roundTrip unpadded64 raw64 values
-forall values: roundTrip paddedUrl strictUrl values
-forall values: roundTrip unpadded32 raw32 values
-forall values: roundTrip unpadded32Hex raw32Hex values
-forall values: roundTrip (Hex.encodeWith { letterCase = Encoding.Uppercase }) Hex.decode values
+
+let case006 testInput =
+  let values = testInput
+  let testActual = roundTrip unpadded64 raw64 values
+  Expect.isTrue "property: roundTrip unpadded64 raw64 values" testActual
+
+let case007 testInput =
+  let values = testInput
+  let testActual = roundTrip paddedUrl strictUrl values
+  Expect.isTrue "property: roundTrip paddedUrl strictUrl values" testActual
+
+let case008 testInput =
+  let values = testInput
+  let testActual = roundTrip unpadded32 raw32 values
+  Expect.isTrue "property: roundTrip unpadded32 raw32 values" testActual
+
+let case009 testInput =
+  let values = testInput
+  let testActual = roundTrip unpadded32Hex raw32Hex values
+  Expect.isTrue "property: roundTrip unpadded32Hex raw32Hex values" testActual
+
+let case010 testInput =
+  let values = testInput
+  let testActual = roundTrip (Hex.encodeWith { letterCase = Encoding.Uppercase }) Hex.decode values
+  Expect.isTrue "property: roundTrip (Hex.encodeWith { letterCase = Encoding.Uppercase }) Hex.decode values" testActual
 
 let sizeMatches encode length values =
   let bytes = Bytes.fromList values
   length (Bytes.length bytes) = Ok (String.length (encode bytes))
-forall values: sizeMatches Hex.encode Hex.encodedLength values
-forall values: sizeMatches Base64.encode Base64.encodedLength values
-forall values: sizeMatches Base64Url.encode Base64Url.encodedLength values
-forall values: sizeMatches Base32.encode Base32.encodedLength values
-forall values: sizeMatches Base32Hex.encode Base32Hex.encodedLength values
-forall values: sizeMatches unpadded64 (Base64.encodedLengthWith {
-  padding = Encoding.Unpadded
-}) values
-forall values: sizeMatches unpadded32 (Base32.encodedLengthWith {
-  padding = Encoding.Unpadded
-}) values
+
+let case011 testInput =
+  let values = testInput
+  let testActual = sizeMatches Hex.encode Hex.encodedLength values
+  Expect.isTrue "property: sizeMatches Hex.encode Hex.encodedLength values" testActual
+
+let case012 testInput =
+  let values = testInput
+  let testActual = sizeMatches Base64.encode Base64.encodedLength values
+  Expect.isTrue "property: sizeMatches Base64.encode Base64.encodedLength values" testActual
+
+let case013 testInput =
+  let values = testInput
+  let testActual = sizeMatches Base64Url.encode Base64Url.encodedLength values
+  Expect.isTrue "property: sizeMatches Base64Url.encode Base64Url.encodedLength values" testActual
+
+let case014 testInput =
+  let values = testInput
+  let testActual = sizeMatches Base32.encode Base32.encodedLength values
+  Expect.isTrue "property: sizeMatches Base32.encode Base32.encodedLength values" testActual
+
+let case015 testInput =
+  let values = testInput
+  let testActual = sizeMatches Base32Hex.encode Base32Hex.encodedLength values
+  Expect.isTrue "property: sizeMatches Base32Hex.encode Base32Hex.encodedLength values" testActual
+
+let case016 testInput =
+  let values = testInput
+  let testActual =
+    sizeMatches unpadded64 (Base64.encodedLengthWith { padding = Encoding.Unpadded }) values
+  Expect.isTrue "property: sizeMatches unpadded64 (Base64.encodedLengthWith { padding = Encoding.Unpadded }) values" testActual
+
+let case017 testInput =
+  let values = testInput
+  let testActual =
+    sizeMatches unpadded32 (Base32.encodedLengthWith { padding = Encoding.Unpadded }) values
+  Expect.isTrue "property: sizeMatches unpadded32 (Base32.encodedLengthWith { padding = Encoding.Unpadded }) values" testActual
 
 let total decode encode values =
   let input = Bytes.fromList values
@@ -53,18 +119,90 @@ let total decode encode values =
     match error.offset with
     | None -> false
     | Some offset -> offset >= 0 && offset <= Bytes.length input
-forall values: total Hex.decodeBytes Hex.encode values
-forall values: total Base64.decodeBytes Base64.encode values
-forall values: total Base64Url.decodeBytes Base64Url.encode values
-forall values: total Base32.decodeBytes Base32.encode values
-forall values: total Base32Hex.decodeBytes Base32Hex.encode values
+
+let case018 testInput =
+  let values = testInput
+  let testActual = total Hex.decodeBytes Hex.encode values
+  Expect.isTrue "property: total Hex.decodeBytes Hex.encode values" testActual
+
+let case019 testInput =
+  let values = testInput
+  let testActual = total Base64.decodeBytes Base64.encode values
+  Expect.isTrue "property: total Base64.decodeBytes Base64.encode values" testActual
+
+let case020 testInput =
+  let values = testInput
+  let testActual = total Base64Url.decodeBytes Base64Url.encode values
+  Expect.isTrue "property: total Base64Url.decodeBytes Base64Url.encode values" testActual
+
+let case021 testInput =
+  let values = testInput
+  let testActual = total Base32.decodeBytes Base32.encode values
+  Expect.isTrue "property: total Base32.decodeBytes Base32.encode values" testActual
+
+let case022 testInput =
+  let values = testInput
+  let testActual = total Base32Hex.decodeBytes Base32Hex.encode values
+  Expect.isTrue "property: total Base32Hex.decodeBytes Base32Hex.encode values" testActual
 
 let canonical decode encode text =
   match decode text with
   | Ok decoded -> encode decoded = text
   | Err _ -> true
-forall text: canonical Base64.decode Base64.encode text
-forall text: canonical Base64Url.decode Base64Url.encode text
-forall text: canonical Base32.decode Base32.encode text
-forall text: canonical Base32Hex.decode Base32Hex.encode text
-forall values: Base64.encode (Bytes.fromList values) = Http.base64Encode (Bytes.fromList values)
+
+let case023 testInput =
+  let text = testInput
+  let testActual = canonical Base64.decode Base64.encode text
+  Expect.isTrue "property: canonical Base64.decode Base64.encode text" testActual
+
+let case024 testInput =
+  let text = testInput
+  let testActual = canonical Base64Url.decode Base64Url.encode text
+  Expect.isTrue "property: canonical Base64Url.decode Base64Url.encode text" testActual
+
+let case025 testInput =
+  let text = testInput
+  let testActual = canonical Base32.decode Base32.encode text
+  Expect.isTrue "property: canonical Base32.decode Base32.encode text" testActual
+
+let case026 testInput =
+  let text = testInput
+  let testActual = canonical Base32Hex.decode Base32Hex.encode text
+  Expect.isTrue "property: canonical Base32Hex.decode Base32Hex.encode text" testActual
+
+let case027 testInput =
+  let values = testInput
+  let testActual = Base64.encode (Bytes.fromList values)
+  let testExpected = Http.base64Encode (Bytes.fromList values)
+  Expect.equal (Test.string).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "EncodingPropertySpec" [
+  Test.property "property: roundTrip Hex.encode Hex.decode values" (Test.list Test.int) case001,
+  Test.property "property: roundTrip Base64.encode Base64.decode values" (Test.list Test.int) case002,
+  Test.property "property: roundTrip Base64Url.encode Base64Url.decode values" (Test.list Test.int) case003,
+  Test.property "property: roundTrip Base32.encode Base32.decode values" (Test.list Test.int) case004,
+  Test.property "property: roundTrip Base32Hex.encode Base32Hex.decode values" (Test.list Test.int) case005,
+  Test.property "property: roundTrip unpadded64 raw64 values" (Test.list Test.int) case006,
+  Test.property "property: roundTrip paddedUrl strictUrl values" (Test.list Test.int) case007,
+  Test.property "property: roundTrip unpadded32 raw32 values" (Test.list Test.int) case008,
+  Test.property "property: roundTrip unpadded32Hex raw32Hex values" (Test.list Test.int) case009,
+  Test.property "property: roundTrip (Hex.encodeWith { letterCase = Encoding.Uppercase }) Hex.decode values" (Test.list Test.int) case010,
+  Test.property "property: sizeMatches Hex.encode Hex.encodedLength values" (Test.list Test.int) case011,
+  Test.property "property: sizeMatches Base64.encode Base64.encodedLength values" (Test.list Test.int) case012,
+  Test.property "property: sizeMatches Base64Url.encode Base64Url.encodedLength values" (Test.list Test.int) case013,
+  Test.property "property: sizeMatches Base32.encode Base32.encodedLength values" (Test.list Test.int) case014,
+  Test.property "property: sizeMatches Base32Hex.encode Base32Hex.encodedLength values" (Test.list Test.int) case015,
+  Test.property "property: sizeMatches unpadded64 (Base64.encodedLengthWith { padding = Encoding.Unpadded }) values" (Test.list Test.int) case016,
+  Test.property "property: sizeMatches unpadded32 (Base32.encodedLengthWith { padding = Encoding.Unpadded }) values" (Test.list Test.int) case017,
+  Test.property "property: total Hex.decodeBytes Hex.encode values" (Test.list Test.int) case018,
+  Test.property "property: total Base64.decodeBytes Base64.encode values" (Test.list Test.int) case019,
+  Test.property "property: total Base64Url.decodeBytes Base64Url.encode values" (Test.list Test.int) case020,
+  Test.property "property: total Base32.decodeBytes Base32.encode values" (Test.list Test.int) case021,
+  Test.property "property: total Base32Hex.decodeBytes Base32Hex.encode values" (Test.list Test.int) case022,
+  Test.property "property: canonical Base64.decode Base64.encode text" Test.string case023,
+  Test.property "property: canonical Base64Url.decode Base64Url.encode text" Test.string case024,
+  Test.property "property: canonical Base32.decode Base32.encode text" Test.string case025,
+  Test.property "property: canonical Base32Hex.decode Base32Hex.encode text" Test.string case026,
+  Test.property "property: Base64.encode (Bytes.fromList values) = Http.base64Encode (Bytes.fromList values)" (Test.list Test.int) case027
+]

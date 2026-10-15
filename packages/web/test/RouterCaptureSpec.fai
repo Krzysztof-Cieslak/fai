@@ -17,32 +17,64 @@ let sharedPrefix = Router.router (Web.text "fallback") [
   Router.route "/user/{id}/view" (show "id"),
   Router.route "/user/{slug}/edit" (show "slug")
 ]
-example: bodyOn sharedPrefix Http.GET "/user/42/view" = Ok "42"
-example: bodyOn sharedPrefix Http.GET "/user/article/edit" = Ok "article"
+
+let case001 _ =
+  let testActual = bodyOn sharedPrefix Http.GET "/user/42/view"
+  let testExpected = Ok "42"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual = bodyOn sharedPrefix Http.GET "/user/article/edit"
+  let testExpected = Ok "article"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 reversedPrefix : Web.HttpHandler 'e
 let reversedPrefix = Router.router (Web.text "fallback") [
   Router.route "/user/{slug}/edit" (show "slug"),
   Router.route "/user/{id}/view" (show "id")
 ]
-example: bodyOn reversedPrefix Http.GET "/user/42/view" = Ok "42"
-example: bodyOn reversedPrefix Http.GET "/user/article/edit" = Ok "article"
+
+let case003 _ =
+  let testActual = bodyOn reversedPrefix Http.GET "/user/42/view"
+  let testExpected = Ok "42"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case004 _ =
+  let testActual = bodyOn reversedPrefix Http.GET "/user/article/edit"
+  let testExpected = Ok "article"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 byMethod : Web.HttpHandler 'e
 let byMethod = Router.router (Web.text "fallback") [
   Router.get [Router.route "/user/{id}" (show "id")],
   Router.post [Router.route "/user/{slug}" (show "slug")]
 ]
-example: bodyOn byMethod Http.GET "/user/42" = Ok "42"
-example: bodyOn byMethod Http.POST "/user/article" = Ok "article"
+
+let case005 _ =
+  let testActual = bodyOn byMethod Http.GET "/user/42"
+  let testExpected = Ok "42"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case006 _ =
+  let testActual = bodyOn byMethod Http.POST "/user/article"
+  let testExpected = Ok "article"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 methodsReversed : Web.HttpHandler 'e
 let methodsReversed = Router.router (Web.text "fallback") [
   Router.post [Router.route "/user/{slug}" (show "slug")],
   Router.get [Router.route "/user/{id}" (show "id")]
 ]
-example: bodyOn methodsReversed Http.GET "/user/42" = Ok "42"
-example: bodyOn methodsReversed Http.POST "/user/article" = Ok "article"
+
+let case007 _ =
+  let testActual = bodyOn methodsReversed Http.GET "/user/42"
+  let testExpected = Ok "42"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case008 _ =
+  let testActual = bodyOn methodsReversed Http.POST "/user/article"
+  let testExpected = Ok "article"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 showPair : String -> String -> Web.HttpHandler 'e
 let showPair first second ctx =
@@ -53,27 +85,51 @@ let multipleCaptures = Router.router (Web.text "fallback") [
   Router.route "/pair/{a}/{b}/view" (showPair "a" "b"),
   Router.route "/pair/{left}/{right}/edit" (showPair "left" "right")
 ]
-example: bodyOn multipleCaptures Http.GET "/pair/one/two/view" = Ok "one:two"
-example: bodyOn multipleCaptures Http.GET "/pair/left/right/edit" = Ok "left:right"
+
+let case009 _ =
+  let testActual = bodyOn multipleCaptures Http.GET "/pair/one/two/view"
+  let testExpected = Ok "one:two"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case010 _ =
+  let testActual = bodyOn multipleCaptures Http.GET "/pair/left/right/edit"
+  let testExpected = Ok "left:right"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 nestedCaptures : Web.HttpHandler 'e
 let nestedCaptures = Router.router (Web.text "fallback") [
   Router.subRoute "/org/{org}" [Router.route "/user/{id}" (showPair "org" "id")],
   Router.subRoute "/org/{tenant}" [Router.route "/project/{project}" (showPair "tenant" "project")]
 ]
-example: bodyOn nestedCaptures Http.GET "/org/acme/user/42" = Ok "acme:42"
-example: bodyOn nestedCaptures Http.GET "/org/acme/project/fai" = Ok "acme:fai"
+
+let case011 _ =
+  let testActual = bodyOn nestedCaptures Http.GET "/org/acme/user/42"
+  let testExpected = Ok "acme:42"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case012 _ =
+  let testActual = bodyOn nestedCaptures Http.GET "/org/acme/project/fai"
+  let testExpected = Ok "acme:fai"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 repeatedName : Web.HttpHandler 'e
 let repeatedName = Router.router (Web.text "fallback") [Router.route "/{id}/{id}" (show "id")]
-example: bodyOn repeatedName Http.GET "/first/second" = Ok "first"
+
+let case013 _ =
+  let testActual = bodyOn repeatedName Http.GET "/first/second"
+  let testExpected = Ok "first"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 skippingFirst : Web.HttpHandler 'e
 let skippingFirst = Router.router (Web.text "fallback") [
   Router.route "/user/{id}" (fun ctx -> Web.Skip),
   Router.route "/user/{slug}" (show "slug")
 ]
-example: bodyOn skippingFirst Http.GET "/user/article" = Ok "article"
+
+let case014 _ =
+  let testActual = bodyOn skippingFirst Http.GET "/user/article"
+  let testExpected = Ok "article"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 noLeakedCapture : Web.HttpHandler 'e
 let noLeakedCapture ctx = Web.text (if Web.param "id" ctx = None then "clean" else "leaked") ctx
@@ -82,11 +138,39 @@ fallbackContext : Web.HttpHandler 'e
 let fallbackContext = Router.router noLeakedCapture [
   Router.route "/user/{id}" (fun ctx -> Web.Skip)
 ]
-example: bodyOn fallbackContext Http.GET "/user/42" = Ok "clean"
+
+let case015 _ =
+  let testActual = bodyOn fallbackContext Http.GET "/user/42"
+  let testExpected = Ok "clean"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 staticFirst : Web.HttpHandler 'e
 let staticFirst = Router.router (Web.text "fallback") [
   Router.route "/user/{id}" (show "id"),
   Router.route "/user/new" (Web.text "static")
 ]
-example: bodyOn staticFirst Http.GET "/user/new" = Ok "static"
+
+let case016 _ =
+  let testActual = bodyOn staticFirst Http.GET "/user/new"
+  let testExpected = Ok "static"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "RouterCaptureSpec" [
+  Test.test "bodyOn sharedPrefix Http.GET \"/user/42/view\" = Ok \"42\"" case001,
+  Test.test "bodyOn sharedPrefix Http.GET \"/user/article/edit\" = Ok \"article\"" case002,
+  Test.test "bodyOn reversedPrefix Http.GET \"/user/42/view\" = Ok \"42\"" case003,
+  Test.test "bodyOn reversedPrefix Http.GET \"/user/article/edit\" = Ok \"article\"" case004,
+  Test.test "bodyOn byMethod Http.GET \"/user/42\" = Ok \"42\"" case005,
+  Test.test "bodyOn byMethod Http.POST \"/user/article\" = Ok \"article\"" case006,
+  Test.test "bodyOn methodsReversed Http.GET \"/user/42\" = Ok \"42\"" case007,
+  Test.test "bodyOn methodsReversed Http.POST \"/user/article\" = Ok \"article\"" case008,
+  Test.test "bodyOn multipleCaptures Http.GET \"/pair/one/two/view\" = Ok \"one:two\"" case009,
+  Test.test "bodyOn multipleCaptures Http.GET \"/pair/left/right/edit\" = Ok \"left:right\"" case010,
+  Test.test "bodyOn nestedCaptures Http.GET \"/org/acme/user/42\" = Ok \"acme:42\"" case011,
+  Test.test "bodyOn nestedCaptures Http.GET \"/org/acme/project/fai\" = Ok \"acme:fai\"" case012,
+  Test.test "bodyOn repeatedName Http.GET \"/first/second\" = Ok \"first\"" case013,
+  Test.test "bodyOn skippingFirst Http.GET \"/user/article\" = Ok \"article\"" case014,
+  Test.test "bodyOn fallbackContext Http.GET \"/user/42\" = Ok \"clean\"" case015,
+  Test.test "bodyOn staticFirst Http.GET \"/user/new\" = Ok \"static\"" case016
+]

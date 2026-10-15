@@ -7,19 +7,54 @@ let openai = Bytes.fromString (LlmFixtures.openai true)
 let anthropic = Bytes.fromString (LlmFixtures.anthropic true)
 
 let split bytes index = [Bytes.slice 0 index bytes, Bytes.slice index (Bytes.length bytes) bytes]
-example: (LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [
-  openai
-] |> Result.map Llm.text) = Ok "tools completed"
-example: (LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [
-  anthropic
-] |> Result.map Llm.text) = Ok "tools completed"
-example: LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [
-  Bytes.fromString "data: {}\n\n"
-] |> Result.isErr
-example: LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [] |> Result.isErr
-forall index: LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits (split openai index) = LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [
-  openai
-]
-forall index: LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits (split anthropic index) = LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [
-  anthropic
+
+let case001 _ =
+  let testActual =
+    (LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [
+      openai
+    ] |> Result.map Llm.text) = Ok "tools completed"
+  Expect.isTrue "(LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [ openai ] |> Result.map Llm.text) = Ok \"tools completed\"" testActual
+
+let case002 _ =
+  let testActual =
+    (LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [
+      anthropic
+    ] |> Result.map Llm.text) = Ok "tools completed"
+  Expect.isTrue "(LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [ anthropic ] |> Result.map Llm.text) = Ok \"tools completed\"" testActual
+
+let case003 _ =
+  let testActual =
+    LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [
+      Bytes.fromString "data: {}\n\n"
+    ] |> Result.isErr
+  Expect.isTrue "LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [ Bytes.fromString \"data: {}\\n\\n\" ] |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual = LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [] |> Result.isErr
+  Expect.isTrue "LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [] |> Result.isErr" testActual
+
+let case005 testInput =
+  let index = testInput
+  let testActual =
+    LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits (split openai index) = LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [
+      openai
+    ]
+  Expect.isTrue "property: LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits (split openai index) = LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [ openai ]" testActual
+
+let case006 testInput =
+  let index = testInput
+  let testActual =
+    LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits (split anthropic index) = LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [
+      anthropic
+    ]
+  Expect.isTrue "property: LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits (split anthropic index) = LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [ anthropic ]" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LlmReplaySpec" [
+  Test.test "(LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [ openai ] |> Result.map Llm.text) = Ok \"tools completed\"" case001,
+  Test.test "(LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [ anthropic ] |> Result.map Llm.text) = Ok \"tools completed\"" case002,
+  Test.test "LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [ Bytes.fromString \"data: {}\\n\\n\" ] |> Result.isErr" case003,
+  Test.test "LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [] |> Result.isErr" case004,
+  Test.property "property: LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits (split openai index) = LlmReplay.fromChunks LlmTypes.OpenAI Llm.limits [ openai ]" Test.int case005,
+  Test.property "property: LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits (split anthropic index) = LlmReplay.fromChunks LlmTypes.Anthropic Llm.limits [ anthropic ]" Test.int case006
 ]

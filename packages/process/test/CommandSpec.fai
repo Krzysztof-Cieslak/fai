@@ -1,43 +1,125 @@
 module CommandSpec
 
-example: (Process.describe (Process.command "x" [] |> Process.stdout Process.Discard)).launch.stdoutMode = 2
-example: (Process.describe (Process.command "x" [] |> Process.stdin Process.Inherit)).launch.stdinMode = 1
-example: Process.validate Process.defaults (Process.command "x" [] |> Process.stdinText "data" |> Process.stdin Process.Discard) |> Result.isErr
-example: (Process.describe (Process.command "git" [
-  "status"
-] |> Process.argument "--short")).launch.arguments = ["status", "--short"]
-example: (Process.describe (Process.command "x" [] |> Process.clearEnvironment)).launch.inherit = false
-example: (Process.describe (Process.command "x" [] |> Process.workingDirectory "a b")).launch.directory = "a b"
-example: (Process.describe (Process.command "x" [] |> Process.stdinText "hé😀")).input = Bytes.fromString "hé😀"
-example: (Process.describe (Process.command "x" [] |> Process.setEnvironment "A" "one" |> Process.unsetEnvironment "A")).launch.edits = [
-  { name = "A", value = Some "one" },
-  { name = "A", value = None }
-]
-example: Process.validate Process.defaults (Process.command "" []) |> Result.isErr
-example: Process.validate Process.defaults (Process.command "x" ["a\u{0}b"]) |> Result.isErr
-example: Process.validate Process.defaults (Process.command "x" ["", "a b", "a\"b", "hé😀"]) = Ok ()
-example: Process.validate { Process.defaults with
-  chunkBytes = 0
-} (Process.command "x" []) |> Result.isErr
-example: Process.validate { Process.defaults with
-  maxCaptureBytes = -1
-} (Process.command "x" []) |> Result.isErr
-example: Process.validate { Process.defaults with
-  timeoutMs = Some 0
-} (Process.command "x" []) |> Result.isErr
-example: Process.validate Process.defaults (Process.command "x" [] |> Process.setEnvironment "a=b" "value") |> Result.isErr
-example: Process.succeeded (ProcessHost.Exited 0)
-example: not (Process.succeeded (ProcessHost.Exited 37))
-example: not (Process.succeeded (ProcessHost.Signaled 15 false))
-example: Process.stdoutText { Process.emptyOutput with
-  stdout = Bytes.fromList [255]
-} |> Result.isErr
-example: Process.expectSuccess { Process.emptyOutput with
-  exits = [Some (ProcessHost.Exited 0)]
-} |> Result.isOk
-example: Process.expectSuccess { Process.emptyOutput with
-  exits = [Some (ProcessHost.Exited 0), Some (ProcessHost.Exited 1)]
-} |> Result.isErr
+let case001 _ =
+  let testActual =
+    (Process.describe (Process.command "x" [] |> Process.stdout Process.Discard)).launch.stdoutMode
+  let testExpected = 2
+  Expect.equal (Test.int).show testExpected testActual
+
+let case002 _ =
+  let testActual =
+    (Process.describe (Process.command "x" [] |> Process.stdin Process.Inherit)).launch.stdinMode
+  let testExpected = 1
+  Expect.equal (Test.int).show testExpected testActual
+
+let case003 _ =
+  let testActual =
+    Process.validate Process.defaults (Process.command "x" [] |> Process.stdinText "data" |> Process.stdin Process.Discard) |> Result.isErr
+  Expect.isTrue "Process.validate Process.defaults (Process.command \"x\" [] |> Process.stdinText \"data\" |> Process.stdin Process.Discard) |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual =
+    (Process.describe (Process.command "git" [
+      "status"
+    ] |> Process.argument "--short")).launch.arguments
+  let testExpected = ["status", "--short"]
+  Expect.equal ((Test.list Test.string)).show testExpected testActual
+
+let case005 _ =
+  let testActual =
+    (Process.describe (Process.command "x" [] |> Process.clearEnvironment)).launch.inherit
+  let testExpected = false
+  Expect.equal (Test.bool).show testExpected testActual
+
+let case006 _ =
+  let testActual =
+    (Process.describe (Process.command "x" [] |> Process.workingDirectory "a b")).launch.directory
+  let testExpected = "a b"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case007 _ =
+  let testActual =
+    (Process.describe (Process.command "x" [] |> Process.stdinText "hé😀")).input = Bytes.fromString "hé😀"
+  Expect.isTrue "(Process.describe (Process.command \"x\" [] |> Process.stdinText \"hé😀\")).input = Bytes.fromString \"hé😀\"" testActual
+
+let case008 _ =
+  let testActual =
+    (Process.describe (Process.command "x" [] |> Process.setEnvironment "A" "one" |> Process.unsetEnvironment "A")).launch.edits = [
+      { name = "A", value = Some "one" },
+      { name = "A", value = None }
+    ]
+  Expect.isTrue "(Process.describe (Process.command \"x\" [] |> Process.setEnvironment \"A\" \"one\" |> Process.unsetEnvironment \"A\")).launch.edits = [ { name = \"A\", value = Some \"…" testActual
+
+let case009 _ =
+  let testActual = Process.validate Process.defaults (Process.command "" []) |> Result.isErr
+  Expect.isTrue "Process.validate Process.defaults (Process.command \"\" []) |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual =
+    Process.validate Process.defaults (Process.command "x" ["a\u{0}b"]) |> Result.isErr
+  Expect.isTrue "Process.validate Process.defaults (Process.command \"x\" [\"a\\u{0}b\"]) |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual =
+    Process.validate Process.defaults (Process.command "x" ["", "a b", "a\"b", "hé😀"]) = Ok ()
+  Expect.isTrue "Process.validate Process.defaults (Process.command \"x\" [\"\", \"a b\", \"a\\\"b\", \"hé😀\"]) = Ok ()" testActual
+
+let case012 _ =
+  let testActual =
+    Process.validate { Process.defaults with
+      chunkBytes = 0
+    } (Process.command "x" []) |> Result.isErr
+  Expect.isTrue "Process.validate { Process.defaults with chunkBytes = 0 } (Process.command \"x\" []) |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual =
+    Process.validate { Process.defaults with
+      maxCaptureBytes = -1
+    } (Process.command "x" []) |> Result.isErr
+  Expect.isTrue "Process.validate { Process.defaults with maxCaptureBytes = -1 } (Process.command \"x\" []) |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual =
+    Process.validate { Process.defaults with
+      timeoutMs = Some 0
+    } (Process.command "x" []) |> Result.isErr
+  Expect.isTrue "Process.validate { Process.defaults with timeoutMs = Some 0 } (Process.command \"x\" []) |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual =
+    Process.validate Process.defaults (Process.command "x" [] |> Process.setEnvironment "a=b" "value") |> Result.isErr
+  Expect.isTrue "Process.validate Process.defaults (Process.command \"x\" [] |> Process.setEnvironment \"a=b\" \"value\") |> Result.isErr" testActual
+
+let case016 _ =
+  let testActual = Process.succeeded (ProcessHost.Exited 0)
+  Expect.isTrue "Process.succeeded (ProcessHost.Exited 0)" testActual
+
+let case017 _ =
+  let testActual = not (Process.succeeded (ProcessHost.Exited 37))
+  Expect.isTrue "not (Process.succeeded (ProcessHost.Exited 37))" testActual
+
+let case018 _ =
+  let testActual = not (Process.succeeded (ProcessHost.Signaled 15 false))
+  Expect.isTrue "not (Process.succeeded (ProcessHost.Signaled 15 false))" testActual
+
+let case019 _ =
+  let testActual =
+    Process.stdoutText { Process.emptyOutput with stdout = Bytes.fromList [255] } |> Result.isErr
+  Expect.isTrue "Process.stdoutText { Process.emptyOutput with stdout = Bytes.fromList [255] } |> Result.isErr" testActual
+
+let case020 _ =
+  let testActual =
+    Process.expectSuccess { Process.emptyOutput with
+      exits = [Some (ProcessHost.Exited 0)]
+    } |> Result.isOk
+  Expect.isTrue "Process.expectSuccess { Process.emptyOutput with exits = [Some (ProcessHost.Exited 0)] } |> Result.isOk" testActual
+
+let case021 _ =
+  let testActual =
+    Process.expectSuccess { Process.emptyOutput with
+      exits = [Some (ProcessHost.Exited 0), Some (ProcessHost.Exited 1)]
+    } |> Result.isErr
+  Expect.isTrue "Process.expectSuccess { Process.emptyOutput with exits = [Some (ProcessHost.Exited 0), Some (ProcessHost.Exited 1)] } |> Result.isErr" testActual
 
 scripted : Process.Runner { }
 let scripted = {
@@ -45,29 +127,108 @@ let scripted = {
     stdout = (Process.describe command).input
   }
 }
-example: (scripted.run Process.defaults (Process.command "unused" [] |> Process.stdinText "fake") |> Result.map Process.stdoutText) = Ok (Ok "fake")
-forall text: (Process.describe (Process.command "x" [] |> Process.stdinText text)).input = Bytes.fromString text
-example: Process.validate { Process.defaults with
-  bufferBytes = 1073741825
-} (Process.command "x" []) |> Result.isErr
-example: Process.validate { Process.defaults with
-  bufferBytes = 1,
-  chunkBytes = 2
-} (Process.command "x" []) |> Result.isErr
-example: Process.validate { Process.defaults with
-  pollMs = 1001
-} (Process.command "x" []) |> Result.isErr
-example: Process.validate { Process.defaults with
-  graceMs = -1
-} (Process.command "x" []) |> Result.isErr
-example: Process.validate { Process.defaults with
-  maxPreviewBytes = -1
-} (Process.command "x" []) |> Result.isErr
-example: Process.validate Process.defaults (Process.command "x" [] |> Process.workingDirectory "bad\u{0}path") |> Result.isErr
-example: Process.validate Process.defaults (Process.command "x" [] |> Process.setEnvironment "" "value") |> Result.isErr
-example: Process.validate Process.defaults (Process.command "x" [] |> Process.setEnvironment "key" "bad\u{0}value") |> Result.isErr
-example: Process.validate { Process.defaults with
-  graceMs = 0,
-  maxCaptureBytes = 0,
-  maxPreviewBytes = 0
-} (Process.command "x" []) = Ok ()
+
+let case022 _ =
+  let testActual =
+    (scripted.run Process.defaults (Process.command "unused" [] |> Process.stdinText "fake") |> Result.map Process.stdoutText) = Ok (Ok "fake")
+  Expect.isTrue "(scripted.run Process.defaults (Process.command \"unused\" [] |> Process.stdinText \"fake\") |> Result.map Process.stdoutText) = Ok (Ok \"fake\")" testActual
+
+let case023 testInput =
+  let text = testInput
+  let testActual =
+    (Process.describe (Process.command "x" [] |> Process.stdinText text)).input = Bytes.fromString text
+  Expect.isTrue "property: (Process.describe (Process.command \"x\" [] |> Process.stdinText text)).input = Bytes.fromString text" testActual
+
+let case024 _ =
+  let testActual =
+    Process.validate { Process.defaults with
+      bufferBytes = 1073741825
+    } (Process.command "x" []) |> Result.isErr
+  Expect.isTrue "Process.validate { Process.defaults with bufferBytes = 1073741825 } (Process.command \"x\" []) |> Result.isErr" testActual
+
+let case025 _ =
+  let testActual =
+    Process.validate { Process.defaults with
+      bufferBytes = 1,
+      chunkBytes = 2
+    } (Process.command "x" []) |> Result.isErr
+  Expect.isTrue "Process.validate { Process.defaults with bufferBytes = 1, chunkBytes = 2 } (Process.command \"x\" []) |> Result.isErr" testActual
+
+let case026 _ =
+  let testActual =
+    Process.validate { Process.defaults with
+      pollMs = 1001
+    } (Process.command "x" []) |> Result.isErr
+  Expect.isTrue "Process.validate { Process.defaults with pollMs = 1001 } (Process.command \"x\" []) |> Result.isErr" testActual
+
+let case027 _ =
+  let testActual =
+    Process.validate { Process.defaults with graceMs = -1 } (Process.command "x" []) |> Result.isErr
+  Expect.isTrue "Process.validate { Process.defaults with graceMs = -1 } (Process.command \"x\" []) |> Result.isErr" testActual
+
+let case028 _ =
+  let testActual =
+    Process.validate { Process.defaults with
+      maxPreviewBytes = -1
+    } (Process.command "x" []) |> Result.isErr
+  Expect.isTrue "Process.validate { Process.defaults with maxPreviewBytes = -1 } (Process.command \"x\" []) |> Result.isErr" testActual
+
+let case029 _ =
+  let testActual =
+    Process.validate Process.defaults (Process.command "x" [] |> Process.workingDirectory "bad\u{0}path") |> Result.isErr
+  Expect.isTrue "Process.validate Process.defaults (Process.command \"x\" [] |> Process.workingDirectory \"bad\\u{0}path\") |> Result.isErr" testActual
+
+let case030 _ =
+  let testActual =
+    Process.validate Process.defaults (Process.command "x" [] |> Process.setEnvironment "" "value") |> Result.isErr
+  Expect.isTrue "Process.validate Process.defaults (Process.command \"x\" [] |> Process.setEnvironment \"\" \"value\") |> Result.isErr" testActual
+
+let case031 _ =
+  let testActual =
+    Process.validate Process.defaults (Process.command "x" [] |> Process.setEnvironment "key" "bad\u{0}value") |> Result.isErr
+  Expect.isTrue "Process.validate Process.defaults (Process.command \"x\" [] |> Process.setEnvironment \"key\" \"bad\\u{0}value\") |> Result.isErr" testActual
+
+let case032 _ =
+  let testActual =
+    Process.validate { Process.defaults with
+      graceMs = 0,
+      maxCaptureBytes = 0,
+      maxPreviewBytes = 0
+    } (Process.command "x" []) = Ok ()
+  Expect.isTrue "Process.validate { Process.defaults with graceMs = 0, maxCaptureBytes = 0, maxPreviewBytes = 0 } (Process.command \"x\" []) = Ok ()" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CommandSpec" [
+  Test.test "(Process.describe (Process.command \"x\" [] |> Process.stdout Process.Discard)).launch.stdoutMode = 2" case001,
+  Test.test "(Process.describe (Process.command \"x\" [] |> Process.stdin Process.Inherit)).launch.stdinMode = 1" case002,
+  Test.test "Process.validate Process.defaults (Process.command \"x\" [] |> Process.stdinText \"data\" |> Process.stdin Process.Discard) |> Result.isErr" case003,
+  Test.test "(Process.describe (Process.command \"git\" [ \"status\" ] |> Process.argument \"--short\")).launch.arguments = [\"status\", \"--short\"]" case004,
+  Test.test "(Process.describe (Process.command \"x\" [] |> Process.clearEnvironment)).launch.inherit = false" case005,
+  Test.test "(Process.describe (Process.command \"x\" [] |> Process.workingDirectory \"a b\")).launch.directory = \"a b\"" case006,
+  Test.test "(Process.describe (Process.command \"x\" [] |> Process.stdinText \"hé😀\")).input = Bytes.fromString \"hé😀\"" case007,
+  Test.test "(Process.describe (Process.command \"x\" [] |> Process.setEnvironment \"A\" \"one\" |> Process.unsetEnvironment \"A\")).launch.edits = [ { name = \"A\", value = Some \"…" case008,
+  Test.test "Process.validate Process.defaults (Process.command \"\" []) |> Result.isErr" case009,
+  Test.test "Process.validate Process.defaults (Process.command \"x\" [\"a\\u{0}b\"]) |> Result.isErr" case010,
+  Test.test "Process.validate Process.defaults (Process.command \"x\" [\"\", \"a b\", \"a\\\"b\", \"hé😀\"]) = Ok ()" case011,
+  Test.test "Process.validate { Process.defaults with chunkBytes = 0 } (Process.command \"x\" []) |> Result.isErr" case012,
+  Test.test "Process.validate { Process.defaults with maxCaptureBytes = -1 } (Process.command \"x\" []) |> Result.isErr" case013,
+  Test.test "Process.validate { Process.defaults with timeoutMs = Some 0 } (Process.command \"x\" []) |> Result.isErr" case014,
+  Test.test "Process.validate Process.defaults (Process.command \"x\" [] |> Process.setEnvironment \"a=b\" \"value\") |> Result.isErr" case015,
+  Test.test "Process.succeeded (ProcessHost.Exited 0)" case016,
+  Test.test "not (Process.succeeded (ProcessHost.Exited 37))" case017,
+  Test.test "not (Process.succeeded (ProcessHost.Signaled 15 false))" case018,
+  Test.test "Process.stdoutText { Process.emptyOutput with stdout = Bytes.fromList [255] } |> Result.isErr" case019,
+  Test.test "Process.expectSuccess { Process.emptyOutput with exits = [Some (ProcessHost.Exited 0)] } |> Result.isOk" case020,
+  Test.test "Process.expectSuccess { Process.emptyOutput with exits = [Some (ProcessHost.Exited 0), Some (ProcessHost.Exited 1)] } |> Result.isErr" case021,
+  Test.test "(scripted.run Process.defaults (Process.command \"unused\" [] |> Process.stdinText \"fake\") |> Result.map Process.stdoutText) = Ok (Ok \"fake\")" case022,
+  Test.property "property: (Process.describe (Process.command \"x\" [] |> Process.stdinText text)).input = Bytes.fromString text" Test.string case023,
+  Test.test "Process.validate { Process.defaults with bufferBytes = 1073741825 } (Process.command \"x\" []) |> Result.isErr" case024,
+  Test.test "Process.validate { Process.defaults with bufferBytes = 1, chunkBytes = 2 } (Process.command \"x\" []) |> Result.isErr" case025,
+  Test.test "Process.validate { Process.defaults with pollMs = 1001 } (Process.command \"x\" []) |> Result.isErr" case026,
+  Test.test "Process.validate { Process.defaults with graceMs = -1 } (Process.command \"x\" []) |> Result.isErr" case027,
+  Test.test "Process.validate { Process.defaults with maxPreviewBytes = -1 } (Process.command \"x\" []) |> Result.isErr" case028,
+  Test.test "Process.validate Process.defaults (Process.command \"x\" [] |> Process.workingDirectory \"bad\\u{0}path\") |> Result.isErr" case029,
+  Test.test "Process.validate Process.defaults (Process.command \"x\" [] |> Process.setEnvironment \"\" \"value\") |> Result.isErr" case030,
+  Test.test "Process.validate Process.defaults (Process.command \"x\" [] |> Process.setEnvironment \"key\" \"bad\\u{0}value\") |> Result.isErr" case031,
+  Test.test "Process.validate { Process.defaults with graceMs = 0, maxCaptureBytes = 0, maxPreviewBytes = 0 } (Process.command \"x\" []) = Ok ()" case032
+]

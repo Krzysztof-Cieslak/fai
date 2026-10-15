@@ -21,15 +21,59 @@ let decide config retries update =
       status = Some 429
     }
     LlmPolicy.delay config 0 retries (update error)
-example: decide config 0 identity = Some 100
-example: decide config 1 identity = Some 200
-example: decide config 2 identity = None
-example: decide config 0 (fun error -> { error with eventsDelivered = 1 }) = None
-example: decide config 0 (fun error -> { error with
-  headers = Headers.fromList [("Retry-After", "2")]
-}) = Some 2000
-example: decide { config with retryCount = 0 } 0 identity = None
-example: decide config 0 (fun error -> { error with status = Some 401 }) = None
-example: decide config 0 (fun error -> { error with
-  http = Some (HttpClient.Transport "connection lost")
-}) = None
+
+let case001 _ =
+  let testActual = decide config 0 identity
+  let testExpected = Some 100
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case002 _ =
+  let testActual = decide config 1 identity
+  let testExpected = Some 200
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case003 _ =
+  let testActual = decide config 2 identity
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case004 _ =
+  let testActual = decide config 0 (fun error -> { error with eventsDelivered = 1 })
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case005 _ =
+  let testActual =
+    decide config 0 (fun error -> { error with headers = Headers.fromList [("Retry-After", "2")] })
+  let testExpected = Some 2000
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case006 _ =
+  let testActual = decide { config with retryCount = 0 } 0 identity
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case007 _ =
+  let testActual = decide config 0 (fun error -> { error with status = Some 401 })
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+let case008 _ =
+  let testActual =
+    decide config 0 (fun error -> { error with
+      http = Some (HttpClient.Transport "connection lost")
+    })
+  let testExpected = None
+  Expect.equal ((Test.option Test.int)).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LlmPolicySpec" [
+  Test.test "decide config 0 identity = Some 100" case001,
+  Test.test "decide config 1 identity = Some 200" case002,
+  Test.test "decide config 2 identity = None" case003,
+  Test.test "decide config 0 (fun error -> { error with eventsDelivered = 1 }) = None" case004,
+  Test.test "decide config 0 (fun error -> { error with headers = Headers.fromList [(\"Retry-After\", \"2\")] }) = Some 2000" case005,
+  Test.test "decide { config with retryCount = 0 } 0 identity = None" case006,
+  Test.test "decide config 0 (fun error -> { error with status = Some 401 }) = None" case007,
+  Test.test "decide config 0 (fun error -> { error with http = Some (HttpClient.Transport \"connection lost\") }) = None" case008
+]

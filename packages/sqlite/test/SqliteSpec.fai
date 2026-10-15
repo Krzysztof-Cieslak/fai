@@ -1,5 +1,21 @@
 module SqliteSpec
 
-example: Sqlite.validateOptions Sqlite.defaults = Ok ()
-example: Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = 0 } = Ok ()
-example: Result.isErr (Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = (-1) })
+let case001 _ =
+  let testActual = Sqlite.validateOptions Sqlite.defaults = Ok ()
+  Expect.isTrue "Sqlite.validateOptions Sqlite.defaults = Ok ()" testActual
+
+let case002 _ =
+  let testActual = Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = 0 } = Ok ()
+  Expect.isTrue "Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = 0 } = Ok ()" testActual
+
+let case003 _ =
+  let testActual =
+    Result.isErr (Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = (-1) })
+  Expect.isTrue "Result.isErr (Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = (-1) })" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SqliteSpec" [
+  Test.test "Sqlite.validateOptions Sqlite.defaults = Ok ()" case001,
+  Test.test "Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = 0 } = Ok ()" case002,
+  Test.test "Result.isErr (Sqlite.validateOptions { Sqlite.defaults with busyTimeoutMs = (-1) })" case003
+]

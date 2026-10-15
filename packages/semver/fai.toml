@@ -4,11 +4,8 @@ manifest-version = 1
 name = "semver"
 version = "0.1.0"
 fai-version = "0.0.1 || ^0.1.0"
-test-dir = "test"
+test-dir = "."
 
-[[bin]]
-name = "runtime-checks"
-path = "examples/RuntimeChecks.fai"
 
 [[bin]]
 name = "select-version"

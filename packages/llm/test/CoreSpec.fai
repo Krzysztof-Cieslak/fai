@@ -10,24 +10,69 @@ let read text =
   match Json.parse text with
   | Err _ -> false
   | Ok value -> LlmSchema.decode person value = Ok ("Ada", 37)
-example: read "{\"name\":\"Ada\",\"age\":37}"
-example: not (read "{\"name\":\"Ada\",\"age\":37.5}")
-example: not (read "{\"name\":\"Ada\",\"age\":37,\"extra\":true}")
-example: not (read "{\"name\":\"Ada\",\"name\":\"Other\",\"age\":37}")
-example: LlmSchema.describe (LlmSchema.map2 (fun a b ->
-  (a, b)) (LlmSchema.field "x" LlmSchema.int) (LlmSchema.field "x" LlmSchema.int)) |> Result.isErr
-example: LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request "model" |> Llm.userText "hello") = Ok ()
-example: LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request "") |> Result.isErr
-example: LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request "model" |> Llm.maxOutputTokens 0) |> Result.isErr
-example: LlmValidate.request LlmTypes.Anthropic Llm.limits { Llm.request "model" with
-  history = [LlmTypes.Native LlmTypes.OpenAI Json.Null]
-} |> Result.isErr
-example: LlmValidate.toolName "read_file-2"
-example: not (LlmValidate.toolName "read file")
-example: LlmMessage.continueWith (LlmTypes.emptyResponse LlmTypes.OpenAI) [] (Llm.request "model") |> Result.isErr
-example: LlmMessage.continueWith { LlmTypes.emptyResponse LlmTypes.OpenAI with
-  finish = LlmTypes.Completed
-} [] (Llm.request "model") = Ok (Llm.request "model")
+
+let case001 _ =
+  let testActual = read "{\"name\":\"Ada\",\"age\":37}"
+  Expect.isTrue "read \"{\\\"name\\\":\\\"Ada\\\",\\\"age\\\":37}\"" testActual
+
+let case002 _ =
+  let testActual = not (read "{\"name\":\"Ada\",\"age\":37.5}")
+  Expect.isTrue "not (read \"{\\\"name\\\":\\\"Ada\\\",\\\"age\\\":37.5}\")" testActual
+
+let case003 _ =
+  let testActual = not (read "{\"name\":\"Ada\",\"age\":37,\"extra\":true}")
+  Expect.isTrue "not (read \"{\\\"name\\\":\\\"Ada\\\",\\\"age\\\":37,\\\"extra\\\":true}\")" testActual
+
+let case004 _ =
+  let testActual = not (read "{\"name\":\"Ada\",\"name\":\"Other\",\"age\":37}")
+  Expect.isTrue "not (read \"{\\\"name\\\":\\\"Ada\\\",\\\"name\\\":\\\"Other\\\",\\\"age\\\":37}\")" testActual
+
+let case005 _ =
+  let testActual =
+    LlmSchema.describe (LlmSchema.map2 (fun a b ->
+      (a, b)) (LlmSchema.field "x" LlmSchema.int) (LlmSchema.field "x" LlmSchema.int)) |> Result.isErr
+  Expect.isTrue "LlmSchema.describe (LlmSchema.map2 (fun a b -> (a, b)) (LlmSchema.field \"x\" LlmSchema.int) (LlmSchema.field \"x\" LlmSchema.int)) |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual =
+    LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request "model" |> Llm.userText "hello") = Ok ()
+  Expect.isTrue "LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request \"model\" |> Llm.userText \"hello\") = Ok ()" testActual
+
+let case007 _ =
+  let testActual = LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request "") |> Result.isErr
+  Expect.isTrue "LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request \"\") |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual =
+    LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request "model" |> Llm.maxOutputTokens 0) |> Result.isErr
+  Expect.isTrue "LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request \"model\" |> Llm.maxOutputTokens 0) |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual =
+    LlmValidate.request LlmTypes.Anthropic Llm.limits { Llm.request "model" with
+      history = [LlmTypes.Native LlmTypes.OpenAI Json.Null]
+    } |> Result.isErr
+  Expect.isTrue "LlmValidate.request LlmTypes.Anthropic Llm.limits { Llm.request \"model\" with history = [LlmTypes.Native LlmTypes.OpenAI Json.Null] } |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual = LlmValidate.toolName "read_file-2"
+  Expect.isTrue "LlmValidate.toolName \"read_file-2\"" testActual
+
+let case011 _ =
+  let testActual = not (LlmValidate.toolName "read file")
+  Expect.isTrue "not (LlmValidate.toolName \"read file\")" testActual
+
+let case012 _ =
+  let testActual =
+    LlmMessage.continueWith (LlmTypes.emptyResponse LlmTypes.OpenAI) [] (Llm.request "model") |> Result.isErr
+  Expect.isTrue "LlmMessage.continueWith (LlmTypes.emptyResponse LlmTypes.OpenAI) [] (Llm.request \"model\") |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual =
+    LlmMessage.continueWith { LlmTypes.emptyResponse LlmTypes.OpenAI with
+      finish = LlmTypes.Completed
+    } [] (Llm.request "model") = Ok (Llm.request "model")
+  Expect.isTrue "LlmMessage.continueWith { LlmTypes.emptyResponse LlmTypes.OpenAI with finish = LlmTypes.Completed } [] (Llm.request \"model\") = Ok (Llm.request \"model\")" testActual
 
 let scripted = {
   generate = fun request -> Ok { LlmTypes.emptyResponse LlmTypes.OpenAI with
@@ -38,7 +83,34 @@ let scripted = {
 
 useModel : Llm.Model 'e -> Llm.Request -> Result Llm.Response Llm.Error / 'e
 let useModel model request = model.generate request
-example: useModel scripted (Llm.request "test") |> Result.isOk
-forall text: (Llm.request "test" |> Llm.userText text).history = [
-  LlmTypes.Message LlmTypes.User [LlmTypes.Text text]
+
+let case014 _ =
+  let testActual = useModel scripted (Llm.request "test") |> Result.isOk
+  Expect.isTrue "useModel scripted (Llm.request \"test\") |> Result.isOk" testActual
+
+let case015 testInput =
+  let text = testInput
+  let testActual =
+    (Llm.request "test" |> Llm.userText text).history = [
+      LlmTypes.Message LlmTypes.User [LlmTypes.Text text]
+    ]
+  Expect.isTrue "property: (Llm.request \"test\" |> Llm.userText text).history = [ LlmTypes.Message LlmTypes.User [LlmTypes.Text text] ]" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LlmCoreSpec" [
+  Test.test "read \"{\\\"name\\\":\\\"Ada\\\",\\\"age\\\":37}\"" case001,
+  Test.test "not (read \"{\\\"name\\\":\\\"Ada\\\",\\\"age\\\":37.5}\")" case002,
+  Test.test "not (read \"{\\\"name\\\":\\\"Ada\\\",\\\"age\\\":37,\\\"extra\\\":true}\")" case003,
+  Test.test "not (read \"{\\\"name\\\":\\\"Ada\\\",\\\"name\\\":\\\"Other\\\",\\\"age\\\":37}\")" case004,
+  Test.test "LlmSchema.describe (LlmSchema.map2 (fun a b -> (a, b)) (LlmSchema.field \"x\" LlmSchema.int) (LlmSchema.field \"x\" LlmSchema.int)) |> Result.isErr" case005,
+  Test.test "LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request \"model\" |> Llm.userText \"hello\") = Ok ()" case006,
+  Test.test "LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request \"\") |> Result.isErr" case007,
+  Test.test "LlmValidate.request LlmTypes.OpenAI Llm.limits (Llm.request \"model\" |> Llm.maxOutputTokens 0) |> Result.isErr" case008,
+  Test.test "LlmValidate.request LlmTypes.Anthropic Llm.limits { Llm.request \"model\" with history = [LlmTypes.Native LlmTypes.OpenAI Json.Null] } |> Result.isErr" case009,
+  Test.test "LlmValidate.toolName \"read_file-2\"" case010,
+  Test.test "not (LlmValidate.toolName \"read file\")" case011,
+  Test.test "LlmMessage.continueWith (LlmTypes.emptyResponse LlmTypes.OpenAI) [] (Llm.request \"model\") |> Result.isErr" case012,
+  Test.test "LlmMessage.continueWith { LlmTypes.emptyResponse LlmTypes.OpenAI with finish = LlmTypes.Completed } [] (Llm.request \"model\") = Ok (Llm.request \"model\")" case013,
+  Test.test "useModel scripted (Llm.request \"test\") |> Result.isOk" case014,
+  Test.property "property: (Llm.request \"test\" |> Llm.userText text).history = [ LlmTypes.Message LlmTypes.User [LlmTypes.Text text] ]" Test.string case015
 ]

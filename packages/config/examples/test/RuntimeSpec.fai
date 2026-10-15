@@ -1,0 +1,4 @@
+module ConfigRuntimeSpec
+
+tests : Test.Suite Test.Context { Env, FileSystem }
+let tests = ConfigRuntimeChecks.tests

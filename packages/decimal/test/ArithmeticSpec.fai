@@ -10,34 +10,166 @@ let sub a b expected =
 
 let mul a b expected =
   Result.map Decimal.toString (Decimal.multiply (decimal a) (decimal b)) = Ok expected
-example: add "0.1" "0.2" "0.3"
-example: add "999999999999999999" "1" "1000000000000000000"
-example: add "-1.5" "1.5" "0"
-example: add "-2" "1" "-1"
-example: add "1" "-2" "-1"
-example: add "1.25" "2.5" "3.75"
-example: sub "1.2" "1.01" "0.19"
-example: sub "-1.2" "1.01" "-2.21"
-example: mul "1.5" "2" "3"
-example: mul "-1.5" "-0.2" "0.3"
-example: mul "999999999999999999" "999999999999999999" "9.99999999999999998000000000000000001e35"
-example: decimal "1" = decimal "1.00"
-example: decimal "-0" = decimal "+000.0e+99"
-example: decimal "10" = decimal ".1e2"
-example: Decimal.compare (decimal "9e999999") (decimal "1e1000000") < 0
-example: Decimal.compare (decimal "-9e999999") (decimal "-1e1000000") > 0
-example: Decimal.compare Decimal.negativeInfinity (decimal "-1e1000000") < 0
-example: Decimal.compare Decimal.positiveInfinity Decimal.nan < 0
-example: Decimal.compare Decimal.nan Decimal.nan = 0
-example: Decimal.nan = Decimal.nan
-example: Decimal.parse "1_000" |> Result.isErr
-example: Decimal.parse " 1" |> Result.isErr
-example: Decimal.parse "1 " |> Result.isErr
-example: Decimal.parse "1e" |> Result.isErr
-example: Decimal.parse "." |> Result.isErr
-example: Decimal.parse "nan" |> Result.isErr
-example: Decimal.toString (decimal "+001.2300e2") = "123"
-example: Decimal.toString (decimal "1e-7") = "1e-7"
-example: Decimal.toIntExact (decimal "-9223372036854775808") = Ok (-9223372036854775808)
-example: Decimal.toIntExact (decimal "9223372036854775808") |> Result.isErr
-example: Decimal.toIntExact (decimal "1.1") |> Result.isErr
+
+let case001 _ =
+  let testActual = add "0.1" "0.2" "0.3"
+  Expect.isTrue "add \"0.1\" \"0.2\" \"0.3\"" testActual
+
+let case002 _ =
+  let testActual = add "999999999999999999" "1" "1000000000000000000"
+  Expect.isTrue "add \"999999999999999999\" \"1\" \"1000000000000000000\"" testActual
+
+let case003 _ =
+  let testActual = add "-1.5" "1.5" "0"
+  Expect.isTrue "add \"-1.5\" \"1.5\" \"0\"" testActual
+
+let case004 _ =
+  let testActual = add "-2" "1" "-1"
+  Expect.isTrue "add \"-2\" \"1\" \"-1\"" testActual
+
+let case005 _ =
+  let testActual = add "1" "-2" "-1"
+  Expect.isTrue "add \"1\" \"-2\" \"-1\"" testActual
+
+let case006 _ =
+  let testActual = add "1.25" "2.5" "3.75"
+  Expect.isTrue "add \"1.25\" \"2.5\" \"3.75\"" testActual
+
+let case007 _ =
+  let testActual = sub "1.2" "1.01" "0.19"
+  Expect.isTrue "sub \"1.2\" \"1.01\" \"0.19\"" testActual
+
+let case008 _ =
+  let testActual = sub "-1.2" "1.01" "-2.21"
+  Expect.isTrue "sub \"-1.2\" \"1.01\" \"-2.21\"" testActual
+
+let case009 _ =
+  let testActual = mul "1.5" "2" "3"
+  Expect.isTrue "mul \"1.5\" \"2\" \"3\"" testActual
+
+let case010 _ =
+  let testActual = mul "-1.5" "-0.2" "0.3"
+  Expect.isTrue "mul \"-1.5\" \"-0.2\" \"0.3\"" testActual
+
+let case011 _ =
+  let testActual =
+    mul "999999999999999999" "999999999999999999" "9.99999999999999998000000000000000001e35"
+  Expect.isTrue "mul \"999999999999999999\" \"999999999999999999\" \"9.99999999999999998000000000000000001e35\"" testActual
+
+let case012 _ =
+  let testActual = decimal "1" = decimal "1.00"
+  Expect.isTrue "decimal \"1\" = decimal \"1.00\"" testActual
+
+let case013 _ =
+  let testActual = decimal "-0" = decimal "+000.0e+99"
+  Expect.isTrue "decimal \"-0\" = decimal \"+000.0e+99\"" testActual
+
+let case014 _ =
+  let testActual = decimal "10" = decimal ".1e2"
+  Expect.isTrue "decimal \"10\" = decimal \".1e2\"" testActual
+
+let case015 _ =
+  let testActual = Decimal.compare (decimal "9e999999") (decimal "1e1000000") < 0
+  Expect.isTrue "Decimal.compare (decimal \"9e999999\") (decimal \"1e1000000\") < 0" testActual
+
+let case016 _ =
+  let testActual = Decimal.compare (decimal "-9e999999") (decimal "-1e1000000") > 0
+  Expect.isTrue "Decimal.compare (decimal \"-9e999999\") (decimal \"-1e1000000\") > 0" testActual
+
+let case017 _ =
+  let testActual = Decimal.compare Decimal.negativeInfinity (decimal "-1e1000000") < 0
+  Expect.isTrue "Decimal.compare Decimal.negativeInfinity (decimal \"-1e1000000\") < 0" testActual
+
+let case018 _ =
+  let testActual = Decimal.compare Decimal.positiveInfinity Decimal.nan < 0
+  Expect.isTrue "Decimal.compare Decimal.positiveInfinity Decimal.nan < 0" testActual
+
+let case019 _ =
+  let testActual = Decimal.compare Decimal.nan Decimal.nan
+  let testExpected = 0
+  Expect.equal (Test.int).show testExpected testActual
+
+let case020 _ =
+  let testActual = Decimal.nan = Decimal.nan
+  Expect.isTrue "Decimal.nan = Decimal.nan" testActual
+
+let case021 _ =
+  let testActual = Decimal.parse "1_000" |> Result.isErr
+  Expect.isTrue "Decimal.parse \"1_000\" |> Result.isErr" testActual
+
+let case022 _ =
+  let testActual = Decimal.parse " 1" |> Result.isErr
+  Expect.isTrue "Decimal.parse \" 1\" |> Result.isErr" testActual
+
+let case023 _ =
+  let testActual = Decimal.parse "1 " |> Result.isErr
+  Expect.isTrue "Decimal.parse \"1 \" |> Result.isErr" testActual
+
+let case024 _ =
+  let testActual = Decimal.parse "1e" |> Result.isErr
+  Expect.isTrue "Decimal.parse \"1e\" |> Result.isErr" testActual
+
+let case025 _ =
+  let testActual = Decimal.parse "." |> Result.isErr
+  Expect.isTrue "Decimal.parse \".\" |> Result.isErr" testActual
+
+let case026 _ =
+  let testActual = Decimal.parse "nan" |> Result.isErr
+  Expect.isTrue "Decimal.parse \"nan\" |> Result.isErr" testActual
+
+let case027 _ =
+  let testActual = Decimal.toString (decimal "+001.2300e2")
+  let testExpected = "123"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case028 _ =
+  let testActual = Decimal.toString (decimal "1e-7")
+  let testExpected = "1e-7"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case029 _ =
+  let testActual = Decimal.toIntExact (decimal "-9223372036854775808") = Ok (-9223372036854775808)
+  Expect.isTrue "Decimal.toIntExact (decimal \"-9223372036854775808\") = Ok (-9223372036854775808)" testActual
+
+let case030 _ =
+  let testActual = Decimal.toIntExact (decimal "9223372036854775808") |> Result.isErr
+  Expect.isTrue "Decimal.toIntExact (decimal \"9223372036854775808\") |> Result.isErr" testActual
+
+let case031 _ =
+  let testActual = Decimal.toIntExact (decimal "1.1") |> Result.isErr
+  Expect.isTrue "Decimal.toIntExact (decimal \"1.1\") |> Result.isErr" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DecimalArithmeticSpec" [
+  Test.test "add \"0.1\" \"0.2\" \"0.3\"" case001,
+  Test.test "add \"999999999999999999\" \"1\" \"1000000000000000000\"" case002,
+  Test.test "add \"-1.5\" \"1.5\" \"0\"" case003,
+  Test.test "add \"-2\" \"1\" \"-1\"" case004,
+  Test.test "add \"1\" \"-2\" \"-1\"" case005,
+  Test.test "add \"1.25\" \"2.5\" \"3.75\"" case006,
+  Test.test "sub \"1.2\" \"1.01\" \"0.19\"" case007,
+  Test.test "sub \"-1.2\" \"1.01\" \"-2.21\"" case008,
+  Test.test "mul \"1.5\" \"2\" \"3\"" case009,
+  Test.test "mul \"-1.5\" \"-0.2\" \"0.3\"" case010,
+  Test.test "mul \"999999999999999999\" \"999999999999999999\" \"9.99999999999999998000000000000000001e35\"" case011,
+  Test.test "decimal \"1\" = decimal \"1.00\"" case012,
+  Test.test "decimal \"-0\" = decimal \"+000.0e+99\"" case013,
+  Test.test "decimal \"10\" = decimal \".1e2\"" case014,
+  Test.test "Decimal.compare (decimal \"9e999999\") (decimal \"1e1000000\") < 0" case015,
+  Test.test "Decimal.compare (decimal \"-9e999999\") (decimal \"-1e1000000\") > 0" case016,
+  Test.test "Decimal.compare Decimal.negativeInfinity (decimal \"-1e1000000\") < 0" case017,
+  Test.test "Decimal.compare Decimal.positiveInfinity Decimal.nan < 0" case018,
+  Test.test "Decimal.compare Decimal.nan Decimal.nan = 0" case019,
+  Test.test "Decimal.nan = Decimal.nan" case020,
+  Test.test "Decimal.parse \"1_000\" |> Result.isErr" case021,
+  Test.test "Decimal.parse \" 1\" |> Result.isErr" case022,
+  Test.test "Decimal.parse \"1 \" |> Result.isErr" case023,
+  Test.test "Decimal.parse \"1e\" |> Result.isErr" case024,
+  Test.test "Decimal.parse \".\" |> Result.isErr" case025,
+  Test.test "Decimal.parse \"nan\" |> Result.isErr" case026,
+  Test.test "Decimal.toString (decimal \"+001.2300e2\") = \"123\"" case027,
+  Test.test "Decimal.toString (decimal \"1e-7\") = \"1e-7\"" case028,
+  Test.test "Decimal.toIntExact (decimal \"-9223372036854775808\") = Ok (-9223372036854775808)" case029,
+  Test.test "Decimal.toIntExact (decimal \"9223372036854775808\") |> Result.isErr" case030,
+  Test.test "Decimal.toIntExact (decimal \"1.1\") |> Result.isErr" case031
+]

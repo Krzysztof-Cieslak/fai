@@ -3,11 +3,26 @@ module LogTimestampSpec
 let checked = Log.create Log.defaults (LogSink.discard "test")
 
 let badTime unit = Some (Instant.fromUnixTimeSeconds (1 / 0))
-example: (match checked with
-| Err _ -> false
-| Ok logger ->
-  Log.info (logger |> Log.withTimestamp badTime |> Log.withTimestamp (fun _ ->
-    None)) "no timestamp" [] |> Result.isOk)
-example: (match checked with
-| Err _ -> false
-| Ok logger -> Log.debug (Log.withTimestamp badTime logger) "disabled" [] = Ok LogTypes.Filtered)
+
+let case001 _ =
+  let testActual =
+    (match checked with
+    | Err _ -> false
+    | Ok logger ->
+      Log.info (logger |> Log.withTimestamp badTime |> Log.withTimestamp (fun _ ->
+        None)) "no timestamp" [] |> Result.isOk)
+  Expect.isTrue "(match checked with | Err _ -> false | Ok logger -> Log.info (logger |> Log.withTimestamp badTime |> Log.withTimestamp (fun _ -> None)) \"no timestamp\" [] |> …" testActual
+
+let case002 _ =
+  let testActual =
+    (match checked with
+    | Err _ -> false
+    | Ok logger ->
+      Log.debug (Log.withTimestamp badTime logger) "disabled" [] = Ok LogTypes.Filtered)
+  Expect.isTrue "(match checked with | Err _ -> false | Ok logger -> Log.debug (Log.withTimestamp badTime logger) \"disabled\" [] = Ok LogTypes.Filtered)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LogTimestampSpec" [
+  Test.test "(match checked with | Err _ -> false | Ok logger -> Log.info (logger |> Log.withTimestamp badTime |> Log.withTimestamp (fun _ -> None)) \"no timestamp\" [] |> …" case001,
+  Test.test "(match checked with | Err _ -> false | Ok logger -> Log.debug (Log.withTimestamp badTime logger) \"disabled\" [] = Ok LogTypes.Filtered)" case002
+]

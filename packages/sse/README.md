@@ -64,12 +64,12 @@ each item, and are cancelled/joined when the writer exits. A timer tick cannot
 discard a pending source event. Recent data suppresses unnecessary heartbeats.
 `Web.sse` and `Web.sseWith` integrate this with ordinary Web routes.
 
-## Native contracts
+## Named tests and properties
 
 ```sh
 fai fmt -C packages sse
 fai test -C packages sse
 ```
 
-Contracts cover malformed UTF-8, split code points/BOM/CRLF, ID-only blocks,
+Named tests cover malformed UTF-8, split code points/BOM/CRLF, ID-only blocks,
 limits and locations, partial input, and encoding/decoding properties.

@@ -195,5 +195,5 @@ rejects every invalid case, reparses rendered graphs, and compares application
 values where projection applies. Event comparison intentionally ignores flow
 versus block collection style and explicit document-marker presentation.
 Both conformance and large-input/alias/runtime fixtures run through JIT and AOT.
-Native contracts independently cover Core resolution, Unicode encodings and byte
+Named tests independently cover Core resolution, Unicode encodings and byte
 locations, typed codecs, merges, tag handlers, cycles and configured limits.

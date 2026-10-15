@@ -2,27 +2,111 @@ module EncodingHexSpec
 
 let vector plain encoded =
   Hex.encode (Bytes.fromString plain) = encoded && Hex.decode encoded = Ok (Bytes.fromString plain)
-example: vector "" ""
-example: vector "f" "66"
-example: vector "fo" "666f"
-example: vector "foo" "666f6f"
-example: vector "foob" "666f6f62"
-example: vector "fooba" "666f6f6261"
-example: vector "foobar" "666f6f626172"
-example: Hex.encodeWith {
-  letterCase = Encoding.Uppercase
-} (Bytes.fromString "foobar") = "666F6F626172"
-example: Hex.decode "00fFAa" = Ok (Bytes.fromList [0, 255, 170])
-example: Hex.decode "ff" = Ok (Bytes.fromList [255])
-example: Hex.decode "f" |> Result.isErr
-example: Hex.decode "0xff" |> Result.isErr
-example: Hex.decode "ff ff" |> Result.isErr
-example: Hex.decode "ff=" |> Result.isErr
-example: Hex.decode "gg" |> Result.isErr
-example: Hex.decodeWith { letterCase = Some Encoding.Lowercase } "ff" = Ok (Bytes.fromList [255])
-example: Hex.decodeWith { letterCase = Some Encoding.Lowercase } "FF" |> Result.isErr
-example: Hex.decodeWith { letterCase = Some Encoding.Uppercase } "FF" = Ok (Bytes.fromList [255])
-example: Hex.decodeWith { letterCase = Some Encoding.Uppercase } "ff" |> Result.isErr
-example: Hex.decodeBytesWith {
-  letterCase = None
-} (Bytes.fromString "Ff") = Ok (Bytes.fromList [255])
+
+let case001 _ =
+  let testActual = vector "" ""
+  Expect.isTrue "vector \"\" \"\"" testActual
+
+let case002 _ =
+  let testActual = vector "f" "66"
+  Expect.isTrue "vector \"f\" \"66\"" testActual
+
+let case003 _ =
+  let testActual = vector "fo" "666f"
+  Expect.isTrue "vector \"fo\" \"666f\"" testActual
+
+let case004 _ =
+  let testActual = vector "foo" "666f6f"
+  Expect.isTrue "vector \"foo\" \"666f6f\"" testActual
+
+let case005 _ =
+  let testActual = vector "foob" "666f6f62"
+  Expect.isTrue "vector \"foob\" \"666f6f62\"" testActual
+
+let case006 _ =
+  let testActual = vector "fooba" "666f6f6261"
+  Expect.isTrue "vector \"fooba\" \"666f6f6261\"" testActual
+
+let case007 _ =
+  let testActual = vector "foobar" "666f6f626172"
+  Expect.isTrue "vector \"foobar\" \"666f6f626172\"" testActual
+
+let case008 _ =
+  let testActual = Hex.encodeWith { letterCase = Encoding.Uppercase } (Bytes.fromString "foobar")
+  let testExpected = "666F6F626172"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case009 _ =
+  let testActual = Hex.decode "00fFAa" = Ok (Bytes.fromList [0, 255, 170])
+  Expect.isTrue "Hex.decode \"00fFAa\" = Ok (Bytes.fromList [0, 255, 170])" testActual
+
+let case010 _ =
+  let testActual = Hex.decode "ff" = Ok (Bytes.fromList [255])
+  Expect.isTrue "Hex.decode \"ff\" = Ok (Bytes.fromList [255])" testActual
+
+let case011 _ =
+  let testActual = Hex.decode "f" |> Result.isErr
+  Expect.isTrue "Hex.decode \"f\" |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = Hex.decode "0xff" |> Result.isErr
+  Expect.isTrue "Hex.decode \"0xff\" |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual = Hex.decode "ff ff" |> Result.isErr
+  Expect.isTrue "Hex.decode \"ff ff\" |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual = Hex.decode "ff=" |> Result.isErr
+  Expect.isTrue "Hex.decode \"ff=\" |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual = Hex.decode "gg" |> Result.isErr
+  Expect.isTrue "Hex.decode \"gg\" |> Result.isErr" testActual
+
+let case016 _ =
+  let testActual =
+    Hex.decodeWith { letterCase = Some Encoding.Lowercase } "ff" = Ok (Bytes.fromList [255])
+  Expect.isTrue "Hex.decodeWith { letterCase = Some Encoding.Lowercase } \"ff\" = Ok (Bytes.fromList [255])" testActual
+
+let case017 _ =
+  let testActual = Hex.decodeWith { letterCase = Some Encoding.Lowercase } "FF" |> Result.isErr
+  Expect.isTrue "Hex.decodeWith { letterCase = Some Encoding.Lowercase } \"FF\" |> Result.isErr" testActual
+
+let case018 _ =
+  let testActual =
+    Hex.decodeWith { letterCase = Some Encoding.Uppercase } "FF" = Ok (Bytes.fromList [255])
+  Expect.isTrue "Hex.decodeWith { letterCase = Some Encoding.Uppercase } \"FF\" = Ok (Bytes.fromList [255])" testActual
+
+let case019 _ =
+  let testActual = Hex.decodeWith { letterCase = Some Encoding.Uppercase } "ff" |> Result.isErr
+  Expect.isTrue "Hex.decodeWith { letterCase = Some Encoding.Uppercase } \"ff\" |> Result.isErr" testActual
+
+let case020 _ =
+  let testActual =
+    Hex.decodeBytesWith { letterCase = None } (Bytes.fromString "Ff") = Ok (Bytes.fromList [255])
+  Expect.isTrue "Hex.decodeBytesWith { letterCase = None } (Bytes.fromString \"Ff\") = Ok (Bytes.fromList [255])" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "EncodingHexSpec" [
+  Test.test "vector \"\" \"\"" case001,
+  Test.test "vector \"f\" \"66\"" case002,
+  Test.test "vector \"fo\" \"666f\"" case003,
+  Test.test "vector \"foo\" \"666f6f\"" case004,
+  Test.test "vector \"foob\" \"666f6f62\"" case005,
+  Test.test "vector \"fooba\" \"666f6f6261\"" case006,
+  Test.test "vector \"foobar\" \"666f6f626172\"" case007,
+  Test.test "Hex.encodeWith { letterCase = Encoding.Uppercase } (Bytes.fromString \"foobar\") = \"666F6F626172\"" case008,
+  Test.test "Hex.decode \"00fFAa\" = Ok (Bytes.fromList [0, 255, 170])" case009,
+  Test.test "Hex.decode \"ff\" = Ok (Bytes.fromList [255])" case010,
+  Test.test "Hex.decode \"f\" |> Result.isErr" case011,
+  Test.test "Hex.decode \"0xff\" |> Result.isErr" case012,
+  Test.test "Hex.decode \"ff ff\" |> Result.isErr" case013,
+  Test.test "Hex.decode \"ff=\" |> Result.isErr" case014,
+  Test.test "Hex.decode \"gg\" |> Result.isErr" case015,
+  Test.test "Hex.decodeWith { letterCase = Some Encoding.Lowercase } \"ff\" = Ok (Bytes.fromList [255])" case016,
+  Test.test "Hex.decodeWith { letterCase = Some Encoding.Lowercase } \"FF\" |> Result.isErr" case017,
+  Test.test "Hex.decodeWith { letterCase = Some Encoding.Uppercase } \"FF\" = Ok (Bytes.fromList [255])" case018,
+  Test.test "Hex.decodeWith { letterCase = Some Encoding.Uppercase } \"ff\" |> Result.isErr" case019,
+  Test.test "Hex.decodeBytesWith { letterCase = None } (Bytes.fromString \"Ff\") = Ok (Bytes.fromList [255])" case020
+]

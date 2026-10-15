@@ -45,7 +45,7 @@ expected/actual values where relevant, and an optional original provider cause.
 Text length errors count Unicode scalars; accepted text is ASCII. Binary length
 errors count bytes. Inputs are length-checked before fixed-size decoding.
 
-Run contracts with `fai test -C packages uuid`. They include RFC 9562 v4/v7
+Run named tests and properties with `fai test -C packages uuid`. They include RFC 9562 v4/v7
 vectors, malformed inputs, full-width timestamp bounds, bit preservation,
 text/byte round trips, and equality/order/hash behavior.
 
@@ -98,7 +98,7 @@ returns the same type. There is no second SQL-specific UUID representation.
 
 SQLite stores canonical lowercase text. PostgreSQL reads binary UUIDs directly
 from their network-order bytes and binds canonical text. The SQL and PostgreSQL
-contracts cover both APIs, all-zero/all-one values and non-RFC variants; the
+tests cover both APIs, all-zero/all-one values and non-RFC variants; the
 SQLite UUID fixture and PostgreSQL integration exercise actual database values.
 
 Reference: https://www.rfc-editor.org/rfc/rfc9562.html

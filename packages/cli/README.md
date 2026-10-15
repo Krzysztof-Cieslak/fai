@@ -176,5 +176,5 @@ fai test -C packages cli
 fai test -C packages cli/test/HelpSpec.fai
 ```
 
-The tests are Fai contracts. Repeated commands reuse the warm daemon, and the
+The tests are named Fai cases and properties. Repeated commands reuse the warm daemon, and the
 package's `fai.toml` also supplies dependency-aware cached-compiler CI selection.

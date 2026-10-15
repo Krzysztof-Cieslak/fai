@@ -7,49 +7,174 @@ let parts = {
   patch = "3",
   prerelease = ["rc", "1"]
 }
-example: Result.map Semver.parts (Semver.fromParts parts) = Ok parts
-example: Result.map Semver.toString (Semver.fromParts parts) = Ok "1.2.3-rc.1+commit.abc"
-example: Semver.fromParts { parts with major = "01" } |> Result.isErr
-example: Semver.fromParts { parts with minor = "" } |> Result.isErr
-example: Semver.fromParts { parts with patch = "1.2" } |> Result.isErr
-example: Semver.fromParts { parts with prerelease = ["a.b"] } |> Result.isErr
-example: Semver.fromParts { parts with prerelease = [""] } |> Result.isErr
-example: Semver.fromParts { parts with build = ["a+b"] } |> Result.isErr
-example: Semver.fromParts { parts with build = ["a.b"] } |> Result.isErr
-example: Semver.fromParts { parts with build = ["é"] } |> Result.isErr
-example: (match Semver.fromParts { parts with prerelease = ["a", "01"] } with
-| Err error ->
-  error.kind = Semver.LeadingZero && error.component = Some "prerelease" && error.identifier = Some 1 && error.offset = None
-| _ -> false)
-example: Result.map Semver.toString (Semver.fromInts 0 0 0) = Ok "0.0.0"
-example: Semver.fromInts (-1) 0 0 |> Result.isErr
-example: Semver.fromInts 0 (-1) 0 |> Result.isErr
-example: Semver.fromInts 0 0 (-1) |> Result.isErr
-example: (match Semver.fromInts 0 (-1) 0 with
-| Err error ->
-  error.kind = Semver.OutOfRange && error.component = Some "minor" && error.offset = None
-| _ -> false)
-example: (match Semver.fromInts 9223372036854775807 2 3 with
-| Ok version -> Semver.toInts version = Ok { major = 9223372036854775807, minor = 2, patch = 3 }
-| _ -> false)
-example: (match Semver.parse "1.9223372036854775808.3" with
-| Ok version ->
-  (match Semver.toInts version with
-  | Err error ->
-    error.kind = Semver.OutOfRange && error.component = Some "minor" && error.offset = None
-  | _ -> false)
-| _ -> false)
+
+let case001 _ =
+  let testActual = Result.map Semver.parts (Semver.fromParts parts) = Ok parts
+  Expect.isTrue "Result.map Semver.parts (Semver.fromParts parts) = Ok parts" testActual
+
+let case002 _ =
+  let testActual = Result.map Semver.toString (Semver.fromParts parts) = Ok "1.2.3-rc.1+commit.abc"
+  Expect.isTrue "Result.map Semver.toString (Semver.fromParts parts) = Ok \"1.2.3-rc.1+commit.abc\"" testActual
+
+let case003 _ =
+  let testActual = Semver.fromParts { parts with major = "01" } |> Result.isErr
+  Expect.isTrue "Semver.fromParts { parts with major = \"01\" } |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual = Semver.fromParts { parts with minor = "" } |> Result.isErr
+  Expect.isTrue "Semver.fromParts { parts with minor = \"\" } |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual = Semver.fromParts { parts with patch = "1.2" } |> Result.isErr
+  Expect.isTrue "Semver.fromParts { parts with patch = \"1.2\" } |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual = Semver.fromParts { parts with prerelease = ["a.b"] } |> Result.isErr
+  Expect.isTrue "Semver.fromParts { parts with prerelease = [\"a.b\"] } |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual = Semver.fromParts { parts with prerelease = [""] } |> Result.isErr
+  Expect.isTrue "Semver.fromParts { parts with prerelease = [\"\"] } |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual = Semver.fromParts { parts with build = ["a+b"] } |> Result.isErr
+  Expect.isTrue "Semver.fromParts { parts with build = [\"a+b\"] } |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual = Semver.fromParts { parts with build = ["a.b"] } |> Result.isErr
+  Expect.isTrue "Semver.fromParts { parts with build = [\"a.b\"] } |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual = Semver.fromParts { parts with build = ["é"] } |> Result.isErr
+  Expect.isTrue "Semver.fromParts { parts with build = [\"é\"] } |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual =
+    (match Semver.fromParts { parts with prerelease = ["a", "01"] } with
+    | Err error ->
+      error.kind = Semver.LeadingZero && error.component = Some "prerelease" && error.identifier = Some 1 && error.offset = None
+    | _ -> false)
+  Expect.isTrue "(match Semver.fromParts { parts with prerelease = [\"a\", \"01\"] } with | Err error -> error.kind = Semver.LeadingZero && error.component = Some \"prerelease\" &&…" testActual
+
+let case012 _ =
+  let testActual = Result.map Semver.toString (Semver.fromInts 0 0 0) = Ok "0.0.0"
+  Expect.isTrue "Result.map Semver.toString (Semver.fromInts 0 0 0) = Ok \"0.0.0\"" testActual
+
+let case013 _ =
+  let testActual = Semver.fromInts (-1) 0 0 |> Result.isErr
+  Expect.isTrue "Semver.fromInts (-1) 0 0 |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual = Semver.fromInts 0 (-1) 0 |> Result.isErr
+  Expect.isTrue "Semver.fromInts 0 (-1) 0 |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual = Semver.fromInts 0 0 (-1) |> Result.isErr
+  Expect.isTrue "Semver.fromInts 0 0 (-1) |> Result.isErr" testActual
+
+let case016 _ =
+  let testActual =
+    (match Semver.fromInts 0 (-1) 0 with
+    | Err error ->
+      error.kind = Semver.OutOfRange && error.component = Some "minor" && error.offset = None
+    | _ -> false)
+  Expect.isTrue "(match Semver.fromInts 0 (-1) 0 with | Err error -> error.kind = Semver.OutOfRange && error.component = Some \"minor\" && error.offset = None | _ -> false)" testActual
+
+let case017 _ =
+  let testActual =
+    (match Semver.fromInts 9223372036854775807 2 3 with
+    | Ok version -> Semver.toInts version = Ok { major = 9223372036854775807, minor = 2, patch = 3 }
+    | _ -> false)
+  Expect.isTrue "(match Semver.fromInts 9223372036854775807 2 3 with | Ok version -> Semver.toInts version = Ok { major = 9223372036854775807, minor = 2, patch = 3 } | _ -> f…" testActual
+
+let case018 _ =
+  let testActual =
+    (match Semver.parse "1.9223372036854775808.3" with
+    | Ok version ->
+      (match Semver.toInts version with
+      | Err error ->
+        error.kind = Semver.OutOfRange && error.component = Some "minor" && error.offset = None
+      | _ -> false)
+    | _ -> false)
+  Expect.isTrue "(match Semver.parse \"1.9223372036854775808.3\" with | Ok version -> (match Semver.toInts version with | Err error -> error.kind = Semver.OutOfRange && error.c…" testActual
 
 let changed operation text expected =
   Result.map (fun version -> Semver.toString (operation version)) (Semver.parse text) = Ok expected
-example: changed Semver.bumpMajor "1.2.3-rc.1+commit.abc" "2.0.0"
-example: changed Semver.bumpMinor "1.2.3-rc.1+commit.abc" "1.3.0"
-example: changed Semver.bumpPatch "1.2.3-rc.1+commit.abc" "1.2.4"
-example: changed Semver.release "1.2.3-rc.1+commit.abc" "1.2.3"
-example: changed Semver.release "1.2.3+commit.abc" "1.2.3"
-example: changed Semver.release "1.2.3" "1.2.3"
-example: changed Semver.bumpMajor "999999999999999999999999999999.2.3" "1000000000000000000000000000000.0.0"
-example: changed Semver.bumpMinor "0.99.99" "0.100.0"
-example: changed Semver.bumpPatch "0.0.1299" "0.0.1300"
-example: changed Semver.bumpPatch "0.0.0" "0.0.1"
-example: changed Semver.bumpPatch "0.0.9223372036854775807" "0.0.9223372036854775808"
+
+let case019 _ =
+  let testActual = changed Semver.bumpMajor "1.2.3-rc.1+commit.abc" "2.0.0"
+  Expect.isTrue "changed Semver.bumpMajor \"1.2.3-rc.1+commit.abc\" \"2.0.0\"" testActual
+
+let case020 _ =
+  let testActual = changed Semver.bumpMinor "1.2.3-rc.1+commit.abc" "1.3.0"
+  Expect.isTrue "changed Semver.bumpMinor \"1.2.3-rc.1+commit.abc\" \"1.3.0\"" testActual
+
+let case021 _ =
+  let testActual = changed Semver.bumpPatch "1.2.3-rc.1+commit.abc" "1.2.4"
+  Expect.isTrue "changed Semver.bumpPatch \"1.2.3-rc.1+commit.abc\" \"1.2.4\"" testActual
+
+let case022 _ =
+  let testActual = changed Semver.release "1.2.3-rc.1+commit.abc" "1.2.3"
+  Expect.isTrue "changed Semver.release \"1.2.3-rc.1+commit.abc\" \"1.2.3\"" testActual
+
+let case023 _ =
+  let testActual = changed Semver.release "1.2.3+commit.abc" "1.2.3"
+  Expect.isTrue "changed Semver.release \"1.2.3+commit.abc\" \"1.2.3\"" testActual
+
+let case024 _ =
+  let testActual = changed Semver.release "1.2.3" "1.2.3"
+  Expect.isTrue "changed Semver.release \"1.2.3\" \"1.2.3\"" testActual
+
+let case025 _ =
+  let testActual =
+    changed Semver.bumpMajor "999999999999999999999999999999.2.3" "1000000000000000000000000000000.0.0"
+  Expect.isTrue "changed Semver.bumpMajor \"999999999999999999999999999999.2.3\" \"1000000000000000000000000000000.0.0\"" testActual
+
+let case026 _ =
+  let testActual = changed Semver.bumpMinor "0.99.99" "0.100.0"
+  Expect.isTrue "changed Semver.bumpMinor \"0.99.99\" \"0.100.0\"" testActual
+
+let case027 _ =
+  let testActual = changed Semver.bumpPatch "0.0.1299" "0.0.1300"
+  Expect.isTrue "changed Semver.bumpPatch \"0.0.1299\" \"0.0.1300\"" testActual
+
+let case028 _ =
+  let testActual = changed Semver.bumpPatch "0.0.0" "0.0.1"
+  Expect.isTrue "changed Semver.bumpPatch \"0.0.0\" \"0.0.1\"" testActual
+
+let case029 _ =
+  let testActual = changed Semver.bumpPatch "0.0.9223372036854775807" "0.0.9223372036854775808"
+  Expect.isTrue "changed Semver.bumpPatch \"0.0.9223372036854775807\" \"0.0.9223372036854775808\"" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SemverConstructionSpec" [
+  Test.test "Result.map Semver.parts (Semver.fromParts parts) = Ok parts" case001,
+  Test.test "Result.map Semver.toString (Semver.fromParts parts) = Ok \"1.2.3-rc.1+commit.abc\"" case002,
+  Test.test "Semver.fromParts { parts with major = \"01\" } |> Result.isErr" case003,
+  Test.test "Semver.fromParts { parts with minor = \"\" } |> Result.isErr" case004,
+  Test.test "Semver.fromParts { parts with patch = \"1.2\" } |> Result.isErr" case005,
+  Test.test "Semver.fromParts { parts with prerelease = [\"a.b\"] } |> Result.isErr" case006,
+  Test.test "Semver.fromParts { parts with prerelease = [\"\"] } |> Result.isErr" case007,
+  Test.test "Semver.fromParts { parts with build = [\"a+b\"] } |> Result.isErr" case008,
+  Test.test "Semver.fromParts { parts with build = [\"a.b\"] } |> Result.isErr" case009,
+  Test.test "Semver.fromParts { parts with build = [\"é\"] } |> Result.isErr" case010,
+  Test.test "(match Semver.fromParts { parts with prerelease = [\"a\", \"01\"] } with | Err error -> error.kind = Semver.LeadingZero && error.component = Some \"prerelease\" &&…" case011,
+  Test.test "Result.map Semver.toString (Semver.fromInts 0 0 0) = Ok \"0.0.0\"" case012,
+  Test.test "Semver.fromInts (-1) 0 0 |> Result.isErr" case013,
+  Test.test "Semver.fromInts 0 (-1) 0 |> Result.isErr" case014,
+  Test.test "Semver.fromInts 0 0 (-1) |> Result.isErr" case015,
+  Test.test "(match Semver.fromInts 0 (-1) 0 with | Err error -> error.kind = Semver.OutOfRange && error.component = Some \"minor\" && error.offset = None | _ -> false)" case016,
+  Test.test "(match Semver.fromInts 9223372036854775807 2 3 with | Ok version -> Semver.toInts version = Ok { major = 9223372036854775807, minor = 2, patch = 3 } | _ -> f…" case017,
+  Test.test "(match Semver.parse \"1.9223372036854775808.3\" with | Ok version -> (match Semver.toInts version with | Err error -> error.kind = Semver.OutOfRange && error.c…" case018,
+  Test.test "changed Semver.bumpMajor \"1.2.3-rc.1+commit.abc\" \"2.0.0\"" case019,
+  Test.test "changed Semver.bumpMinor \"1.2.3-rc.1+commit.abc\" \"1.3.0\"" case020,
+  Test.test "changed Semver.bumpPatch \"1.2.3-rc.1+commit.abc\" \"1.2.4\"" case021,
+  Test.test "changed Semver.release \"1.2.3-rc.1+commit.abc\" \"1.2.3\"" case022,
+  Test.test "changed Semver.release \"1.2.3+commit.abc\" \"1.2.3\"" case023,
+  Test.test "changed Semver.release \"1.2.3\" \"1.2.3\"" case024,
+  Test.test "changed Semver.bumpMajor \"999999999999999999999999999999.2.3\" \"1000000000000000000000000000000.0.0\"" case025,
+  Test.test "changed Semver.bumpMinor \"0.99.99\" \"0.100.0\"" case026,
+  Test.test "changed Semver.bumpPatch \"0.0.1299\" \"0.0.1300\"" case027,
+  Test.test "changed Semver.bumpPatch \"0.0.0\" \"0.0.1\"" case028,
+  Test.test "changed Semver.bumpPatch \"0.0.9223372036854775807\" \"0.0.9223372036854775808\"" case029
+]

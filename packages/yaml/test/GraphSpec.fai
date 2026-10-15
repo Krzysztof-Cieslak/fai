@@ -3,23 +3,53 @@ module YamlGraphSpec
 let int value = YamlData.Integer (YamlNumber.integerFromInt value)
 
 let projected text = Yaml.loadWith Yaml.defaults { YamlProject.defaults with mergeKeys = true } text
-example: projected "a: &a {x: 1, y: 2}\nb: &b {x: 3, z: 4}\nc: {<<: [*a, *b]}" = Ok (YamlData.Mapping [|
-  ("a", YamlData.Mapping [| ("x", int 1), ("y", int 2) |]),
-  ("b", YamlData.Mapping [| ("x", int 3), ("z", int 4) |]),
-  ("c", YamlData.Mapping [| ("x", int 1), ("y", int 2), ("z", int 4) |])
-|])
-example: projected "{<<: 1}" |> Result.isErr
-example: projected "{a: 1, a: 2, <<: {a: 3}}" |> Result.isErr
-example: projected "{'<<': 1}" = Ok (YamlData.Mapping [| ("<<", int 1) |])
-example: Yaml.loadWith Yaml.defaults { YamlProject.defaults with
-  limits = { maxDepth = 1, maxNodes = 10 }
-} "&a [*a]" |> Result.isErr
-example: Yaml.loadWith Yaml.defaults { YamlProject.defaults with
-  limits = { maxDepth = 10, maxNodes = 5 }
-} "a: &a [1, 2]\nb: [*a, *a]" |> Result.isErr
-example: Yaml.parse "!<bad%ZZ> x" |> Result.isErr
-example: Yaml.parse "!<bad%ff> x" |> Result.isErr
-example: Yaml.parse "&a x\n--- *a" |> Result.isErr
+
+let case001 _ =
+  let testActual =
+    projected "a: &a {x: 1, y: 2}\nb: &b {x: 3, z: 4}\nc: {<<: [*a, *b]}" = Ok (YamlData.Mapping [|
+      ("a", YamlData.Mapping [| ("x", int 1), ("y", int 2) |]),
+      ("b", YamlData.Mapping [| ("x", int 3), ("z", int 4) |]),
+      ("c", YamlData.Mapping [| ("x", int 1), ("y", int 2), ("z", int 4) |])
+    |])
+  Expect.isTrue "projected \"a: &a {x: 1, y: 2}\\nb: &b {x: 3, z: 4}\\nc: {<<: [*a, *b]}\" = Ok (YamlData.Mapping [| (\"a\", YamlData.Mapping [| (\"x\", int 1), (\"y\", int 2) |]), (\"b…" testActual
+
+let case002 _ =
+  let testActual = projected "{<<: 1}" |> Result.isErr
+  Expect.isTrue "projected \"{<<: 1}\" |> Result.isErr" testActual
+
+let case003 _ =
+  let testActual = projected "{a: 1, a: 2, <<: {a: 3}}" |> Result.isErr
+  Expect.isTrue "projected \"{a: 1, a: 2, <<: {a: 3}}\" |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual = projected "{'<<': 1}" = Ok (YamlData.Mapping [| ("<<", int 1) |])
+  Expect.isTrue "projected \"{'<<': 1}\" = Ok (YamlData.Mapping [| (\"<<\", int 1) |])" testActual
+
+let case005 _ =
+  let testActual =
+    Yaml.loadWith Yaml.defaults { YamlProject.defaults with
+      limits = { maxDepth = 1, maxNodes = 10 }
+    } "&a [*a]" |> Result.isErr
+  Expect.isTrue "Yaml.loadWith Yaml.defaults { YamlProject.defaults with limits = { maxDepth = 1, maxNodes = 10 } } \"&a [*a]\" |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual =
+    Yaml.loadWith Yaml.defaults { YamlProject.defaults with
+      limits = { maxDepth = 10, maxNodes = 5 }
+    } "a: &a [1, 2]\nb: [*a, *a]" |> Result.isErr
+  Expect.isTrue "Yaml.loadWith Yaml.defaults { YamlProject.defaults with limits = { maxDepth = 10, maxNodes = 5 } } \"a: &a [1, 2]\\nb: [*a, *a]\" |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual = Yaml.parse "!<bad%ZZ> x" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"!<bad%ZZ> x\" |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual = Yaml.parse "!<bad%ff> x" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"!<bad%ff> x\" |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual = Yaml.parse "&a x\n--- *a" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"&a x\\n--- *a\" |> Result.isErr" testActual
 
 let graphRoundTrip text =
   match Yaml.parse text with
@@ -29,7 +59,10 @@ let graphRoundTrip text =
     | Err _ -> false
     | Ok text ->
       Result.map (fun parsed -> Array.length (YamlDocument.nodes parsed)) (Yaml.parse text) = Ok 2
-example: graphRoundTrip "&a [*a]"
+
+let case010 _ =
+  let testActual = graphRoundTrip "&a [*a]"
+  Expect.isTrue "graphRoundTrip \"&a [*a]\"" testActual
 
 let mapTag = {
   run = fun content ->
@@ -39,31 +72,103 @@ let mapTag = {
     | _ -> Err "expected mapping",
   tag = "!pairs"
 }
-example: Yaml.loadWith Yaml.defaults { YamlProject.defaults with
-  handlers = [mapTag]
-} "!pairs {[1, 2]: 3}" = Ok (int 1)
-example: (match Yaml.parse "a: *missing" with
-| Err error ->
-  error.kind = YamlTypes.UnknownAnchor && Option.map (fun span ->
-    span.start.byte) error.primary = Some 3
-| _ -> false)
-example: Yaml.parseWith { Yaml.defaults with maxDocuments = 0 } "" |> Result.isErr
-example: Yaml.parseWith { Yaml.defaults with maxNodes = 0 } "" |> Result.isErr
-example: Yaml.parseWith { Yaml.defaults with maxDepth = 0 } "[[]]" |> Result.isErr
-example: Yaml.parseWith { Yaml.defaults with maxScalarBytes = 3 } "four" |> Result.isErr
-example: Yaml.toStringWith { YamlRender.defaults with maxBytes = 3 } YamlData.Null |> Result.isErr
-example: Yaml.toStringWith { YamlRender.defaults with
-  sortKeys = true
-} (YamlData.Mapping [| ("b", int 2), ("a", int 1) |]) = Ok "\"a\": 1\n\"b\": 2\n"
-example: Yaml.loadWith Yaml.defaults { YamlProject.defaults with
-  handlers = [mapTag, mapTag]
-} "null" |> Result.isErr
-example: Yaml.parse "%TAG !x! tag:one:\n%TAG !x! tag:two:\n--- value" |> Result.isErr
-example: Yaml.parse "{,}" |> Result.isErr
-example: Yaml.parse "{a: 1,,b: 2}" |> Result.isErr
-example: (match Yaml.load "&x [*x]" with
-| Err error ->
-  error.kind = YamlTypes.CyclicAlias && Option.map (fun span ->
-    span.start.byte) error.primary = Some 4 && Option.map (fun span ->
-    span.start.byte) error.secondary = Some 0
-| _ -> false)
+
+let case011 _ =
+  let testActual =
+    Yaml.loadWith Yaml.defaults { YamlProject.defaults with
+      handlers = [mapTag]
+    } "!pairs {[1, 2]: 3}" = Ok (int 1)
+  Expect.isTrue "Yaml.loadWith Yaml.defaults { YamlProject.defaults with handlers = [mapTag] } \"!pairs {[1, 2]: 3}\" = Ok (int 1)" testActual
+
+let case012 _ =
+  let testActual =
+    (match Yaml.parse "a: *missing" with
+    | Err error ->
+      error.kind = YamlTypes.UnknownAnchor && Option.map (fun span ->
+        span.start.byte) error.primary = Some 3
+    | _ -> false)
+  Expect.isTrue "(match Yaml.parse \"a: *missing\" with | Err error -> error.kind = YamlTypes.UnknownAnchor && Option.map (fun span -> span.start.byte) error.primary = Some 3 |…" testActual
+
+let case013 _ =
+  let testActual = Yaml.parseWith { Yaml.defaults with maxDocuments = 0 } "" |> Result.isErr
+  Expect.isTrue "Yaml.parseWith { Yaml.defaults with maxDocuments = 0 } \"\" |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual = Yaml.parseWith { Yaml.defaults with maxNodes = 0 } "" |> Result.isErr
+  Expect.isTrue "Yaml.parseWith { Yaml.defaults with maxNodes = 0 } \"\" |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual = Yaml.parseWith { Yaml.defaults with maxDepth = 0 } "[[]]" |> Result.isErr
+  Expect.isTrue "Yaml.parseWith { Yaml.defaults with maxDepth = 0 } \"[[]]\" |> Result.isErr" testActual
+
+let case016 _ =
+  let testActual = Yaml.parseWith { Yaml.defaults with maxScalarBytes = 3 } "four" |> Result.isErr
+  Expect.isTrue "Yaml.parseWith { Yaml.defaults with maxScalarBytes = 3 } \"four\" |> Result.isErr" testActual
+
+let case017 _ =
+  let testActual =
+    Yaml.toStringWith { YamlRender.defaults with maxBytes = 3 } YamlData.Null |> Result.isErr
+  Expect.isTrue "Yaml.toStringWith { YamlRender.defaults with maxBytes = 3 } YamlData.Null |> Result.isErr" testActual
+
+let case018 _ =
+  let testActual =
+    Yaml.toStringWith { YamlRender.defaults with
+      sortKeys = true
+    } (YamlData.Mapping [| ("b", int 2), ("a", int 1) |]) = Ok "\"a\": 1\n\"b\": 2\n"
+  Expect.isTrue "Yaml.toStringWith { YamlRender.defaults with sortKeys = true } (YamlData.Mapping [| (\"b\", int 2), (\"a\", int 1) |]) = Ok \"\\\"a\\\": 1\\n\\\"b\\\": 2\\n\"" testActual
+
+let case019 _ =
+  let testActual =
+    Yaml.loadWith Yaml.defaults { YamlProject.defaults with
+      handlers = [mapTag, mapTag]
+    } "null" |> Result.isErr
+  Expect.isTrue "Yaml.loadWith Yaml.defaults { YamlProject.defaults with handlers = [mapTag, mapTag] } \"null\" |> Result.isErr" testActual
+
+let case020 _ =
+  let testActual = Yaml.parse "%TAG !x! tag:one:\n%TAG !x! tag:two:\n--- value" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"%TAG !x! tag:one:\\n%TAG !x! tag:two:\\n--- value\" |> Result.isErr" testActual
+
+let case021 _ =
+  let testActual = Yaml.parse "{,}" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"{,}\" |> Result.isErr" testActual
+
+let case022 _ =
+  let testActual = Yaml.parse "{a: 1,,b: 2}" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"{a: 1,,b: 2}\" |> Result.isErr" testActual
+
+let case023 _ =
+  let testActual =
+    (match Yaml.load "&x [*x]" with
+    | Err error ->
+      error.kind = YamlTypes.CyclicAlias && Option.map (fun span ->
+        span.start.byte) error.primary = Some 4 && Option.map (fun span ->
+        span.start.byte) error.secondary = Some 0
+    | _ -> false)
+  Expect.isTrue "(match Yaml.load \"&x [*x]\" with | Err error -> error.kind = YamlTypes.CyclicAlias && Option.map (fun span -> span.start.byte) error.primary = Some 4 && Optio…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "YamlGraphSpec" [
+  Test.test "projected \"a: &a {x: 1, y: 2}\\nb: &b {x: 3, z: 4}\\nc: {<<: [*a, *b]}\" = Ok (YamlData.Mapping [| (\"a\", YamlData.Mapping [| (\"x\", int 1), (\"y\", int 2) |]), (\"b…" case001,
+  Test.test "projected \"{<<: 1}\" |> Result.isErr" case002,
+  Test.test "projected \"{a: 1, a: 2, <<: {a: 3}}\" |> Result.isErr" case003,
+  Test.test "projected \"{'<<': 1}\" = Ok (YamlData.Mapping [| (\"<<\", int 1) |])" case004,
+  Test.test "Yaml.loadWith Yaml.defaults { YamlProject.defaults with limits = { maxDepth = 1, maxNodes = 10 } } \"&a [*a]\" |> Result.isErr" case005,
+  Test.test "Yaml.loadWith Yaml.defaults { YamlProject.defaults with limits = { maxDepth = 10, maxNodes = 5 } } \"a: &a [1, 2]\\nb: [*a, *a]\" |> Result.isErr" case006,
+  Test.test "Yaml.parse \"!<bad%ZZ> x\" |> Result.isErr" case007,
+  Test.test "Yaml.parse \"!<bad%ff> x\" |> Result.isErr" case008,
+  Test.test "Yaml.parse \"&a x\\n--- *a\" |> Result.isErr" case009,
+  Test.test "graphRoundTrip \"&a [*a]\"" case010,
+  Test.test "Yaml.loadWith Yaml.defaults { YamlProject.defaults with handlers = [mapTag] } \"!pairs {[1, 2]: 3}\" = Ok (int 1)" case011,
+  Test.test "(match Yaml.parse \"a: *missing\" with | Err error -> error.kind = YamlTypes.UnknownAnchor && Option.map (fun span -> span.start.byte) error.primary = Some 3 |…" case012,
+  Test.test "Yaml.parseWith { Yaml.defaults with maxDocuments = 0 } \"\" |> Result.isErr" case013,
+  Test.test "Yaml.parseWith { Yaml.defaults with maxNodes = 0 } \"\" |> Result.isErr" case014,
+  Test.test "Yaml.parseWith { Yaml.defaults with maxDepth = 0 } \"[[]]\" |> Result.isErr" case015,
+  Test.test "Yaml.parseWith { Yaml.defaults with maxScalarBytes = 3 } \"four\" |> Result.isErr" case016,
+  Test.test "Yaml.toStringWith { YamlRender.defaults with maxBytes = 3 } YamlData.Null |> Result.isErr" case017,
+  Test.test "Yaml.toStringWith { YamlRender.defaults with sortKeys = true } (YamlData.Mapping [| (\"b\", int 2), (\"a\", int 1) |]) = Ok \"\\\"a\\\": 1\\n\\\"b\\\": 2\\n\"" case018,
+  Test.test "Yaml.loadWith Yaml.defaults { YamlProject.defaults with handlers = [mapTag, mapTag] } \"null\" |> Result.isErr" case019,
+  Test.test "Yaml.parse \"%TAG !x! tag:one:\\n%TAG !x! tag:two:\\n--- value\" |> Result.isErr" case020,
+  Test.test "Yaml.parse \"{,}\" |> Result.isErr" case021,
+  Test.test "Yaml.parse \"{a: 1,,b: 2}\" |> Result.isErr" case022,
+  Test.test "(match Yaml.load \"&x [*x]\" with | Err error -> error.kind = YamlTypes.CyclicAlias && Option.map (fun span -> span.start.byte) error.primary = Some 4 && Optio…" case023
+]

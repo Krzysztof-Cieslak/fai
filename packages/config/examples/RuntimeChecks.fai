@@ -145,3 +145,48 @@ let main env =
     else
       env.console.writeLine "Configuration runtime checks FAILED"
   | _ -> env.console.writeLine "Configuration fixture arguments or temporary directory failed"
+
+namedEnvironment : Env
+let namedEnvironment = { Env with
+  args = fun _ -> ["--port", "8100"],
+  get = fun name ->
+    if name = "FAI_CONFIG_PORT" then
+      Some "7100"
+    else if name = "FAI_CONFIG_HOST" then Some "localhost" else None
+}
+
+withSettings : (Runtime -> Path -> Config.Layer -> Result Unit String / { Env, FileSystem }) -> Test.Context -> Test.Check / { Env, FileSystem }
+let withSettings check ctx =
+  let env = { ctx.runtime with env = namedEnvironment }
+  let base = ctx.tempRoot
+  let made = env.fs.createDirectory (Path.join base (path "cfg"))
+  let wrote =
+    env.fs.writeBytes (Path.join base (path "cfg/settings.toml")) (Bytes.fromString "data='files'\n[server]\nport=6000")
+  let dot =
+    env.fs.writeBytes (Path.join base (path ".env")) (Bytes.fromString "FAI_CONFIG_PORT=6100\n")
+  match (made, wrote, dot, ConfigExampleSettings.defaults) with
+  | (Ok _, Ok _, Ok _, Ok defaults) ->
+    Expect.ok identity (fun _ -> Test.pass) (check env base defaults)
+  | _ -> Test.error "could not prepare configuration sources"
+
+public tests : Test.Suite Test.Context { Env, FileSystem }
+let tests = Test.describe "configuration sources" [
+  Test.test "dotenv overrides file defaults with source provenance" (withSettings (fun env base defaults ->
+    loadCheck env base defaults [] 6100 ConfigTypes.DotenvFile)),
+  Test.test "environment overrides dotenv with source provenance" (withSettings (fun env base defaults ->
+    loadCheck env base defaults [
+      ConfigSource.Environment ConfigExampleSettings.bindings
+    ] 7100 ConfigTypes.Environment)),
+  Test.test "CLI overrides environment with source provenance" (withSettings commandLine),
+  Test.test "optional files, parse errors and resource limits" (withSettings errorChecks),
+  Test.test "only winning values are decoded and errors do not expose secrets" (withSettings precedenceChecks),
+  Test.test "absent CLI options do not create overrides" (fun _ ->
+    Expect.isTrue "no command line layer" (ConfigExampleSettings.cli [] = Ok []))
+]
+
+commandLine : Runtime -> Path -> Config.Layer -> Result Unit String / { Env, FileSystem }
+let commandLine env base defaults =
+  match ConfigExampleSettings.cli ["--port", "8100"] with
+  | Err error -> Err error
+  | Ok cli ->
+    loadCheck env base defaults (ConfigSource.Environment ConfigExampleSettings.bindings :: cli) 8100 ConfigTypes.CommandLine

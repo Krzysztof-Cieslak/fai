@@ -4,59 +4,222 @@ let matches requirement version =
   match (SemverRange.parse requirement, Semver.parse version) with
   | (Ok requirement, Ok version) -> SemverRange.matches requirement version
   | _ -> false
-example: matches "1.2.3" "1.2.3"
-example: not (matches "1.2.3" "1.2.4")
-example: matches "=1.2.3" "1.2.3+build"
-example: matches ">1.2.3" "1.2.4"
-example: not (matches ">1.2.3" "1.2.3")
-example: matches ">=1.2.3" "1.2.3"
-example: matches "<1.2.3" "1.2.2"
-example: not (matches "<1.2.3" "1.2.3")
-example: matches "<=1.2.3" "1.2.3"
-example: matches "^1.2.3" "1.9.99"
-example: not (matches "^1.2.3" "1.2.2")
-example: not (matches "^1.2.3" "2.0.0")
-example: matches "^0.2.3" "0.2.99"
-example: not (matches "^0.2.3" "0.3.0")
-example: matches "^0.0.3" "0.0.3"
-example: not (matches "^0.0.3" "0.0.4")
-example: matches "^0.0.0" "0.0.0"
-example: not (matches "^0.0.0" "0.0.1")
-example: matches "~1.2.3" "1.2.99"
-example: not (matches "~1.2.3" "1.3.0")
-example: not (matches "~1.2.3" "1.2.2")
-example: matches ">=1.2.3, <1.7.0" "1.6.9"
-example: not (matches ">=1.2.3, <1.7.0" "1.7.0")
-example: matches "^1.0.0 || ^3.0.0" "3.1.0"
-example: not (matches "^1.0.0 || ^3.0.0" "2.1.0")
-example: matches "*" "9999999999999999999999999.0.0+build"
-example: not (matches "*" "1.0.0-rc.1")
-example: matches "* || =1.0.0-rc.1" "1.0.0-rc.1"
-example: not (matches "* || =1.0.0-rc.1" "1.0.0-rc.2")
-example: not (matches ">=1.0.0, <2.0.0" "2.0.0-rc.1")
-example: matches "^2.0.0-rc.1" "2.0.0-rc.2"
-example: matches "^2.0.0-rc.1" "2.1.0"
-example: not (matches "^2.0.0-rc.1" "2.1.0-beta.1")
-example: not (matches "=2.0.0-rc.1 || >=2.0.0-rc.3" "2.0.0-rc.2")
-example: not (matches ">=1.0.0, <2.0.0 || =2.0.0-rc.1" "2.0.0-rc.2")
-example: matches ">=1.0.0, <2.0.0, >=2.0.0-rc.1" "2.0.0-rc.2"
-example: not (matches "^1.0.0, >=2.0.0-rc.1" "2.0.0-rc.2")
-example: matches "*, >=1.0.0-rc.1" "1.0.0-rc.2"
-example: not (matches "*, >=1.0.0-rc.1" "1.1.0-beta")
-example: matches "0.0.0-0" "0.0.0-0+abc"
-example: matches "~0.0.0-0" "0.0.1"
-example: not (matches "~0.0.0-0" "0.0.1-0")
-example: not (matches "^0.0.0-0" "0.0.1")
-example: matches "^9999999999999999999999.0.0" "9999999999999999999999.9999999999999999999999.0"
-example: not (matches "^9999999999999999999999.0.0" "10000000000000000000000.0.0")
-example: not (matches ">2.0.0, <1.0.0" "1.5.0")
-example: SemverRange.parse ">2.0.0, <1.0.0" |> Result.isOk
-example: Result.map SemverRange.toString (SemverRange.parse " 1.2.3 ") = Ok "=1.2.3"
-example: Result.map SemverRange.toString (SemverRange.parse "<2.0.0,>=1.0.0 || ^3.0.0") = Ok ">=1.0.0, <2.0.0 || ^3.0.0"
-example: SemverRange.parse "<2.0.0, >=1.0.0 || ^3.0.0" = SemverRange.parse "^3.0.0 || >=1.0.0, <2.0.0"
-example: Result.map SemverRange.toString (SemverRange.parse "*, 1.2.3, =1.2.3 || 1.2.3") = Ok "=1.2.3"
-example: Result.map SemverRange.toString (SemverRange.parse "* || *") = Ok "*"
-example: matches "\u{2003}>= 1.2.3\t,\n<2.0.0\u{a0}" "1.2.3"
+
+let case001 _ =
+  let testActual = matches "1.2.3" "1.2.3"
+  Expect.isTrue "matches \"1.2.3\" \"1.2.3\"" testActual
+
+let case002 _ =
+  let testActual = not (matches "1.2.3" "1.2.4")
+  Expect.isTrue "not (matches \"1.2.3\" \"1.2.4\")" testActual
+
+let case003 _ =
+  let testActual = matches "=1.2.3" "1.2.3+build"
+  Expect.isTrue "matches \"=1.2.3\" \"1.2.3+build\"" testActual
+
+let case004 _ =
+  let testActual = matches ">1.2.3" "1.2.4"
+  Expect.isTrue "matches \">1.2.3\" \"1.2.4\"" testActual
+
+let case005 _ =
+  let testActual = not (matches ">1.2.3" "1.2.3")
+  Expect.isTrue "not (matches \">1.2.3\" \"1.2.3\")" testActual
+
+let case006 _ =
+  let testActual = matches ">=1.2.3" "1.2.3"
+  Expect.isTrue "matches \">=1.2.3\" \"1.2.3\"" testActual
+
+let case007 _ =
+  let testActual = matches "<1.2.3" "1.2.2"
+  Expect.isTrue "matches \"<1.2.3\" \"1.2.2\"" testActual
+
+let case008 _ =
+  let testActual = not (matches "<1.2.3" "1.2.3")
+  Expect.isTrue "not (matches \"<1.2.3\" \"1.2.3\")" testActual
+
+let case009 _ =
+  let testActual = matches "<=1.2.3" "1.2.3"
+  Expect.isTrue "matches \"<=1.2.3\" \"1.2.3\"" testActual
+
+let case010 _ =
+  let testActual = matches "^1.2.3" "1.9.99"
+  Expect.isTrue "matches \"^1.2.3\" \"1.9.99\"" testActual
+
+let case011 _ =
+  let testActual = not (matches "^1.2.3" "1.2.2")
+  Expect.isTrue "not (matches \"^1.2.3\" \"1.2.2\")" testActual
+
+let case012 _ =
+  let testActual = not (matches "^1.2.3" "2.0.0")
+  Expect.isTrue "not (matches \"^1.2.3\" \"2.0.0\")" testActual
+
+let case013 _ =
+  let testActual = matches "^0.2.3" "0.2.99"
+  Expect.isTrue "matches \"^0.2.3\" \"0.2.99\"" testActual
+
+let case014 _ =
+  let testActual = not (matches "^0.2.3" "0.3.0")
+  Expect.isTrue "not (matches \"^0.2.3\" \"0.3.0\")" testActual
+
+let case015 _ =
+  let testActual = matches "^0.0.3" "0.0.3"
+  Expect.isTrue "matches \"^0.0.3\" \"0.0.3\"" testActual
+
+let case016 _ =
+  let testActual = not (matches "^0.0.3" "0.0.4")
+  Expect.isTrue "not (matches \"^0.0.3\" \"0.0.4\")" testActual
+
+let case017 _ =
+  let testActual = matches "^0.0.0" "0.0.0"
+  Expect.isTrue "matches \"^0.0.0\" \"0.0.0\"" testActual
+
+let case018 _ =
+  let testActual = not (matches "^0.0.0" "0.0.1")
+  Expect.isTrue "not (matches \"^0.0.0\" \"0.0.1\")" testActual
+
+let case019 _ =
+  let testActual = matches "~1.2.3" "1.2.99"
+  Expect.isTrue "matches \"~1.2.3\" \"1.2.99\"" testActual
+
+let case020 _ =
+  let testActual = not (matches "~1.2.3" "1.3.0")
+  Expect.isTrue "not (matches \"~1.2.3\" \"1.3.0\")" testActual
+
+let case021 _ =
+  let testActual = not (matches "~1.2.3" "1.2.2")
+  Expect.isTrue "not (matches \"~1.2.3\" \"1.2.2\")" testActual
+
+let case022 _ =
+  let testActual = matches ">=1.2.3, <1.7.0" "1.6.9"
+  Expect.isTrue "matches \">=1.2.3, <1.7.0\" \"1.6.9\"" testActual
+
+let case023 _ =
+  let testActual = not (matches ">=1.2.3, <1.7.0" "1.7.0")
+  Expect.isTrue "not (matches \">=1.2.3, <1.7.0\" \"1.7.0\")" testActual
+
+let case024 _ =
+  let testActual = matches "^1.0.0 || ^3.0.0" "3.1.0"
+  Expect.isTrue "matches \"^1.0.0 || ^3.0.0\" \"3.1.0\"" testActual
+
+let case025 _ =
+  let testActual = not (matches "^1.0.0 || ^3.0.0" "2.1.0")
+  Expect.isTrue "not (matches \"^1.0.0 || ^3.0.0\" \"2.1.0\")" testActual
+
+let case026 _ =
+  let testActual = matches "*" "9999999999999999999999999.0.0+build"
+  Expect.isTrue "matches \"*\" \"9999999999999999999999999.0.0+build\"" testActual
+
+let case027 _ =
+  let testActual = not (matches "*" "1.0.0-rc.1")
+  Expect.isTrue "not (matches \"*\" \"1.0.0-rc.1\")" testActual
+
+let case028 _ =
+  let testActual = matches "* || =1.0.0-rc.1" "1.0.0-rc.1"
+  Expect.isTrue "matches \"* || =1.0.0-rc.1\" \"1.0.0-rc.1\"" testActual
+
+let case029 _ =
+  let testActual = not (matches "* || =1.0.0-rc.1" "1.0.0-rc.2")
+  Expect.isTrue "not (matches \"* || =1.0.0-rc.1\" \"1.0.0-rc.2\")" testActual
+
+let case030 _ =
+  let testActual = not (matches ">=1.0.0, <2.0.0" "2.0.0-rc.1")
+  Expect.isTrue "not (matches \">=1.0.0, <2.0.0\" \"2.0.0-rc.1\")" testActual
+
+let case031 _ =
+  let testActual = matches "^2.0.0-rc.1" "2.0.0-rc.2"
+  Expect.isTrue "matches \"^2.0.0-rc.1\" \"2.0.0-rc.2\"" testActual
+
+let case032 _ =
+  let testActual = matches "^2.0.0-rc.1" "2.1.0"
+  Expect.isTrue "matches \"^2.0.0-rc.1\" \"2.1.0\"" testActual
+
+let case033 _ =
+  let testActual = not (matches "^2.0.0-rc.1" "2.1.0-beta.1")
+  Expect.isTrue "not (matches \"^2.0.0-rc.1\" \"2.1.0-beta.1\")" testActual
+
+let case034 _ =
+  let testActual = not (matches "=2.0.0-rc.1 || >=2.0.0-rc.3" "2.0.0-rc.2")
+  Expect.isTrue "not (matches \"=2.0.0-rc.1 || >=2.0.0-rc.3\" \"2.0.0-rc.2\")" testActual
+
+let case035 _ =
+  let testActual = not (matches ">=1.0.0, <2.0.0 || =2.0.0-rc.1" "2.0.0-rc.2")
+  Expect.isTrue "not (matches \">=1.0.0, <2.0.0 || =2.0.0-rc.1\" \"2.0.0-rc.2\")" testActual
+
+let case036 _ =
+  let testActual = matches ">=1.0.0, <2.0.0, >=2.0.0-rc.1" "2.0.0-rc.2"
+  Expect.isTrue "matches \">=1.0.0, <2.0.0, >=2.0.0-rc.1\" \"2.0.0-rc.2\"" testActual
+
+let case037 _ =
+  let testActual = not (matches "^1.0.0, >=2.0.0-rc.1" "2.0.0-rc.2")
+  Expect.isTrue "not (matches \"^1.0.0, >=2.0.0-rc.1\" \"2.0.0-rc.2\")" testActual
+
+let case038 _ =
+  let testActual = matches "*, >=1.0.0-rc.1" "1.0.0-rc.2"
+  Expect.isTrue "matches \"*, >=1.0.0-rc.1\" \"1.0.0-rc.2\"" testActual
+
+let case039 _ =
+  let testActual = not (matches "*, >=1.0.0-rc.1" "1.1.0-beta")
+  Expect.isTrue "not (matches \"*, >=1.0.0-rc.1\" \"1.1.0-beta\")" testActual
+
+let case040 _ =
+  let testActual = matches "0.0.0-0" "0.0.0-0+abc"
+  Expect.isTrue "matches \"0.0.0-0\" \"0.0.0-0+abc\"" testActual
+
+let case041 _ =
+  let testActual = matches "~0.0.0-0" "0.0.1"
+  Expect.isTrue "matches \"~0.0.0-0\" \"0.0.1\"" testActual
+
+let case042 _ =
+  let testActual = not (matches "~0.0.0-0" "0.0.1-0")
+  Expect.isTrue "not (matches \"~0.0.0-0\" \"0.0.1-0\")" testActual
+
+let case043 _ =
+  let testActual = not (matches "^0.0.0-0" "0.0.1")
+  Expect.isTrue "not (matches \"^0.0.0-0\" \"0.0.1\")" testActual
+
+let case044 _ =
+  let testActual =
+    matches "^9999999999999999999999.0.0" "9999999999999999999999.9999999999999999999999.0"
+  Expect.isTrue "matches \"^9999999999999999999999.0.0\" \"9999999999999999999999.9999999999999999999999.0\"" testActual
+
+let case045 _ =
+  let testActual = not (matches "^9999999999999999999999.0.0" "10000000000000000000000.0.0")
+  Expect.isTrue "not (matches \"^9999999999999999999999.0.0\" \"10000000000000000000000.0.0\")" testActual
+
+let case046 _ =
+  let testActual = not (matches ">2.0.0, <1.0.0" "1.5.0")
+  Expect.isTrue "not (matches \">2.0.0, <1.0.0\" \"1.5.0\")" testActual
+
+let case047 _ =
+  let testActual = SemverRange.parse ">2.0.0, <1.0.0" |> Result.isOk
+  Expect.isTrue "SemverRange.parse \">2.0.0, <1.0.0\" |> Result.isOk" testActual
+
+let case048 _ =
+  let testActual = Result.map SemverRange.toString (SemverRange.parse " 1.2.3 ") = Ok "=1.2.3"
+  Expect.isTrue "Result.map SemverRange.toString (SemverRange.parse \" 1.2.3 \") = Ok \"=1.2.3\"" testActual
+
+let case049 _ =
+  let testActual =
+    Result.map SemverRange.toString (SemverRange.parse "<2.0.0,>=1.0.0 || ^3.0.0") = Ok ">=1.0.0, <2.0.0 || ^3.0.0"
+  Expect.isTrue "Result.map SemverRange.toString (SemverRange.parse \"<2.0.0,>=1.0.0 || ^3.0.0\") = Ok \">=1.0.0, <2.0.0 || ^3.0.0\"" testActual
+
+let case050 _ =
+  let testActual =
+    SemverRange.parse "<2.0.0, >=1.0.0 || ^3.0.0" = SemverRange.parse "^3.0.0 || >=1.0.0, <2.0.0"
+  Expect.isTrue "SemverRange.parse \"<2.0.0, >=1.0.0 || ^3.0.0\" = SemverRange.parse \"^3.0.0 || >=1.0.0, <2.0.0\"" testActual
+
+let case051 _ =
+  let testActual =
+    Result.map SemverRange.toString (SemverRange.parse "*, 1.2.3, =1.2.3 || 1.2.3") = Ok "=1.2.3"
+  Expect.isTrue "Result.map SemverRange.toString (SemverRange.parse \"*, 1.2.3, =1.2.3 || 1.2.3\") = Ok \"=1.2.3\"" testActual
+
+let case052 _ =
+  let testActual = Result.map SemverRange.toString (SemverRange.parse "* || *") = Ok "*"
+  Expect.isTrue "Result.map SemverRange.toString (SemverRange.parse \"* || *\") = Ok \"*\"" testActual
+
+let case053 _ =
+  let testActual = matches "\u{2003}>= 1.2.3\t,\n<2.0.0\u{a0}" "1.2.3"
+  Expect.isTrue "matches \"\\u{2003}>= 1.2.3\\t,\\n<2.0.0\\u{a0}\" \"1.2.3\"" testActual
 
 let selection =
   match (SemverRange.parse "^1.0.0", Semver.parse "1.2.3+first", Semver.parse "1.2.3+second", Semver.parse "1.1.0", Semver.parse "2.0.0") with
@@ -70,4 +233,65 @@ let selection =
       outside
     ] = None
   | _ -> false
-example: selection
+
+let case054 _ =
+  let testActual = selection
+  Expect.isTrue "selection" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SemverRangeSpec" [
+  Test.test "matches \"1.2.3\" \"1.2.3\"" case001,
+  Test.test "not (matches \"1.2.3\" \"1.2.4\")" case002,
+  Test.test "matches \"=1.2.3\" \"1.2.3+build\"" case003,
+  Test.test "matches \">1.2.3\" \"1.2.4\"" case004,
+  Test.test "not (matches \">1.2.3\" \"1.2.3\")" case005,
+  Test.test "matches \">=1.2.3\" \"1.2.3\"" case006,
+  Test.test "matches \"<1.2.3\" \"1.2.2\"" case007,
+  Test.test "not (matches \"<1.2.3\" \"1.2.3\")" case008,
+  Test.test "matches \"<=1.2.3\" \"1.2.3\"" case009,
+  Test.test "matches \"^1.2.3\" \"1.9.99\"" case010,
+  Test.test "not (matches \"^1.2.3\" \"1.2.2\")" case011,
+  Test.test "not (matches \"^1.2.3\" \"2.0.0\")" case012,
+  Test.test "matches \"^0.2.3\" \"0.2.99\"" case013,
+  Test.test "not (matches \"^0.2.3\" \"0.3.0\")" case014,
+  Test.test "matches \"^0.0.3\" \"0.0.3\"" case015,
+  Test.test "not (matches \"^0.0.3\" \"0.0.4\")" case016,
+  Test.test "matches \"^0.0.0\" \"0.0.0\"" case017,
+  Test.test "not (matches \"^0.0.0\" \"0.0.1\")" case018,
+  Test.test "matches \"~1.2.3\" \"1.2.99\"" case019,
+  Test.test "not (matches \"~1.2.3\" \"1.3.0\")" case020,
+  Test.test "not (matches \"~1.2.3\" \"1.2.2\")" case021,
+  Test.test "matches \">=1.2.3, <1.7.0\" \"1.6.9\"" case022,
+  Test.test "not (matches \">=1.2.3, <1.7.0\" \"1.7.0\")" case023,
+  Test.test "matches \"^1.0.0 || ^3.0.0\" \"3.1.0\"" case024,
+  Test.test "not (matches \"^1.0.0 || ^3.0.0\" \"2.1.0\")" case025,
+  Test.test "matches \"*\" \"9999999999999999999999999.0.0+build\"" case026,
+  Test.test "not (matches \"*\" \"1.0.0-rc.1\")" case027,
+  Test.test "matches \"* || =1.0.0-rc.1\" \"1.0.0-rc.1\"" case028,
+  Test.test "not (matches \"* || =1.0.0-rc.1\" \"1.0.0-rc.2\")" case029,
+  Test.test "not (matches \">=1.0.0, <2.0.0\" \"2.0.0-rc.1\")" case030,
+  Test.test "matches \"^2.0.0-rc.1\" \"2.0.0-rc.2\"" case031,
+  Test.test "matches \"^2.0.0-rc.1\" \"2.1.0\"" case032,
+  Test.test "not (matches \"^2.0.0-rc.1\" \"2.1.0-beta.1\")" case033,
+  Test.test "not (matches \"=2.0.0-rc.1 || >=2.0.0-rc.3\" \"2.0.0-rc.2\")" case034,
+  Test.test "not (matches \">=1.0.0, <2.0.0 || =2.0.0-rc.1\" \"2.0.0-rc.2\")" case035,
+  Test.test "matches \">=1.0.0, <2.0.0, >=2.0.0-rc.1\" \"2.0.0-rc.2\"" case036,
+  Test.test "not (matches \"^1.0.0, >=2.0.0-rc.1\" \"2.0.0-rc.2\")" case037,
+  Test.test "matches \"*, >=1.0.0-rc.1\" \"1.0.0-rc.2\"" case038,
+  Test.test "not (matches \"*, >=1.0.0-rc.1\" \"1.1.0-beta\")" case039,
+  Test.test "matches \"0.0.0-0\" \"0.0.0-0+abc\"" case040,
+  Test.test "matches \"~0.0.0-0\" \"0.0.1\"" case041,
+  Test.test "not (matches \"~0.0.0-0\" \"0.0.1-0\")" case042,
+  Test.test "not (matches \"^0.0.0-0\" \"0.0.1\")" case043,
+  Test.test "matches \"^9999999999999999999999.0.0\" \"9999999999999999999999.9999999999999999999999.0\"" case044,
+  Test.test "not (matches \"^9999999999999999999999.0.0\" \"10000000000000000000000.0.0\")" case045,
+  Test.test "not (matches \">2.0.0, <1.0.0\" \"1.5.0\")" case046,
+  Test.test "SemverRange.parse \">2.0.0, <1.0.0\" |> Result.isOk" case047,
+  Test.test "Result.map SemverRange.toString (SemverRange.parse \" 1.2.3 \") = Ok \"=1.2.3\"" case048,
+  Test.test "Result.map SemverRange.toString (SemverRange.parse \"<2.0.0,>=1.0.0 || ^3.0.0\") = Ok \">=1.0.0, <2.0.0 || ^3.0.0\"" case049,
+  Test.test "SemverRange.parse \"<2.0.0, >=1.0.0 || ^3.0.0\" = SemverRange.parse \"^3.0.0 || >=1.0.0, <2.0.0\"" case050,
+  Test.test "Result.map SemverRange.toString (SemverRange.parse \"*, 1.2.3, =1.2.3 || 1.2.3\") = Ok \"=1.2.3\"" case051,
+  Test.test "Result.map SemverRange.toString (SemverRange.parse \"* || *\") = Ok \"*\"" case052,
+  Test.test "matches \"\\u{2003}>= 1.2.3\\t,\\n<2.0.0\\u{a0}\" \"1.2.3\"" case053,
+  Test.test "selection" case054
+]

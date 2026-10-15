@@ -136,7 +136,7 @@ fai test -C packages llm
 python scripts/tests/llm_toolchain.py --fai /path/to/fai
 ```
 
-Native contracts cover pure encoders, reducers, schema decoding, tool invocation,
+Named tests and properties cover pure encoders, reducers, schema decoding, tool invocation,
 retry decisions, persistence encoding and arbitrary SSE chunk boundaries. The
 integration fixture uses local model servers for both protocols through JIT and
 AOT, including real file/command tools and SQLite. Unix PTY checks cover the live

@@ -68,35 +68,84 @@ let first pair =
 
 run : List Json.Value -> Result LlmStream.State LlmTypes.Error
 let run events = List.foldl step (Ok (LlmStream.initial LlmTypes.OpenAI)) events
-example: (LlmOpenAI.decode Llm.limits final |> Result.map Llm.text) = Ok "hello"
-example: (run [
-  created,
-  added,
-  part,
-  delta "hel",
-  delta "lo",
-  partDone,
-  completed
-] |> Result.map (fun state -> Llm.text state.response)) = Ok "hello"
-example: run [created, delta "out of order"] |> Result.isErr
-example: run [created, added, added] |> Result.isErr
-example: run [created, added, part, delta "wrong", partDone, completed] |> Result.isErr
-example: run [created, added, part, delta "hello", completed] |> Result.isErr
-example: run [created, completed, completed] |> Result.isErr
-example: run [obj []] |> Result.isErr
-example: LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) "{broken" |> Result.isErr
-example: LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) "{\"type\":\"a\",\"type\":\"b\"}" |> Result.isErr
-example: LlmOpenAI.decode Llm.limits (obj [
-  ("id", str "resp"),
-  ("status", str "completed")
-]) |> Result.isErr
-example: LlmOpenAI.encode Llm.limits (Llm.request "model" |> Llm.user [
-  LlmMessage.imageBytes "image/png" (Bytes.fromList [1, 2, 3])
-]) |> Result.isOk
-example: LlmOpenAI.encode Llm.limits { Llm.request "model" with
-  providerOptions = LlmTypes.AnthropicOptions { thinkingBudget = None }
-} |> Result.isErr
-example: (LlmOpenAI.encode Llm.limits (Llm.request "model") |> Result.map (LlmJson.get "store")) = Ok (Some (Json.Boolean false))
+
+let case001 _ =
+  let testActual = (LlmOpenAI.decode Llm.limits final |> Result.map Llm.text) = Ok "hello"
+  Expect.isTrue "(LlmOpenAI.decode Llm.limits final |> Result.map Llm.text) = Ok \"hello\"" testActual
+
+let case002 _ =
+  let testActual =
+    (run [
+      created,
+      added,
+      part,
+      delta "hel",
+      delta "lo",
+      partDone,
+      completed
+    ] |> Result.map (fun state -> Llm.text state.response)) = Ok "hello"
+  Expect.isTrue "(run [ created, added, part, delta \"hel\", delta \"lo\", partDone, completed ] |> Result.map (fun state -> Llm.text state.response)) = Ok \"hello\"" testActual
+
+let case003 _ =
+  let testActual = run [created, delta "out of order"] |> Result.isErr
+  Expect.isTrue "run [created, delta \"out of order\"] |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual = run [created, added, added] |> Result.isErr
+  Expect.isTrue "run [created, added, added] |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual = run [created, added, part, delta "wrong", partDone, completed] |> Result.isErr
+  Expect.isTrue "run [created, added, part, delta \"wrong\", partDone, completed] |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual = run [created, added, part, delta "hello", completed] |> Result.isErr
+  Expect.isTrue "run [created, added, part, delta \"hello\", completed] |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual = run [created, completed, completed] |> Result.isErr
+  Expect.isTrue "run [created, completed, completed] |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual = run [obj []] |> Result.isErr
+  Expect.isTrue "run [obj []] |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual =
+    LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) "{broken" |> Result.isErr
+  Expect.isTrue "LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) \"{broken\" |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual =
+    LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) "{\"type\":\"a\",\"type\":\"b\"}" |> Result.isErr
+  Expect.isTrue "LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) \"{\\\"type\\\":\\\"a\\\",\\\"type\\\":\\\"b\\\"}\" |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual =
+    LlmOpenAI.decode Llm.limits (obj [
+      ("id", str "resp"),
+      ("status", str "completed")
+    ]) |> Result.isErr
+  Expect.isTrue "LlmOpenAI.decode Llm.limits (obj [ (\"id\", str \"resp\"), (\"status\", str \"completed\") ]) |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual =
+    LlmOpenAI.encode Llm.limits (Llm.request "model" |> Llm.user [
+      LlmMessage.imageBytes "image/png" (Bytes.fromList [1, 2, 3])
+    ]) |> Result.isOk
+  Expect.isTrue "LlmOpenAI.encode Llm.limits (Llm.request \"model\" |> Llm.user [ LlmMessage.imageBytes \"image/png\" (Bytes.fromList [1, 2, 3]) ]) |> Result.isOk" testActual
+
+let case013 _ =
+  let testActual =
+    LlmOpenAI.encode Llm.limits { Llm.request "model" with
+      providerOptions = LlmTypes.AnthropicOptions { thinkingBudget = None }
+    } |> Result.isErr
+  Expect.isTrue "LlmOpenAI.encode Llm.limits { Llm.request \"model\" with providerOptions = LlmTypes.AnthropicOptions { thinkingBudget = None } } |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual =
+    (LlmOpenAI.encode Llm.limits (Llm.request "model") |> Result.map (LlmJson.get "store")) = Ok (Some (Json.Boolean false))
+  Expect.isTrue "(LlmOpenAI.encode Llm.limits (Llm.request \"model\") |> Result.map (LlmJson.get \"store\")) = Ok (Some (Json.Boolean false))" testActual
 
 let call id name arguments = obj [
   ("id", str ("item-" ++ id)),
@@ -111,17 +160,61 @@ let toolFinal =
     call "a" "first" "{\"x\":1}",
     call "b" "second" "{\"x\":2}"
   ]) final
-example: (LlmOpenAI.decode Llm.limits toolFinal |> Result.map (fun response ->
-  List.map (fun call -> call.id) response.toolCalls)) = Ok ["a", "b"]
-example: LlmOpenAI.decode Llm.limits (LlmJson.set "output" (LlmJson.array [
-  call "a" "first" "{}",
-  call "a" "second" "{}"
-]) final) |> Result.isErr
-example: LlmOpenAI.decode Llm.limits (LlmJson.set "output" (LlmJson.array [
-  call "a" "first" "{\"x\":1,\"x\":2}"
-]) final) |> Result.isErr
-example: (LlmOpenAI.decode Llm.limits (LlmJson.set "status" (str "incomplete") final) |> Result.map (fun response ->
-  match response.finish with
-  | LlmTypes.Incomplete _ -> true
-  | _ -> false)) = Ok true
-forall text: LlmOpenAI.encode Llm.limits (Llm.request "model" |> Llm.userText text) |> Result.isOk
+
+let case015 _ =
+  let testActual =
+    (LlmOpenAI.decode Llm.limits toolFinal |> Result.map (fun response ->
+      List.map (fun call -> call.id) response.toolCalls)) = Ok ["a", "b"]
+  Expect.isTrue "(LlmOpenAI.decode Llm.limits toolFinal |> Result.map (fun response -> List.map (fun call -> call.id) response.toolCalls)) = Ok [\"a\", \"b\"]" testActual
+
+let case016 _ =
+  let testActual =
+    LlmOpenAI.decode Llm.limits (LlmJson.set "output" (LlmJson.array [
+      call "a" "first" "{}",
+      call "a" "second" "{}"
+    ]) final) |> Result.isErr
+  Expect.isTrue "LlmOpenAI.decode Llm.limits (LlmJson.set \"output\" (LlmJson.array [ call \"a\" \"first\" \"{}\", call \"a\" \"second\" \"{}\" ]) final) |> Result.isErr" testActual
+
+let case017 _ =
+  let testActual =
+    LlmOpenAI.decode Llm.limits (LlmJson.set "output" (LlmJson.array [
+      call "a" "first" "{\"x\":1,\"x\":2}"
+    ]) final) |> Result.isErr
+  Expect.isTrue "LlmOpenAI.decode Llm.limits (LlmJson.set \"output\" (LlmJson.array [ call \"a\" \"first\" \"{\\\"x\\\":1,\\\"x\\\":2}\" ]) final) |> Result.isErr" testActual
+
+let case018 _ =
+  let testActual =
+    (LlmOpenAI.decode Llm.limits (LlmJson.set "status" (str "incomplete") final) |> Result.map (fun response ->
+      match response.finish with
+      | LlmTypes.Incomplete _ -> true
+      | _ -> false)) = Ok true
+  Expect.isTrue "(LlmOpenAI.decode Llm.limits (LlmJson.set \"status\" (str \"incomplete\") final) |> Result.map (fun response -> match response.finish with | LlmTypes.Incomplete …" testActual
+
+let case019 testInput =
+  let text = testInput
+  let testActual =
+    LlmOpenAI.encode Llm.limits (Llm.request "model" |> Llm.userText text) |> Result.isOk
+  Expect.isTrue "property: LlmOpenAI.encode Llm.limits (Llm.request \"model\" |> Llm.userText text) |> Result.isOk" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LlmOpenAISpec" [
+  Test.test "(LlmOpenAI.decode Llm.limits final |> Result.map Llm.text) = Ok \"hello\"" case001,
+  Test.test "(run [ created, added, part, delta \"hel\", delta \"lo\", partDone, completed ] |> Result.map (fun state -> Llm.text state.response)) = Ok \"hello\"" case002,
+  Test.test "run [created, delta \"out of order\"] |> Result.isErr" case003,
+  Test.test "run [created, added, added] |> Result.isErr" case004,
+  Test.test "run [created, added, part, delta \"wrong\", partDone, completed] |> Result.isErr" case005,
+  Test.test "run [created, added, part, delta \"hello\", completed] |> Result.isErr" case006,
+  Test.test "run [created, completed, completed] |> Result.isErr" case007,
+  Test.test "run [obj []] |> Result.isErr" case008,
+  Test.test "LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) \"{broken\" |> Result.isErr" case009,
+  Test.test "LlmOpenAI.reduce Llm.limits (LlmStream.initial LlmTypes.OpenAI) \"{\\\"type\\\":\\\"a\\\",\\\"type\\\":\\\"b\\\"}\" |> Result.isErr" case010,
+  Test.test "LlmOpenAI.decode Llm.limits (obj [ (\"id\", str \"resp\"), (\"status\", str \"completed\") ]) |> Result.isErr" case011,
+  Test.test "LlmOpenAI.encode Llm.limits (Llm.request \"model\" |> Llm.user [ LlmMessage.imageBytes \"image/png\" (Bytes.fromList [1, 2, 3]) ]) |> Result.isOk" case012,
+  Test.test "LlmOpenAI.encode Llm.limits { Llm.request \"model\" with providerOptions = LlmTypes.AnthropicOptions { thinkingBudget = None } } |> Result.isErr" case013,
+  Test.test "(LlmOpenAI.encode Llm.limits (Llm.request \"model\") |> Result.map (LlmJson.get \"store\")) = Ok (Some (Json.Boolean false))" case014,
+  Test.test "(LlmOpenAI.decode Llm.limits toolFinal |> Result.map (fun response -> List.map (fun call -> call.id) response.toolCalls)) = Ok [\"a\", \"b\"]" case015,
+  Test.test "LlmOpenAI.decode Llm.limits (LlmJson.set \"output\" (LlmJson.array [ call \"a\" \"first\" \"{}\", call \"a\" \"second\" \"{}\" ]) final) |> Result.isErr" case016,
+  Test.test "LlmOpenAI.decode Llm.limits (LlmJson.set \"output\" (LlmJson.array [ call \"a\" \"first\" \"{\\\"x\\\":1,\\\"x\\\":2}\" ]) final) |> Result.isErr" case017,
+  Test.test "(LlmOpenAI.decode Llm.limits (LlmJson.set \"status\" (str \"incomplete\") final) |> Result.map (fun response -> match response.finish with | LlmTypes.Incomplete …" case018,
+  Test.property "property: LlmOpenAI.encode Llm.limits (Llm.request \"model\" |> Llm.userText text) |> Result.isOk" Test.string case019
+]
