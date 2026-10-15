@@ -4,18 +4,61 @@ configuration : Runtime -> Listener -> HttpClient.Config / { Net }
 let configuration r listener =
   HttpClient.config ("http://127.0.0.1:" ++ Int.toString (r.net.localPort listener) ++ "/")
 
+// TCP may split even a small request across reads. Drain the complete header
+// before treating the next read as evidence that the client closed its socket.
+readRequest : Runtime -> Connection -> Bytes -> Result Unit String / { Net }
+let readRequest r connection pending =
+  readRequestFrom (fun _ ->
+    Result.map (fun bytes -> (bytes, ())) (r.net.recv connection 4096)) () pending
+
+readRequestFrom : ('state -> Result (Bytes * 'state) String / 'e) -> 'state -> Bytes -> Result Unit String / 'e
+let readRequestFrom read state pending =
+  if Bytes.length pending > 16384 then
+    Err "fixture request headers exceed their limit"
+  else
+    match Bytes.toString pending with
+    | None -> Err "fixture request headers are not UTF-8"
+    | Some text ->
+      if String.contains text "\r\n\r\n" then
+        Ok ()
+      else
+        match read state with
+        | Err error -> Err ("reading fixture request: " ++ error)
+        | Ok (bytes, next) ->
+          if Bytes.length bytes = 0 then
+            Err "client closed before completing its request"
+          else
+            readRequestFrom read next (Bytes.concat pending bytes)
+
+let readChunk chunks =
+  match chunks with
+  | [] -> Ok (Bytes.empty, [])
+  | first :: rest -> Ok (first, rest)
+
+let requestChunks = List.map Bytes.fromString [
+  "GET / HTTP/1.1\r\n",
+  "Host: localhost\r\n",
+  "\r",
+  "\n"
+]
+
+let showRead result =
+  match result with
+  | Ok _ -> "complete request"
+  | Err error -> error
+
 stall : Runtime -> Listener -> Channel Unit -> Bool / { Concurrency, Net }
 let stall r listener ready =
   match r.net.accept listener with
   | Err _ -> false
   | Ok connection ->
-    let request = r.net.recv connection 4096
+    let request = readRequest r connection Bytes.empty
     let sent =
       r.net.send connection (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
     let signalled = r.concurrency.send ready ()
     let eof = r.net.recv connection 1
     let closed = r.net.close connection
-    eof = Ok Bytes.empty
+    Result.isOk request && Result.isOk sent && eof = Ok Bytes.empty
 
 earlyClient : Runtime -> Task Bool -> HttpClient.Client -> Result Bool HttpClient.Error / { Clock, Concurrency, Net, Tls }
 let earlyClient r server client =
@@ -31,19 +74,79 @@ let earlyInScope r listener nursery =
   let result = HttpClient.withClient r (configuration r listener) (earlyClient r server)
   result = Ok true
 
-cancelInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
-let cancelInScope r listener nursery =
+cancellationPeer : Runtime -> Listener -> Channel Unit -> Bool -> Result Bytes String / { Concurrency, Net }
+let cancellationPeer r listener ready bodyPhase =
+  let result =
+    match r.net.accept listener with
+    | Err error -> Err ("accepting fixture connection: " ++ error)
+    | Ok connection ->
+      let received = readRequest r connection Bytes.empty
+      let observed =
+        match received with
+        | Err error -> Err error
+        | Ok _ ->
+          let sent =
+            if bodyPhase then
+              r.net.send connection (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+            else
+              Ok ()
+          match sent with
+          | Err error -> Err ("sending fixture response: " ++ error)
+          | Ok _ ->
+            let signalled = if bodyPhase then () else r.concurrency.send ready ()
+            r.net.recv connection 1
+      let closed = r.net.close connection
+      observed
+  let finished = r.concurrency.close ready
+  result
+
+bufferReady : Runtime -> Channel Unit -> HttpClient.Config -> HttpClient.Response (Stream Bytes { Concurrency, Net, Tls }) -> Result (HttpClient.Response Bytes) HttpClient.Error / { Concurrency, Net, Tls }
+let bufferReady r ready config response =
+  // Only the consumer can confirm that the response header was read. Closing
+  // earlier can reset a socket with unread response bytes instead of sending EOF.
+  let signalled = r.concurrency.send ready ()
+  HttpClient.decodeStream config (HttpClient.get "") response
+
+showResponse : Result (HttpClient.Response Bytes) HttpClient.Error -> String
+let showResponse result =
+  match result with
+  | Err error -> HttpClient.errorToString error
+  | Ok response ->
+    "HTTP " ++ Int.toString response.head.status ++ ", " ++ Int.toString (Bytes.length response.body) ++ " body bytes"
+
+showPeer : Result Bytes String -> String
+let showPeer result =
+  match result with
+  | Err error -> "read error: " ++ error
+  | Ok bytes -> "received bytes: " ++ (Test.list Test.int).show (Bytes.toList bytes)
+
+cancellationCheck : Runtime -> Listener -> Bool -> Nursery -> Test.Check / { Clock, Concurrency, Net, Tls }
+let cancellationCheck r listener bodyPhase nursery =
   let ready = r.concurrency.channel 1
-  let server = r.concurrency.spawn nursery (fun _ -> stall r listener ready)
+  let server = r.concurrency.spawn nursery (fun _ -> cancellationPeer r listener ready bodyPhase)
+  let config = configuration r listener
   let worker =
     r.concurrency.spawn nursery (fun _ ->
-      HttpClient.withClient r (configuration r listener) (fun client ->
-        HttpClient.send client (HttpClient.get "")))
+      HttpClient.withClient r config (fun client ->
+        if bodyPhase then
+          HttpClient.withResponse client (bufferReady r ready config) (HttpClient.get "")
+        else
+          HttpClient.send client (HttpClient.get "")))
   let started = r.concurrency.recv ready
   let cancelled = r.concurrency.cancel worker
   let result = r.concurrency.await worker
-  let closed = r.concurrency.await server
-  result = Err HttpClient.Cancelled && closed
+  let peer = r.concurrency.await server
+  Expect.all [
+    Expect.isTrue "cancellation starts in the selected HTTP phase" (started = Some ()),
+    Expect.equal showResponse (Err HttpClient.Cancelled) result,
+    Expect.equal showPeer (Ok Bytes.empty) peer
+  ]
+
+cancelInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let cancelInScope r listener nursery = cancellationCheck r listener false nursery = Test.pass
+
+cancelBodyInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
+let cancelBodyInScope r listener nursery = cancellationCheck r listener true nursery = Test.pass
 
 timeoutInScope : Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }
 let timeoutInScope r listener nursery =
@@ -63,7 +166,7 @@ let respond r listener text =
   match r.net.accept listener with
   | Err _ -> ()
   | Ok connection ->
-    let request = r.net.recv connection 4096
+    let request = readRequest r connection Bytes.empty
     let sent = r.net.send connection (Bytes.fromString text)
     r.net.close connection
 
@@ -180,13 +283,14 @@ public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
 let main r =
   let early = run r earlyInScope
   let cancelled = run r cancelInScope
+  let cancelledBody = run r cancelBodyInScope
   let timedOut = run r timeoutInScope
   let streamed = run r streamInScope
   let consumer = run r consumerInScope
   let callbackTimedOut = run r callbackTimeoutInScope
   let backoffTimedOut = run r backoffTimeoutInScope
   let status = run r statusInScope
-  r.console.writeLine (if early && cancelled && timedOut && streamed && consumer && callbackTimedOut && backoffTimedOut && status then
+  r.console.writeLine (if early && cancelled && cancelledBody && timedOut && streamed && consumer && callbackTimedOut && backoffTimedOut && status then
     "lifecycle checks passed"
   else
     "lifecycle checks failed")
@@ -194,10 +298,33 @@ let main r =
 scenario : String -> (Runtime -> Listener -> Nursery -> Bool / { Clock, Concurrency, Net, Tls }) -> Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
 let scenario name check = Test.test name (fun ctx -> Expect.isTrue name (run ctx.runtime check))
 
+cancellation : Bool -> Test.Context -> Test.Check / { Clock, Concurrency, Net, Tls }
+let cancellation bodyPhase ctx =
+  match ctx.runtime.net.listen 0 with
+  | Err error -> Test.error error
+  | Ok listener -> ctx.runtime.concurrency.scope (cancellationCheck ctx.runtime listener bodyPhase)
+
+cancellationMany : Int -> Test.Context -> Test.Check / { Clock, Concurrency, Net, Tls }
+let cancellationMany remaining ctx =
+  if remaining <= 0 then
+    Test.pass
+  else
+    let checked = Expect.all [cancellation false ctx, cancellation true ctx]
+    Expect.andThen (fun _ ->
+      cancellationMany (remaining - 1) ctx) (Expect.context ("remaining cancellation rounds: " ++ Int.toString remaining) checked)
+
 tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
 let tests = Test.describe "HTTP client lifecycle" [
+  Test.test "request fixture drains fragmented headers" (fun _ ->
+    Expect.equal showRead (Ok ()) (readRequestFrom readChunk requestChunks Bytes.empty)),
+  Test.test "request fixture rejects incomplete headers" (fun _ ->
+    Expect.equal showRead (Err "client closed before completing its request") (readRequestFrom readChunk [
+      Bytes.fromString "GET / HTTP/1.1\r\n"
+    ] Bytes.empty)),
   scenario "early return closes an unfinished response" earlyInScope,
-  scenario "cancellation closes the transport" cancelInScope,
+  Test.test "cancellation closes the transport" (cancellation false),
+  Test.test "body cancellation closes the transport" (cancellation true),
+  Test.test "repeated cancellations close both HTTP phases" (cancellationMany 10),
   scenario "body reads share the operation deadline" timeoutInScope,
   scenario "streaming bypasses the buffered limit and invokes the consumer once" streamInScope,
   scenario "consumer failure is not retried" consumerInScope,
