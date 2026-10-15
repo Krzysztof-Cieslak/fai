@@ -1,9 +1,15 @@
 # Compression
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/compression --as compression --version '^0.1.0'
+```
+
 Bounded, pure gzip, zlib and raw DEFLATE codecs, with immutable incremental
 snapshots and effect-forwarding streaming adapters. This package requires a
-compiler containing the `CompressionEngine` standard bridge (the unreleased
-compiler sources in this repository); the original 0.0.1 binary does not contain it.
+compiler containing the `CompressionEngine` standard bridge, available from
+Fai 0.1.0; the original 0.0.1 binary does not contain it.
 
 ```fai
 import compression.Gzip

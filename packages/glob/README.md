@@ -1,5 +1,11 @@
 # Glob and Git ignore matching
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/glob --as glob --version '^0.1.0'
+```
+
 Pure Fai byte-oriented path matchers, compiled pattern sets, Git ignore rules,
 and scoped filesystem discovery. Declare a `glob` dependency in `fai.toml` and
 import the modules you use:

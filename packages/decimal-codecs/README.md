@@ -1,5 +1,11 @@
 # Decimal codecs
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/decimal-codecs --as decimal_codecs --version '^0.1.0'
+```
+
 Optional exact numeric adapters for `decimal`, `json`, `yaml`, and `sql`.
 Existing numeric types remain unchanged. Declare `decimal-codecs` in `fai.toml`
 under an alias such as `decimal_codecs`, then import the adapters:

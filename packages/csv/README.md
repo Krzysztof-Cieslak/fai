@@ -1,5 +1,11 @@
 # CSV
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/csv --as csv --version '^0.1.0'
+```
+
 Pure Fai CSV processing. A shared byte-oriented incremental parser accepts text
 or arbitrary byte fields, retains source spans and checks configurable limits.
 `CsvCore` is the parser foundation; `CsvTypes` defines dialects and diagnostics.

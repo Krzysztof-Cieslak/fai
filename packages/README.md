@@ -1,5 +1,22 @@
 # Source packages
 
+The initial package versions are **0.1.0**, requiring **Fai 0.1.x**. Their
+READMEs contain installation commands and link to individual changelogs. Publish
+the compiler before the initial package batch; repository source alone does not
+make a version available to `fai add`.
+
+Packages are released independently through the manual
+[package release workflow](../docs/RELEASING_PACKAGES.md). A package tag looks like
+`packages/json/v0.1.0`; the initial `all` batch includes nested example packages
+needed by development dependencies.
+
+After publication, add a library to an application using its repository and
+subdirectory, rather than copying sources:
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/json --as json --version '^0.1.0'
+```
+
 These libraries are ordinary Fai packages. Each `fai.toml` declares its public
 source, dependencies, additional tests, and executable entries. Cross-package
 modules use explicit imports, for example `import json.JsonDecode`.

@@ -1,8 +1,14 @@
 # Typed HTTP clients for Fai
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/http-client --as http_client --version '^0.1.0'
+```
+
 `HttpClient` is an ordinary Fai source package over the standard HTTP/1.1 and
-TLS implementation. Include this package and `packages/json/src` beneath your
-workspace root. Request construction and response decoding are pure; executing a
+TLS implementation. Its manifest resolves the `json` and `sse` dependencies.
+Request construction and response decoding are pure; executing a
 request takes capabilities from the application.
 
 ```fai

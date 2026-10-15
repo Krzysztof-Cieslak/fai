@@ -1,0 +1,171 @@
+name: Package release
+run-name: ${{ inputs.publish && 'Publish' || 'Validate' }} packages (${{ inputs.source_ref }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Prepared package versions as JSON, e.g. {"json":"0.1.0"}, or all'
+        required: true
+        default: all
+        type: string
+      compiler_version:
+        description: Exact published compiler version (never built from checkout)
+        required: true
+        default: '0.1.0'
+        type: string
+      source_ref:
+        description: Prepared source commit already merged into main
+        required: true
+        type: string
+      publish:
+        description: Publish package tags and immutable releases after all native checks
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: package-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare package release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    outputs:
+      commit: ${{ steps.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve a source commit on the protected branch before executing its code
+        id: source
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        shell: python
+        run: |
+          import os, subprocess
+          commit = subprocess.check_output(["git", "rev-parse", "--verify", "--end-of-options",
+                                            os.environ["SOURCE_REF"] + "^{commit}"], text=True).strip()
+          subprocess.run(["git", "merge-base", "--is-ancestor", commit, "origin/main"], check=True)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"commit={commit}", file=output)
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: prepare
+        env:
+          PACKAGE_SELECTION: ${{ inputs.packages }}
+          COMPILER_VERSION: ${{ inputs.compiler_version }}
+          SOURCE_REF: ${{ steps.source.outputs.commit }}
+        run: >-
+          python3 scripts/package_release.py prepare
+          --packages "$PACKAGE_SELECTION" --compiler-version "$COMPILER_VERSION"
+          --source-ref "$SOURCE_REF" --output "$RUNNER_TEMP/package-request/request.json"
+          --github-output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-release-request
+          path: ${{ runner.temp }}/package-request/request.json
+          if-no-files-found: error
+
+  validate:
+    name: Qualify packages (${{ matrix.target }})
+    needs: prepare
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: amd64
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-release-request
+          path: ${{ runner.temp }}/package-request
+      - name: Validate consumers and package tests with the exact released compiler
+        shell: python
+        run: |
+          import os, subprocess, sys
+          from pathlib import Path
+          temporary = Path(os.environ["RUNNER_TEMP"])
+          subprocess.run([sys.executable, "scripts/package_release.py", "validate",
+                          "--request", str(temporary / "package-request/request.json"),
+                          "--compiler-home", str(temporary / "fai-package-compiler"),
+                          "--output", str(temporary / "package-qualification/qualification.json")], check=True)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-qualification-${{ matrix.target }}
+          path: ${{ runner.temp }}/package-qualification/qualification.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish qualified packages
+    if: inputs.publish
+    needs: [prepare, validate]
+    runs-on: ubuntu-22.04
+    # Share the compiler publisher's lock: package releases must never move Latest.
+    concurrency:
+      group: release-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-release-request
+          path: ${{ runner.temp }}/package-request
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-qualification-*
+          path: ${{ runner.temp }}/package-qualifications
+      - name: Publish only the already-committed source and verified package tags
+        run: >-
+          python3 scripts/package_release.py publish
+          --request "$RUNNER_TEMP/package-request/request.json"
+          --reports "$RUNNER_TEMP/package-qualifications"
+          --output "$RUNNER_TEMP/package-publication.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-publication
+          path: ${{ runner.temp }}/package-publication.json
+          if-no-files-found: error

@@ -1,5 +1,11 @@
 # PostgreSQL
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/postgres --as postgres --version '^0.1.0'
+```
+
 An explicit-capability PostgreSQL v3 client written in Fai. Declare `postgres` in
 your application's `fai.toml` and import `postgres.Postgres`. Its manifest declares
 the `sql`, `json`, `uuid` and `encoding` dependencies.

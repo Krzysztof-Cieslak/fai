@@ -1,5 +1,11 @@
 # YAML
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/yaml --as yaml --version '^0.1.0'
+```
+
 A pure Fai YAML 1.2 data library: located document graphs, exact numeric values,
 typed decoding/encoding, normalized rendering, and JSON conversion. Declare a
 `yaml` dependency in your `fai.toml` and import the modules you use:

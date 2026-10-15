@@ -1,7 +1,7 @@
 # Compiler release runbook
 
 Compiler releases are explicit, manually dispatched operations. Source packages
-under `packages/` retain their own publishing process and tags.
+under `packages/` retain their own [publishing workflow and tags](RELEASING_PACKAGES.md).
 
 ## Development and preparation
 

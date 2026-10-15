@@ -1,5 +1,11 @@
 # Dotenv
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/dotenv --as dotenv --version '^0.1.0'
+```
+
 Pure literal dotenv parsing: `Dotenv.parse`/`parseBytes` return a document with
 ordered entries and name/value locations. `Dotenv.values` extracts a dictionary.
 The package never changes the process environment or expands `${...}`.

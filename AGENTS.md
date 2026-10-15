@@ -1478,6 +1478,15 @@ output schemas, and the daemon (MessagePack JSON-RPC) protocol.
 
 ## Compiler releases and changelog
 
+Source packages use `.github/workflows/package-release.yml`, a manual-only
+workflow documented in `docs/RELEASING_PACKAGES.md`. Their versions, READMEs,
+compiler requirements, and `changelog.md` sections must already be committed and
+merged. Native Linux/macOS/Windows qualification uses the same exact published
+compiler and the existing external-consumer publisher validation. Publication
+pushes only immutable package tags, never a new main commit; package releases
+never replace the compiler's Latest channel. The initial package series is
+0.1.0 and requires Fai 0.1.x, including separately owned example packages.
+
 **Every compiler, runtime, tooling, or embedded standard-library change must add
 or update an entry under `[Unreleased]` in `changelog.md`.** This includes internal
 improvements, CLI/daemon/LSP/editor changes, installers, and build/CI/release tools.

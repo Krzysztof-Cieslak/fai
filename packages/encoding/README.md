@@ -1,5 +1,11 @@
 # Encoding
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/encoding --as encoding --version '^0.1.0'
+```
+
 Pure Fai binary-to-ASCII codecs following [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648).
 Declare `encoding` in your application's `fai.toml`, then import its modules.
 For a sibling checkout:

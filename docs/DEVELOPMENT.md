@@ -1,5 +1,11 @@
 # Development workflows
 
+Source-package releases use the manual workflow described in
+[RELEASING_PACKAGES.md](RELEASING_PACKAGES.md). Each package owns a README and
+`changelog.md`; prepare version changes in a PR, then qualify the merged source
+with an exact published compiler. `python3 scripts/package_release.py check`
+checks release metadata without building or publishing anything.
+
 Terminal library contracts are ordinary Fai tests: `fai test -C packages tui`.
 Headless lifecycle checks run with `fai run -C packages
 tui/examples/RuntimeChecks.fai`; the form, SQLite browser and simulated agent

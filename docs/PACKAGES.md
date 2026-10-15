@@ -1355,6 +1355,12 @@ and recoverable.
 
 ## 16. Publishing and release transactions
 
+For this repository's maintained packages, the manual Actions workflow qualifies
+prepared releases on three native hosts before publication. See
+[RELEASING_PACKAGES.md](RELEASING_PACKAGES.md) for compiler prerequisites,
+agent-friendly dispatch commands, and exact-version retry rules. The CLI below
+also supports other package repositories and local maintainer workflows.
+
 ### 16.1 CLI and version intent
 
 For a workspace batch, supply explicit version intent per package:

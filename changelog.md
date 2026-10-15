@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- Add a manual source-package release workflow with exact published-compiler
+  qualification on Linux, macOS, and Windows, atomic package tags, and immutable
+  per-package release notes without changing the compiler's Latest channel.
 - Add `Test.property` for named property-based tests with explicit generators,
   runner-controlled seed/count/size, shrinking, and located assertion details.
   Hand-built `Test.Context` values must now include `trials` and `maxSize`;

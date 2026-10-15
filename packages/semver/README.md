@@ -1,5 +1,11 @@
 # Semantic versions
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/semver --as semver --version '^0.1.0'
+```
+
 Pure Fai SemVer 2.0 values, explicit version requirements, stable selection and
 compiler-package compatibility checks. Declare a `semver` dependency in your
 application's `fai.toml`, then import the modules you use:

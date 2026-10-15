@@ -1,8 +1,14 @@
 # Typed command-line arguments for Fai
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/cli --as cli --version '^0.1.0'
+```
+
 `Args` is a pure Fai argument parser. Declarations produce a typed application
-value and generate help from the same metadata. Include `src/Args.fai` in your
-workspace; the package has no dependencies beyond the standard library.
+value and generate help from the same metadata. Import `cli.Args` after adding
+the package; it has no dependencies beyond the standard library.
 
 ```fai
 let parser = Args.map2

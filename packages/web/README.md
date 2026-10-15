@@ -1,5 +1,11 @@
 # web — a micro web framework for Fai
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/web --as web --version '^0.1.0'
+```
+
 A small, [Giraffe](https://github.com/giraffe-fsharp/Giraffe)-inspired web
 framework built on Fai's networking stack (`std/networking/Http.fai`), with
 [TokenRouter](https://github.com/giraffe-fsharp/Giraffe.TokenRouter)-style
