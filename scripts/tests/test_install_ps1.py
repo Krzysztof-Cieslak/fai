@@ -5,10 +5,45 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import warnings
 import zipfile
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+VALIDATOR_TIMEOUT_SECONDS = 120
+
+
+def validate_archive(shell, archive):
+    # A fresh Windows PowerShell/.NET host can take longer than 30 seconds to
+    # initialize on hosted runners. Keep the whole invocation bounded and fatal
+    # on timeout; archive validation errors must still reach the caller unchanged.
+    return subprocess.run([
+        shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", str(SCRIPTS / "tests/assert_installer_archive.ps1"),
+        "-InstallerScript", str(SCRIPTS / "install/install.ps1"), "-ArchivePath", str(archive),
+    ], capture_output=True, text=True, encoding="utf-8", errors="replace",
+       timeout=VALIDATOR_TIMEOUT_SECONDS)
+
+
+class PowerShellInvocationTests(unittest.TestCase):
+    def test_cold_start_has_a_bounded_two_minute_budget(self):
+        with mock.patch.object(subprocess, "run") as run:
+            validate_archive("powershell.exe", Path("installer.zip"))
+        self.assertEqual(run.call_args.kwargs["timeout"], 120)
+
+    def test_timeout_is_fatal_and_is_not_retried(self):
+        error = subprocess.TimeoutExpired("powershell.exe", 120)
+        with mock.patch.object(subprocess, "run", side_effect=error) as run:
+            with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                validate_archive("powershell.exe", Path("installer.zip"))
+        self.assertIs(raised.exception, error)
+        run.assert_called_once()
+
+    def test_validation_failure_is_returned_unchanged(self):
+        result = subprocess.CompletedProcess([], 1, "", "invalid archive")
+        with mock.patch.object(subprocess, "run", return_value=result) as run:
+            self.assertIs(validate_archive("powershell.exe", Path("installer.zip")), result)
+        run.assert_called_once()
 
 
 class PowerShellArchiveTests(unittest.TestCase):
@@ -30,11 +65,7 @@ class PowerShellArchiveTests(unittest.TestCase):
                 entry.create_system = 3
                 entry.external_attr = mode << 16
                 archive.writestr(entry, b"fixture")
-        return subprocess.run([
-            self.shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", str(SCRIPTS / "tests/assert_installer_archive.ps1"),
-            "-InstallerScript", str(SCRIPTS / "install/install.ps1"), "-ArchivePath", str(self.archive),
-        ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        return validate_archive(self.shell, self.archive)
 
     def test_release_members_use_ordinal_not_culture_dependent_order(self):
         result = self.validate([("LICENSE", 0o100644), ("bin/fai.exe", 0o100755), ("metadata.json", 0o100644)])
