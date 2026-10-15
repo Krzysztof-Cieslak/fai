@@ -71,6 +71,8 @@ fn every_public_std_function_has_an_example() {
         // would have to reference a capability value, which is FAI6004. Such
         // functions are covered by end-to-end tests instead. Keyed off the same rule
         // as FAI6004 (an interface that carries an effect is a capability).
+        // Test.Context also contains Runtime: named property descriptions are pure,
+        // but referring to their context type in a contract is still FAI6004.
         const CAPABILITY_TYPES: &[&str] = &[
             "Console",
             "Clock",
@@ -85,6 +87,7 @@ fn every_public_std_function_has_an_example() {
             "Terminal",
             "Process",
             "Runtime",
+            "Context",
         ];
 
         // Public value bindings carry a `public <name> :` signature (a `public
