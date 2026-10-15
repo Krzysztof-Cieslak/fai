@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -31,6 +32,11 @@ class PostgresSuiteTests(unittest.TestCase):
                 self.assertEqual(command[:4], ["fixture-fai", "test", "--no-daemon", "--deny-focused"])
                 project = Path(command[command.index("-C") + 1])
                 self.assertTrue((project / "fai.toml").is_file())
+                manifest = tomllib.loads((project / "fai.toml").read_text(encoding="utf-8"))
+                for name in ("postgres", "sql", "json", "uuid"):
+                    self.assertEqual(manifest["dependencies"][name]["subdir"], f"packages/{name}")
+                    self.assertIn("git", manifest["dependencies"][name])
+                    self.assertNotIn("path", manifest["dependencies"][name])
                 self.assertTrue((project / "tests/Basic.fai").is_file())
                 source = (project / "tests/Integration.fai").read_text(encoding="utf-8")
                 self.assertIn("\ntests : Test.Suite", source)

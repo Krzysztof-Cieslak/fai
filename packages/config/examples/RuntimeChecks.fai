@@ -30,7 +30,7 @@ let loadCheck env base defaults tail expected sourceKind =
     | Err errors -> Err (String.join "; " (List.map Config.errorToString errors))
     | Ok settings ->
       let origin = Config.origin config [TomlTypes.Key "server", TomlTypes.Key "port"]
-      if settings.port = expected && settings.host = "localhost" && not settings.debug && settings.data = Path.join base (path "cfg/files") && Option.map (fun origin ->
+      if settings.port = expected && settings.host = "localhost" && not settings.debug && Path.resolve base (path "cfg/files") = Ok settings.data && Option.map (fun origin ->
         origin.kind) origin = Some sourceKind then
         Ok ()
       else
