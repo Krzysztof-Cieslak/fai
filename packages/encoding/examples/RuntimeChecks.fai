@@ -98,3 +98,37 @@ let main env =
     "Encoding runtime checks passed"
   else
     "Encoding runtime checks FAILED")
+
+let testInput = Bytes.fromList (List.map (fun n -> Int.and 255 (n * 73 + 19)) (List.range 0 262147))
+
+let testChunk = Bytes.slice 0 4093 testInput
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "encoding runtime" [
+  Test.test "large hex" (fun _ ->
+    Expect.isTrue "length and round trip" (large Hex.encode Hex.decode Hex.encodedLength testInput)),
+  Test.test "large base64" (fun _ ->
+    Expect.isTrue "length and round trip" (large Base64.encode Base64.decode Base64.encodedLength testInput)),
+  Test.test "large base64url" (fun _ ->
+    Expect.isTrue "length and round trip" (large Base64Url.encode Base64Url.decode Base64Url.encodedLength testInput)),
+  Test.test "large base32" (fun _ ->
+    Expect.isTrue "length and round trip" (large Base32.encode Base32.decode Base32.encodedLength testInput)),
+  Test.test "large base32hex" (fun _ ->
+    Expect.isTrue "length and round trip" (large Base32Hex.encode Base32Hex.decode Base32Hex.encodedLength testInput)),
+  Test.test "streamed hex" (fun _ ->
+    Expect.isTrue "stream hash and length" (streamed (Hex.encoder Hex.encodeOptions) (Hex.decoder Hex.decodeOptions) testChunk)),
+  Test.test "streamed base64" (fun _ ->
+    Expect.isTrue "stream hash and length" (streamed (Base64.encoder Base64.encodeOptions) (Base64.decoder Base64.decodeOptions) testChunk)),
+  Test.test "streamed base64url" (fun _ ->
+    Expect.isTrue "stream hash and length" (streamed (Base64Url.encoder Base64Url.encodeOptions) (Base64Url.decoder Base64Url.decodeOptions) testChunk)),
+  Test.test "streamed base32" (fun _ ->
+    Expect.isTrue "stream hash and length" (streamed (Base32.encoder Base32.encodeOptions) (Base32.decoder Base32.decodeOptions) testChunk)),
+  Test.test "streamed base32hex" (fun _ ->
+    Expect.isTrue "stream hash and length" (streamed (Base32Hex.encoder Base32Hex.encodeOptions) (Base32Hex.decoder Base32Hex.decodeOptions) testChunk)),
+  Test.test "shared incremental state" (fun _ ->
+    Expect.isTrue "branches preserve their snapshots" (aliases testChunk)),
+  Test.test "malformed byte prefix" (fun _ ->
+    Expect.isTrue "validated prefixes retain exact error offsets" invalidBytes),
+  Test.test "independent RFC vectors" (fun _ ->
+    Expect.isTrue "canonical encodings" referenceVectors)
+]

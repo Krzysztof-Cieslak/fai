@@ -1,45 +1,135 @@
 module SseOptionsSpec
 
-example: SseOptions.validateEvents SseOptions.events = Ok ()
-example: SseOptions.validateSubscription SseOptions.subscription = Ok ()
-example: SseOptions.validateEvents { SseOptions.events with
-  connectTimeoutMs = None,
-  readIdleTimeoutMs = None,
-  subscriptionTimeoutMs = None
-} = Ok ()
-example: Result.isErr (SseOptions.validateEvents { SseOptions.events with
-  connectTimeoutMs = Some 0
-})
-example: Result.isErr (SseOptions.validateEvents { SseOptions.events with
-  readIdleTimeoutMs = Some (-1)
-})
-example: Result.isErr (SseOptions.validateEvents { SseOptions.events with
-  subscriptionTimeoutMs = Some 0
-})
-example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
-  reconnectDelayMs = (-1)
-})
-example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
-  minReconnectDelayMs = (-1)
-})
-example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
-  maxReconnectDelayMs = Some 10,
-  minReconnectDelayMs = 20
-})
-example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
-  maxReconnects = Some (-1)
-})
-example: Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
-  initialLastEventId = "bad\nvalue"
-})
-example: SseOptions.validResumeId "é😀"
-example: not (SseOptions.validResumeId "a\u{0}b")
-example: SseOptions.reconnectDelay SseOptions.subscription None = 3000
-example: SseOptions.reconnectDelay { SseOptions.subscription with reconnectDelayMs = 17 } None = 17
-example: SseOptions.reconnectDelay SseOptions.subscription (Some 0) = 0
-example: SseOptions.reconnectDelay { SseOptions.subscription with
-  minReconnectDelayMs = 20
-} (Some 0) = 20
-example: SseOptions.reconnectDelay { SseOptions.subscription with
-  maxReconnectDelayMs = Some 40
-} (Some 9223372036854775807) = 40
+let case001 _ =
+  let testActual = SseOptions.validateEvents SseOptions.events
+  let testExpected = Ok ()
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual = SseOptions.validateSubscription SseOptions.subscription
+  let testExpected = Ok ()
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual = SseOptions.validateEvents { SseOptions.events with
+    connectTimeoutMs = None,
+    readIdleTimeoutMs = None,
+    subscriptionTimeoutMs = None
+  }
+  let testExpected = Ok ()
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+let case004 _ =
+  let testActual =
+    Result.isErr (SseOptions.validateEvents { SseOptions.events with connectTimeoutMs = Some 0 })
+  Expect.isTrue "Result.isErr (SseOptions.validateEvents { SseOptions.events with connectTimeoutMs = Some 0 })" testActual
+
+let case005 _ =
+  let testActual =
+    Result.isErr (SseOptions.validateEvents { SseOptions.events with
+      readIdleTimeoutMs = Some (-1)
+    })
+  Expect.isTrue "Result.isErr (SseOptions.validateEvents { SseOptions.events with readIdleTimeoutMs = Some (-1) })" testActual
+
+let case006 _ =
+  let testActual =
+    Result.isErr (SseOptions.validateEvents { SseOptions.events with
+      subscriptionTimeoutMs = Some 0
+    })
+  Expect.isTrue "Result.isErr (SseOptions.validateEvents { SseOptions.events with subscriptionTimeoutMs = Some 0 })" testActual
+
+let case007 _ =
+  let testActual =
+    Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+      reconnectDelayMs = (-1)
+    })
+  Expect.isTrue "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with reconnectDelayMs = (-1) })" testActual
+
+let case008 _ =
+  let testActual =
+    Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+      minReconnectDelayMs = (-1)
+    })
+  Expect.isTrue "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with minReconnectDelayMs = (-1) })" testActual
+
+let case009 _ =
+  let testActual =
+    Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+      maxReconnectDelayMs = Some 10,
+      minReconnectDelayMs = 20
+    })
+  Expect.isTrue "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with maxReconnectDelayMs = Some 10, minReconnectDelayMs = 20 })" testActual
+
+let case010 _ =
+  let testActual =
+    Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+      maxReconnects = Some (-1)
+    })
+  Expect.isTrue "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with maxReconnects = Some (-1) })" testActual
+
+let case011 _ =
+  let testActual =
+    Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with
+      initialLastEventId = "bad\nvalue"
+    })
+  Expect.isTrue "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with initialLastEventId = \"bad\\nvalue\" })" testActual
+
+let case012 _ =
+  let testActual = SseOptions.validResumeId "é😀"
+  Expect.isTrue "SseOptions.validResumeId \"é😀\"" testActual
+
+let case013 _ =
+  let testActual = not (SseOptions.validResumeId "a\u{0}b")
+  Expect.isTrue "not (SseOptions.validResumeId \"a\\u{0}b\")" testActual
+
+let case014 _ =
+  let testActual = SseOptions.reconnectDelay SseOptions.subscription None
+  let testExpected = 3000
+  Expect.equal (Test.int).show testExpected testActual
+
+let case015 _ =
+  let testActual =
+    SseOptions.reconnectDelay { SseOptions.subscription with reconnectDelayMs = 17 } None
+  let testExpected = 17
+  Expect.equal (Test.int).show testExpected testActual
+
+let case016 _ =
+  let testActual = SseOptions.reconnectDelay SseOptions.subscription (Some 0)
+  let testExpected = 0
+  Expect.equal (Test.int).show testExpected testActual
+
+let case017 _ =
+  let testActual =
+    SseOptions.reconnectDelay { SseOptions.subscription with minReconnectDelayMs = 20 } (Some 0)
+  let testExpected = 20
+  Expect.equal (Test.int).show testExpected testActual
+
+let case018 _ =
+  let testActual =
+    SseOptions.reconnectDelay { SseOptions.subscription with
+      maxReconnectDelayMs = Some 40
+    } (Some 9223372036854775807)
+  let testExpected = 40
+  Expect.equal (Test.int).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SseOptionsSpec" [
+  Test.test "SseOptions.validateEvents SseOptions.events = Ok ()" case001,
+  Test.test "SseOptions.validateSubscription SseOptions.subscription = Ok ()" case002,
+  Test.test "SseOptions.validateEvents { SseOptions.events with connectTimeoutMs = None, readIdleTimeoutMs = None, subscriptionTimeoutMs = None } = Ok ()" case003,
+  Test.test "Result.isErr (SseOptions.validateEvents { SseOptions.events with connectTimeoutMs = Some 0 })" case004,
+  Test.test "Result.isErr (SseOptions.validateEvents { SseOptions.events with readIdleTimeoutMs = Some (-1) })" case005,
+  Test.test "Result.isErr (SseOptions.validateEvents { SseOptions.events with subscriptionTimeoutMs = Some 0 })" case006,
+  Test.test "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with reconnectDelayMs = (-1) })" case007,
+  Test.test "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with minReconnectDelayMs = (-1) })" case008,
+  Test.test "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with maxReconnectDelayMs = Some 10, minReconnectDelayMs = 20 })" case009,
+  Test.test "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with maxReconnects = Some (-1) })" case010,
+  Test.test "Result.isErr (SseOptions.validateSubscription { SseOptions.subscription with initialLastEventId = \"bad\\nvalue\" })" case011,
+  Test.test "SseOptions.validResumeId \"é😀\"" case012,
+  Test.test "not (SseOptions.validResumeId \"a\\u{0}b\")" case013,
+  Test.test "SseOptions.reconnectDelay SseOptions.subscription None = 3000" case014,
+  Test.test "SseOptions.reconnectDelay { SseOptions.subscription with reconnectDelayMs = 17 } None = 17" case015,
+  Test.test "SseOptions.reconnectDelay SseOptions.subscription (Some 0) = 0" case016,
+  Test.test "SseOptions.reconnectDelay { SseOptions.subscription with minReconnectDelayMs = 20 } (Some 0) = 20" case017,
+  Test.test "SseOptions.reconnectDelay { SseOptions.subscription with maxReconnectDelayMs = Some 40 } (Some 9223372036854775807) = 40" case018
+]

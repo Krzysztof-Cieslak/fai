@@ -110,9 +110,13 @@ tests. It retains AOT, inherited-stdin, callback-effect and terminal checks.
 changes and uses the exact cached compiler. The interactive task runner is
 `fai run -C packages process/examples/TaskRunner.fai -- git status --short`.
 
-Use the compiler directly. Package tests combine pure `example`/`forall`
-declarations with explicitly typed private `tests : Test.Suite Test.Context { ... }`
-roots. Named cases get the same console, JSON and JUnit reporting as contracts:
+Use the compiler directly. Keep pure `example`/`forall` declarations beside
+library implementations as executable documentation. Dedicated test sources
+define explicitly typed private `tests : Test.Suite Test.Context { ... }` roots,
+using `Test.test` for cases and `Test.property` with explicit `Arbitrary` values
+for laws. Properties use the runner's seed/count/size settings and shrink failing
+checks; generators and predicates are not evaluated during discovery. Named
+cases get the same console, JSON and JUnit reporting as inline contracts:
 
 ```sh
 fai check -C packages --package json
@@ -165,9 +169,9 @@ helpers to depend on their library without adding a production dependency back
 to those helpers. Optional `ci.json` files declare integration programs and pinned
 fixtures, using the manifest's identity and dependencies.
 
-Measured on the development Linux host with the assertion-enabled optimized
-compiler: a cold JSON type check was 106 ms, a warm check 4 ms, and the warm
-143-contract JSON suite 308 ms. These are observations, not timing gates.
+Keep the daemon warm for edit/check/test loops. Named cases still use fresh
+workers; measure preparation separately from execution, and keep property trials
+inside one named case rather than creating a worker for each generated input.
 
 ## Package-local integration programs
 

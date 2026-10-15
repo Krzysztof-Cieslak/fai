@@ -24,29 +24,80 @@ let value result = Result.map (fun response -> response.body) result
 let json = Headers.fromList [("Content-Type", "application/json")]
 
 let read = raw |> HttpClient.expectJson (JsonDecode.field "name" JsonDecode.string)
-example: value (decode cfg raw 404 Headers.empty "missing") = Ok (Bytes.fromString "missing")
-example: value (decode cfg (HttpClient.expectText raw) 200 Headers.empty "é😀") = Ok "é😀"
-example: value (decode cfg (HttpClient.expectEmpty raw) 204 Headers.empty "") = Ok ()
-example: value (decode cfg read 200 json "{\"name\":\"Ada\"}") = Ok "Ada"
-example: Result.isErr (decode cfg read 400 json "{\"name\":\"Ada\"}")
-example: Result.isErr (decode cfg read 200 Headers.empty "{\"name\":\"Ada\"}")
-example: Result.isErr (decode cfg read 200 json "{bad}")
-example: Result.isErr (decode cfg read 200 json "{\"name\":1}")
-example: Result.isErr (decode cfg read 200 json "{\"name\":\"Ada\",\"name\":\"B\"}")
-example: Result.isErr (decode cfg read 204 json "")
-example: value (decode cfg read 200 (Headers.fromList [
-  ("content-type", "Application/Problem+Json; charset=utf-8")
-]) "{\"name\":\"Ada\"}") = Ok "Ada"
-example: Result.isErr (decode cfg read 200 (Headers.fromList [
-  ("Content-Type", "application/*+json")
-]) "{\"name\":\"Ada\"}")
-example: value (decode { cfg with
-  maxBodyBytes = 2
-} (HttpClient.expectText raw) 200 Headers.empty "hi") = Ok "hi"
-example: Result.isErr (decode { cfg with
-  maxBodyBytes = 1
-} (HttpClient.expectText raw) 200 Headers.empty "hi")
-example: value (decode { cfg with maxBodyBytes = 0 } raw 200 Headers.empty "") = Ok Bytes.empty
+
+let case001 _ =
+  let testActual =
+    value (decode cfg raw 404 Headers.empty "missing") = Ok (Bytes.fromString "missing")
+  Expect.isTrue "value (decode cfg raw 404 Headers.empty \"missing\") = Ok (Bytes.fromString \"missing\")" testActual
+
+let case002 _ =
+  let testActual = value (decode cfg (HttpClient.expectText raw) 200 Headers.empty "é😀") = Ok "é😀"
+  Expect.isTrue "value (decode cfg (HttpClient.expectText raw) 200 Headers.empty \"é😀\") = Ok \"é😀\"" testActual
+
+let case003 _ =
+  let testActual = value (decode cfg (HttpClient.expectEmpty raw) 204 Headers.empty "") = Ok ()
+  Expect.isTrue "value (decode cfg (HttpClient.expectEmpty raw) 204 Headers.empty \"\") = Ok ()" testActual
+
+let case004 _ =
+  let testActual = value (decode cfg read 200 json "{\"name\":\"Ada\"}") = Ok "Ada"
+  Expect.isTrue "value (decode cfg read 200 json \"{\\\"name\\\":\\\"Ada\\\"}\") = Ok \"Ada\"" testActual
+
+let case005 _ =
+  let testActual = Result.isErr (decode cfg read 400 json "{\"name\":\"Ada\"}")
+  Expect.isTrue "Result.isErr (decode cfg read 400 json \"{\\\"name\\\":\\\"Ada\\\"}\")" testActual
+
+let case006 _ =
+  let testActual = Result.isErr (decode cfg read 200 Headers.empty "{\"name\":\"Ada\"}")
+  Expect.isTrue "Result.isErr (decode cfg read 200 Headers.empty \"{\\\"name\\\":\\\"Ada\\\"}\")" testActual
+
+let case007 _ =
+  let testActual = Result.isErr (decode cfg read 200 json "{bad}")
+  Expect.isTrue "Result.isErr (decode cfg read 200 json \"{bad}\")" testActual
+
+let case008 _ =
+  let testActual = Result.isErr (decode cfg read 200 json "{\"name\":1}")
+  Expect.isTrue "Result.isErr (decode cfg read 200 json \"{\\\"name\\\":1}\")" testActual
+
+let case009 _ =
+  let testActual = Result.isErr (decode cfg read 200 json "{\"name\":\"Ada\",\"name\":\"B\"}")
+  Expect.isTrue "Result.isErr (decode cfg read 200 json \"{\\\"name\\\":\\\"Ada\\\",\\\"name\\\":\\\"B\\\"}\")" testActual
+
+let case010 _ =
+  let testActual = Result.isErr (decode cfg read 204 json "")
+  Expect.isTrue "Result.isErr (decode cfg read 204 json \"\")" testActual
+
+let case011 _ =
+  let testActual =
+    value (decode cfg read 200 (Headers.fromList [
+      ("content-type", "Application/Problem+Json; charset=utf-8")
+    ]) "{\"name\":\"Ada\"}") = Ok "Ada"
+  Expect.isTrue "value (decode cfg read 200 (Headers.fromList [ (\"content-type\", \"Application/Problem+Json; charset=utf-8\") ]) \"{\\\"name\\\":\\\"Ada\\\"}\") = Ok \"Ada\"" testActual
+
+let case012 _ =
+  let testActual =
+    Result.isErr (decode cfg read 200 (Headers.fromList [
+      ("Content-Type", "application/*+json")
+    ]) "{\"name\":\"Ada\"}")
+  Expect.isTrue "Result.isErr (decode cfg read 200 (Headers.fromList [ (\"Content-Type\", \"application/*+json\") ]) \"{\\\"name\\\":\\\"Ada\\\"}\")" testActual
+
+let case013 _ =
+  let testActual =
+    value (decode { cfg with
+      maxBodyBytes = 2
+    } (HttpClient.expectText raw) 200 Headers.empty "hi") = Ok "hi"
+  Expect.isTrue "value (decode { cfg with maxBodyBytes = 2 } (HttpClient.expectText raw) 200 Headers.empty \"hi\") = Ok \"hi\"" testActual
+
+let case014 _ =
+  let testActual =
+    Result.isErr (decode { cfg with
+      maxBodyBytes = 1
+    } (HttpClient.expectText raw) 200 Headers.empty "hi")
+  Expect.isTrue "Result.isErr (decode { cfg with maxBodyBytes = 1 } (HttpClient.expectText raw) 200 Headers.empty \"hi\")" testActual
+
+let case015 _ =
+  let testActual =
+    value (decode { cfg with maxBodyBytes = 0 } raw 200 Headers.empty "") = Ok Bytes.empty
+  Expect.isTrue "value (decode { cfg with maxBodyBytes = 0 } raw 200 Headers.empty \"\") = Ok Bytes.empty" testActual
 
 let preview =
   match decode { cfg with
@@ -55,15 +106,25 @@ let preview =
   | Err (HttpClient.UnexpectedStatus head bytes truncated) ->
     head.status = 503 && bytes = Bytes.fromString "abc" && truncated
   | _ -> false
-example: preview
+
+let case016 _ =
+  let testActual = preview
+  Expect.isTrue "preview" testActual
 
 let located =
   match decode cfg read 200 json "{\"name\":1}" with
   | Err (HttpClient.InvalidJson head (JsonDecode.Data (JsonDecode.Failure path message))) ->
     head.status = 200 && path = [JsonDecode.Field "name"]
   | _ -> false
-example: located
-forall text: value (decode cfg (HttpClient.expectText raw) 200 Headers.empty text) = Ok text
+
+let case017 _ =
+  let testActual = located
+  Expect.isTrue "located" testActual
+
+let case018 testInput =
+  let text = testInput
+  let testActual = value (decode cfg (HttpClient.expectText raw) 200 Headers.empty text) = Ok text
+  Expect.isTrue "property: value (decode cfg (HttpClient.expectText raw) 200 Headers.empty text) = Ok text" testActual
 
 let streamResponse request limit chunks =
   match response 200 json "" with
@@ -71,10 +132,23 @@ let streamResponse request limit chunks =
   | Ok r -> HttpClient.decodeStream { cfg with
     maxBodyBytes = limit
   } request { body = Stream.fromList (List.map Bytes.fromString chunks), head = r.head }
-example: value (streamResponse (HttpClient.expectText raw) 6 ["ab", "", "cd", "ef"]) = Ok "abcdef"
-example: Result.isErr (streamResponse (HttpClient.expectText raw) 5 ["ab", "cd", "ef"])
-example: value (streamResponse read 100 ["{\"na", "me\":\"", "Ada", "\"}"]) = Ok "Ada"
-example: value (streamResponse raw 0 ["", ""]) = Ok Bytes.empty
+
+let case019 _ =
+  let testActual =
+    value (streamResponse (HttpClient.expectText raw) 6 ["ab", "", "cd", "ef"]) = Ok "abcdef"
+  Expect.isTrue "value (streamResponse (HttpClient.expectText raw) 6 [\"ab\", \"\", \"cd\", \"ef\"]) = Ok \"abcdef\"" testActual
+
+let case020 _ =
+  let testActual = Result.isErr (streamResponse (HttpClient.expectText raw) 5 ["ab", "cd", "ef"])
+  Expect.isTrue "Result.isErr (streamResponse (HttpClient.expectText raw) 5 [\"ab\", \"cd\", \"ef\"])" testActual
+
+let case021 _ =
+  let testActual = value (streamResponse read 100 ["{\"na", "me\":\"", "Ada", "\"}"]) = Ok "Ada"
+  Expect.isTrue "value (streamResponse read 100 [\"{\\\"na\", \"me\\\":\\\"\", \"Ada\", \"\\\"}\"]) = Ok \"Ada\"" testActual
+
+let case022 _ =
+  let testActual = value (streamResponse raw 0 ["", ""]) = Ok Bytes.empty
+  Expect.isTrue "value (streamResponse raw 0 [\"\", \"\"]) = Ok Bytes.empty" testActual
 
 let faulted =
   match response 200 Headers.empty "" with
@@ -86,7 +160,10 @@ let faulted =
     } with
     | Err (HttpClient.BodyRead head message) -> message = "read failed" && head.status = 200
     | _ -> false
-example: faulted
+
+let case023 _ =
+  let testActual = faulted
+  Expect.isTrue "faulted" testActual
 
 let invalidUtf8 =
   match response 200 Headers.empty "" with
@@ -97,14 +174,25 @@ let invalidUtf8 =
     } with
     | Err (HttpClient.InvalidText head) -> head.status = 200
     | _ -> false
-example: invalidUtf8
-example: Result.isErr (decode cfg read 200 (Headers.fromList [
-  ("Content-Type", "application/json"),
-  ("Content-Type", "text/html")
-]) "{\"name\":\"Ada\"}")
-example: Result.isErr (decode cfg read 200 (Headers.fromList [
-  ("Content-Type", "application/a/b+json")
-]) "{\"name\":\"Ada\"}")
+
+let case024 _ =
+  let testActual = invalidUtf8
+  Expect.isTrue "invalidUtf8" testActual
+
+let case025 _ =
+  let testActual =
+    Result.isErr (decode cfg read 200 (Headers.fromList [
+      ("Content-Type", "application/json"),
+      ("Content-Type", "text/html")
+    ]) "{\"name\":\"Ada\"}")
+  Expect.isTrue "Result.isErr (decode cfg read 200 (Headers.fromList [ (\"Content-Type\", \"application/json\"), (\"Content-Type\", \"text/html\") ]) \"{\\\"name\\\":\\\"Ada\\\"}\")" testActual
+
+let case026 _ =
+  let testActual =
+    Result.isErr (decode cfg read 200 (Headers.fromList [
+      ("Content-Type", "application/a/b+json")
+    ]) "{\"name\":\"Ada\"}")
+  Expect.isTrue "Result.isErr (decode cfg read 200 (Headers.fromList [ (\"Content-Type\", \"application/a/b+json\") ]) \"{\\\"name\\\":\\\"Ada\\\"}\")" testActual
 
 let failIfRead unit = Stream.cons (Bytes.fromList [1 / 0]) Stream.empty
 
@@ -115,7 +203,10 @@ let mediaBeforeBody =
     match HttpClient.decodeStream cfg read { body = Stream.defer failIfRead, head = r.head } with
     | Err (HttpClient.UnsupportedJsonMediaType head media) -> media = None
     | _ -> false
-example: mediaBeforeBody
+
+let case027 _ =
+  let testActual = mediaBeforeBody
+  Expect.isTrue "mediaBeforeBody" testActual
 
 let invalidConfigBeforeBody =
   match response 200 Headers.empty "" with
@@ -126,5 +217,46 @@ let invalidConfigBeforeBody =
     } raw { body = Stream.defer failIfRead, head = r.head } with
     | Err (HttpClient.InvalidConfiguration _) -> true
     | _ -> false
-example: invalidConfigBeforeBody
-forall pieces: value (streamResponse (HttpClient.expectText raw) 16777216 pieces) = Ok (String.join "" pieces)
+
+let case028 _ =
+  let testActual = invalidConfigBeforeBody
+  Expect.isTrue "invalidConfigBeforeBody" testActual
+
+let case029 testInput =
+  let pieces = testInput
+  let testActual =
+    value (streamResponse (HttpClient.expectText raw) 16777216 pieces) = Ok (String.join "" pieces)
+  Expect.isTrue "property: value (streamResponse (HttpClient.expectText raw) 16777216 pieces) = Ok (String.join \"\" pieces)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "ResponseSpec" [
+  Test.test "value (decode cfg raw 404 Headers.empty \"missing\") = Ok (Bytes.fromString \"missing\")" case001,
+  Test.test "value (decode cfg (HttpClient.expectText raw) 200 Headers.empty \"é😀\") = Ok \"é😀\"" case002,
+  Test.test "value (decode cfg (HttpClient.expectEmpty raw) 204 Headers.empty \"\") = Ok ()" case003,
+  Test.test "value (decode cfg read 200 json \"{\\\"name\\\":\\\"Ada\\\"}\") = Ok \"Ada\"" case004,
+  Test.test "Result.isErr (decode cfg read 400 json \"{\\\"name\\\":\\\"Ada\\\"}\")" case005,
+  Test.test "Result.isErr (decode cfg read 200 Headers.empty \"{\\\"name\\\":\\\"Ada\\\"}\")" case006,
+  Test.test "Result.isErr (decode cfg read 200 json \"{bad}\")" case007,
+  Test.test "Result.isErr (decode cfg read 200 json \"{\\\"name\\\":1}\")" case008,
+  Test.test "Result.isErr (decode cfg read 200 json \"{\\\"name\\\":\\\"Ada\\\",\\\"name\\\":\\\"B\\\"}\")" case009,
+  Test.test "Result.isErr (decode cfg read 204 json \"\")" case010,
+  Test.test "value (decode cfg read 200 (Headers.fromList [ (\"content-type\", \"Application/Problem+Json; charset=utf-8\") ]) \"{\\\"name\\\":\\\"Ada\\\"}\") = Ok \"Ada\"" case011,
+  Test.test "Result.isErr (decode cfg read 200 (Headers.fromList [ (\"Content-Type\", \"application/*+json\") ]) \"{\\\"name\\\":\\\"Ada\\\"}\")" case012,
+  Test.test "value (decode { cfg with maxBodyBytes = 2 } (HttpClient.expectText raw) 200 Headers.empty \"hi\") = Ok \"hi\"" case013,
+  Test.test "Result.isErr (decode { cfg with maxBodyBytes = 1 } (HttpClient.expectText raw) 200 Headers.empty \"hi\")" case014,
+  Test.test "value (decode { cfg with maxBodyBytes = 0 } raw 200 Headers.empty \"\") = Ok Bytes.empty" case015,
+  Test.test "preview" case016,
+  Test.test "located" case017,
+  Test.property "property: value (decode cfg (HttpClient.expectText raw) 200 Headers.empty text) = Ok text" Test.string case018,
+  Test.test "value (streamResponse (HttpClient.expectText raw) 6 [\"ab\", \"\", \"cd\", \"ef\"]) = Ok \"abcdef\"" case019,
+  Test.test "Result.isErr (streamResponse (HttpClient.expectText raw) 5 [\"ab\", \"cd\", \"ef\"])" case020,
+  Test.test "value (streamResponse read 100 [\"{\\\"na\", \"me\\\":\\\"\", \"Ada\", \"\\\"}\"]) = Ok \"Ada\"" case021,
+  Test.test "value (streamResponse raw 0 [\"\", \"\"]) = Ok Bytes.empty" case022,
+  Test.test "faulted" case023,
+  Test.test "invalidUtf8" case024,
+  Test.test "Result.isErr (decode cfg read 200 (Headers.fromList [ (\"Content-Type\", \"application/json\"), (\"Content-Type\", \"text/html\") ]) \"{\\\"name\\\":\\\"Ada\\\"}\")" case025,
+  Test.test "Result.isErr (decode cfg read 200 (Headers.fromList [ (\"Content-Type\", \"application/a/b+json\") ]) \"{\\\"name\\\":\\\"Ada\\\"}\")" case026,
+  Test.test "mediaBeforeBody" case027,
+  Test.test "invalidConfigBeforeBody" case028,
+  Test.property "property: value (streamResponse (HttpClient.expectText raw) 16777216 pieces) = Ok (String.join \"\" pieces)" (Test.list Test.string) case029
+]

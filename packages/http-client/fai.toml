@@ -15,36 +15,8 @@ name = "examples-download"
 path = "examples/Download.fai"
 
 [[bin]]
-name = "examples-download-check"
-path = "examples/DownloadCheck.fai"
-
-[[bin]]
-name = "examples-event-fold-checks"
-path = "examples/EventFoldChecks.fai"
-
-[[bin]]
-name = "examples-event-heartbeat-check"
-path = "examples/EventHeartbeatCheck.fai"
-
-[[bin]]
-name = "examples-event-reader-checks"
-path = "examples/EventReaderChecks.fai"
-
-[[bin]]
-name = "examples-event-redirect-check"
-path = "examples/EventRedirectCheck.fai"
-
-[[bin]]
-name = "examples-lifecycle-checks"
-path = "examples/LifecycleChecks.fai"
-
-[[bin]]
 name = "examples-retry-redirect"
 path = "examples/RetryRedirect.fai"
-
-[[bin]]
-name = "examples-subscription-checks"
-path = "examples/SubscriptionChecks.fai"
 
 [[bin]]
 name = "examples-typed-client"

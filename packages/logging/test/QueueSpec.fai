@@ -1,15 +1,50 @@
 module LogQueueSpec
 
-example: LogQueue.validate LogQueue.defaults = Ok ()
-example: LogQueue.validate { LogQueue.defaults with maxRecords = 0 } |> Result.isErr
-example: LogQueue.validate { LogQueue.defaults with maxBytes = 0 } |> Result.isErr
-example: LogQueue.validate { LogQueue.defaults with
-  maxRecordBytes = LogQueue.defaults.maxBytes + 1
-} |> Result.isErr
-example: LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some 0 } |> Result.isErr
-example: LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some (-1) } |> Result.isErr
-example: LogQueue.validate { LogQueue.defaults with
-  maxBytes = 1,
-  maxRecordBytes = 1,
-  maxRecords = 1
-} = Ok ()
+let case001 _ =
+  let testActual = LogQueue.validate LogQueue.defaults = Ok ()
+  Expect.isTrue "LogQueue.validate LogQueue.defaults = Ok ()" testActual
+
+let case002 _ =
+  let testActual = LogQueue.validate { LogQueue.defaults with maxRecords = 0 } |> Result.isErr
+  Expect.isTrue "LogQueue.validate { LogQueue.defaults with maxRecords = 0 } |> Result.isErr" testActual
+
+let case003 _ =
+  let testActual = LogQueue.validate { LogQueue.defaults with maxBytes = 0 } |> Result.isErr
+  Expect.isTrue "LogQueue.validate { LogQueue.defaults with maxBytes = 0 } |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual =
+    LogQueue.validate { LogQueue.defaults with
+      maxRecordBytes = LogQueue.defaults.maxBytes + 1
+    } |> Result.isErr
+  Expect.isTrue "LogQueue.validate { LogQueue.defaults with maxRecordBytes = LogQueue.defaults.maxBytes + 1 } |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some 0 } |> Result.isErr
+  Expect.isTrue "LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some 0 } |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual =
+    LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some (-1) } |> Result.isErr
+  Expect.isTrue "LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some (-1) } |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual =
+    LogQueue.validate { LogQueue.defaults with
+      maxBytes = 1,
+      maxRecordBytes = 1,
+      maxRecords = 1
+    } = Ok ()
+  Expect.isTrue "LogQueue.validate { LogQueue.defaults with maxBytes = 1, maxRecordBytes = 1, maxRecords = 1 } = Ok ()" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LogQueueSpec" [
+  Test.test "LogQueue.validate LogQueue.defaults = Ok ()" case001,
+  Test.test "LogQueue.validate { LogQueue.defaults with maxRecords = 0 } |> Result.isErr" case002,
+  Test.test "LogQueue.validate { LogQueue.defaults with maxBytes = 0 } |> Result.isErr" case003,
+  Test.test "LogQueue.validate { LogQueue.defaults with maxRecordBytes = LogQueue.defaults.maxBytes + 1 } |> Result.isErr" case004,
+  Test.test "LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some 0 } |> Result.isErr" case005,
+  Test.test "LogQueue.validate { LogQueue.defaults with drainTimeoutMs = Some (-1) } |> Result.isErr" case006,
+  Test.test "LogQueue.validate { LogQueue.defaults with maxBytes = 1, maxRecordBytes = 1, maxRecords = 1 } = Ok ()" case007
+]

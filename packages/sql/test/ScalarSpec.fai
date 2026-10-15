@@ -1,18 +1,94 @@
 module ScalarSpec
 
-example: Result.map SqlDecimal.toString (SqlDecimal.parse "12345678901234567890.123400") = Ok "12345678901234567890.123400"
-example: Result.isOk (SqlDecimal.parse "-.125e+200")
-example: Result.isErr (SqlDecimal.parse ".")
-example: Result.isErr (SqlDecimal.parse "1e")
-example: Result.isErr (SqlDecimal.parse " 1")
-example: Result.map SqlDecimal.isFinite (SqlDecimal.parse "Infinity") = Ok false
-example: Result.map SqlDecimal.isFinite (SqlDecimal.parse "NaN") = Ok false
-forall n: SqlDecimal.toString (SqlDecimal.fromInt n) = Int.toString n
-example: Result.map SqlUuid.toString (SqlUuid.parse "01234567-89AB-CDEF-0123-456789ABCDEF") = Ok "01234567-89ab-cdef-0123-456789abcdef"
-example: Result.isErr (SqlUuid.parse "0123456789abcdef0123456789abcdef")
-example: Result.isErr (SqlUuid.parse "01234567-89ab-cdef-0123-456789abcdeg")
-example: SqlDecode.decodeValue SqlDecode.bool (Sql.Boolean true) = Ok true
-example: Result.isErr (SqlDecode.decodeValue SqlDecode.decimal (Sql.Real 0.1))
-example: SqlDecode.decodeValue SqlDecode.date (Sql.Date Sql.NegativeInfinity) = Ok Sql.NegativeInfinity
-example: SqlDecode.decodeValue SqlDecode.time (Sql.Text "24:00:00") = Ok Sql.EndOfDay
-example: SqlDecode.decodeValue SqlDecode.timestampTz (Sql.TimestampTz (Sql.Finite Instant.epoch)) = Ok (Sql.Finite Instant.epoch)
+let case001 _ =
+  let testActual = Result.map SqlDecimal.toString (SqlDecimal.parse "12345678901234567890.123400")
+  let testExpected = Ok "12345678901234567890.123400"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual = Result.isOk (SqlDecimal.parse "-.125e+200")
+  Expect.isTrue "Result.isOk (SqlDecimal.parse \"-.125e+200\")" testActual
+
+let case003 _ =
+  let testActual = Result.isErr (SqlDecimal.parse ".")
+  Expect.isTrue "Result.isErr (SqlDecimal.parse \".\")" testActual
+
+let case004 _ =
+  let testActual = Result.isErr (SqlDecimal.parse "1e")
+  Expect.isTrue "Result.isErr (SqlDecimal.parse \"1e\")" testActual
+
+let case005 _ =
+  let testActual = Result.isErr (SqlDecimal.parse " 1")
+  Expect.isTrue "Result.isErr (SqlDecimal.parse \" 1\")" testActual
+
+let case006 _ =
+  let testActual = Result.map SqlDecimal.isFinite (SqlDecimal.parse "Infinity")
+  let testExpected = Ok false
+  Expect.equal ((Test.result Test.bool Test.string)).show testExpected testActual
+
+let case007 _ =
+  let testActual = Result.map SqlDecimal.isFinite (SqlDecimal.parse "NaN")
+  let testExpected = Ok false
+  Expect.equal ((Test.result Test.bool Test.string)).show testExpected testActual
+
+let case008 testInput =
+  let n = testInput
+  let testActual = SqlDecimal.toString (SqlDecimal.fromInt n)
+  let testExpected = Int.toString n
+  Expect.equal (Test.string).show testExpected testActual
+
+let case009 _ =
+  let testActual =
+    Result.map SqlUuid.toString (SqlUuid.parse "01234567-89AB-CDEF-0123-456789ABCDEF")
+  let testExpected = Ok "01234567-89ab-cdef-0123-456789abcdef"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case010 _ =
+  let testActual = Result.isErr (SqlUuid.parse "0123456789abcdef0123456789abcdef")
+  Expect.isTrue "Result.isErr (SqlUuid.parse \"0123456789abcdef0123456789abcdef\")" testActual
+
+let case011 _ =
+  let testActual = Result.isErr (SqlUuid.parse "01234567-89ab-cdef-0123-456789abcdeg")
+  Expect.isTrue "Result.isErr (SqlUuid.parse \"01234567-89ab-cdef-0123-456789abcdeg\")" testActual
+
+let case012 _ =
+  let testActual = SqlDecode.decodeValue SqlDecode.bool (Sql.Boolean true) = Ok true
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.bool (Sql.Boolean true) = Ok true" testActual
+
+let case013 _ =
+  let testActual = Result.isErr (SqlDecode.decodeValue SqlDecode.decimal (Sql.Real 0.1))
+  Expect.isTrue "Result.isErr (SqlDecode.decodeValue SqlDecode.decimal (Sql.Real 0.1))" testActual
+
+let case014 _ =
+  let testActual =
+    SqlDecode.decodeValue SqlDecode.date (Sql.Date Sql.NegativeInfinity) = Ok Sql.NegativeInfinity
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.date (Sql.Date Sql.NegativeInfinity) = Ok Sql.NegativeInfinity" testActual
+
+let case015 _ =
+  let testActual = SqlDecode.decodeValue SqlDecode.time (Sql.Text "24:00:00") = Ok Sql.EndOfDay
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.time (Sql.Text \"24:00:00\") = Ok Sql.EndOfDay" testActual
+
+let case016 _ =
+  let testActual =
+    SqlDecode.decodeValue SqlDecode.timestampTz (Sql.TimestampTz (Sql.Finite Instant.epoch)) = Ok (Sql.Finite Instant.epoch)
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.timestampTz (Sql.TimestampTz (Sql.Finite Instant.epoch)) = Ok (Sql.Finite Instant.epoch)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "ScalarSpec" [
+  Test.test "Result.map SqlDecimal.toString (SqlDecimal.parse \"12345678901234567890.123400\") = Ok \"12345678901234567890.123400\"" case001,
+  Test.test "Result.isOk (SqlDecimal.parse \"-.125e+200\")" case002,
+  Test.test "Result.isErr (SqlDecimal.parse \".\")" case003,
+  Test.test "Result.isErr (SqlDecimal.parse \"1e\")" case004,
+  Test.test "Result.isErr (SqlDecimal.parse \" 1\")" case005,
+  Test.test "Result.map SqlDecimal.isFinite (SqlDecimal.parse \"Infinity\") = Ok false" case006,
+  Test.test "Result.map SqlDecimal.isFinite (SqlDecimal.parse \"NaN\") = Ok false" case007,
+  Test.property "property: SqlDecimal.toString (SqlDecimal.fromInt n) = Int.toString n" Test.int case008,
+  Test.test "Result.map SqlUuid.toString (SqlUuid.parse \"01234567-89AB-CDEF-0123-456789ABCDEF\") = Ok \"01234567-89ab-cdef-0123-456789abcdef\"" case009,
+  Test.test "Result.isErr (SqlUuid.parse \"0123456789abcdef0123456789abcdef\")" case010,
+  Test.test "Result.isErr (SqlUuid.parse \"01234567-89ab-cdef-0123-456789abcdeg\")" case011,
+  Test.test "SqlDecode.decodeValue SqlDecode.bool (Sql.Boolean true) = Ok true" case012,
+  Test.test "Result.isErr (SqlDecode.decodeValue SqlDecode.decimal (Sql.Real 0.1))" case013,
+  Test.test "SqlDecode.decodeValue SqlDecode.date (Sql.Date Sql.NegativeInfinity) = Ok Sql.NegativeInfinity" case014,
+  Test.test "SqlDecode.decodeValue SqlDecode.time (Sql.Text \"24:00:00\") = Ok Sql.EndOfDay" case015,
+  Test.test "SqlDecode.decodeValue SqlDecode.timestampTz (Sql.TimestampTz (Sql.Finite Instant.epoch)) = Ok (Sql.Finite Instant.epoch)" case016
+]

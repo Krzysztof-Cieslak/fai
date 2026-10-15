@@ -1,32 +1,139 @@
 module ValueSpec
 
-example: Args.parseValue Args.string "" = Ok ""
-example: Args.parseValue Args.string " é😀 \"quoted\" " = Ok " é😀 \"quoted\" "
-example: Args.parseValue Args.bool "true" = Ok true
-example: Args.parseValue Args.bool "false" = Ok false
-example: Args.parseValue Args.bool "True" = Err "expected true or false"
-example: Args.parseValue Args.bool "1" = Err "expected true or false"
-example: Args.parseValue Args.int "0" = Ok 0
-example: Args.parseValue Args.int "+00042" = Ok 42
-example: Args.parseValue Args.int "-00042" = Ok (-42)
-example: Args.parseValue Args.int "9223372036854775807" = Ok 9223372036854775807
-example: Args.parseValue Args.int "-9223372036854775808" = Ok (-9223372036854775808)
-example: Args.parseValue Args.int "9223372036854775808" = Err "outside the signed 64-bit Int range"
-example: Args.parseValue Args.int "-9223372036854775809" = Err "outside the signed 64-bit Int range"
-example: Args.parseValue Args.int "18446744073709551616" = Err "outside the signed 64-bit Int range"
-example: Args.parseValue Args.int "" = Err "expected a decimal Int"
-example: Args.parseValue Args.int "+" = Err "expected a decimal Int"
-example: Args.parseValue Args.int "-" = Err "expected a decimal Int"
-example: Args.parseValue Args.int " 1" = Err "expected a decimal Int"
-example: Args.parseValue Args.int "1 " = Err "expected a decimal Int"
-example: Args.parseValue Args.int "1.0" = Err "expected a decimal Int"
-example: Args.parseValue Args.int "1e2" = Err "expected a decimal Int"
-example: Args.parseValue Args.int "0x10" = Err "expected a decimal Int"
-example: Args.parseValue Args.int "１２" = Err "expected a decimal Int"
-example: Args.parseValue (Args.choice ["fast", "safe", ""]) "safe" = Ok "safe"
-example: Args.parseValue (Args.choice ["fast", "safe", ""]) "" = Ok ""
-example: Result.isErr (Args.parseValue (Args.choice ["fast", "safe"]) "FAST")
-forall value: Args.parseValue Args.int (Int.toString value) = Ok value
+let case001 _ =
+  let testActual = Args.parseValue Args.string ""
+  let testExpected = Ok ""
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual = Args.parseValue Args.string " é😀 \"quoted\" "
+  let testExpected = Ok " é😀 \"quoted\" "
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual = Args.parseValue Args.bool "true"
+  let testExpected = Ok true
+  Expect.equal ((Test.result Test.bool Test.string)).show testExpected testActual
+
+let case004 _ =
+  let testActual = Args.parseValue Args.bool "false"
+  let testExpected = Ok false
+  Expect.equal ((Test.result Test.bool Test.string)).show testExpected testActual
+
+let case005 _ =
+  let testActual = Args.parseValue Args.bool "True"
+  let testExpected = Err "expected true or false"
+  Expect.equal ((Test.result Test.bool Test.string)).show testExpected testActual
+
+let case006 _ =
+  let testActual = Args.parseValue Args.bool "1"
+  let testExpected = Err "expected true or false"
+  Expect.equal ((Test.result Test.bool Test.string)).show testExpected testActual
+
+let case007 _ =
+  let testActual = Args.parseValue Args.int "0"
+  let testExpected = Ok 0
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case008 _ =
+  let testActual = Args.parseValue Args.int "+00042"
+  let testExpected = Ok 42
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case009 _ =
+  let testActual = Args.parseValue Args.int "-00042"
+  let testExpected = Ok (-42)
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case010 _ =
+  let testActual = Args.parseValue Args.int "9223372036854775807"
+  let testExpected = Ok 9223372036854775807
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case011 _ =
+  let testActual = Args.parseValue Args.int "-9223372036854775808"
+  let testExpected = Ok (-9223372036854775808)
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case012 _ =
+  let testActual = Args.parseValue Args.int "9223372036854775808"
+  let testExpected = Err "outside the signed 64-bit Int range"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case013 _ =
+  let testActual = Args.parseValue Args.int "-9223372036854775809"
+  let testExpected = Err "outside the signed 64-bit Int range"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case014 _ =
+  let testActual = Args.parseValue Args.int "18446744073709551616"
+  let testExpected = Err "outside the signed 64-bit Int range"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case015 _ =
+  let testActual = Args.parseValue Args.int ""
+  let testExpected = Err "expected a decimal Int"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case016 _ =
+  let testActual = Args.parseValue Args.int "+"
+  let testExpected = Err "expected a decimal Int"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case017 _ =
+  let testActual = Args.parseValue Args.int "-"
+  let testExpected = Err "expected a decimal Int"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case018 _ =
+  let testActual = Args.parseValue Args.int " 1"
+  let testExpected = Err "expected a decimal Int"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case019 _ =
+  let testActual = Args.parseValue Args.int "1 "
+  let testExpected = Err "expected a decimal Int"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case020 _ =
+  let testActual = Args.parseValue Args.int "1.0"
+  let testExpected = Err "expected a decimal Int"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case021 _ =
+  let testActual = Args.parseValue Args.int "1e2"
+  let testExpected = Err "expected a decimal Int"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case022 _ =
+  let testActual = Args.parseValue Args.int "0x10"
+  let testExpected = Err "expected a decimal Int"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case023 _ =
+  let testActual = Args.parseValue Args.int "１２"
+  let testExpected = Err "expected a decimal Int"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case024 _ =
+  let testActual = Args.parseValue (Args.choice ["fast", "safe", ""]) "safe"
+  let testExpected = Ok "safe"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case025 _ =
+  let testActual = Args.parseValue (Args.choice ["fast", "safe", ""]) ""
+  let testExpected = Ok ""
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case026 _ =
+  let testActual = Result.isErr (Args.parseValue (Args.choice ["fast", "safe"]) "FAST")
+  Expect.isTrue "Result.isErr (Args.parseValue (Args.choice [\"fast\", \"safe\"]) \"FAST\")" testActual
+
+let case027 testInput =
+  let value = testInput
+  let testActual = Args.parseValue Args.int (Int.toString value)
+  let testExpected = Ok value
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
 
 type Port =
   | Port Int
@@ -42,5 +149,44 @@ let showPort port =
   | Port value -> Int.toString value
 
 let port = Args.custom "PORT" readPort showPort
-example: Args.parseValue port "8080" = Ok (Port 8080)
-example: Args.parseValue port "65536" = Err "port must be in 0..65535"
+
+let case028 _ =
+  let testActual = Args.parseValue port "8080" = Ok (Port 8080)
+  Expect.isTrue "Args.parseValue port \"8080\" = Ok (Port 8080)" testActual
+
+let case029 _ =
+  let testActual = Args.parseValue port "65536" = Err "port must be in 0..65535"
+  Expect.isTrue "Args.parseValue port \"65536\" = Err \"port must be in 0..65535\"" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "ValueSpec" [
+  Test.test "Args.parseValue Args.string \"\" = Ok \"\"" case001,
+  Test.test "Args.parseValue Args.string \" é😀 \\\"quoted\\\" \" = Ok \" é😀 \\\"quoted\\\" \"" case002,
+  Test.test "Args.parseValue Args.bool \"true\" = Ok true" case003,
+  Test.test "Args.parseValue Args.bool \"false\" = Ok false" case004,
+  Test.test "Args.parseValue Args.bool \"True\" = Err \"expected true or false\"" case005,
+  Test.test "Args.parseValue Args.bool \"1\" = Err \"expected true or false\"" case006,
+  Test.test "Args.parseValue Args.int \"0\" = Ok 0" case007,
+  Test.test "Args.parseValue Args.int \"+00042\" = Ok 42" case008,
+  Test.test "Args.parseValue Args.int \"-00042\" = Ok (-42)" case009,
+  Test.test "Args.parseValue Args.int \"9223372036854775807\" = Ok 9223372036854775807" case010,
+  Test.test "Args.parseValue Args.int \"-9223372036854775808\" = Ok (-9223372036854775808)" case011,
+  Test.test "Args.parseValue Args.int \"9223372036854775808\" = Err \"outside the signed 64-bit Int range\"" case012,
+  Test.test "Args.parseValue Args.int \"-9223372036854775809\" = Err \"outside the signed 64-bit Int range\"" case013,
+  Test.test "Args.parseValue Args.int \"18446744073709551616\" = Err \"outside the signed 64-bit Int range\"" case014,
+  Test.test "Args.parseValue Args.int \"\" = Err \"expected a decimal Int\"" case015,
+  Test.test "Args.parseValue Args.int \"+\" = Err \"expected a decimal Int\"" case016,
+  Test.test "Args.parseValue Args.int \"-\" = Err \"expected a decimal Int\"" case017,
+  Test.test "Args.parseValue Args.int \" 1\" = Err \"expected a decimal Int\"" case018,
+  Test.test "Args.parseValue Args.int \"1 \" = Err \"expected a decimal Int\"" case019,
+  Test.test "Args.parseValue Args.int \"1.0\" = Err \"expected a decimal Int\"" case020,
+  Test.test "Args.parseValue Args.int \"1e2\" = Err \"expected a decimal Int\"" case021,
+  Test.test "Args.parseValue Args.int \"0x10\" = Err \"expected a decimal Int\"" case022,
+  Test.test "Args.parseValue Args.int \"１２\" = Err \"expected a decimal Int\"" case023,
+  Test.test "Args.parseValue (Args.choice [\"fast\", \"safe\", \"\"]) \"safe\" = Ok \"safe\"" case024,
+  Test.test "Args.parseValue (Args.choice [\"fast\", \"safe\", \"\"]) \"\" = Ok \"\"" case025,
+  Test.test "Result.isErr (Args.parseValue (Args.choice [\"fast\", \"safe\"]) \"FAST\")" case026,
+  Test.property "property: Args.parseValue Args.int (Int.toString value) = Ok value" Test.int case027,
+  Test.test "Args.parseValue port \"8080\" = Ok (Port 8080)" case028,
+  Test.test "Args.parseValue port \"65536\" = Err \"port must be in 0..65535\"" case029
+]

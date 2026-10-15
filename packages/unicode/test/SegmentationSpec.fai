@@ -1,18 +1,57 @@
 module UnicodeSegmentationSpec
 
-example: UnicodeGrapheme.segments "" = Ok [||]
-example: UnicodeGrapheme.segments "abc" = Ok [| "a", "b", "c" |]
-example: UnicodeGrapheme.segments "a\u{301}界" = Ok [| "a\u{301}", "界" |]
-example: UnicodeGrapheme.segments "👩‍💻🇵🇱" = Ok [| "👩‍💻", "🇵🇱" |]
-example: UnicodeGrapheme.segments "\r\n\r" = Ok [| "\r\n", "\r" |]
-example: UnicodeGrapheme.segments "\u{094d}\u{0915}" = Ok [| "\u{094d}\u{0915}" |]
-example: UnicodeWord.segments "can't stop!" = Ok [| "can't", " ", "stop", "!" |]
-example: UnicodeWord.segments "a\u{0308}.b" = Ok [| "a\u{0308}.b" |]
-example: UnicodeGrapheme.spans "é🙂" = Ok [| { end = 2, start = 0 }, { end = 6, start = 2 } |]
-example: UnicodeWord.spans "" = Ok [||]
-example: Unicode.slice { end = 6, start = 2 } "é🙂" = Ok "🙂"
-example: Unicode.slice { end = 2, start = 1 } "é🙂" |> Result.isErr
-example: Unicode.slice { end = 1, start = 2 } "é🙂" |> Result.isErr
+let case001 _ =
+  let testActual = UnicodeGrapheme.segments "" = Ok [||]
+  Expect.isTrue "UnicodeGrapheme.segments \"\" = Ok [||]" testActual
+
+let case002 _ =
+  let testActual = UnicodeGrapheme.segments "abc" = Ok [| "a", "b", "c" |]
+  Expect.isTrue "UnicodeGrapheme.segments \"abc\" = Ok [| \"a\", \"b\", \"c\" |]" testActual
+
+let case003 _ =
+  let testActual = UnicodeGrapheme.segments "a\u{301}界" = Ok [| "a\u{301}", "界" |]
+  Expect.isTrue "UnicodeGrapheme.segments \"a\\u{301}界\" = Ok [| \"a\\u{301}\", \"界\" |]" testActual
+
+let case004 _ =
+  let testActual = UnicodeGrapheme.segments "👩‍💻🇵🇱" = Ok [| "👩‍💻", "🇵🇱" |]
+  Expect.isTrue "UnicodeGrapheme.segments \"👩‍💻🇵🇱\" = Ok [| \"👩‍💻\", \"🇵🇱\" |]" testActual
+
+let case005 _ =
+  let testActual = UnicodeGrapheme.segments "\r\n\r" = Ok [| "\r\n", "\r" |]
+  Expect.isTrue "UnicodeGrapheme.segments \"\\r\\n\\r\" = Ok [| \"\\r\\n\", \"\\r\" |]" testActual
+
+let case006 _ =
+  let testActual = UnicodeGrapheme.segments "\u{094d}\u{0915}" = Ok [| "\u{094d}\u{0915}" |]
+  Expect.isTrue "UnicodeGrapheme.segments \"\\u{094d}\\u{0915}\" = Ok [| \"\\u{094d}\\u{0915}\" |]" testActual
+
+let case007 _ =
+  let testActual = UnicodeWord.segments "can't stop!" = Ok [| "can't", " ", "stop", "!" |]
+  Expect.isTrue "UnicodeWord.segments \"can't stop!\" = Ok [| \"can't\", \" \", \"stop\", \"!\" |]" testActual
+
+let case008 _ =
+  let testActual = UnicodeWord.segments "a\u{0308}.b" = Ok [| "a\u{0308}.b" |]
+  Expect.isTrue "UnicodeWord.segments \"a\\u{0308}.b\" = Ok [| \"a\\u{0308}.b\" |]" testActual
+
+let case009 _ =
+  let testActual =
+    UnicodeGrapheme.spans "é🙂" = Ok [| { end = 2, start = 0 }, { end = 6, start = 2 } |]
+  Expect.isTrue "UnicodeGrapheme.spans \"é🙂\" = Ok [| { end = 2, start = 0 }, { end = 6, start = 2 } |]" testActual
+
+let case010 _ =
+  let testActual = UnicodeWord.spans "" = Ok [||]
+  Expect.isTrue "UnicodeWord.spans \"\" = Ok [||]" testActual
+
+let case011 _ =
+  let testActual = Unicode.slice { end = 6, start = 2 } "é🙂" = Ok "🙂"
+  Expect.isTrue "Unicode.slice { end = 6, start = 2 } \"é🙂\" = Ok \"🙂\"" testActual
+
+let case012 _ =
+  let testActual = Unicode.slice { end = 2, start = 1 } "é🙂" |> Result.isErr
+  Expect.isTrue "Unicode.slice { end = 2, start = 1 } \"é🙂\" |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual = Unicode.slice { end = 1, start = 2 } "é🙂" |> Result.isErr
+  Expect.isTrue "Unicode.slice { end = 1, start = 2 } \"é🙂\" |> Result.isErr" testActual
 
 let graphemesRestore text =
   match UnicodeGrapheme.segments text with
@@ -23,14 +62,50 @@ let wordsRestore text =
   match UnicodeWord.segments text with
   | Ok parts -> String.joinArray "" parts = text
   | Err _ -> false
-forall text: graphemesRestore text
-forall text: wordsRestore text
-example: (match UnicodeGrapheme.cursor "a👩‍💻b" with
-| Err _ -> false
-| Ok cursor -> UnicodeGrapheme.next cursor = UnicodeGrapheme.next cursor)
+
+let case014 testInput =
+  let text = testInput
+  let testActual = graphemesRestore text
+  Expect.isTrue "property: graphemesRestore text" testActual
+
+let case015 testInput =
+  let text = testInput
+  let testActual = wordsRestore text
+  Expect.isTrue "property: wordsRestore text" testActual
+
+let case016 _ =
+  let testActual =
+    (match UnicodeGrapheme.cursor "a👩‍💻b" with
+    | Err _ -> false
+    | Ok cursor -> UnicodeGrapheme.next cursor = UnicodeGrapheme.next cursor)
+  Expect.isTrue "(match UnicodeGrapheme.cursor \"a👩‍💻b\" with | Err _ -> false | Ok cursor -> UnicodeGrapheme.next cursor = UnicodeGrapheme.next cursor)" testActual
 
 let exhausted =
   match UnicodeGrapheme.cursor "" with
   | Err _ -> false
   | Ok cursor -> UnicodeGrapheme.next cursor = Ok None
-example: exhausted
+
+let case017 _ =
+  let testActual = exhausted
+  Expect.isTrue "exhausted" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "UnicodeSegmentationSpec" [
+  Test.test "UnicodeGrapheme.segments \"\" = Ok [||]" case001,
+  Test.test "UnicodeGrapheme.segments \"abc\" = Ok [| \"a\", \"b\", \"c\" |]" case002,
+  Test.test "UnicodeGrapheme.segments \"a\\u{301}界\" = Ok [| \"a\\u{301}\", \"界\" |]" case003,
+  Test.test "UnicodeGrapheme.segments \"👩‍💻🇵🇱\" = Ok [| \"👩‍💻\", \"🇵🇱\" |]" case004,
+  Test.test "UnicodeGrapheme.segments \"\\r\\n\\r\" = Ok [| \"\\r\\n\", \"\\r\" |]" case005,
+  Test.test "UnicodeGrapheme.segments \"\\u{094d}\\u{0915}\" = Ok [| \"\\u{094d}\\u{0915}\" |]" case006,
+  Test.test "UnicodeWord.segments \"can't stop!\" = Ok [| \"can't\", \" \", \"stop\", \"!\" |]" case007,
+  Test.test "UnicodeWord.segments \"a\\u{0308}.b\" = Ok [| \"a\\u{0308}.b\" |]" case008,
+  Test.test "UnicodeGrapheme.spans \"é🙂\" = Ok [| { end = 2, start = 0 }, { end = 6, start = 2 } |]" case009,
+  Test.test "UnicodeWord.spans \"\" = Ok [||]" case010,
+  Test.test "Unicode.slice { end = 6, start = 2 } \"é🙂\" = Ok \"🙂\"" case011,
+  Test.test "Unicode.slice { end = 2, start = 1 } \"é🙂\" |> Result.isErr" case012,
+  Test.test "Unicode.slice { end = 1, start = 2 } \"é🙂\" |> Result.isErr" case013,
+  Test.property "property: graphemesRestore text" Test.string case014,
+  Test.property "property: wordsRestore text" Test.string case015,
+  Test.test "(match UnicodeGrapheme.cursor \"a👩‍💻b\" with | Err _ -> false | Ok cursor -> UnicodeGrapheme.next cursor = UnicodeGrapheme.next cursor)" case016,
+  Test.test "exhausted" case017
+]

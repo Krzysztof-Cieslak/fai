@@ -108,7 +108,7 @@ split UTF-8 code points.
 
 `RuntimeChecks.fai` executes real child fixtures through both JIT and AOT. The
 Python integration harness supplies a portable child executable and separately
-checks compiler rejection of hidden process/callback effects. Package contracts
+checks compiler rejection of hidden process/callback effects. Named package tests
 remain ordinary `fai test` declarations. The CI dependency on `tui` covers the
 interactive example; the process library sources themselves use only std.
 

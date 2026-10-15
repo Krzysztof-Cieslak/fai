@@ -1,10 +1,54 @@
 module MarkdownSpec
 
 let options = { ambiguousWide = false, theme = TuiStyle.defaultTheme, width = 80 }
-example: TuiMarkdown.toText (TuiMarkdown.fromString options "# Hello\n**bold** and `code`") = "Hello\nbold and code"
-example: TuiMarkdown.toText (TuiMarkdown.fromString options "[link](https://example.com)") = "link (https://example.com)"
-example: TuiMarkdown.toText (TuiMarkdown.fromString { options with width = 3 } "ab界c") = "ab\n界c"
-example: TuiMarkdown.toText (TuiMarkdown.append "ld**" (TuiMarkdown.fromString options "**bo")) = "bold"
-example: TuiMarkdown.toText (TuiMarkdown.fromString options "```fai\nlet x = 1\n```\nafter") = "── fai\nlet x = 1\n──\nafter"
-example: TuiMarkdown.toText (TuiMarkdown.fromString options "\u{1b}[2J") = "�[2J"
-forall first second: TuiMarkdown.toText (TuiMarkdown.append second (TuiMarkdown.fromString options first)) = TuiMarkdown.toText (TuiMarkdown.fromString options (first ++ second))
+
+let case001 _ =
+  let testActual =
+    TuiMarkdown.toText (TuiMarkdown.fromString options "# Hello\n**bold** and `code`")
+  let testExpected = "Hello\nbold and code"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case002 _ =
+  let testActual = TuiMarkdown.toText (TuiMarkdown.fromString options "[link](https://example.com)")
+  let testExpected = "link (https://example.com)"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case003 _ =
+  let testActual = TuiMarkdown.toText (TuiMarkdown.fromString { options with width = 3 } "ab界c")
+  let testExpected = "ab\n界c"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case004 _ =
+  let testActual =
+    TuiMarkdown.toText (TuiMarkdown.append "ld**" (TuiMarkdown.fromString options "**bo"))
+  let testExpected = "bold"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case005 _ =
+  let testActual =
+    TuiMarkdown.toText (TuiMarkdown.fromString options "```fai\nlet x = 1\n```\nafter")
+  let testExpected = "── fai\nlet x = 1\n──\nafter"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case006 _ =
+  let testActual = TuiMarkdown.toText (TuiMarkdown.fromString options "\u{1b}[2J")
+  let testExpected = "�[2J"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case007 testInput =
+  let (first, second) = testInput
+  let testActual =
+    TuiMarkdown.toText (TuiMarkdown.append second (TuiMarkdown.fromString options first))
+  let testExpected = TuiMarkdown.toText (TuiMarkdown.fromString options (first ++ second))
+  Expect.equal (Test.string).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "MarkdownSpec" [
+  Test.test "TuiMarkdown.toText (TuiMarkdown.fromString options \"# Hello\\n**bold** and `code`\") = \"Hello\\nbold and code\"" case001,
+  Test.test "TuiMarkdown.toText (TuiMarkdown.fromString options \"[link](https://example.com)\") = \"link (https://example.com)\"" case002,
+  Test.test "TuiMarkdown.toText (TuiMarkdown.fromString { options with width = 3 } \"ab界c\") = \"ab\\n界c\"" case003,
+  Test.test "TuiMarkdown.toText (TuiMarkdown.append \"ld**\" (TuiMarkdown.fromString options \"**bo\")) = \"bold\"" case004,
+  Test.test "TuiMarkdown.toText (TuiMarkdown.fromString options \"```fai\\nlet x = 1\\n```\\nafter\") = \"── fai\\nlet x = 1\\n──\\nafter\"" case005,
+  Test.test "TuiMarkdown.toText (TuiMarkdown.fromString options \"\\u{1b}[2J\") = \"�[2J\"" case006,
+  Test.property "property: TuiMarkdown.toText (TuiMarkdown.append second (TuiMarkdown.fromString options first)) = TuiMarkdown.toText (TuiMarkdown.fromString options (first +…" (Test.tuple2 Test.string Test.string) case007
+]

@@ -42,3 +42,23 @@ let main env =
     let good =
       folded.state = 1 && folded.outcome = Ok CsvTypes.Stopped && written.recordsWritten = 1 && written.bytesWritten = 3 && written.outcome = Ok ()
     env.console.writeLine (if good then "CSV stream checks passed" else "CSV stream checks FAILED")
+
+readSource : Test.Context -> Test.Check / { Clock, Console }
+let readSource ctx =
+  match CsvStream.fromPull Csv.options Csv.NoHeader (readClock ctx.runtime.clock) 0 with
+  | Err error -> Test.error (CsvTypes.errorToString error)
+  | Ok reader ->
+    let folded = CsvStream.fold CsvStream.next reader 0 (visit ctx.runtime.console)
+    Expect.isTrue "the stopped fold commits one row without pulling again" (folded.state = 1 && folded.outcome = Ok CsvTypes.Stopped)
+
+writeSource : Test.Context -> Test.Check / { Clock, Console }
+let writeSource ctx =
+  let written =
+    CsvStream.write CsvEncode.options (writeInput ctx.runtime.clock) 0 (writeConsole ctx.runtime.console)
+  Expect.isTrue "the writer forwards source and sink effects" (written.recordsWritten = 1 && written.bytesWritten = 3 && written.outcome = Ok ())
+
+public tests : Test.Suite Test.Context { Clock, Console }
+let tests = Test.describe "CSV mixed stream effects" [
+  Test.test "read effects and early stop" readSource,
+  Test.test "write effects and committed progress" writeSource
+]

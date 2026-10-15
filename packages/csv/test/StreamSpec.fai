@@ -4,21 +4,43 @@ let collect options mode chunks =
   match CsvStream.reader options mode (Stream.fromList (List.map Bytes.fromString chunks)) with
   | Err error -> Err (CsvTypes.CsvError error)
   | Ok reader -> CsvStream.collect reader
-example: (match collect Csv.options Csv.FirstRecord ["a,b\r", "\n"] with
-| Ok table ->
-  Option.map Csv.headerNames table.headers = Some [| "a", "b" |] && Array.isEmpty table.records
-| _ -> false)
-example: (match collect Csv.options Csv.NoHeader [] with
-| Ok table -> table.headers = None && Array.isEmpty table.records
-| _ -> false)
-example: collect Csv.options Csv.FirstRecord [] |> Result.isErr
-example: collect Csv.options Csv.FirstRecord ["a,a\n"] |> Result.isErr
-example: (match collect Csv.options Csv.FirstRecord ["a,b\n", "é,\"a\"", "\"b\"\n"] with
-| Ok table -> Array.map Csv.fields table.records = [| [| "é", "a\"b" |] |]
-| _ -> false)
-example: collect { Csv.options with
-  limits = { CsvTypes.limits with maxCollectedRecords = 1 }
-} Csv.FirstRecord ["a\nx\n"] |> Result.isErr
+
+let case001 _ =
+  let testActual =
+    (match collect Csv.options Csv.FirstRecord ["a,b\r", "\n"] with
+    | Ok table ->
+      Option.map Csv.headerNames table.headers = Some [| "a", "b" |] && Array.isEmpty table.records
+    | _ -> false)
+  Expect.isTrue "(match collect Csv.options Csv.FirstRecord [\"a,b\\r\", \"\\n\"] with | Ok table -> Option.map Csv.headerNames table.headers = Some [| \"a\", \"b\" |] && Array.isEmpty…" testActual
+
+let case002 _ =
+  let testActual =
+    (match collect Csv.options Csv.NoHeader [] with
+    | Ok table -> table.headers = None && Array.isEmpty table.records
+    | _ -> false)
+  Expect.isTrue "(match collect Csv.options Csv.NoHeader [] with | Ok table -> table.headers = None && Array.isEmpty table.records | _ -> false)" testActual
+
+let case003 _ =
+  let testActual = collect Csv.options Csv.FirstRecord [] |> Result.isErr
+  Expect.isTrue "collect Csv.options Csv.FirstRecord [] |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual = collect Csv.options Csv.FirstRecord ["a,a\n"] |> Result.isErr
+  Expect.isTrue "collect Csv.options Csv.FirstRecord [\"a,a\\n\"] |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    (match collect Csv.options Csv.FirstRecord ["a,b\n", "é,\"a\"", "\"b\"\n"] with
+    | Ok table -> Array.map Csv.fields table.records = [| [| "é", "a\"b" |] |]
+    | _ -> false)
+  Expect.isTrue "(match collect Csv.options Csv.FirstRecord [\"a,b\\n\", \"é,\\\"a\\\"\", \"\\\"b\\\"\\n\"] with | Ok table -> Array.map Csv.fields table.records = [| [| \"é\", \"a\\\"b\" |] |] | …" testActual
+
+let case006 _ =
+  let testActual =
+    collect { Csv.options with
+      limits = { CsvTypes.limits with maxCollectedRecords = 1 }
+    } Csv.FirstRecord ["a\nx\n"] |> Result.isErr
+  Expect.isTrue "collect { Csv.options with limits = { CsvTypes.limits with maxCollectedRecords = 1 } } Csv.FirstRecord [\"a\\nx\\n\"] |> Result.isErr" testActual
 
 let stopping =
   match CsvStream.reader Csv.options Csv.NoHeader (Stream.cons (Bytes.fromList [
@@ -31,7 +53,10 @@ let stopping =
     let result =
       CsvStream.fold CsvStream.next reader 0 (fun count row -> Ok (count + 1, CsvTypes.Stop))
     result.outcome = Ok CsvTypes.Stopped && result.state = 1 && result.completed = 1 && result.parsed = 1
-example: stopping
+
+let case007 _ =
+  let testActual = stopping
+  Expect.isTrue "stopping" testActual
 
 let callbackFailure =
   match CsvStream.reader Csv.options Csv.NoHeader (Stream.fromList [
@@ -50,7 +75,10 @@ let callbackFailure =
       byteOffset = 1,
       line = 1
     }
-example: callbackFailure
+
+let case008 _ =
+  let testActual = callbackFailure
+  Expect.isTrue "callbackFailure" testActual
 
 let sourceFailure =
   let read index = if index = 0 then Ok (Some (Bytes.fromString "a\n", 1)) else Err 17
@@ -60,7 +88,10 @@ let sourceFailure =
     let result =
       CsvStream.fold CsvStream.next reader 0 (fun count row -> Ok (count + 1, CsvTypes.Continue))
     result.state = 1 && result.outcome = Err (CsvTypes.ReadFailure (CsvTypes.SourceError 17))
-example: sourceFailure
+
+let case009 _ =
+  let testActual = sourceFailure
+  Expect.isTrue "sourceFailure" testActual
 
 let writeFailure =
   match (Csv.record [| "a" |], Csv.record [| "b" |]) with
@@ -72,7 +103,10 @@ let writeFailure =
       ]) (fun bytes -> if bytes = Bytes.fromString "b\r\n" then Err "sink rejected" else Ok ())
     result.recordsWritten = 1 && result.bytesWritten = 3 && result.uncertainRecord = Some 1 && result.outcome = Err (CsvTypes.SinkFailure "sink rejected")
   | _ -> false
-example: writeFailure
+
+let case010 _ =
+  let testActual = writeFailure
+  Expect.isTrue "writeFailure" testActual
 
 let noInvalidOutput =
   match Csv.record [| "a" |] with
@@ -83,14 +117,20 @@ let noInvalidOutput =
         limits = { CsvTypes.limits with maxRecordBytes = 0 }
       } Stream.uncons (Stream.singleton record) (fun _ -> if 1 / 0 = 1 then Ok () else Err "called")
     result.recordsWritten = 0 && result.bytesWritten = 0 && Result.isErr result.outcome
-example: noInvalidOutput
+
+let case011 _ =
+  let testActual = noInvalidOutput
+  Expect.isTrue "noInvalidOutput" testActual
 
 let invalidBeforeRead =
   let read state = if 1 / 0 = 1 then Ok None else Err "called"
   let result =
     CsvStream.write { CsvEncode.options with maxBufferedBytes = -1 } read () (fun _ -> Ok ())
   result.recordsWritten = 0 && Result.isErr result.outcome
-example: invalidBeforeRead
+
+let case012 _ =
+  let testActual = invalidBeforeRead
+  Expect.isTrue "invalidBeforeRead" testActual
 
 let typedHeader =
   match CsvEncode.schema [| CsvEncode.column "number" CsvEncode.int identity |] with
@@ -110,7 +150,10 @@ let typedHeader =
         else
           Err "wrong output")
     result.outcome = Ok () && result.recordsWritten = 3 && result.bytesWritten = 14
-example: typedHeader
+
+let case013 _ =
+  let testActual = typedHeader
+  Expect.isTrue "typedHeader" testActual
 
 let foldWithoutCollection =
   match CsvStream.reader { Csv.options with
@@ -121,4 +164,25 @@ let foldWithoutCollection =
     let result =
       CsvStream.fold CsvStream.next reader 0 (fun count row -> Ok (count + 1, CsvTypes.Continue))
     result.state = 1 && result.outcome = Ok CsvTypes.Exhausted
-example: foldWithoutCollection
+
+let case014 _ =
+  let testActual = foldWithoutCollection
+  Expect.isTrue "foldWithoutCollection" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CsvStreamSpec" [
+  Test.test "(match collect Csv.options Csv.FirstRecord [\"a,b\\r\", \"\\n\"] with | Ok table -> Option.map Csv.headerNames table.headers = Some [| \"a\", \"b\" |] && Array.isEmpty…" case001,
+  Test.test "(match collect Csv.options Csv.NoHeader [] with | Ok table -> table.headers = None && Array.isEmpty table.records | _ -> false)" case002,
+  Test.test "collect Csv.options Csv.FirstRecord [] |> Result.isErr" case003,
+  Test.test "collect Csv.options Csv.FirstRecord [\"a,a\\n\"] |> Result.isErr" case004,
+  Test.test "(match collect Csv.options Csv.FirstRecord [\"a,b\\n\", \"é,\\\"a\\\"\", \"\\\"b\\\"\\n\"] with | Ok table -> Array.map Csv.fields table.records = [| [| \"é\", \"a\\\"b\" |] |] | …" case005,
+  Test.test "collect { Csv.options with limits = { CsvTypes.limits with maxCollectedRecords = 1 } } Csv.FirstRecord [\"a\\nx\\n\"] |> Result.isErr" case006,
+  Test.test "stopping" case007,
+  Test.test "callbackFailure" case008,
+  Test.test "sourceFailure" case009,
+  Test.test "writeFailure" case010,
+  Test.test "noInvalidOutput" case011,
+  Test.test "invalidBeforeRead" case012,
+  Test.test "typedHeader" case013,
+  Test.test "foldWithoutCollection" case014
+]

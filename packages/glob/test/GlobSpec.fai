@@ -4,49 +4,178 @@ let matches pattern text =
   match (Glob.compile pattern, Glob.candidateBytes (Bytes.fromString text)) with
   | (Ok pattern, Ok candidate) -> Glob.isMatch pattern candidate
   | _ -> false
-example: matches "" ""
-example: matches "*.fai" "Main.fai"
-example: not (matches "*.fai" "src/Main.fai")
-example: matches "**/*.fai" "Main.fai"
-example: matches "**/*.fai" "src/deep/Main.fai"
-example: not (matches "**/foo" "xfoo")
-example: matches "**/foo" "a/foo"
-example: not (matches "**/foo" "foo/bar")
-example: matches "a/**/b" "a/b"
-example: matches "a/**/b" "a/x/y/b"
-example: not (matches "a/**/b" "a/xb")
-example: matches "a/**" "a/b/c"
-example: not (matches "a/**" "a")
-example: matches "**" ""
-example: matches "**" "a/b/c"
-example: matches "*" ".hidden"
-example: matches "**/*" ".git/config"
-example: not (matches "?" "é")
-example: matches "??" "é"
-example: matches "é*" "éclair"
-example: not (matches "?.txt" "a/b.txt")
-example: matches "[a-z][!0-9].fai" "az.fai"
-example: not (matches "[a-z][!0-9].fai" "a1.fai")
-example: not (matches "[/]" "/")
-example: matches "[]]" "]"
-example: matches "[[]" "["
-example: matches "[-a]" "-"
-example: matches "[a-]" "-"
-example: matches "[[:digit:]][[:alpha:]]" "5z"
-example: matches "[[:space:]]" "\t"
-example: matches "[[:punct:]]" "!"
-example: matches "[[:xdigit:]]" "F"
-example: not (matches "[[:xdigit:]]" "g")
-example: matches "\\*\\?\\[\\]\\{\\}\\\\" "*?[]{}\\"
-example: matches "{src,test}/**/*.{fai,toml}" "src/Main.fai"
-example: matches "{src,test}/**/*.{fai,toml}" "test/deep/fai.toml"
-example: not (matches "{src,test}/**/*.{fai,toml}" "lib/Main.fai")
-example: matches "a{,b}c" "ac"
-example: matches "a{,b}c" "abc"
-example: matches "{**,src}/Main.fai" "Main.fai"
-example: matches "{**,src}/Main.fai" "lib/Main.fai"
-example: not (matches "{**,src}/Main.fai" "libMain.fai")
-example: matches "{a?,b*}/file" "bb/file"
+
+let case001 _ =
+  let testActual = matches "" ""
+  Expect.isTrue "matches \"\" \"\"" testActual
+
+let case002 _ =
+  let testActual = matches "*.fai" "Main.fai"
+  Expect.isTrue "matches \"*.fai\" \"Main.fai\"" testActual
+
+let case003 _ =
+  let testActual = not (matches "*.fai" "src/Main.fai")
+  Expect.isTrue "not (matches \"*.fai\" \"src/Main.fai\")" testActual
+
+let case004 _ =
+  let testActual = matches "**/*.fai" "Main.fai"
+  Expect.isTrue "matches \"**/*.fai\" \"Main.fai\"" testActual
+
+let case005 _ =
+  let testActual = matches "**/*.fai" "src/deep/Main.fai"
+  Expect.isTrue "matches \"**/*.fai\" \"src/deep/Main.fai\"" testActual
+
+let case006 _ =
+  let testActual = not (matches "**/foo" "xfoo")
+  Expect.isTrue "not (matches \"**/foo\" \"xfoo\")" testActual
+
+let case007 _ =
+  let testActual = matches "**/foo" "a/foo"
+  Expect.isTrue "matches \"**/foo\" \"a/foo\"" testActual
+
+let case008 _ =
+  let testActual = not (matches "**/foo" "foo/bar")
+  Expect.isTrue "not (matches \"**/foo\" \"foo/bar\")" testActual
+
+let case009 _ =
+  let testActual = matches "a/**/b" "a/b"
+  Expect.isTrue "matches \"a/**/b\" \"a/b\"" testActual
+
+let case010 _ =
+  let testActual = matches "a/**/b" "a/x/y/b"
+  Expect.isTrue "matches \"a/**/b\" \"a/x/y/b\"" testActual
+
+let case011 _ =
+  let testActual = not (matches "a/**/b" "a/xb")
+  Expect.isTrue "not (matches \"a/**/b\" \"a/xb\")" testActual
+
+let case012 _ =
+  let testActual = matches "a/**" "a/b/c"
+  Expect.isTrue "matches \"a/**\" \"a/b/c\"" testActual
+
+let case013 _ =
+  let testActual = not (matches "a/**" "a")
+  Expect.isTrue "not (matches \"a/**\" \"a\")" testActual
+
+let case014 _ =
+  let testActual = matches "**" ""
+  Expect.isTrue "matches \"**\" \"\"" testActual
+
+let case015 _ =
+  let testActual = matches "**" "a/b/c"
+  Expect.isTrue "matches \"**\" \"a/b/c\"" testActual
+
+let case016 _ =
+  let testActual = matches "*" ".hidden"
+  Expect.isTrue "matches \"*\" \".hidden\"" testActual
+
+let case017 _ =
+  let testActual = matches "**/*" ".git/config"
+  Expect.isTrue "matches \"**/*\" \".git/config\"" testActual
+
+let case018 _ =
+  let testActual = not (matches "?" "é")
+  Expect.isTrue "not (matches \"?\" \"é\")" testActual
+
+let case019 _ =
+  let testActual = matches "??" "é"
+  Expect.isTrue "matches \"??\" \"é\"" testActual
+
+let case020 _ =
+  let testActual = matches "é*" "éclair"
+  Expect.isTrue "matches \"é*\" \"éclair\"" testActual
+
+let case021 _ =
+  let testActual = not (matches "?.txt" "a/b.txt")
+  Expect.isTrue "not (matches \"?.txt\" \"a/b.txt\")" testActual
+
+let case022 _ =
+  let testActual = matches "[a-z][!0-9].fai" "az.fai"
+  Expect.isTrue "matches \"[a-z][!0-9].fai\" \"az.fai\"" testActual
+
+let case023 _ =
+  let testActual = not (matches "[a-z][!0-9].fai" "a1.fai")
+  Expect.isTrue "not (matches \"[a-z][!0-9].fai\" \"a1.fai\")" testActual
+
+let case024 _ =
+  let testActual = not (matches "[/]" "/")
+  Expect.isTrue "not (matches \"[/]\" \"/\")" testActual
+
+let case025 _ =
+  let testActual = matches "[]]" "]"
+  Expect.isTrue "matches \"[]]\" \"]\"" testActual
+
+let case026 _ =
+  let testActual = matches "[[]" "["
+  Expect.isTrue "matches \"[[]\" \"[\"" testActual
+
+let case027 _ =
+  let testActual = matches "[-a]" "-"
+  Expect.isTrue "matches \"[-a]\" \"-\"" testActual
+
+let case028 _ =
+  let testActual = matches "[a-]" "-"
+  Expect.isTrue "matches \"[a-]\" \"-\"" testActual
+
+let case029 _ =
+  let testActual = matches "[[:digit:]][[:alpha:]]" "5z"
+  Expect.isTrue "matches \"[[:digit:]][[:alpha:]]\" \"5z\"" testActual
+
+let case030 _ =
+  let testActual = matches "[[:space:]]" "\t"
+  Expect.isTrue "matches \"[[:space:]]\" \"\\t\"" testActual
+
+let case031 _ =
+  let testActual = matches "[[:punct:]]" "!"
+  Expect.isTrue "matches \"[[:punct:]]\" \"!\"" testActual
+
+let case032 _ =
+  let testActual = matches "[[:xdigit:]]" "F"
+  Expect.isTrue "matches \"[[:xdigit:]]\" \"F\"" testActual
+
+let case033 _ =
+  let testActual = not (matches "[[:xdigit:]]" "g")
+  Expect.isTrue "not (matches \"[[:xdigit:]]\" \"g\")" testActual
+
+let case034 _ =
+  let testActual = matches "\\*\\?\\[\\]\\{\\}\\\\" "*?[]{}\\"
+  Expect.isTrue "matches \"\\\\*\\\\?\\\\[\\\\]\\\\{\\\\}\\\\\\\\\" \"*?[]{}\\\\\"" testActual
+
+let case035 _ =
+  let testActual = matches "{src,test}/**/*.{fai,toml}" "src/Main.fai"
+  Expect.isTrue "matches \"{src,test}/**/*.{fai,toml}\" \"src/Main.fai\"" testActual
+
+let case036 _ =
+  let testActual = matches "{src,test}/**/*.{fai,toml}" "test/deep/fai.toml"
+  Expect.isTrue "matches \"{src,test}/**/*.{fai,toml}\" \"test/deep/fai.toml\"" testActual
+
+let case037 _ =
+  let testActual = not (matches "{src,test}/**/*.{fai,toml}" "lib/Main.fai")
+  Expect.isTrue "not (matches \"{src,test}/**/*.{fai,toml}\" \"lib/Main.fai\")" testActual
+
+let case038 _ =
+  let testActual = matches "a{,b}c" "ac"
+  Expect.isTrue "matches \"a{,b}c\" \"ac\"" testActual
+
+let case039 _ =
+  let testActual = matches "a{,b}c" "abc"
+  Expect.isTrue "matches \"a{,b}c\" \"abc\"" testActual
+
+let case040 _ =
+  let testActual = matches "{**,src}/Main.fai" "Main.fai"
+  Expect.isTrue "matches \"{**,src}/Main.fai\" \"Main.fai\"" testActual
+
+let case041 _ =
+  let testActual = matches "{**,src}/Main.fai" "lib/Main.fai"
+  Expect.isTrue "matches \"{**,src}/Main.fai\" \"lib/Main.fai\"" testActual
+
+let case042 _ =
+  let testActual = not (matches "{**,src}/Main.fai" "libMain.fai")
+  Expect.isTrue "not (matches \"{**,src}/Main.fai\" \"libMain.fai\")" testActual
+
+let case043 _ =
+  let testActual = matches "{a?,b*}/file" "bb/file"
+  Expect.isTrue "matches \"{a?,b*}/file\" \"bb/file\"" testActual
 
 let insensitive pattern text =
   match (Glob.compileWith { Glob.defaults with
@@ -54,69 +183,287 @@ let insensitive pattern text =
   } pattern, Glob.candidateBytes (Bytes.fromString text)) with
   | (Ok pattern, Ok candidate) -> Glob.isMatch pattern candidate
   | _ -> false
-example: not (matches "README" "readme")
-example: insensitive "README" "readme"
-example: insensitive "[A-C]" "b"
-example: not (insensitive "[!a]" "A")
-example: not (insensitive "É" "é")
+
+let case044 _ =
+  let testActual = not (matches "README" "readme")
+  Expect.isTrue "not (matches \"README\" \"readme\")" testActual
+
+let case045 _ =
+  let testActual = insensitive "README" "readme"
+  Expect.isTrue "insensitive \"README\" \"readme\"" testActual
+
+let case046 _ =
+  let testActual = insensitive "[A-C]" "b"
+  Expect.isTrue "insensitive \"[A-C]\" \"b\"" testActual
+
+let case047 _ =
+  let testActual = not (insensitive "[!a]" "A")
+  Expect.isTrue "not (insensitive \"[!a]\" \"A\")" testActual
+
+let case048 _ =
+  let testActual = not (insensitive "É" "é")
+  Expect.isTrue "not (insensitive \"É\" \"é\")" testActual
 
 let errorAt offset pattern =
   match Glob.compile pattern with
   | Err error -> error.kind = Glob.InvalidPattern && error.offset = Some offset
   | _ -> false
-example: errorAt 0 "["
-example: errorAt 0 "[z-a]"
-example: errorAt 0 "[[:unknown:]]"
-example: errorAt 1 "a\\"
-example: errorAt 1 "a**b"
-example: errorAt 0 "***"
-example: errorAt 3 "{a,{b,c}}"
-example: errorAt 0 "}"
-example: errorAt 2 "{a"
-example: errorAt 1 "a\u{0}"
-example: errorAt 0 "[\u{0}]"
-example: errorAt 1 "{**,src}foo"
-example: Glob.compileWith { Glob.defaults with maxPatternBytes = -1 } "" |> Result.isErr
-example: Glob.compileWith { Glob.defaults with maxStates = 0 } "" |> Result.isErr
-example: Glob.compileWith { Glob.defaults with maxPatternBytes = 2 } "abc" |> Result.isErr
-example: Glob.compileWith { Glob.defaults with maxStates = 2 } "a" |> Result.isOk
-example: Glob.compileWith { Glob.defaults with maxStates = 1 } "a" |> Result.isErr
-example: Glob.compileWith { Glob.defaults with maxStates = 1 } "" |> Result.isOk
+
+let case049 _ =
+  let testActual = errorAt 0 "["
+  Expect.isTrue "errorAt 0 \"[\"" testActual
+
+let case050 _ =
+  let testActual = errorAt 0 "[z-a]"
+  Expect.isTrue "errorAt 0 \"[z-a]\"" testActual
+
+let case051 _ =
+  let testActual = errorAt 0 "[[:unknown:]]"
+  Expect.isTrue "errorAt 0 \"[[:unknown:]]\"" testActual
+
+let case052 _ =
+  let testActual = errorAt 1 "a\\"
+  Expect.isTrue "errorAt 1 \"a\\\\\"" testActual
+
+let case053 _ =
+  let testActual = errorAt 1 "a**b"
+  Expect.isTrue "errorAt 1 \"a**b\"" testActual
+
+let case054 _ =
+  let testActual = errorAt 0 "***"
+  Expect.isTrue "errorAt 0 \"***\"" testActual
+
+let case055 _ =
+  let testActual = errorAt 3 "{a,{b,c}}"
+  Expect.isTrue "errorAt 3 \"{a,{b,c}}\"" testActual
+
+let case056 _ =
+  let testActual = errorAt 0 "}"
+  Expect.isTrue "errorAt 0 \"}\"" testActual
+
+let case057 _ =
+  let testActual = errorAt 2 "{a"
+  Expect.isTrue "errorAt 2 \"{a\"" testActual
+
+let case058 _ =
+  let testActual = errorAt 1 "a\u{0}"
+  Expect.isTrue "errorAt 1 \"a\\u{0}\"" testActual
+
+let case059 _ =
+  let testActual = errorAt 0 "[\u{0}]"
+  Expect.isTrue "errorAt 0 \"[\\u{0}]\"" testActual
+
+let case060 _ =
+  let testActual = errorAt 1 "{**,src}foo"
+  Expect.isTrue "errorAt 1 \"{**,src}foo\"" testActual
+
+let case061 _ =
+  let testActual = Glob.compileWith { Glob.defaults with maxPatternBytes = -1 } "" |> Result.isErr
+  Expect.isTrue "Glob.compileWith { Glob.defaults with maxPatternBytes = -1 } \"\" |> Result.isErr" testActual
+
+let case062 _ =
+  let testActual = Glob.compileWith { Glob.defaults with maxStates = 0 } "" |> Result.isErr
+  Expect.isTrue "Glob.compileWith { Glob.defaults with maxStates = 0 } \"\" |> Result.isErr" testActual
+
+let case063 _ =
+  let testActual = Glob.compileWith { Glob.defaults with maxPatternBytes = 2 } "abc" |> Result.isErr
+  Expect.isTrue "Glob.compileWith { Glob.defaults with maxPatternBytes = 2 } \"abc\" |> Result.isErr" testActual
+
+let case064 _ =
+  let testActual = Glob.compileWith { Glob.defaults with maxStates = 2 } "a" |> Result.isOk
+  Expect.isTrue "Glob.compileWith { Glob.defaults with maxStates = 2 } \"a\" |> Result.isOk" testActual
+
+let case065 _ =
+  let testActual = Glob.compileWith { Glob.defaults with maxStates = 1 } "a" |> Result.isErr
+  Expect.isTrue "Glob.compileWith { Glob.defaults with maxStates = 1 } \"a\" |> Result.isErr" testActual
+
+let case066 _ =
+  let testActual = Glob.compileWith { Glob.defaults with maxStates = 1 } "" |> Result.isOk
+  Expect.isTrue "Glob.compileWith { Glob.defaults with maxStates = 1 } \"\" |> Result.isOk" testActual
 
 let spelling text = Result.map Glob.candidateSpelling (Glob.candidateBytes (Bytes.fromString text))
-example: spelling "./a//b/" = Ok (Bytes.fromString "a/b")
-example: spelling "." = Ok Bytes.empty
-example: Glob.candidateBytes (Bytes.fromString "/a") |> Result.isErr
-example: Glob.candidateBytes (Bytes.fromString "a/../b") |> Result.isErr
-example: Glob.candidateBytes (Bytes.fromString "a\u{0}b") |> Result.isErr
-example: (match (Glob.compileBytes (Bytes.fromList [
-  255
-]), Glob.candidateBytes (Bytes.fromList [255])) with
-| (Ok pattern, Ok candidate) -> Glob.isMatch pattern candidate
-| _ -> false)
-example: (match (Glob.compile "é", Path.fromString "é") with
-| (Ok pattern, Ok path) -> Glob.matchesPath pattern path = Ok true
-| _ -> false)
+
+let case067 _ =
+  let testActual = spelling "./a//b/" = Ok (Bytes.fromString "a/b")
+  Expect.isTrue "spelling \"./a//b/\" = Ok (Bytes.fromString \"a/b\")" testActual
+
+let case068 _ =
+  let testActual = spelling "." = Ok Bytes.empty
+  Expect.isTrue "spelling \".\" = Ok Bytes.empty" testActual
+
+let case069 _ =
+  let testActual = Glob.candidateBytes (Bytes.fromString "/a") |> Result.isErr
+  Expect.isTrue "Glob.candidateBytes (Bytes.fromString \"/a\") |> Result.isErr" testActual
+
+let case070 _ =
+  let testActual = Glob.candidateBytes (Bytes.fromString "a/../b") |> Result.isErr
+  Expect.isTrue "Glob.candidateBytes (Bytes.fromString \"a/../b\") |> Result.isErr" testActual
+
+let case071 _ =
+  let testActual = Glob.candidateBytes (Bytes.fromString "a\u{0}b") |> Result.isErr
+  Expect.isTrue "Glob.candidateBytes (Bytes.fromString \"a\\u{0}b\") |> Result.isErr" testActual
+
+let case072 _ =
+  let testActual =
+    (match (Glob.compileBytes (Bytes.fromList [
+      255
+    ]), Glob.candidateBytes (Bytes.fromList [255])) with
+    | (Ok pattern, Ok candidate) -> Glob.isMatch pattern candidate
+    | _ -> false)
+  Expect.isTrue "(match (Glob.compileBytes (Bytes.fromList [ 255 ]), Glob.candidateBytes (Bytes.fromList [255])) with | (Ok pattern, Ok candidate) -> Glob.isMatch pattern can…" testActual
+
+let case073 _ =
+  let testActual =
+    (match (Glob.compile "é", Path.fromString "é") with
+    | (Ok pattern, Ok path) -> Glob.matchesPath pattern path = Ok true
+    | _ -> false)
+  Expect.isTrue "(match (Glob.compile \"é\", Path.fromString \"é\") with | (Ok pattern, Ok path) -> Glob.matchesPath pattern path = Ok true | _ -> false)" testActual
 
 let descendant pattern path =
   match (Glob.compile pattern, Glob.candidateBytes (Bytes.fromString path)) with
   | (Ok pattern, Ok candidate) -> Glob.mayMatchDescendant pattern candidate
   | _ -> false
-example: descendant "src/**/*.fai" "src"
-example: not (descendant "src/**/*.fai" "other")
-example: not (descendant "src" "src")
-example: descendant "**" "a/b"
-example: descendant "*.fai" ""
-example: not (descendant "*.fai" "src")
+
+let case074 _ =
+  let testActual = descendant "src/**/*.fai" "src"
+  Expect.isTrue "descendant \"src/**/*.fai\" \"src\"" testActual
+
+let case075 _ =
+  let testActual = not (descendant "src/**/*.fai" "other")
+  Expect.isTrue "not (descendant \"src/**/*.fai\" \"other\")" testActual
+
+let case076 _ =
+  let testActual = not (descendant "src" "src")
+  Expect.isTrue "not (descendant \"src\" \"src\")" testActual
+
+let case077 _ =
+  let testActual = descendant "**" "a/b"
+  Expect.isTrue "descendant \"**\" \"a/b\"" testActual
+
+let case078 _ =
+  let testActual = descendant "*.fai" ""
+  Expect.isTrue "descendant \"*.fai\" \"\"" testActual
+
+let case079 _ =
+  let testActual = not (descendant "*.fai" "src")
+  Expect.isTrue "not (descendant \"*.fai\" \"src\")" testActual
 
 let setMatches patterns path =
   match (GlobSet.compile patterns, Glob.candidateBytes (Bytes.fromString path)) with
   | (Ok set, Ok candidate) -> GlobSet.matches set candidate
   | _ -> [-1]
-example: setMatches [] "a" = []
-example: setMatches ["**", "*.fai", "*.fai", "src/**"] "Main.fai" = [0, 1, 2]
-example: setMatches ["**", "*.fai", "src/**"] "src/Main.fai" = [0, 2]
-example: (match GlobSet.compile ["a", "["] with
-| Err error -> error.patternIndex = Some 1
-| _ -> false)
-example: GlobSet.compileWith { Glob.defaults with maxStates = 3 } ["a", "b"] |> Result.isErr
+
+let case080 _ =
+  let testActual = setMatches [] "a"
+  let testExpected = []
+  Expect.equal ((Test.list Test.int)).show testExpected testActual
+
+let case081 _ =
+  let testActual = setMatches ["**", "*.fai", "*.fai", "src/**"] "Main.fai"
+  let testExpected = [0, 1, 2]
+  Expect.equal ((Test.list Test.int)).show testExpected testActual
+
+let case082 _ =
+  let testActual = setMatches ["**", "*.fai", "src/**"] "src/Main.fai"
+  let testExpected = [0, 2]
+  Expect.equal ((Test.list Test.int)).show testExpected testActual
+
+let case083 _ =
+  let testActual =
+    (match GlobSet.compile ["a", "["] with
+    | Err error -> error.patternIndex = Some 1
+    | _ -> false)
+  Expect.isTrue "(match GlobSet.compile [\"a\", \"[\"] with | Err error -> error.patternIndex = Some 1 | _ -> false)" testActual
+
+let case084 _ =
+  let testActual =
+    GlobSet.compileWith { Glob.defaults with maxStates = 3 } ["a", "b"] |> Result.isErr
+  Expect.isTrue "GlobSet.compileWith { Glob.defaults with maxStates = 3 } [\"a\", \"b\"] |> Result.isErr" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "GlobSpec" [
+  Test.test "matches \"\" \"\"" case001,
+  Test.test "matches \"*.fai\" \"Main.fai\"" case002,
+  Test.test "not (matches \"*.fai\" \"src/Main.fai\")" case003,
+  Test.test "matches \"**/*.fai\" \"Main.fai\"" case004,
+  Test.test "matches \"**/*.fai\" \"src/deep/Main.fai\"" case005,
+  Test.test "not (matches \"**/foo\" \"xfoo\")" case006,
+  Test.test "matches \"**/foo\" \"a/foo\"" case007,
+  Test.test "not (matches \"**/foo\" \"foo/bar\")" case008,
+  Test.test "matches \"a/**/b\" \"a/b\"" case009,
+  Test.test "matches \"a/**/b\" \"a/x/y/b\"" case010,
+  Test.test "not (matches \"a/**/b\" \"a/xb\")" case011,
+  Test.test "matches \"a/**\" \"a/b/c\"" case012,
+  Test.test "not (matches \"a/**\" \"a\")" case013,
+  Test.test "matches \"**\" \"\"" case014,
+  Test.test "matches \"**\" \"a/b/c\"" case015,
+  Test.test "matches \"*\" \".hidden\"" case016,
+  Test.test "matches \"**/*\" \".git/config\"" case017,
+  Test.test "not (matches \"?\" \"é\")" case018,
+  Test.test "matches \"??\" \"é\"" case019,
+  Test.test "matches \"é*\" \"éclair\"" case020,
+  Test.test "not (matches \"?.txt\" \"a/b.txt\")" case021,
+  Test.test "matches \"[a-z][!0-9].fai\" \"az.fai\"" case022,
+  Test.test "not (matches \"[a-z][!0-9].fai\" \"a1.fai\")" case023,
+  Test.test "not (matches \"[/]\" \"/\")" case024,
+  Test.test "matches \"[]]\" \"]\"" case025,
+  Test.test "matches \"[[]\" \"[\"" case026,
+  Test.test "matches \"[-a]\" \"-\"" case027,
+  Test.test "matches \"[a-]\" \"-\"" case028,
+  Test.test "matches \"[[:digit:]][[:alpha:]]\" \"5z\"" case029,
+  Test.test "matches \"[[:space:]]\" \"\\t\"" case030,
+  Test.test "matches \"[[:punct:]]\" \"!\"" case031,
+  Test.test "matches \"[[:xdigit:]]\" \"F\"" case032,
+  Test.test "not (matches \"[[:xdigit:]]\" \"g\")" case033,
+  Test.test "matches \"\\\\*\\\\?\\\\[\\\\]\\\\{\\\\}\\\\\\\\\" \"*?[]{}\\\\\"" case034,
+  Test.test "matches \"{src,test}/**/*.{fai,toml}\" \"src/Main.fai\"" case035,
+  Test.test "matches \"{src,test}/**/*.{fai,toml}\" \"test/deep/fai.toml\"" case036,
+  Test.test "not (matches \"{src,test}/**/*.{fai,toml}\" \"lib/Main.fai\")" case037,
+  Test.test "matches \"a{,b}c\" \"ac\"" case038,
+  Test.test "matches \"a{,b}c\" \"abc\"" case039,
+  Test.test "matches \"{**,src}/Main.fai\" \"Main.fai\"" case040,
+  Test.test "matches \"{**,src}/Main.fai\" \"lib/Main.fai\"" case041,
+  Test.test "not (matches \"{**,src}/Main.fai\" \"libMain.fai\")" case042,
+  Test.test "matches \"{a?,b*}/file\" \"bb/file\"" case043,
+  Test.test "not (matches \"README\" \"readme\")" case044,
+  Test.test "insensitive \"README\" \"readme\"" case045,
+  Test.test "insensitive \"[A-C]\" \"b\"" case046,
+  Test.test "not (insensitive \"[!a]\" \"A\")" case047,
+  Test.test "not (insensitive \"É\" \"é\")" case048,
+  Test.test "errorAt 0 \"[\"" case049,
+  Test.test "errorAt 0 \"[z-a]\"" case050,
+  Test.test "errorAt 0 \"[[:unknown:]]\"" case051,
+  Test.test "errorAt 1 \"a\\\\\"" case052,
+  Test.test "errorAt 1 \"a**b\"" case053,
+  Test.test "errorAt 0 \"***\"" case054,
+  Test.test "errorAt 3 \"{a,{b,c}}\"" case055,
+  Test.test "errorAt 0 \"}\"" case056,
+  Test.test "errorAt 2 \"{a\"" case057,
+  Test.test "errorAt 1 \"a\\u{0}\"" case058,
+  Test.test "errorAt 0 \"[\\u{0}]\"" case059,
+  Test.test "errorAt 1 \"{**,src}foo\"" case060,
+  Test.test "Glob.compileWith { Glob.defaults with maxPatternBytes = -1 } \"\" |> Result.isErr" case061,
+  Test.test "Glob.compileWith { Glob.defaults with maxStates = 0 } \"\" |> Result.isErr" case062,
+  Test.test "Glob.compileWith { Glob.defaults with maxPatternBytes = 2 } \"abc\" |> Result.isErr" case063,
+  Test.test "Glob.compileWith { Glob.defaults with maxStates = 2 } \"a\" |> Result.isOk" case064,
+  Test.test "Glob.compileWith { Glob.defaults with maxStates = 1 } \"a\" |> Result.isErr" case065,
+  Test.test "Glob.compileWith { Glob.defaults with maxStates = 1 } \"\" |> Result.isOk" case066,
+  Test.test "spelling \"./a//b/\" = Ok (Bytes.fromString \"a/b\")" case067,
+  Test.test "spelling \".\" = Ok Bytes.empty" case068,
+  Test.test "Glob.candidateBytes (Bytes.fromString \"/a\") |> Result.isErr" case069,
+  Test.test "Glob.candidateBytes (Bytes.fromString \"a/../b\") |> Result.isErr" case070,
+  Test.test "Glob.candidateBytes (Bytes.fromString \"a\\u{0}b\") |> Result.isErr" case071,
+  Test.test "(match (Glob.compileBytes (Bytes.fromList [ 255 ]), Glob.candidateBytes (Bytes.fromList [255])) with | (Ok pattern, Ok candidate) -> Glob.isMatch pattern can…" case072,
+  Test.test "(match (Glob.compile \"é\", Path.fromString \"é\") with | (Ok pattern, Ok path) -> Glob.matchesPath pattern path = Ok true | _ -> false)" case073,
+  Test.test "descendant \"src/**/*.fai\" \"src\"" case074,
+  Test.test "not (descendant \"src/**/*.fai\" \"other\")" case075,
+  Test.test "not (descendant \"src\" \"src\")" case076,
+  Test.test "descendant \"**\" \"a/b\"" case077,
+  Test.test "descendant \"*.fai\" \"\"" case078,
+  Test.test "not (descendant \"*.fai\" \"src\")" case079,
+  Test.test "setMatches [] \"a\" = []" case080,
+  Test.test "setMatches [\"**\", \"*.fai\", \"*.fai\", \"src/**\"] \"Main.fai\" = [0, 1, 2]" case081,
+  Test.test "setMatches [\"**\", \"*.fai\", \"src/**\"] \"src/Main.fai\" = [0, 2]" case082,
+  Test.test "(match GlobSet.compile [\"a\", \"[\"] with | Err error -> error.patternIndex = Some 1 | _ -> false)" case083,
+  Test.test "GlobSet.compileWith { Glob.defaults with maxStates = 3 } [\"a\", \"b\"] |> Result.isErr" case084
+]

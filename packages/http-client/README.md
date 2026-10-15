@@ -263,7 +263,7 @@ fai run -C packages http-client/examples/EventHeartbeatCheck.fai
 fai run -C packages http-client/examples/EventRedirectCheck.fai
 ```
 
-## Native contracts
+## Named tests and properties
 
 ```sh
 fai fmt -C packages http-client

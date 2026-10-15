@@ -1,65 +1,169 @@
 module UnicodeLimitsSpec
 
-example: kind Unicode.InvalidOptions (UnicodeNormalize.normalizeWith { Unicode.limits with
-  maxMappings = -1
-} UnicodeNormalize.NFC "")
-example: kind Unicode.InputLimit (UnicodeGrapheme.cursorWith { Unicode.limits with
-  maxInputBytes = 0
-} "a")
-example: kind Unicode.WorkLimit (UnicodeWord.spansWith { Unicode.limits with maxWork = 0 } "a")
-example: kind Unicode.OutputLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
-  maxOutputBytes = 1
-} UnicodeNormalize.NFD "á")
-example: UnicodeNormalize.normalizeWith { Unicode.limits with
-  maxCombining = 0
-} UnicodeNormalize.NFC "abc" = Ok "abc"
-example: kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
-  maxCombining = 0
-} UnicodeNormalize.NFD "\u{0301}")
+let case001 _ =
+  let testActual =
+    kind Unicode.InvalidOptions (UnicodeNormalize.normalizeWith { Unicode.limits with
+      maxMappings = -1
+    } UnicodeNormalize.NFC "")
+  Expect.isTrue "kind Unicode.InvalidOptions (UnicodeNormalize.normalizeWith { Unicode.limits with maxMappings = -1 } UnicodeNormalize.NFC \"\")" testActual
+
+let case002 _ =
+  let testActual =
+    kind Unicode.InputLimit (UnicodeGrapheme.cursorWith { Unicode.limits with
+      maxInputBytes = 0
+    } "a")
+  Expect.isTrue "kind Unicode.InputLimit (UnicodeGrapheme.cursorWith { Unicode.limits with maxInputBytes = 0 } \"a\")" testActual
+
+let case003 _ =
+  let testActual =
+    kind Unicode.WorkLimit (UnicodeWord.spansWith { Unicode.limits with maxWork = 0 } "a")
+  Expect.isTrue "kind Unicode.WorkLimit (UnicodeWord.spansWith { Unicode.limits with maxWork = 0 } \"a\")" testActual
+
+let case004 _ =
+  let testActual =
+    kind Unicode.OutputLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
+      maxOutputBytes = 1
+    } UnicodeNormalize.NFD "á")
+  Expect.isTrue "kind Unicode.OutputLimit (UnicodeNormalize.normalizeWith { Unicode.limits with maxOutputBytes = 1 } UnicodeNormalize.NFD \"á\")" testActual
+
+let case005 _ =
+  let testActual =
+    UnicodeNormalize.normalizeWith { Unicode.limits with
+      maxCombining = 0
+    } UnicodeNormalize.NFC "abc" = Ok "abc"
+  Expect.isTrue "UnicodeNormalize.normalizeWith { Unicode.limits with maxCombining = 0 } UnicodeNormalize.NFC \"abc\" = Ok \"abc\"" testActual
+
+let case006 _ =
+  let testActual =
+    kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
+      maxCombining = 0
+    } UnicodeNormalize.NFD "\u{0301}")
+  Expect.isTrue "kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with maxCombining = 0 } UnicodeNormalize.NFD \"\\u{0301}\")" testActual
 
 let kind expected result =
   match result with
   | Err error -> error.kind = expected
   | Ok _ -> false
-example: kind Unicode.InvalidOptions (UnicodeGrapheme.spansWith { Unicode.limits with
-  maxWork = -1
-} "")
-example: kind Unicode.InputLimit (UnicodeCase.foldWith { Unicode.limits with
-  maxInputBytes = 1
-} "ß")
-example: kind Unicode.OutputLimit (UnicodeCase.foldWith { Unicode.limits with
-  maxOutputBytes = 1
-} "ß")
-example: kind Unicode.ScalarLimit (UnicodeCase.foldWith { Unicode.limits with maxScalars = 1 } "ß")
-example: kind Unicode.WorkLimit (UnicodeCase.foldWith { Unicode.limits with maxWork = 0 } "a")
-example: kind Unicode.MappingLimit (UnicodeCase.foldMappedWith { Unicode.limits with
-  maxMappings = 3
-} "ß")
-example: UnicodeCase.foldMappedWith { Unicode.limits with maxMappings = 4 } "ß" |> Result.isOk
-example: kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
-  maxCombining = 1
-} UnicodeNormalize.NFD "a\u{301}\u{305}")
-example: kind Unicode.ScalarLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
-  maxScalars = 1
-} UnicodeNormalize.NFD "á")
-example: UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 0 } "" = Ok [||]
-example: kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with
-  maxSegments = 0
-} "a")
-example: kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with
-  maxSegments = 1
-} "ab")
-example: UnicodeGrapheme.spansWith { Unicode.limits with
-  maxSegments = 1
-} "a\u{301}" = Ok [| { end = 3, start = 0 } |]
-example: kind Unicode.ScalarLimit (UnicodeWord.spansWith { Unicode.limits with
-  maxScalars = 1
-} "ab")
-example: kind Unicode.OutputLimit (UnicodeWord.segmentsWith { Unicode.limits with
-  maxOutputBytes = 1
-} "ab")
-example: UnicodeCase.foldWith { Unicode.limits with
-  maxOutputBytes = 0,
-  maxScalars = 0,
-  maxWork = 0
-} "" = Ok ""
+
+let case007 _ =
+  let testActual =
+    kind Unicode.InvalidOptions (UnicodeGrapheme.spansWith { Unicode.limits with maxWork = -1 } "")
+  Expect.isTrue "kind Unicode.InvalidOptions (UnicodeGrapheme.spansWith { Unicode.limits with maxWork = -1 } \"\")" testActual
+
+let case008 _ =
+  let testActual =
+    kind Unicode.InputLimit (UnicodeCase.foldWith { Unicode.limits with maxInputBytes = 1 } "ß")
+  Expect.isTrue "kind Unicode.InputLimit (UnicodeCase.foldWith { Unicode.limits with maxInputBytes = 1 } \"ß\")" testActual
+
+let case009 _ =
+  let testActual =
+    kind Unicode.OutputLimit (UnicodeCase.foldWith { Unicode.limits with maxOutputBytes = 1 } "ß")
+  Expect.isTrue "kind Unicode.OutputLimit (UnicodeCase.foldWith { Unicode.limits with maxOutputBytes = 1 } \"ß\")" testActual
+
+let case010 _ =
+  let testActual =
+    kind Unicode.ScalarLimit (UnicodeCase.foldWith { Unicode.limits with maxScalars = 1 } "ß")
+  Expect.isTrue "kind Unicode.ScalarLimit (UnicodeCase.foldWith { Unicode.limits with maxScalars = 1 } \"ß\")" testActual
+
+let case011 _ =
+  let testActual =
+    kind Unicode.WorkLimit (UnicodeCase.foldWith { Unicode.limits with maxWork = 0 } "a")
+  Expect.isTrue "kind Unicode.WorkLimit (UnicodeCase.foldWith { Unicode.limits with maxWork = 0 } \"a\")" testActual
+
+let case012 _ =
+  let testActual =
+    kind Unicode.MappingLimit (UnicodeCase.foldMappedWith { Unicode.limits with
+      maxMappings = 3
+    } "ß")
+  Expect.isTrue "kind Unicode.MappingLimit (UnicodeCase.foldMappedWith { Unicode.limits with maxMappings = 3 } \"ß\")" testActual
+
+let case013 _ =
+  let testActual =
+    UnicodeCase.foldMappedWith { Unicode.limits with maxMappings = 4 } "ß" |> Result.isOk
+  Expect.isTrue "UnicodeCase.foldMappedWith { Unicode.limits with maxMappings = 4 } \"ß\" |> Result.isOk" testActual
+
+let case014 _ =
+  let testActual =
+    kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
+      maxCombining = 1
+    } UnicodeNormalize.NFD "a\u{301}\u{305}")
+  Expect.isTrue "kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with maxCombining = 1 } UnicodeNormalize.NFD \"a\\u{301}\\u{305}\")" testActual
+
+let case015 _ =
+  let testActual =
+    kind Unicode.ScalarLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
+      maxScalars = 1
+    } UnicodeNormalize.NFD "á")
+  Expect.isTrue "kind Unicode.ScalarLimit (UnicodeNormalize.normalizeWith { Unicode.limits with maxScalars = 1 } UnicodeNormalize.NFD \"á\")" testActual
+
+let case016 _ =
+  let testActual = UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 0 } "" = Ok [||]
+  Expect.isTrue "UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 0 } \"\" = Ok [||]" testActual
+
+let case017 _ =
+  let testActual =
+    kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with
+      maxSegments = 0
+    } "a")
+  Expect.isTrue "kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 0 } \"a\")" testActual
+
+let case018 _ =
+  let testActual =
+    kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with
+      maxSegments = 1
+    } "ab")
+  Expect.isTrue "kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 1 } \"ab\")" testActual
+
+let case019 _ =
+  let testActual =
+    UnicodeGrapheme.spansWith { Unicode.limits with
+      maxSegments = 1
+    } "a\u{301}" = Ok [| { end = 3, start = 0 } |]
+  Expect.isTrue "UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 1 } \"a\\u{301}\" = Ok [| { end = 3, start = 0 } |]" testActual
+
+let case020 _ =
+  let testActual =
+    kind Unicode.ScalarLimit (UnicodeWord.spansWith { Unicode.limits with maxScalars = 1 } "ab")
+  Expect.isTrue "kind Unicode.ScalarLimit (UnicodeWord.spansWith { Unicode.limits with maxScalars = 1 } \"ab\")" testActual
+
+let case021 _ =
+  let testActual =
+    kind Unicode.OutputLimit (UnicodeWord.segmentsWith { Unicode.limits with
+      maxOutputBytes = 1
+    } "ab")
+  Expect.isTrue "kind Unicode.OutputLimit (UnicodeWord.segmentsWith { Unicode.limits with maxOutputBytes = 1 } \"ab\")" testActual
+
+let case022 _ =
+  let testActual =
+    UnicodeCase.foldWith { Unicode.limits with
+      maxOutputBytes = 0,
+      maxScalars = 0,
+      maxWork = 0
+    } "" = Ok ""
+  Expect.isTrue "UnicodeCase.foldWith { Unicode.limits with maxOutputBytes = 0, maxScalars = 0, maxWork = 0 } \"\" = Ok \"\"" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "UnicodeLimitsSpec" [
+  Test.test "kind Unicode.InvalidOptions (UnicodeNormalize.normalizeWith { Unicode.limits with maxMappings = -1 } UnicodeNormalize.NFC \"\")" case001,
+  Test.test "kind Unicode.InputLimit (UnicodeGrapheme.cursorWith { Unicode.limits with maxInputBytes = 0 } \"a\")" case002,
+  Test.test "kind Unicode.WorkLimit (UnicodeWord.spansWith { Unicode.limits with maxWork = 0 } \"a\")" case003,
+  Test.test "kind Unicode.OutputLimit (UnicodeNormalize.normalizeWith { Unicode.limits with maxOutputBytes = 1 } UnicodeNormalize.NFD \"á\")" case004,
+  Test.test "UnicodeNormalize.normalizeWith { Unicode.limits with maxCombining = 0 } UnicodeNormalize.NFC \"abc\" = Ok \"abc\"" case005,
+  Test.test "kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with maxCombining = 0 } UnicodeNormalize.NFD \"\\u{0301}\")" case006,
+  Test.test "kind Unicode.InvalidOptions (UnicodeGrapheme.spansWith { Unicode.limits with maxWork = -1 } \"\")" case007,
+  Test.test "kind Unicode.InputLimit (UnicodeCase.foldWith { Unicode.limits with maxInputBytes = 1 } \"ß\")" case008,
+  Test.test "kind Unicode.OutputLimit (UnicodeCase.foldWith { Unicode.limits with maxOutputBytes = 1 } \"ß\")" case009,
+  Test.test "kind Unicode.ScalarLimit (UnicodeCase.foldWith { Unicode.limits with maxScalars = 1 } \"ß\")" case010,
+  Test.test "kind Unicode.WorkLimit (UnicodeCase.foldWith { Unicode.limits with maxWork = 0 } \"a\")" case011,
+  Test.test "kind Unicode.MappingLimit (UnicodeCase.foldMappedWith { Unicode.limits with maxMappings = 3 } \"ß\")" case012,
+  Test.test "UnicodeCase.foldMappedWith { Unicode.limits with maxMappings = 4 } \"ß\" |> Result.isOk" case013,
+  Test.test "kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with maxCombining = 1 } UnicodeNormalize.NFD \"a\\u{301}\\u{305}\")" case014,
+  Test.test "kind Unicode.ScalarLimit (UnicodeNormalize.normalizeWith { Unicode.limits with maxScalars = 1 } UnicodeNormalize.NFD \"á\")" case015,
+  Test.test "UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 0 } \"\" = Ok [||]" case016,
+  Test.test "kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 0 } \"a\")" case017,
+  Test.test "kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 1 } \"ab\")" case018,
+  Test.test "UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 1 } \"a\\u{301}\" = Ok [| { end = 3, start = 0 } |]" case019,
+  Test.test "kind Unicode.ScalarLimit (UnicodeWord.spansWith { Unicode.limits with maxScalars = 1 } \"ab\")" case020,
+  Test.test "kind Unicode.OutputLimit (UnicodeWord.segmentsWith { Unicode.limits with maxOutputBytes = 1 } \"ab\")" case021,
+  Test.test "UnicodeCase.foldWith { Unicode.limits with maxOutputBytes = 0, maxScalars = 0, maxWork = 0 } \"\" = Ok \"\"" case022
+]

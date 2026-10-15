@@ -11,80 +11,265 @@ let rules text =
   | Ok file -> Result.withDefault Ignore.empty (Ignore.append file Ignore.empty)
 
 let ignored text path kind = Ignore.isIgnored (Ignore.decide (rules text) (candidate path) kind)
-example: ignored "*.o\n" "a/b/file.o" FileSystem.RegularFile
-example: not (ignored "/*.o\n" "a/b/file.o" FileSystem.RegularFile)
-example: ignored "/file.o\n" "file.o" FileSystem.RegularFile
-example: ignored "doc/file\n" "doc/file" FileSystem.RegularFile
-example: not (ignored "doc/file\n" "a/doc/file" FileSystem.RegularFile)
-example: ignored "build/\n!build/keep.txt\n" "build/keep.txt" FileSystem.RegularFile
-example: not (ignored "build/*\n!build/keep.txt\n" "build/keep.txt" FileSystem.RegularFile)
-example: ignored "build/\n" "build" FileSystem.Directory
-example: not (ignored "build/\n" "build" FileSystem.SymbolicLink)
-example: not (ignored "build/\n" "build" FileSystem.RegularFile)
-example: ignored "build\n" "build" FileSystem.SymbolicLink
-example: ignored "cache/\n" "a/cache/item" FileSystem.RegularFile
-example: ignored "a/**/b\n" "a/b" FileSystem.RegularFile
-example: ignored "a/**/b\n" "a/x/y/b" FileSystem.RegularFile
-example: not (ignored "a/**/b\n" "a/xb" FileSystem.RegularFile)
-example: ignored "a***b\n" "axxb" FileSystem.RegularFile
-example: not (ignored "a**/b\n" "a/x/b" FileSystem.RegularFile)
-example: not (ignored "a/**\\/b\n" "a/b" FileSystem.RegularFile)
-example: ignored "a/**\\/b\n" "a/x/b" FileSystem.RegularFile
-example: ignored "a/***/b\n" "a/x/y/b" FileSystem.RegularFile
-example: ignored "**/file\n" "file" FileSystem.RegularFile
-example: ignored "{a,b}\n" "{a,b}" FileSystem.RegularFile
-example: not (ignored "{a,b}\n" "a" FileSystem.RegularFile)
-example: ignored "#comment\n\\#file\n" "#file" FileSystem.RegularFile
-example: not (ignored "#comment\n" "#comment" FileSystem.RegularFile)
-example: ignored "\\!file\n" "!file" FileSystem.RegularFile
-example: ignored "foo   \n" "foo" FileSystem.RegularFile
-example: ignored "foo\\ \n" "foo " FileSystem.RegularFile
-example: ignored "foo\\  \n" "foo " FileSystem.RegularFile
-example: not (ignored "foo\\ \n" "foo" FileSystem.RegularFile)
-example: ignored " foo\n" " foo" FileSystem.RegularFile
-example: ignored "foo\t\n" "foo\t" FileSystem.RegularFile
-example: ignored "\u{feff}foo\r\nbar\r\n" "foo" FileSystem.RegularFile
-example: ignored "foo\r\nbar\r\n" "bar" FileSystem.RegularFile
-example: ignored "*\n" ".hidden" FileSystem.RegularFile
-example: not (ignored "foo\\\n" "foo" FileSystem.RegularFile)
-example: not (ignored "[abc\n" "[abc" FileSystem.RegularFile)
-example: ignored "[[:digit:]].txt\n" "1.txt" FileSystem.RegularFile
-example: not (ignored "[[:digit:]].txt\n" "a.txt" FileSystem.RegularFile)
-example: not (ignored "?\n" "é" FileSystem.RegularFile)
-example: not (ignored "*\n" "" FileSystem.Directory)
-example: ignored "é\n" "é" FileSystem.RegularFile
-example: ignored "[z-aq]\n" "z" FileSystem.RegularFile
-example: ignored "[z-aq]\n" "q" FileSystem.RegularFile
-example: not (ignored "[z-aq]\n" "a" FileSystem.RegularFile)
-example: ignored "[a-[:digit:]]\n" "a]" FileSystem.RegularFile
-example: ignored "[[:]]\n" "[]" FileSystem.RegularFile
+
+let case001 _ =
+  let testActual = ignored "*.o\n" "a/b/file.o" FileSystem.RegularFile
+  Expect.isTrue "ignored \"*.o\\n\" \"a/b/file.o\" FileSystem.RegularFile" testActual
+
+let case002 _ =
+  let testActual = not (ignored "/*.o\n" "a/b/file.o" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"/*.o\\n\" \"a/b/file.o\" FileSystem.RegularFile)" testActual
+
+let case003 _ =
+  let testActual = ignored "/file.o\n" "file.o" FileSystem.RegularFile
+  Expect.isTrue "ignored \"/file.o\\n\" \"file.o\" FileSystem.RegularFile" testActual
+
+let case004 _ =
+  let testActual = ignored "doc/file\n" "doc/file" FileSystem.RegularFile
+  Expect.isTrue "ignored \"doc/file\\n\" \"doc/file\" FileSystem.RegularFile" testActual
+
+let case005 _ =
+  let testActual = not (ignored "doc/file\n" "a/doc/file" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"doc/file\\n\" \"a/doc/file\" FileSystem.RegularFile)" testActual
+
+let case006 _ =
+  let testActual = ignored "build/\n!build/keep.txt\n" "build/keep.txt" FileSystem.RegularFile
+  Expect.isTrue "ignored \"build/\\n!build/keep.txt\\n\" \"build/keep.txt\" FileSystem.RegularFile" testActual
+
+let case007 _ =
+  let testActual =
+    not (ignored "build/*\n!build/keep.txt\n" "build/keep.txt" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"build/*\\n!build/keep.txt\\n\" \"build/keep.txt\" FileSystem.RegularFile)" testActual
+
+let case008 _ =
+  let testActual = ignored "build/\n" "build" FileSystem.Directory
+  Expect.isTrue "ignored \"build/\\n\" \"build\" FileSystem.Directory" testActual
+
+let case009 _ =
+  let testActual = not (ignored "build/\n" "build" FileSystem.SymbolicLink)
+  Expect.isTrue "not (ignored \"build/\\n\" \"build\" FileSystem.SymbolicLink)" testActual
+
+let case010 _ =
+  let testActual = not (ignored "build/\n" "build" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"build/\\n\" \"build\" FileSystem.RegularFile)" testActual
+
+let case011 _ =
+  let testActual = ignored "build\n" "build" FileSystem.SymbolicLink
+  Expect.isTrue "ignored \"build\\n\" \"build\" FileSystem.SymbolicLink" testActual
+
+let case012 _ =
+  let testActual = ignored "cache/\n" "a/cache/item" FileSystem.RegularFile
+  Expect.isTrue "ignored \"cache/\\n\" \"a/cache/item\" FileSystem.RegularFile" testActual
+
+let case013 _ =
+  let testActual = ignored "a/**/b\n" "a/b" FileSystem.RegularFile
+  Expect.isTrue "ignored \"a/**/b\\n\" \"a/b\" FileSystem.RegularFile" testActual
+
+let case014 _ =
+  let testActual = ignored "a/**/b\n" "a/x/y/b" FileSystem.RegularFile
+  Expect.isTrue "ignored \"a/**/b\\n\" \"a/x/y/b\" FileSystem.RegularFile" testActual
+
+let case015 _ =
+  let testActual = not (ignored "a/**/b\n" "a/xb" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"a/**/b\\n\" \"a/xb\" FileSystem.RegularFile)" testActual
+
+let case016 _ =
+  let testActual = ignored "a***b\n" "axxb" FileSystem.RegularFile
+  Expect.isTrue "ignored \"a***b\\n\" \"axxb\" FileSystem.RegularFile" testActual
+
+let case017 _ =
+  let testActual = not (ignored "a**/b\n" "a/x/b" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"a**/b\\n\" \"a/x/b\" FileSystem.RegularFile)" testActual
+
+let case018 _ =
+  let testActual = not (ignored "a/**\\/b\n" "a/b" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"a/**\\\\/b\\n\" \"a/b\" FileSystem.RegularFile)" testActual
+
+let case019 _ =
+  let testActual = ignored "a/**\\/b\n" "a/x/b" FileSystem.RegularFile
+  Expect.isTrue "ignored \"a/**\\\\/b\\n\" \"a/x/b\" FileSystem.RegularFile" testActual
+
+let case020 _ =
+  let testActual = ignored "a/***/b\n" "a/x/y/b" FileSystem.RegularFile
+  Expect.isTrue "ignored \"a/***/b\\n\" \"a/x/y/b\" FileSystem.RegularFile" testActual
+
+let case021 _ =
+  let testActual = ignored "**/file\n" "file" FileSystem.RegularFile
+  Expect.isTrue "ignored \"**/file\\n\" \"file\" FileSystem.RegularFile" testActual
+
+let case022 _ =
+  let testActual = ignored "{a,b}\n" "{a,b}" FileSystem.RegularFile
+  Expect.isTrue "ignored \"{a,b}\\n\" \"{a,b}\" FileSystem.RegularFile" testActual
+
+let case023 _ =
+  let testActual = not (ignored "{a,b}\n" "a" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"{a,b}\\n\" \"a\" FileSystem.RegularFile)" testActual
+
+let case024 _ =
+  let testActual = ignored "#comment\n\\#file\n" "#file" FileSystem.RegularFile
+  Expect.isTrue "ignored \"#comment\\n\\\\#file\\n\" \"#file\" FileSystem.RegularFile" testActual
+
+let case025 _ =
+  let testActual = not (ignored "#comment\n" "#comment" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"#comment\\n\" \"#comment\" FileSystem.RegularFile)" testActual
+
+let case026 _ =
+  let testActual = ignored "\\!file\n" "!file" FileSystem.RegularFile
+  Expect.isTrue "ignored \"\\\\!file\\n\" \"!file\" FileSystem.RegularFile" testActual
+
+let case027 _ =
+  let testActual = ignored "foo   \n" "foo" FileSystem.RegularFile
+  Expect.isTrue "ignored \"foo \\n\" \"foo\" FileSystem.RegularFile" testActual
+
+let case028 _ =
+  let testActual = ignored "foo\\ \n" "foo " FileSystem.RegularFile
+  Expect.isTrue "ignored \"foo\\\\ \\n\" \"foo \" FileSystem.RegularFile" testActual
+
+let case029 _ =
+  let testActual = ignored "foo\\  \n" "foo " FileSystem.RegularFile
+  Expect.isTrue "ignored \"foo\\\\ \\n\" \"foo \" FileSystem.RegularFile (2)" testActual
+
+let case030 _ =
+  let testActual = not (ignored "foo\\ \n" "foo" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"foo\\\\ \\n\" \"foo\" FileSystem.RegularFile)" testActual
+
+let case031 _ =
+  let testActual = ignored " foo\n" " foo" FileSystem.RegularFile
+  Expect.isTrue "ignored \" foo\\n\" \" foo\" FileSystem.RegularFile" testActual
+
+let case032 _ =
+  let testActual = ignored "foo\t\n" "foo\t" FileSystem.RegularFile
+  Expect.isTrue "ignored \"foo\\t\\n\" \"foo\\t\" FileSystem.RegularFile" testActual
+
+let case033 _ =
+  let testActual = ignored "\u{feff}foo\r\nbar\r\n" "foo" FileSystem.RegularFile
+  Expect.isTrue "ignored \"\\u{feff}foo\\r\\nbar\\r\\n\" \"foo\" FileSystem.RegularFile" testActual
+
+let case034 _ =
+  let testActual = ignored "foo\r\nbar\r\n" "bar" FileSystem.RegularFile
+  Expect.isTrue "ignored \"foo\\r\\nbar\\r\\n\" \"bar\" FileSystem.RegularFile" testActual
+
+let case035 _ =
+  let testActual = ignored "*\n" ".hidden" FileSystem.RegularFile
+  Expect.isTrue "ignored \"*\\n\" \".hidden\" FileSystem.RegularFile" testActual
+
+let case036 _ =
+  let testActual = not (ignored "foo\\\n" "foo" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"foo\\\\\\n\" \"foo\" FileSystem.RegularFile)" testActual
+
+let case037 _ =
+  let testActual = not (ignored "[abc\n" "[abc" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"[abc\\n\" \"[abc\" FileSystem.RegularFile)" testActual
+
+let case038 _ =
+  let testActual = ignored "[[:digit:]].txt\n" "1.txt" FileSystem.RegularFile
+  Expect.isTrue "ignored \"[[:digit:]].txt\\n\" \"1.txt\" FileSystem.RegularFile" testActual
+
+let case039 _ =
+  let testActual = not (ignored "[[:digit:]].txt\n" "a.txt" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"[[:digit:]].txt\\n\" \"a.txt\" FileSystem.RegularFile)" testActual
+
+let case040 _ =
+  let testActual = not (ignored "?\n" "é" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"?\\n\" \"é\" FileSystem.RegularFile)" testActual
+
+let case041 _ =
+  let testActual = not (ignored "*\n" "" FileSystem.Directory)
+  Expect.isTrue "not (ignored \"*\\n\" \"\" FileSystem.Directory)" testActual
+
+let case042 _ =
+  let testActual = ignored "é\n" "é" FileSystem.RegularFile
+  Expect.isTrue "ignored \"é\\n\" \"é\" FileSystem.RegularFile" testActual
+
+let case043 _ =
+  let testActual = ignored "[z-aq]\n" "z" FileSystem.RegularFile
+  Expect.isTrue "ignored \"[z-aq]\\n\" \"z\" FileSystem.RegularFile" testActual
+
+let case044 _ =
+  let testActual = ignored "[z-aq]\n" "q" FileSystem.RegularFile
+  Expect.isTrue "ignored \"[z-aq]\\n\" \"q\" FileSystem.RegularFile" testActual
+
+let case045 _ =
+  let testActual = not (ignored "[z-aq]\n" "a" FileSystem.RegularFile)
+  Expect.isTrue "not (ignored \"[z-aq]\\n\" \"a\" FileSystem.RegularFile)" testActual
+
+let case046 _ =
+  let testActual = ignored "[a-[:digit:]]\n" "a]" FileSystem.RegularFile
+  Expect.isTrue "ignored \"[a-[:digit:]]\\n\" \"a]\" FileSystem.RegularFile" testActual
+
+let case047 _ =
+  let testActual = ignored "[[:]]\n" "[]" FileSystem.RegularFile
+  Expect.isTrue "ignored \"[[:]]\\n\" \"[]\" FileSystem.RegularFile" testActual
 
 let nested =
   match (file "" "*.txt\n", file "src" "!keep.txt\n") with
   | (Ok outer, Ok inner) -> Result.withDefault Ignore.empty (Ignore.ofFiles [outer, inner])
   | _ -> Ignore.empty
-example: not (Ignore.isIgnored (Ignore.decide nested (candidate "src/keep.txt") FileSystem.RegularFile))
-example: Ignore.isIgnored (Ignore.decide nested (candidate "other/keep.txt") FileSystem.RegularFile)
-example: Ignore.isIgnored (Ignore.decide nested (candidate "src/drop.txt") FileSystem.RegularFile)
-example: not (Ignore.isIgnored (Ignore.decide (rules "foo/\n") (candidate "foobar/file") FileSystem.RegularFile))
-example: not (Ignore.isIgnored (Ignore.decideWithOverrides (rules "build/\n") (rules "!build/\n!build/keep\n") (candidate "build/keep") FileSystem.RegularFile))
-example: (match Ignore.decide (rules "# note\nbuild/\n!build/keep\n") (candidate "build/keep") FileSystem.RegularFile with
-| Ignore.Ignored matched ->
-  matched.line = 2 && matched.start = 7 && matched.finish = 13 && matched.pattern = Bytes.fromString "build/" && matched.blockedParent = Some (candidate "build")
-| _ -> false)
-example: (match file "" "foo\\\n[bad\n# comment\n\nokay\n" with
-| Ok file -> Ignore.ignoredPatternCount file = 2 && Ignore.fileRuleCount file = 1
-| _ -> false)
-example: Ignore.parseWith { Ignore.defaults with
-  maxFileBytes = 1
-} { base = Glob.root, name = "test" } (Bytes.fromString "xx") |> Result.isErr
-example: Ignore.parseWith { Ignore.defaults with
-  maxRules = 1
-} { base = Glob.root, name = "test" } (Bytes.fromString "a\nb") |> Result.isErr
-example: Ignore.parseWith { Ignore.defaults with
-  maxStates = 1
-} { base = Glob.root, name = "test" } (Bytes.fromString "ab") |> Result.isErr
-example: Ignore.ofFilesWith { Ignore.defaults with maxRules = -1 } [] |> Result.isErr
+
+let case048 _ =
+  let testActual =
+    not (Ignore.isIgnored (Ignore.decide nested (candidate "src/keep.txt") FileSystem.RegularFile))
+  Expect.isTrue "not (Ignore.isIgnored (Ignore.decide nested (candidate \"src/keep.txt\") FileSystem.RegularFile))" testActual
+
+let case049 _ =
+  let testActual =
+    Ignore.isIgnored (Ignore.decide nested (candidate "other/keep.txt") FileSystem.RegularFile)
+  Expect.isTrue "Ignore.isIgnored (Ignore.decide nested (candidate \"other/keep.txt\") FileSystem.RegularFile)" testActual
+
+let case050 _ =
+  let testActual =
+    Ignore.isIgnored (Ignore.decide nested (candidate "src/drop.txt") FileSystem.RegularFile)
+  Expect.isTrue "Ignore.isIgnored (Ignore.decide nested (candidate \"src/drop.txt\") FileSystem.RegularFile)" testActual
+
+let case051 _ =
+  let testActual =
+    not (Ignore.isIgnored (Ignore.decide (rules "foo/\n") (candidate "foobar/file") FileSystem.RegularFile))
+  Expect.isTrue "not (Ignore.isIgnored (Ignore.decide (rules \"foo/\\n\") (candidate \"foobar/file\") FileSystem.RegularFile))" testActual
+
+let case052 _ =
+  let testActual =
+    not (Ignore.isIgnored (Ignore.decideWithOverrides (rules "build/\n") (rules "!build/\n!build/keep\n") (candidate "build/keep") FileSystem.RegularFile))
+  Expect.isTrue "not (Ignore.isIgnored (Ignore.decideWithOverrides (rules \"build/\\n\") (rules \"!build/\\n!build/keep\\n\") (candidate \"build/keep\") FileSystem.RegularFile))" testActual
+
+let case053 _ =
+  let testActual =
+    (match Ignore.decide (rules "# note\nbuild/\n!build/keep\n") (candidate "build/keep") FileSystem.RegularFile with
+    | Ignore.Ignored matched ->
+      matched.line = 2 && matched.start = 7 && matched.finish = 13 && matched.pattern = Bytes.fromString "build/" && matched.blockedParent = Some (candidate "build")
+    | _ -> false)
+  Expect.isTrue "(match Ignore.decide (rules \"# note\\nbuild/\\n!build/keep\\n\") (candidate \"build/keep\") FileSystem.RegularFile with | Ignore.Ignored matched -> matched.line = …" testActual
+
+let case054 _ =
+  let testActual =
+    (match file "" "foo\\\n[bad\n# comment\n\nokay\n" with
+    | Ok file -> Ignore.ignoredPatternCount file = 2 && Ignore.fileRuleCount file = 1
+    | _ -> false)
+  Expect.isTrue "(match file \"\" \"foo\\\\\\n[bad\\n# comment\\n\\nokay\\n\" with | Ok file -> Ignore.ignoredPatternCount file = 2 && Ignore.fileRuleCount file = 1 | _ -> false)" testActual
+
+let case055 _ =
+  let testActual =
+    Ignore.parseWith { Ignore.defaults with
+      maxFileBytes = 1
+    } { base = Glob.root, name = "test" } (Bytes.fromString "xx") |> Result.isErr
+  Expect.isTrue "Ignore.parseWith { Ignore.defaults with maxFileBytes = 1 } { base = Glob.root, name = \"test\" } (Bytes.fromString \"xx\") |> Result.isErr" testActual
+
+let case056 _ =
+  let testActual =
+    Ignore.parseWith { Ignore.defaults with
+      maxRules = 1
+    } { base = Glob.root, name = "test" } (Bytes.fromString "a\nb") |> Result.isErr
+  Expect.isTrue "Ignore.parseWith { Ignore.defaults with maxRules = 1 } { base = Glob.root, name = \"test\" } (Bytes.fromString \"a\\nb\") |> Result.isErr" testActual
+
+let case057 _ =
+  let testActual =
+    Ignore.parseWith { Ignore.defaults with
+      maxStates = 1
+    } { base = Glob.root, name = "test" } (Bytes.fromString "ab") |> Result.isErr
+  Expect.isTrue "Ignore.parseWith { Ignore.defaults with maxStates = 1 } { base = Glob.root, name = \"test\" } (Bytes.fromString \"ab\") |> Result.isErr" testActual
+
+let case058 _ =
+  let testActual = Ignore.ofFilesWith { Ignore.defaults with maxRules = -1 } [] |> Result.isErr
+  Expect.isTrue "Ignore.ofFilesWith { Ignore.defaults with maxRules = -1 } [] |> Result.isErr" testActual
 
 let folded text name =
   match Ignore.parseWith { Ignore.defaults with
@@ -95,8 +280,90 @@ let folded text name =
     match Ignore.append file Ignore.empty with
     | Err _ -> false
     | Ok rules -> Ignore.isIgnored (Ignore.decide rules (candidate name) FileSystem.RegularFile)
-example: folded "README" "readme"
-example: folded "[a]" "A"
-example: not (folded "[A]" "A")
-example: folded "[A-Z]" "a"
-example: not (folded "\\A" "A")
+
+let case059 _ =
+  let testActual = folded "README" "readme"
+  Expect.isTrue "folded \"README\" \"readme\"" testActual
+
+let case060 _ =
+  let testActual = folded "[a]" "A"
+  Expect.isTrue "folded \"[a]\" \"A\"" testActual
+
+let case061 _ =
+  let testActual = not (folded "[A]" "A")
+  Expect.isTrue "not (folded \"[A]\" \"A\")" testActual
+
+let case062 _ =
+  let testActual = folded "[A-Z]" "a"
+  Expect.isTrue "folded \"[A-Z]\" \"a\"" testActual
+
+let case063 _ =
+  let testActual = not (folded "\\A" "A")
+  Expect.isTrue "not (folded \"\\\\A\" \"A\")" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "IgnoreSpec" [
+  Test.test "ignored \"*.o\\n\" \"a/b/file.o\" FileSystem.RegularFile" case001,
+  Test.test "not (ignored \"/*.o\\n\" \"a/b/file.o\" FileSystem.RegularFile)" case002,
+  Test.test "ignored \"/file.o\\n\" \"file.o\" FileSystem.RegularFile" case003,
+  Test.test "ignored \"doc/file\\n\" \"doc/file\" FileSystem.RegularFile" case004,
+  Test.test "not (ignored \"doc/file\\n\" \"a/doc/file\" FileSystem.RegularFile)" case005,
+  Test.test "ignored \"build/\\n!build/keep.txt\\n\" \"build/keep.txt\" FileSystem.RegularFile" case006,
+  Test.test "not (ignored \"build/*\\n!build/keep.txt\\n\" \"build/keep.txt\" FileSystem.RegularFile)" case007,
+  Test.test "ignored \"build/\\n\" \"build\" FileSystem.Directory" case008,
+  Test.test "not (ignored \"build/\\n\" \"build\" FileSystem.SymbolicLink)" case009,
+  Test.test "not (ignored \"build/\\n\" \"build\" FileSystem.RegularFile)" case010,
+  Test.test "ignored \"build\\n\" \"build\" FileSystem.SymbolicLink" case011,
+  Test.test "ignored \"cache/\\n\" \"a/cache/item\" FileSystem.RegularFile" case012,
+  Test.test "ignored \"a/**/b\\n\" \"a/b\" FileSystem.RegularFile" case013,
+  Test.test "ignored \"a/**/b\\n\" \"a/x/y/b\" FileSystem.RegularFile" case014,
+  Test.test "not (ignored \"a/**/b\\n\" \"a/xb\" FileSystem.RegularFile)" case015,
+  Test.test "ignored \"a***b\\n\" \"axxb\" FileSystem.RegularFile" case016,
+  Test.test "not (ignored \"a**/b\\n\" \"a/x/b\" FileSystem.RegularFile)" case017,
+  Test.test "not (ignored \"a/**\\\\/b\\n\" \"a/b\" FileSystem.RegularFile)" case018,
+  Test.test "ignored \"a/**\\\\/b\\n\" \"a/x/b\" FileSystem.RegularFile" case019,
+  Test.test "ignored \"a/***/b\\n\" \"a/x/y/b\" FileSystem.RegularFile" case020,
+  Test.test "ignored \"**/file\\n\" \"file\" FileSystem.RegularFile" case021,
+  Test.test "ignored \"{a,b}\\n\" \"{a,b}\" FileSystem.RegularFile" case022,
+  Test.test "not (ignored \"{a,b}\\n\" \"a\" FileSystem.RegularFile)" case023,
+  Test.test "ignored \"#comment\\n\\\\#file\\n\" \"#file\" FileSystem.RegularFile" case024,
+  Test.test "not (ignored \"#comment\\n\" \"#comment\" FileSystem.RegularFile)" case025,
+  Test.test "ignored \"\\\\!file\\n\" \"!file\" FileSystem.RegularFile" case026,
+  Test.test "ignored \"foo \\n\" \"foo\" FileSystem.RegularFile" case027,
+  Test.test "ignored \"foo\\\\ \\n\" \"foo \" FileSystem.RegularFile" case028,
+  Test.test "ignored \"foo\\\\ \\n\" \"foo \" FileSystem.RegularFile (2)" case029,
+  Test.test "not (ignored \"foo\\\\ \\n\" \"foo\" FileSystem.RegularFile)" case030,
+  Test.test "ignored \" foo\\n\" \" foo\" FileSystem.RegularFile" case031,
+  Test.test "ignored \"foo\\t\\n\" \"foo\\t\" FileSystem.RegularFile" case032,
+  Test.test "ignored \"\\u{feff}foo\\r\\nbar\\r\\n\" \"foo\" FileSystem.RegularFile" case033,
+  Test.test "ignored \"foo\\r\\nbar\\r\\n\" \"bar\" FileSystem.RegularFile" case034,
+  Test.test "ignored \"*\\n\" \".hidden\" FileSystem.RegularFile" case035,
+  Test.test "not (ignored \"foo\\\\\\n\" \"foo\" FileSystem.RegularFile)" case036,
+  Test.test "not (ignored \"[abc\\n\" \"[abc\" FileSystem.RegularFile)" case037,
+  Test.test "ignored \"[[:digit:]].txt\\n\" \"1.txt\" FileSystem.RegularFile" case038,
+  Test.test "not (ignored \"[[:digit:]].txt\\n\" \"a.txt\" FileSystem.RegularFile)" case039,
+  Test.test "not (ignored \"?\\n\" \"é\" FileSystem.RegularFile)" case040,
+  Test.test "not (ignored \"*\\n\" \"\" FileSystem.Directory)" case041,
+  Test.test "ignored \"é\\n\" \"é\" FileSystem.RegularFile" case042,
+  Test.test "ignored \"[z-aq]\\n\" \"z\" FileSystem.RegularFile" case043,
+  Test.test "ignored \"[z-aq]\\n\" \"q\" FileSystem.RegularFile" case044,
+  Test.test "not (ignored \"[z-aq]\\n\" \"a\" FileSystem.RegularFile)" case045,
+  Test.test "ignored \"[a-[:digit:]]\\n\" \"a]\" FileSystem.RegularFile" case046,
+  Test.test "ignored \"[[:]]\\n\" \"[]\" FileSystem.RegularFile" case047,
+  Test.test "not (Ignore.isIgnored (Ignore.decide nested (candidate \"src/keep.txt\") FileSystem.RegularFile))" case048,
+  Test.test "Ignore.isIgnored (Ignore.decide nested (candidate \"other/keep.txt\") FileSystem.RegularFile)" case049,
+  Test.test "Ignore.isIgnored (Ignore.decide nested (candidate \"src/drop.txt\") FileSystem.RegularFile)" case050,
+  Test.test "not (Ignore.isIgnored (Ignore.decide (rules \"foo/\\n\") (candidate \"foobar/file\") FileSystem.RegularFile))" case051,
+  Test.test "not (Ignore.isIgnored (Ignore.decideWithOverrides (rules \"build/\\n\") (rules \"!build/\\n!build/keep\\n\") (candidate \"build/keep\") FileSystem.RegularFile))" case052,
+  Test.test "(match Ignore.decide (rules \"# note\\nbuild/\\n!build/keep\\n\") (candidate \"build/keep\") FileSystem.RegularFile with | Ignore.Ignored matched -> matched.line = …" case053,
+  Test.test "(match file \"\" \"foo\\\\\\n[bad\\n# comment\\n\\nokay\\n\" with | Ok file -> Ignore.ignoredPatternCount file = 2 && Ignore.fileRuleCount file = 1 | _ -> false)" case054,
+  Test.test "Ignore.parseWith { Ignore.defaults with maxFileBytes = 1 } { base = Glob.root, name = \"test\" } (Bytes.fromString \"xx\") |> Result.isErr" case055,
+  Test.test "Ignore.parseWith { Ignore.defaults with maxRules = 1 } { base = Glob.root, name = \"test\" } (Bytes.fromString \"a\\nb\") |> Result.isErr" case056,
+  Test.test "Ignore.parseWith { Ignore.defaults with maxStates = 1 } { base = Glob.root, name = \"test\" } (Bytes.fromString \"ab\") |> Result.isErr" case057,
+  Test.test "Ignore.ofFilesWith { Ignore.defaults with maxRules = -1 } [] |> Result.isErr" case058,
+  Test.test "folded \"README\" \"readme\"" case059,
+  Test.test "folded \"[a]\" \"A\"" case060,
+  Test.test "not (folded \"[A]\" \"A\")" case061,
+  Test.test "folded \"[A-Z]\" \"a\"" case062,
+  Test.test "not (folded \"\\\\A\" \"A\")" case063
+]

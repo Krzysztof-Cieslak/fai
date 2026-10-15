@@ -20,7 +20,3 @@ path = "examples/DataBrowser.fai"
 [[bin]]
 name = "examples-form-demo"
 path = "examples/FormDemo.fai"
-
-[[bin]]
-name = "examples-runtime-checks"
-path = "examples/RuntimeChecks.fai"

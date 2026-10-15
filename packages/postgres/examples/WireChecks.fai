@@ -126,3 +126,36 @@ let main r =
     "PostgreSQL wire checks passed"
   else
     "PostgreSQL wire checks failed")
+
+protocolCase : String -> Int -> Test.Suite Test.Context { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let protocolCase name index = Test.test name (fun ctx -> protocolCheck index ctx)
+
+protocolCheck : Int -> Test.Context -> Test.Check / { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let protocolCheck index ctx =
+  let env = {
+    clock = ctx.runtime.clock,
+    concurrency = ctx.runtime.concurrency,
+    console = ctx.runtime.console,
+    entropy = Crypto.systemEntropy,
+    env = ctx.runtime.env,
+    fs = ctx.runtime.fs,
+    net = ctx.runtime.net,
+    tls = ctx.runtime.tls
+  }
+  Expect.isTrue "the connection validates each protocol phase" (one env index)
+
+public tests : Test.Suite Test.Context { Clock, Concurrency, Crypto.Entropy, Net, Tls }
+let tests = Test.describe "PostgreSQL wire protocol" [
+  protocolCase "fragmented startup" 0,
+  protocolCase "invalid message length" 1,
+  protocolCase "invalid startup ordering" 2,
+  protocolCase "cleartext authentication is rejected" 3,
+  protocolCase "truncated messages" 4,
+  protocolCase "incomplete query response" 5,
+  protocolCase "trailing authentication payload" 6,
+  protocolCase "missing command completion" 7,
+  Test.test "zero-byte entropy" (fun _ ->
+    Expect.isTrue "zero bytes is an empty success" (Result.map Bytes.length (Crypto.systemEntropy.bytes 0) = Ok 0)),
+  Test.test "invalid entropy sizes" (fun _ ->
+    Expect.isTrue "invalid sizes fail before allocation" (Result.isErr (Crypto.systemEntropy.bytes (-9223372036854775808)) && Result.isErr (Crypto.systemEntropy.bytes 9223372036854775807)))
+]

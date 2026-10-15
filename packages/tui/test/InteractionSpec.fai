@@ -14,40 +14,83 @@ let copyPaste frame =
     state = TuiState.select (Ui.id "text") 0 2 frame.state
   }
   (send (key "v" 2) { frame with state = TuiState.select (Ui.id "text") 3 3 copied.state }).messages
-example: Result.map copyPaste (frame "abc") = Ok ["abcab"]
-example: Result.map (fun frame ->
-  (send (key "Backspace" 0) frame).messages) (frame "a\u{301}👩‍💻z") = Ok ["a\u{301}👩‍💻"]
-example: Result.map (fun frame ->
-  (TuiState.get (Ui.id "text") (send (key "Left" 0) frame).state).caret) (frame "a\u{301}👩‍💻z") = Ok 2
-example: Result.map (fun frame ->
-  (TuiState.get (Ui.id "text") (send (key "Left" 1) frame).state).anchor) (frame "abc") = Ok 3
-example: Result.map (fun frame ->
-  (send (TerminalHost.Paste "X") { frame with
-    state = TuiState.select (Ui.id "text") 0 2 frame.state
-  }).messages) (frame "a\u{301}👩‍💻z") = Ok ["Xz"]
-example: Result.map (fun frame ->
-  (send (TerminalHost.Paste "a\nb") frame).messages) (frame "") = Ok ["a b"]
-example: Result.map (fun frame ->
-  (send (key "c" 2) { frame with
-    state = TuiState.select (Ui.id "text") 0 2 frame.state
-  }).actions) (frame "abc") = Ok [TuiInput.Copy "ab"]
+
+let case001 _ =
+  let testActual = Result.map copyPaste (frame "abc")
+  let testExpected = Ok ["abcab"]
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual =
+    Result.map (fun frame -> (send (key "Backspace" 0) frame).messages) (frame "a\u{301}👩‍💻z")
+  let testExpected = Ok ["a\u{301}👩‍💻"]
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual =
+    Result.map (fun frame ->
+      (TuiState.get (Ui.id "text") (send (key "Left" 0) frame).state).caret) (frame "a\u{301}👩‍💻z")
+  let testExpected = Ok 2
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case004 _ =
+  let testActual =
+    Result.map (fun frame ->
+      (TuiState.get (Ui.id "text") (send (key "Left" 1) frame).state).anchor) (frame "abc")
+  let testExpected = Ok 3
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case005 _ =
+  let testActual =
+    Result.map (fun frame ->
+      (send (TerminalHost.Paste "X") { frame with
+        state = TuiState.select (Ui.id "text") 0 2 frame.state
+      }).messages) (frame "a\u{301}👩‍💻z")
+  let testExpected = Ok ["Xz"]
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
+
+let case006 _ =
+  let testActual =
+    Result.map (fun frame -> (send (TerminalHost.Paste "a\nb") frame).messages) (frame "")
+  let testExpected = Ok ["a b"]
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
+
+let case007 _ =
+  let testActual =
+    Result.map (fun frame ->
+      (send (key "c" 2) { frame with
+        state = TuiState.select (Ui.id "text") 0 2 frame.state
+      }).actions) (frame "abc") = Ok [TuiInput.Copy "ab"]
+  Expect.isTrue "Result.map (fun frame -> (send (key \"c\" 2) { frame with state = TuiState.select (Ui.id \"text\") 0 2 frame.state }).actions) (frame \"abc\") = Ok [TuiInput.Copy …" testActual
 
 let limited =
   TuiLayout.render (TuiLayout.context 8 2) TuiState.empty (Ui.input (Ui.id "text") [
     Ui.maxLength 2
   ] { label = "", onChange = identity, value = "ab" })
-example: Result.map (fun frame -> (send (TerminalHost.Paste "more") frame).messages) limited = Ok []
+
+let case008 _ =
+  let testActual =
+    Result.map (fun frame -> (send (TerminalHost.Paste "more") frame).messages) limited
+  let testExpected = Ok []
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
 
 let secret =
   TuiLayout.render (TuiLayout.context 8 2) TuiState.empty (Ui.input (Ui.id "text") [
     Ui.password true
   ] { label = "", onChange = identity, value = "secret" })
-example: Result.map (fun frame ->
-  (send (key "c" 2) { frame with
-    state = TuiState.select (Ui.id "text") 0 3 frame.state
-  }).actions) secret = Ok []
-example: Result.map (fun frame ->
-  Array.unsafeGet 0 (TuiScreen.lines frame.screen)) secret = Ok "******  "
+
+let case009 _ =
+  let testActual =
+    Result.map (fun frame ->
+      (send (key "c" 2) { frame with
+        state = TuiState.select (Ui.id "text") 0 3 frame.state
+      }).actions) secret = Ok []
+  Expect.isTrue "Result.map (fun frame -> (send (key \"c\" 2) { frame with state = TuiState.select (Ui.id \"text\") 0 3 frame.state }).actions) secret = Ok []" testActual
+
+let case010 _ =
+  let testActual = Result.map (fun frame -> Array.unsafeGet 0 (TuiScreen.lines frame.screen)) secret
+  let testExpected = Ok "******  "
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
 
 let composer =
   TuiLayout.render (TuiLayout.context 8 3) TuiState.empty (Ui.editor (Ui.id "text") [] {
@@ -57,10 +100,26 @@ let composer =
     onSubmit = Some "submit",
     value = "abc"
   })
-example: Result.map (fun frame -> (send (key "p" 2) frame).messages) composer = Ok []
-example: Result.map (fun frame -> (send (key "n" 2) frame).messages) composer = Ok []
-example: Result.map (fun frame -> (send (key "Enter" 0) frame).messages) composer = Ok ["submit"]
-example: Result.map (fun frame -> (send (key "Enter" 1) frame).messages) composer = Ok ["abc\n"]
+
+let case011 _ =
+  let testActual = Result.map (fun frame -> (send (key "p" 2) frame).messages) composer
+  let testExpected = Ok []
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
+
+let case012 _ =
+  let testActual = Result.map (fun frame -> (send (key "n" 2) frame).messages) composer
+  let testExpected = Ok []
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
+
+let case013 _ =
+  let testActual = Result.map (fun frame -> (send (key "Enter" 0) frame).messages) composer
+  let testExpected = Ok ["submit"]
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
+
+let case014 _ =
+  let testActual = Result.map (fun frame -> (send (key "Enter" 1) frame).messages) composer
+  let testExpected = Ok ["abc\n"]
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
 
 let first = Ui.inputWith (Ui.id "first") [] {
   label = "",
@@ -71,17 +130,29 @@ let first = Ui.inputWith (Ui.id "first") [] {
 }
 
 let pair = TuiLayout.render (TuiLayout.context 10 4) TuiState.empty (Ui.column [] [first, field ""])
-example: Result.map (fun frame -> (send (key "Tab" 0) frame).messages) pair = Ok ["blur"]
-example: Result.map (fun frame ->
-  (send (key "Tab" 0) frame).state.focus) pair = Ok (Some (Ui.id "text"))
-example: Result.map (fun frame ->
-  (TuiState.get (Ui.id "text") (send (TerminalHost.Mouse {
-    button = 0,
-    column = 2,
-    kind = "Down",
-    modifiers = 0,
-    row = 0
-  }) frame).state).caret) (frame "界x") = Ok 1
+
+let case015 _ =
+  let testActual = Result.map (fun frame -> (send (key "Tab" 0) frame).messages) pair
+  let testExpected = Ok ["blur"]
+  Expect.equal ((Test.result (Test.list Test.string) Test.string)).show testExpected testActual
+
+let case016 _ =
+  let testActual =
+    Result.map (fun frame -> (send (key "Tab" 0) frame).state.focus) pair = Ok (Some (Ui.id "text"))
+  Expect.isTrue "Result.map (fun frame -> (send (key \"Tab\" 0) frame).state.focus) pair = Ok (Some (Ui.id \"text\"))" testActual
+
+let case017 _ =
+  let testActual =
+    Result.map (fun frame ->
+      (TuiState.get (Ui.id "text") (send (TerminalHost.Mouse {
+        button = 0,
+        column = 2,
+        kind = "Down",
+        modifiers = 0,
+        row = 0
+      }) frame).state).caret) (frame "界x")
+  let testExpected = Ok 1
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
 
 let background = Ui.column [] [
   Ui.button (Ui.id "a") [] { label = "A", onPress = 1 },
@@ -92,13 +163,47 @@ let modal = Ui.modal [] background (Ui.button (Ui.id "close") [] { label = "Clos
 
 let opened =
   TuiLayout.render (TuiLayout.context 10 4) (TuiState.focus (Some (Ui.id "b")) TuiState.empty) modal
-example: Result.map (fun frame -> frame.state.focus) opened = Ok (Some (Ui.id "close"))
-example: Result.map (fun frame ->
-  Result.map (fun frame ->
-    frame.state.focus) (TuiLayout.render (TuiLayout.context 10 4) frame.state background)) opened = Ok (Ok (Some (Ui.id "b")))
+
+let case018 _ =
+  let testActual = Result.map (fun frame -> frame.state.focus) opened = Ok (Some (Ui.id "close"))
+  Expect.isTrue "Result.map (fun frame -> frame.state.focus) opened = Ok (Some (Ui.id \"close\"))" testActual
+
+let case019 _ =
+  let testActual =
+    Result.map (fun frame ->
+      Result.map (fun frame ->
+        frame.state.focus) (TuiLayout.render (TuiLayout.context 10 4) frame.state background)) opened = Ok (Ok (Some (Ui.id "b")))
+  Expect.isTrue "Result.map (fun frame -> Result.map (fun frame -> frame.state.focus) (TuiLayout.render (TuiLayout.context 10 4) frame.state background)) opened = Ok (Ok (Som…" testActual
 
 let disabled =
   TuiLayout.render (TuiLayout.context 10 4) TuiState.empty (Ui.column [
     Ui.disabled true
   ] [Ui.button (Ui.id "button") [] { label = "disabled", onPress = 1 }])
-example: Result.map (fun frame -> frame.state.focus) disabled = Ok None
+
+let case020 _ =
+  let testActual = Result.map (fun frame -> frame.state.focus) disabled = Ok None
+  Expect.isTrue "Result.map (fun frame -> frame.state.focus) disabled = Ok None" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "InteractionSpec" [
+  Test.test "Result.map copyPaste (frame \"abc\") = Ok [\"abcab\"]" case001,
+  Test.test "Result.map (fun frame -> (send (key \"Backspace\" 0) frame).messages) (frame \"a\\u{301}👩‍💻z\") = Ok [\"a\\u{301}👩‍💻\"]" case002,
+  Test.test "Result.map (fun frame -> (TuiState.get (Ui.id \"text\") (send (key \"Left\" 0) frame).state).caret) (frame \"a\\u{301}👩‍💻z\") = Ok 2" case003,
+  Test.test "Result.map (fun frame -> (TuiState.get (Ui.id \"text\") (send (key \"Left\" 1) frame).state).anchor) (frame \"abc\") = Ok 3" case004,
+  Test.test "Result.map (fun frame -> (send (TerminalHost.Paste \"X\") { frame with state = TuiState.select (Ui.id \"text\") 0 2 frame.state }).messages) (frame \"a\\u{301}👩‍💻z…" case005,
+  Test.test "Result.map (fun frame -> (send (TerminalHost.Paste \"a\\nb\") frame).messages) (frame \"\") = Ok [\"a b\"]" case006,
+  Test.test "Result.map (fun frame -> (send (key \"c\" 2) { frame with state = TuiState.select (Ui.id \"text\") 0 2 frame.state }).actions) (frame \"abc\") = Ok [TuiInput.Copy …" case007,
+  Test.test "Result.map (fun frame -> (send (TerminalHost.Paste \"more\") frame).messages) limited = Ok []" case008,
+  Test.test "Result.map (fun frame -> (send (key \"c\" 2) { frame with state = TuiState.select (Ui.id \"text\") 0 3 frame.state }).actions) secret = Ok []" case009,
+  Test.test "Result.map (fun frame -> Array.unsafeGet 0 (TuiScreen.lines frame.screen)) secret = Ok \"****** \"" case010,
+  Test.test "Result.map (fun frame -> (send (key \"p\" 2) frame).messages) composer = Ok []" case011,
+  Test.test "Result.map (fun frame -> (send (key \"n\" 2) frame).messages) composer = Ok []" case012,
+  Test.test "Result.map (fun frame -> (send (key \"Enter\" 0) frame).messages) composer = Ok [\"submit\"]" case013,
+  Test.test "Result.map (fun frame -> (send (key \"Enter\" 1) frame).messages) composer = Ok [\"abc\\n\"]" case014,
+  Test.test "Result.map (fun frame -> (send (key \"Tab\" 0) frame).messages) pair = Ok [\"blur\"]" case015,
+  Test.test "Result.map (fun frame -> (send (key \"Tab\" 0) frame).state.focus) pair = Ok (Some (Ui.id \"text\"))" case016,
+  Test.test "Result.map (fun frame -> (TuiState.get (Ui.id \"text\") (send (TerminalHost.Mouse { button = 0, column = 2, kind = \"Down\", modifiers = 0, row = 0 }) frame).sta…" case017,
+  Test.test "Result.map (fun frame -> frame.state.focus) opened = Ok (Some (Ui.id \"close\"))" case018,
+  Test.test "Result.map (fun frame -> Result.map (fun frame -> frame.state.focus) (TuiLayout.render (TuiLayout.context 10 4) frame.state background)) opened = Ok (Ok (Som…" case019,
+  Test.test "Result.map (fun frame -> frame.state.focus) disabled = Ok None" case020
+]

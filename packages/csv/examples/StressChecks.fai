@@ -37,3 +37,11 @@ let main env =
     "CSV stress checks passed"
   else
     "CSV stress checks FAILED")
+
+public tests : Test.Suite Test.Context { }
+let tests = Test.describe "CSV large streams" [
+  Test.test "twenty thousand rows stream without collection" (fun _ ->
+    Expect.isTrue "all rows are consumed" scan),
+  Test.test "a large Unicode field crosses small chunks" (fun _ ->
+    Expect.isTrue "the full field is retained" longField)
+]

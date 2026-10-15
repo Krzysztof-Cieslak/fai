@@ -11,3 +11,6 @@ encoding = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "pac
 json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
 sql = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/sql", version = "^0.1.0" }
 uuid = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/uuid", version = "^0.1.0" }
+
+[dev-dependencies]
+postgres_examples = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/postgres/examples", version = "^0.1.0" }

@@ -9,16 +9,44 @@ let compatibility =
   | (Ok current, Ok legacy) ->
     current = legacy && SqlUuid.toString current = text && Uuid.toBytes current = Uuid.toBytes legacy
   | _ -> false
-example: compatibility
-example: SqlUuid.parse "" = Err "invalid UUID"
-example: SqlUuid.parse "0123456789abcdef0123456789abcdef" = Err "invalid UUID"
-example: SqlUuid.parse ("urn:uuid:" ++ text) = Err "invalid UUID"
-example: SqlUuid.parse ("{" ++ text ++ "}") = Err "invalid UUID"
-example: SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.nil) = Ok Uuid.nil
-example: SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.max) = Ok Uuid.max
-example: SqlDecode.decodeValue SqlDecode.uuid (Sql.Text text) = (Uuid.parse text |> Result.mapError (fun _ ->
-  Sql.error Sql.DecodeFailure "uuid" "invalid UUID"))
-example: SqlDecode.decodeValue SqlDecode.uuid (Sql.Integer 0) |> Result.isErr
+
+let case001 _ =
+  let testActual = compatibility
+  Expect.isTrue "compatibility" testActual
+
+let case002 _ =
+  let testActual = SqlUuid.parse "" = Err "invalid UUID"
+  Expect.isTrue "SqlUuid.parse \"\" = Err \"invalid UUID\"" testActual
+
+let case003 _ =
+  let testActual = SqlUuid.parse "0123456789abcdef0123456789abcdef" = Err "invalid UUID"
+  Expect.isTrue "SqlUuid.parse \"0123456789abcdef0123456789abcdef\" = Err \"invalid UUID\"" testActual
+
+let case004 _ =
+  let testActual = SqlUuid.parse ("urn:uuid:" ++ text) = Err "invalid UUID"
+  Expect.isTrue "SqlUuid.parse (\"urn:uuid:\" ++ text) = Err \"invalid UUID\"" testActual
+
+let case005 _ =
+  let testActual = SqlUuid.parse ("{" ++ text ++ "}") = Err "invalid UUID"
+  Expect.isTrue "SqlUuid.parse (\"{\" ++ text ++ \"}\") = Err \"invalid UUID\"" testActual
+
+let case006 _ =
+  let testActual = SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.nil) = Ok Uuid.nil
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.nil) = Ok Uuid.nil" testActual
+
+let case007 _ =
+  let testActual = SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.max) = Ok Uuid.max
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.max) = Ok Uuid.max" testActual
+
+let case008 _ =
+  let testActual =
+    SqlDecode.decodeValue SqlDecode.uuid (Sql.Text text) = (Uuid.parse text |> Result.mapError (fun _ ->
+      Sql.error Sql.DecodeFailure "uuid" "invalid UUID"))
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.uuid (Sql.Text text) = (Uuid.parse text |> Result.mapError (fun _ -> Sql.error Sql.DecodeFailure \"uuid\" \"invalid UUID\"))" testActual
+
+let case009 _ =
+  let testActual = SqlDecode.decodeValue SqlDecode.uuid (Sql.Integer 0) |> Result.isErr
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.uuid (Sql.Integer 0) |> Result.isErr" testActual
 
 let roundTrip bits =
   let bytes =
@@ -28,4 +56,22 @@ let roundTrip bits =
   | Err _ -> false
   | Ok uuid ->
     SqlUuid.parse (Uuid.toString uuid) = Ok uuid && SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid uuid) = Ok uuid
-forall bits: roundTrip bits
+
+let case010 testInput =
+  let bits = testInput
+  let testActual = roundTrip bits
+  Expect.isTrue "property: roundTrip bits" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SqlUuidSpec" [
+  Test.test "compatibility" case001,
+  Test.test "SqlUuid.parse \"\" = Err \"invalid UUID\"" case002,
+  Test.test "SqlUuid.parse \"0123456789abcdef0123456789abcdef\" = Err \"invalid UUID\"" case003,
+  Test.test "SqlUuid.parse (\"urn:uuid:\" ++ text) = Err \"invalid UUID\"" case004,
+  Test.test "SqlUuid.parse (\"{\" ++ text ++ \"}\") = Err \"invalid UUID\"" case005,
+  Test.test "SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.nil) = Ok Uuid.nil" case006,
+  Test.test "SqlDecode.decodeValue SqlDecode.uuid (Sql.Uuid Uuid.max) = Ok Uuid.max" case007,
+  Test.test "SqlDecode.decodeValue SqlDecode.uuid (Sql.Text text) = (Uuid.parse text |> Result.mapError (fun _ -> Sql.error Sql.DecodeFailure \"uuid\" \"invalid UUID\"))" case008,
+  Test.test "SqlDecode.decodeValue SqlDecode.uuid (Sql.Integer 0) |> Result.isErr" case009,
+  Test.property "property: roundTrip bits" Test.int case010
+]

@@ -63,3 +63,23 @@ let report console failed =
   | (name, _) :: rest ->
     let shown = console.writeLine ("FAIL " ++ name)
     report console rest
+
+parallelTransforms : Test.Context -> Test.Check / { Concurrency }
+let parallelTransforms ctx =
+  Expect.isTrue "concurrent transforms preserve their independent results" (Async.parallel ctx.runtime.concurrency [
+    fun _ -> normalizeMany 0,
+    fun _ -> normalizeMany 0
+  ] = [true, true])
+
+tests : Test.Suite Test.Context { Concurrency }
+let tests = Test.describe "Unicode runtime" [
+  Test.test "long canonical ordering" (fun _ ->
+    Expect.isTrue "combining sequences sort canonically" reordered),
+  Test.test "cursor snapshots" (fun _ ->
+    Expect.isTrue "old cursors preserve their position" cursors),
+  Test.test "repeated transforms" (fun _ ->
+    Expect.isTrue "normalization and folding compose" (normalizeMany 0)),
+  Test.test "noncontiguous provenance" (fun _ ->
+    Expect.isTrue "composition retains contributing ranges" mapping),
+  Test.test "parallel transforms" parallelTransforms
+]

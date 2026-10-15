@@ -4,23 +4,39 @@ import json.Json
 import json.JsonNumber
 
 let checked = Log.create Log.defaults (LogSink.discard "test")
-example: (match checked with
-| Err _ -> false
-| Ok logger ->
-  Log.debugLazy logger (fun _ -> Log.entry (Int.toString (1 / 0)) []) = Ok LogTypes.Filtered)
-example: (match checked with
-| Err _ -> false
-| Ok logger ->
-  Log.info logger "hello" [] = Ok (LogTypes.Emitted [
-    { delivery = LogTypes.Completed, destination = "test" }
-  ]))
-example: (match checked with
-| Err _ -> false
-| Ok logger ->
-  Log.info logger "bad float" [
-    LogField.float "x" (Float.fromBits 0x7ff0000000000000)
-  ] |> Result.isErr)
-example: Log.create Log.defaults (LogSink.combine (LogSink.discard "same") (LogSink.discard "same")) |> Result.isErr
+
+let case001 _ =
+  let testActual =
+    (match checked with
+    | Err _ -> false
+    | Ok logger ->
+      Log.debugLazy logger (fun _ -> Log.entry (Int.toString (1 / 0)) []) = Ok LogTypes.Filtered)
+  Expect.isTrue "(match checked with | Err _ -> false | Ok logger -> Log.debugLazy logger (fun _ -> Log.entry (Int.toString (1 / 0)) []) = Ok LogTypes.Filtered)" testActual
+
+let case002 _ =
+  let testActual =
+    (match checked with
+    | Err _ -> false
+    | Ok logger ->
+      Log.info logger "hello" [] = Ok (LogTypes.Emitted [
+        { delivery = LogTypes.Completed, destination = "test" }
+      ]))
+  Expect.isTrue "(match checked with | Err _ -> false | Ok logger -> Log.info logger \"hello\" [] = Ok (LogTypes.Emitted [ { delivery = LogTypes.Completed, destination = \"test\"…" testActual
+
+let case003 _ =
+  let testActual =
+    (match checked with
+    | Err _ -> false
+    | Ok logger ->
+      Log.info logger "bad float" [
+        LogField.float "x" (Float.fromBits 0x7ff0000000000000)
+      ] |> Result.isErr)
+  Expect.isTrue "(match checked with | Err _ -> false | Ok logger -> Log.info logger \"bad float\" [ LogField.float \"x\" (Float.fromBits 0x7ff0000000000000) ] |> Result.isErr)" testActual
+
+let case004 _ =
+  let testActual =
+    Log.create Log.defaults (LogSink.combine (LogSink.discard "same") (LogSink.discard "same")) |> Result.isErr
+  Expect.isTrue "Log.create Log.defaults (LogSink.combine (LogSink.discard \"same\") (LogSink.discard \"same\")) |> Result.isErr" testActual
 
 let fail = {
   emit = fun record -> Err (LogTypes.error LogTypes.Write "failed" "failure"),
@@ -29,26 +45,54 @@ let fail = {
 }
 
 let combined = Log.create Log.defaults (LogSink.combine fail (LogSink.discard "ok"))
-example: (match combined with
-| Err _ -> false
-| Ok logger ->
-  (match Log.info logger "test" [] with
-  | Ok _ -> false
-  | Err error ->
-    error.outcomes = [
-      { delivery = LogTypes.Completed, destination = "ok" }
-    ] && List.length error.failures = 1))
-example: (match combined with
-| Err _ -> false
-| Ok logger ->
-  LogBestEffort.info (LogBestEffort.fromChecked logger (fun _ -> ())) "handled" [] = ())
+
+let case005 _ =
+  let testActual =
+    (match combined with
+    | Err _ -> false
+    | Ok logger ->
+      (match Log.info logger "test" [] with
+      | Ok _ -> false
+      | Err error ->
+        error.outcomes = [
+          { delivery = LogTypes.Completed, destination = "ok" }
+        ] && List.length error.failures = 1))
+  Expect.isTrue "(match combined with | Err _ -> false | Ok logger -> (match Log.info logger \"test\" [] with | Ok _ -> false | Err error -> error.outcomes = [ { delivery = Log…" testActual
+
+let case006 _ =
+  let testActual =
+    (match combined with
+    | Err _ -> false
+    | Ok logger ->
+      LogBestEffort.info (LogBestEffort.fromChecked logger (fun _ -> ())) "handled" [] = ())
+  Expect.isTrue "(match combined with | Err _ -> false | Ok logger -> LogBestEffort.info (LogBestEffort.fromChecked logger (fun _ -> ())) \"handled\" [] = ())" testActual
 
 let prepared =
   Log.prepare Log.defaults "test" [
     LogField.int "x" 1
   ] LogTypes.Info (Log.entry "event" [LogField.int "x" 2])
-example: (prepared |> Result.map (Option.map (fun record ->
-  record.fields))) = Ok (Some (Json.Object [| ("x", Json.Number (JsonNumber.fromInt 2)) |]))
-example: Log.prepare Log.defaults "test" [] LogTypes.Debug (Log.entry "hidden" [
-  LogField.float "x" (Float.fromBits 0x7ff0000000000000)
-]) = Ok None
+
+let case007 _ =
+  let testActual =
+    (prepared |> Result.map (Option.map (fun record ->
+      record.fields))) = Ok (Some (Json.Object [| ("x", Json.Number (JsonNumber.fromInt 2)) |]))
+  Expect.isTrue "(prepared |> Result.map (Option.map (fun record -> record.fields))) = Ok (Some (Json.Object [| (\"x\", Json.Number (JsonNumber.fromInt 2)) |]))" testActual
+
+let case008 _ =
+  let testActual =
+    Log.prepare Log.defaults "test" [] LogTypes.Debug (Log.entry "hidden" [
+      LogField.float "x" (Float.fromBits 0x7ff0000000000000)
+    ]) = Ok None
+  Expect.isTrue "Log.prepare Log.defaults \"test\" [] LogTypes.Debug (Log.entry \"hidden\" [ LogField.float \"x\" (Float.fromBits 0x7ff0000000000000) ]) = Ok None" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LogLoggerSpec" [
+  Test.test "(match checked with | Err _ -> false | Ok logger -> Log.debugLazy logger (fun _ -> Log.entry (Int.toString (1 / 0)) []) = Ok LogTypes.Filtered)" case001,
+  Test.test "(match checked with | Err _ -> false | Ok logger -> Log.info logger \"hello\" [] = Ok (LogTypes.Emitted [ { delivery = LogTypes.Completed, destination = \"test\"…" case002,
+  Test.test "(match checked with | Err _ -> false | Ok logger -> Log.info logger \"bad float\" [ LogField.float \"x\" (Float.fromBits 0x7ff0000000000000) ] |> Result.isErr)" case003,
+  Test.test "Log.create Log.defaults (LogSink.combine (LogSink.discard \"same\") (LogSink.discard \"same\")) |> Result.isErr" case004,
+  Test.test "(match combined with | Err _ -> false | Ok logger -> (match Log.info logger \"test\" [] with | Ok _ -> false | Err error -> error.outcomes = [ { delivery = Log…" case005,
+  Test.test "(match combined with | Err _ -> false | Ok logger -> LogBestEffort.info (LogBestEffort.fromChecked logger (fun _ -> ())) \"handled\" [] = ())" case006,
+  Test.test "(prepared |> Result.map (Option.map (fun record -> record.fields))) = Ok (Some (Json.Object [| (\"x\", Json.Number (JsonNumber.fromInt 2)) |]))" case007,
+  Test.test "Log.prepare Log.defaults \"test\" [] LogTypes.Debug (Log.entry \"hidden\" [ LogField.float \"x\" (Float.fromBits 0x7ff0000000000000) ]) = Ok None" case008
+]

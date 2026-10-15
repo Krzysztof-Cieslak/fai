@@ -27,6 +27,9 @@ runs:
         fai build -C packages postgres/examples/WireChecks.fai --out "$RUNNER_TEMP/postgres-wire.exe"
         "$RUNNER_TEMP/postgres-wire.exe" | tee "$RUNNER_TEMP/postgres-wire-aot.log"
         grep -Fx 'PostgreSQL wire checks passed' "$RUNNER_TEMP/postgres-wire-aot.log"
+    - name: Named PostgreSQL integration suites
+      shell: bash
+      run: python scripts/tests/postgres_suites.py
     - name: Configure a verified TLS endpoint
       if: runner.os == 'Linux'
       shell: bash
@@ -57,3 +60,4 @@ runs:
         grep -Fx 'PostgreSQL checks passed' "$RUNNER_TEMP/postgres-tls.log"
         "$RUNNER_TEMP/postgres-check.exe" | tee "$RUNNER_TEMP/postgres-tls-aot.log"
         grep -Fx 'PostgreSQL checks passed' "$RUNNER_TEMP/postgres-tls-aot.log"
+        python scripts/tests/postgres_suites.py

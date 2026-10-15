@@ -1,53 +1,133 @@
 module RenderingSpec
 
 let screen = TuiScreen.create 100 4 2
-example: Result.isErr (TuiScreen.create 10 4 3)
-example: Result.isErr (TuiScreen.create 100 (-1) 2)
-example: Result.isErr (TuiScreen.create 100 9223372036854775807 2)
-example: Result.map TuiScreen.lines screen = Ok [| "    ", "    " |]
+
+let case001 _ =
+  let testActual = Result.isErr (TuiScreen.create 10 4 3)
+  Expect.isTrue "Result.isErr (TuiScreen.create 10 4 3)" testActual
+
+let case002 _ =
+  let testActual = Result.isErr (TuiScreen.create 100 (-1) 2)
+  Expect.isTrue "Result.isErr (TuiScreen.create 100 (-1) 2)" testActual
+
+let case003 _ =
+  let testActual = Result.isErr (TuiScreen.create 100 9223372036854775807 2)
+  Expect.isTrue "Result.isErr (TuiScreen.create 100 9223372036854775807 2)" testActual
+
+let case004 _ =
+  let testActual = Result.map TuiScreen.lines screen
+  let testExpected = Ok [| "    ", "    " |]
+  Expect.equal ((Test.result (Test.array Test.string) Test.string)).show testExpected testActual
 
 let wide =
   Result.map (fun screen ->
     TuiScreen.put false (TuiScreen.bounds screen) 1 0 TuiStyle.normal "界" screen) screen
-example: Result.map TuiScreen.lines wide = Ok [| " 界 ", "    " |]
+
+let case005 _ =
+  let testActual = Result.map TuiScreen.lines wide
+  let testExpected = Ok [| " 界 ", "    " |]
+  Expect.equal ((Test.result (Test.array Test.string) Test.string)).show testExpected testActual
 
 let overwritten =
   Result.map (fun screen ->
     TuiScreen.put false (TuiScreen.bounds screen) 2 0 TuiStyle.normal "x" screen) wide
-example: Result.map TuiScreen.lines overwritten = Ok [| "  x ", "    " |]
-example: Result.map (fun screen ->
-  TuiScreen.lines (TuiScreen.put false (TuiScreen.bounds screen) 3 0 TuiStyle.normal "界" screen)) screen = Ok [|
-  "    ",
-  "    "
-|]
-example: Result.map (fun screen ->
-  Bytes.toString (TuiScreen.diff (Some screen) screen)) screen = Ok (Some "\u{1b}[?25l\u{1b}[0m\u{1b}[?25l")
+
+let case006 _ =
+  let testActual = Result.map TuiScreen.lines overwritten
+  let testExpected = Ok [| "  x ", "    " |]
+  Expect.equal ((Test.result (Test.array Test.string) Test.string)).show testExpected testActual
+
+let case007 _ =
+  let testActual =
+    Result.map (fun screen ->
+      TuiScreen.lines (TuiScreen.put false (TuiScreen.bounds screen) 3 0 TuiStyle.normal "界" screen)) screen
+  let testExpected = Ok [| "    ", "    " |]
+  Expect.equal ((Test.result (Test.array Test.string) Test.string)).show testExpected testActual
+
+let case008 _ =
+  let testActual =
+    Result.map (fun screen -> Bytes.toString (TuiScreen.diff (Some screen) screen)) screen
+  let testExpected = Ok (Some "\u{1b}[?25l\u{1b}[0m\u{1b}[?25l")
+  Expect.equal ((Test.result (Test.option Test.string) Test.string)).show testExpected testActual
 
 let tree = Ui.column [
   Ui.gap 1
 ] [Ui.text [] "hello", Ui.button (Ui.id "go") [] { label = "Go", onPress = 7 }]
 
 let frame = TuiLayout.render (TuiLayout.context 10 4) TuiState.empty tree
-example: Result.map (fun frame -> frame.state.focus) frame = Ok (Some (Ui.id "go"))
-example: Result.map (fun frame ->
-  TuiScreen.lines frame.screen) frame = Ok [|
-  "hello     ",
-  "          ",
-  "[ Go ]    ",
-  "          "
-|]
-example: Result.map (fun frame ->
-  (TuiInput.step TuiInput.defaults (TerminalHost.Key {
-    code = "Enter",
-    modifiers = 0,
-    repeat = false
-  }) frame).messages) frame = Ok [7]
-example: Result.isErr (TuiLayout.render (TuiLayout.context 10 4) TuiState.empty (Ui.column [] [
-  Ui.button (Ui.id "same") [] { label = "A", onPress = 1 },
-  Ui.button (Ui.id "same") [] { label = "B", onPress = 2 }
-]))
-example: (Ui.describe (Ui.text [Ui.padding 1, Ui.padding 3] "x")).props.padding = 3
-example: Ui.childId (Ui.id "a") "b:c" <> Ui.childId (Ui.id "a:b") "c"
-forall text: String.contains (TuiText.sanitize text) "\u{1b}" = false
-forall text: String.joinArray "" (TextCells.graphemes text) = text
-forall text: TuiText.slice 0 (TuiText.length text) text = text
+
+let case009 _ =
+  let testActual = Result.map (fun frame -> frame.state.focus) frame = Ok (Some (Ui.id "go"))
+  Expect.isTrue "Result.map (fun frame -> frame.state.focus) frame = Ok (Some (Ui.id \"go\"))" testActual
+
+let case010 _ =
+  let testActual = Result.map (fun frame -> TuiScreen.lines frame.screen) frame
+  let testExpected = Ok [| "hello     ", "          ", "[ Go ]    ", "          " |]
+  Expect.equal ((Test.result (Test.array Test.string) Test.string)).show testExpected testActual
+
+let case011 _ =
+  let testActual =
+    Result.map (fun frame ->
+      (TuiInput.step TuiInput.defaults (TerminalHost.Key {
+        code = "Enter",
+        modifiers = 0,
+        repeat = false
+      }) frame).messages) frame
+  let testExpected = Ok [7]
+  Expect.equal ((Test.result (Test.list Test.int) Test.string)).show testExpected testActual
+
+let case012 _ =
+  let testActual =
+    Result.isErr (TuiLayout.render (TuiLayout.context 10 4) TuiState.empty (Ui.column [] [
+      Ui.button (Ui.id "same") [] { label = "A", onPress = 1 },
+      Ui.button (Ui.id "same") [] { label = "B", onPress = 2 }
+    ]))
+  Expect.isTrue "Result.isErr (TuiLayout.render (TuiLayout.context 10 4) TuiState.empty (Ui.column [] [ Ui.button (Ui.id \"same\") [] { label = \"A\", onPress = 1 }, Ui.button (U…" testActual
+
+let case013 _ =
+  let testActual = (Ui.describe (Ui.text [Ui.padding 1, Ui.padding 3] "x")).props.padding
+  let testExpected = 3
+  Expect.equal (Test.int).show testExpected testActual
+
+let case014 _ =
+  let testActual = Ui.childId (Ui.id "a") "b:c" <> Ui.childId (Ui.id "a:b") "c"
+  Expect.isTrue "Ui.childId (Ui.id \"a\") \"b:c\" <> Ui.childId (Ui.id \"a:b\") \"c\"" testActual
+
+let case015 testInput =
+  let text = testInput
+  let testActual = String.contains (TuiText.sanitize text) "\u{1b}"
+  let testExpected = false
+  Expect.equal (Test.bool).show testExpected testActual
+
+let case016 testInput =
+  let text = testInput
+  let testActual = String.joinArray "" (TextCells.graphemes text)
+  let testExpected = text
+  Expect.equal (Test.string).show testExpected testActual
+
+let case017 testInput =
+  let text = testInput
+  let testActual = TuiText.slice 0 (TuiText.length text) text
+  let testExpected = text
+  Expect.equal (Test.string).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "RenderingSpec" [
+  Test.test "Result.isErr (TuiScreen.create 10 4 3)" case001,
+  Test.test "Result.isErr (TuiScreen.create 100 (-1) 2)" case002,
+  Test.test "Result.isErr (TuiScreen.create 100 9223372036854775807 2)" case003,
+  Test.test "Result.map TuiScreen.lines screen = Ok [| \" \", \" \" |]" case004,
+  Test.test "Result.map TuiScreen.lines wide = Ok [| \" 界 \", \" \" |]" case005,
+  Test.test "Result.map TuiScreen.lines overwritten = Ok [| \" x \", \" \" |]" case006,
+  Test.test "Result.map (fun screen -> TuiScreen.lines (TuiScreen.put false (TuiScreen.bounds screen) 3 0 TuiStyle.normal \"界\" screen)) screen = Ok [| \" \", \" \" |]" case007,
+  Test.test "Result.map (fun screen -> Bytes.toString (TuiScreen.diff (Some screen) screen)) screen = Ok (Some \"\\u{1b}[?25l\\u{1b}[0m\\u{1b}[?25l\")" case008,
+  Test.test "Result.map (fun frame -> frame.state.focus) frame = Ok (Some (Ui.id \"go\"))" case009,
+  Test.test "Result.map (fun frame -> TuiScreen.lines frame.screen) frame = Ok [| \"hello \", \" \", \"[ Go ] \", \" \" |]" case010,
+  Test.test "Result.map (fun frame -> (TuiInput.step TuiInput.defaults (TerminalHost.Key { code = \"Enter\", modifiers = 0, repeat = false }) frame).messages) frame = Ok [7]" case011,
+  Test.test "Result.isErr (TuiLayout.render (TuiLayout.context 10 4) TuiState.empty (Ui.column [] [ Ui.button (Ui.id \"same\") [] { label = \"A\", onPress = 1 }, Ui.button (U…" case012,
+  Test.test "(Ui.describe (Ui.text [Ui.padding 1, Ui.padding 3] \"x\")).props.padding = 3" case013,
+  Test.test "Ui.childId (Ui.id \"a\") \"b:c\" <> Ui.childId (Ui.id \"a:b\") \"c\"" case014,
+  Test.property "property: String.contains (TuiText.sanitize text) \"\\u{1b}\" = false" Test.string case015,
+  Test.property "property: String.joinArray \"\" (TextCells.graphemes text) = text" Test.string case016,
+  Test.property "property: TuiText.slice 0 (TuiText.length text) text = text" Test.string case017
+]

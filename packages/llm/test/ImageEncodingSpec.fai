@@ -8,19 +8,33 @@ let imageRequest =
 let message content = LlmJson.array [
   LlmJson.object [("role", Json.String "user"), ("content", LlmJson.array content)]
 ]
-example: Result.map (LlmJson.get "input") (LlmOpenAI.encode Llm.limits imageRequest) = Ok (Some (message [
-  LlmJson.object [
-    ("type", Json.String "input_image"),
-    ("image_url", Json.String "data:image/png;base64,+/8=")
-  ]
-]))
-example: Result.map (LlmJson.get "messages") (LlmAnthropic.encode Llm.limits imageRequest) = Ok (Some (message [
-  LlmJson.object [
-    ("type", Json.String "image"),
-    ("source", LlmJson.object [
-      ("type", Json.String "base64"),
-      ("media_type", Json.String "image/png"),
-      ("data", Json.String "+/8=")
-    ])
-  ]
-]))
+
+let case001 _ =
+  let testActual =
+    Result.map (LlmJson.get "input") (LlmOpenAI.encode Llm.limits imageRequest) = Ok (Some (message [
+      LlmJson.object [
+        ("type", Json.String "input_image"),
+        ("image_url", Json.String "data:image/png;base64,+/8=")
+      ]
+    ]))
+  Expect.isTrue "Result.map (LlmJson.get \"input\") (LlmOpenAI.encode Llm.limits imageRequest) = Ok (Some (message [ LlmJson.object [ (\"type\", Json.String \"input_image\"), (\"ima…" testActual
+
+let case002 _ =
+  let testActual =
+    Result.map (LlmJson.get "messages") (LlmAnthropic.encode Llm.limits imageRequest) = Ok (Some (message [
+      LlmJson.object [
+        ("type", Json.String "image"),
+        ("source", LlmJson.object [
+          ("type", Json.String "base64"),
+          ("media_type", Json.String "image/png"),
+          ("data", Json.String "+/8=")
+        ])
+      ]
+    ]))
+  Expect.isTrue "Result.map (LlmJson.get \"messages\") (LlmAnthropic.encode Llm.limits imageRequest) = Ok (Some (message [ LlmJson.object [ (\"type\", Json.String \"image\"), (\"sou…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LlmImageEncodingSpec" [
+  Test.test "Result.map (LlmJson.get \"input\") (LlmOpenAI.encode Llm.limits imageRequest) = Ok (Some (message [ LlmJson.object [ (\"type\", Json.String \"input_image\"), (\"ima…" case001,
+  Test.test "Result.map (LlmJson.get \"messages\") (LlmAnthropic.encode Llm.limits imageRequest) = Ok (Some (message [ LlmJson.object [ (\"type\", Json.String \"image\"), (\"sou…" case002
+]

@@ -4,42 +4,188 @@ let kind expected result =
   match result with
   | Err error -> error.kind = expected && error.offset = None
   | Ok _ -> false
-example: Hex.encodedLength 0 = Ok 0
-example: Hex.encodedLength 3 = Ok 6
-example: Hex.encodedLength 4611686018427387903 = Ok 9223372036854775806
-example: kind Encoding.Overflow (Hex.encodedLength 4611686018427387904)
-example: kind Encoding.InvalidLength (Hex.encodedLength (-1))
-example: kind Encoding.InvalidLength (Base64.encodedLength (-9223372036854775808))
-example: Base64.encodedLength 0 = Ok 0
-example: Base64.encodedLength 1 = Ok 4
-example: Base64.encodedLength 2 = Ok 4
-example: Base64.encodedLength 3 = Ok 4
-example: Base64.encodedLength 4 = Ok 8
-example: Base64Url.encodedLength 1 = Ok 2
-example: Base64Url.encodedLength 2 = Ok 3
-example: Base64Url.encodedLength 3 = Ok 4
-example: Base64Url.encodedLength 4 = Ok 6
-example: Base64.encodedLength 6917529027641081853 = Ok 9223372036854775804
-example: kind Encoding.Overflow (Base64.encodedLength 6917529027641081854)
-example: Base64Url.encodedLength 6917529027641081855 = Ok 9223372036854775807
-example: kind Encoding.Overflow (Base64Url.encodedLength 6917529027641081856)
-example: Base32.encodedLength 0 = Ok 0
-example: Base32.encodedLength 1 = Ok 8
-example: Base32.encodedLength 5 = Ok 8
-example: Base32.encodedLength 6 = Ok 16
-example: Base32.encodedLengthWith { padding = Encoding.Unpadded } 1 = Ok 2
-example: Base32.encodedLengthWith { padding = Encoding.Unpadded } 2 = Ok 4
-example: Base32.encodedLengthWith { padding = Encoding.Unpadded } 3 = Ok 5
-example: Base32.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7
-example: Base32.encodedLength 5764607523034234875 = Ok 9223372036854775800
-example: kind Encoding.Overflow (Base32.encodedLength 5764607523034234876)
-example: Base32.encodedLengthWith {
-  padding = Encoding.Unpadded
-} 5764607523034234879 = Ok 9223372036854775807
-example: kind Encoding.Overflow (Base32.encodedLengthWith {
-  padding = Encoding.Unpadded
-} 5764607523034234880)
-example: kind Encoding.Overflow (Base32Hex.encodedLength 9223372036854775807)
-example: Base32Hex.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7
-example: Hex.encodedLengthWith { letterCase = Encoding.Uppercase } 2 = Ok 4
-example: Base64Url.encodedLengthWith { padding = Encoding.Padded } 1 = Ok 4
+
+let case001 _ =
+  let testActual = Hex.encodedLength 0 = Ok 0
+  Expect.isTrue "Hex.encodedLength 0 = Ok 0" testActual
+
+let case002 _ =
+  let testActual = Hex.encodedLength 3 = Ok 6
+  Expect.isTrue "Hex.encodedLength 3 = Ok 6" testActual
+
+let case003 _ =
+  let testActual = Hex.encodedLength 4611686018427387903 = Ok 9223372036854775806
+  Expect.isTrue "Hex.encodedLength 4611686018427387903 = Ok 9223372036854775806" testActual
+
+let case004 _ =
+  let testActual = kind Encoding.Overflow (Hex.encodedLength 4611686018427387904)
+  Expect.isTrue "kind Encoding.Overflow (Hex.encodedLength 4611686018427387904)" testActual
+
+let case005 _ =
+  let testActual = kind Encoding.InvalidLength (Hex.encodedLength (-1))
+  Expect.isTrue "kind Encoding.InvalidLength (Hex.encodedLength (-1))" testActual
+
+let case006 _ =
+  let testActual = kind Encoding.InvalidLength (Base64.encodedLength (-9223372036854775808))
+  Expect.isTrue "kind Encoding.InvalidLength (Base64.encodedLength (-9223372036854775808))" testActual
+
+let case007 _ =
+  let testActual = Base64.encodedLength 0 = Ok 0
+  Expect.isTrue "Base64.encodedLength 0 = Ok 0" testActual
+
+let case008 _ =
+  let testActual = Base64.encodedLength 1 = Ok 4
+  Expect.isTrue "Base64.encodedLength 1 = Ok 4" testActual
+
+let case009 _ =
+  let testActual = Base64.encodedLength 2 = Ok 4
+  Expect.isTrue "Base64.encodedLength 2 = Ok 4" testActual
+
+let case010 _ =
+  let testActual = Base64.encodedLength 3 = Ok 4
+  Expect.isTrue "Base64.encodedLength 3 = Ok 4" testActual
+
+let case011 _ =
+  let testActual = Base64.encodedLength 4 = Ok 8
+  Expect.isTrue "Base64.encodedLength 4 = Ok 8" testActual
+
+let case012 _ =
+  let testActual = Base64Url.encodedLength 1 = Ok 2
+  Expect.isTrue "Base64Url.encodedLength 1 = Ok 2" testActual
+
+let case013 _ =
+  let testActual = Base64Url.encodedLength 2 = Ok 3
+  Expect.isTrue "Base64Url.encodedLength 2 = Ok 3" testActual
+
+let case014 _ =
+  let testActual = Base64Url.encodedLength 3 = Ok 4
+  Expect.isTrue "Base64Url.encodedLength 3 = Ok 4" testActual
+
+let case015 _ =
+  let testActual = Base64Url.encodedLength 4 = Ok 6
+  Expect.isTrue "Base64Url.encodedLength 4 = Ok 6" testActual
+
+let case016 _ =
+  let testActual = Base64.encodedLength 6917529027641081853 = Ok 9223372036854775804
+  Expect.isTrue "Base64.encodedLength 6917529027641081853 = Ok 9223372036854775804" testActual
+
+let case017 _ =
+  let testActual = kind Encoding.Overflow (Base64.encodedLength 6917529027641081854)
+  Expect.isTrue "kind Encoding.Overflow (Base64.encodedLength 6917529027641081854)" testActual
+
+let case018 _ =
+  let testActual = Base64Url.encodedLength 6917529027641081855 = Ok 9223372036854775807
+  Expect.isTrue "Base64Url.encodedLength 6917529027641081855 = Ok 9223372036854775807" testActual
+
+let case019 _ =
+  let testActual = kind Encoding.Overflow (Base64Url.encodedLength 6917529027641081856)
+  Expect.isTrue "kind Encoding.Overflow (Base64Url.encodedLength 6917529027641081856)" testActual
+
+let case020 _ =
+  let testActual = Base32.encodedLength 0 = Ok 0
+  Expect.isTrue "Base32.encodedLength 0 = Ok 0" testActual
+
+let case021 _ =
+  let testActual = Base32.encodedLength 1 = Ok 8
+  Expect.isTrue "Base32.encodedLength 1 = Ok 8" testActual
+
+let case022 _ =
+  let testActual = Base32.encodedLength 5 = Ok 8
+  Expect.isTrue "Base32.encodedLength 5 = Ok 8" testActual
+
+let case023 _ =
+  let testActual = Base32.encodedLength 6 = Ok 16
+  Expect.isTrue "Base32.encodedLength 6 = Ok 16" testActual
+
+let case024 _ =
+  let testActual = Base32.encodedLengthWith { padding = Encoding.Unpadded } 1 = Ok 2
+  Expect.isTrue "Base32.encodedLengthWith { padding = Encoding.Unpadded } 1 = Ok 2" testActual
+
+let case025 _ =
+  let testActual = Base32.encodedLengthWith { padding = Encoding.Unpadded } 2 = Ok 4
+  Expect.isTrue "Base32.encodedLengthWith { padding = Encoding.Unpadded } 2 = Ok 4" testActual
+
+let case026 _ =
+  let testActual = Base32.encodedLengthWith { padding = Encoding.Unpadded } 3 = Ok 5
+  Expect.isTrue "Base32.encodedLengthWith { padding = Encoding.Unpadded } 3 = Ok 5" testActual
+
+let case027 _ =
+  let testActual = Base32.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7
+  Expect.isTrue "Base32.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7" testActual
+
+let case028 _ =
+  let testActual = Base32.encodedLength 5764607523034234875 = Ok 9223372036854775800
+  Expect.isTrue "Base32.encodedLength 5764607523034234875 = Ok 9223372036854775800" testActual
+
+let case029 _ =
+  let testActual = kind Encoding.Overflow (Base32.encodedLength 5764607523034234876)
+  Expect.isTrue "kind Encoding.Overflow (Base32.encodedLength 5764607523034234876)" testActual
+
+let case030 _ =
+  let testActual =
+    Base32.encodedLengthWith {
+      padding = Encoding.Unpadded
+    } 5764607523034234879 = Ok 9223372036854775807
+  Expect.isTrue "Base32.encodedLengthWith { padding = Encoding.Unpadded } 5764607523034234879 = Ok 9223372036854775807" testActual
+
+let case031 _ =
+  let testActual =
+    kind Encoding.Overflow (Base32.encodedLengthWith {
+      padding = Encoding.Unpadded
+    } 5764607523034234880)
+  Expect.isTrue "kind Encoding.Overflow (Base32.encodedLengthWith { padding = Encoding.Unpadded } 5764607523034234880)" testActual
+
+let case032 _ =
+  let testActual = kind Encoding.Overflow (Base32Hex.encodedLength 9223372036854775807)
+  Expect.isTrue "kind Encoding.Overflow (Base32Hex.encodedLength 9223372036854775807)" testActual
+
+let case033 _ =
+  let testActual = Base32Hex.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7
+  Expect.isTrue "Base32Hex.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7" testActual
+
+let case034 _ =
+  let testActual = Hex.encodedLengthWith { letterCase = Encoding.Uppercase } 2 = Ok 4
+  Expect.isTrue "Hex.encodedLengthWith { letterCase = Encoding.Uppercase } 2 = Ok 4" testActual
+
+let case035 _ =
+  let testActual = Base64Url.encodedLengthWith { padding = Encoding.Padded } 1 = Ok 4
+  Expect.isTrue "Base64Url.encodedLengthWith { padding = Encoding.Padded } 1 = Ok 4" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "EncodingLengthSpec" [
+  Test.test "Hex.encodedLength 0 = Ok 0" case001,
+  Test.test "Hex.encodedLength 3 = Ok 6" case002,
+  Test.test "Hex.encodedLength 4611686018427387903 = Ok 9223372036854775806" case003,
+  Test.test "kind Encoding.Overflow (Hex.encodedLength 4611686018427387904)" case004,
+  Test.test "kind Encoding.InvalidLength (Hex.encodedLength (-1))" case005,
+  Test.test "kind Encoding.InvalidLength (Base64.encodedLength (-9223372036854775808))" case006,
+  Test.test "Base64.encodedLength 0 = Ok 0" case007,
+  Test.test "Base64.encodedLength 1 = Ok 4" case008,
+  Test.test "Base64.encodedLength 2 = Ok 4" case009,
+  Test.test "Base64.encodedLength 3 = Ok 4" case010,
+  Test.test "Base64.encodedLength 4 = Ok 8" case011,
+  Test.test "Base64Url.encodedLength 1 = Ok 2" case012,
+  Test.test "Base64Url.encodedLength 2 = Ok 3" case013,
+  Test.test "Base64Url.encodedLength 3 = Ok 4" case014,
+  Test.test "Base64Url.encodedLength 4 = Ok 6" case015,
+  Test.test "Base64.encodedLength 6917529027641081853 = Ok 9223372036854775804" case016,
+  Test.test "kind Encoding.Overflow (Base64.encodedLength 6917529027641081854)" case017,
+  Test.test "Base64Url.encodedLength 6917529027641081855 = Ok 9223372036854775807" case018,
+  Test.test "kind Encoding.Overflow (Base64Url.encodedLength 6917529027641081856)" case019,
+  Test.test "Base32.encodedLength 0 = Ok 0" case020,
+  Test.test "Base32.encodedLength 1 = Ok 8" case021,
+  Test.test "Base32.encodedLength 5 = Ok 8" case022,
+  Test.test "Base32.encodedLength 6 = Ok 16" case023,
+  Test.test "Base32.encodedLengthWith { padding = Encoding.Unpadded } 1 = Ok 2" case024,
+  Test.test "Base32.encodedLengthWith { padding = Encoding.Unpadded } 2 = Ok 4" case025,
+  Test.test "Base32.encodedLengthWith { padding = Encoding.Unpadded } 3 = Ok 5" case026,
+  Test.test "Base32.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7" case027,
+  Test.test "Base32.encodedLength 5764607523034234875 = Ok 9223372036854775800" case028,
+  Test.test "kind Encoding.Overflow (Base32.encodedLength 5764607523034234876)" case029,
+  Test.test "Base32.encodedLengthWith { padding = Encoding.Unpadded } 5764607523034234879 = Ok 9223372036854775807" case030,
+  Test.test "kind Encoding.Overflow (Base32.encodedLengthWith { padding = Encoding.Unpadded } 5764607523034234880)" case031,
+  Test.test "kind Encoding.Overflow (Base32Hex.encodedLength 9223372036854775807)" case032,
+  Test.test "Base32Hex.encodedLengthWith { padding = Encoding.Unpadded } 4 = Ok 7" case033,
+  Test.test "Hex.encodedLengthWith { letterCase = Encoding.Uppercase } 2 = Ok 4" case034,
+  Test.test "Base64Url.encodedLengthWith { padding = Encoding.Padded } 1 = Ok 4" case035
+]

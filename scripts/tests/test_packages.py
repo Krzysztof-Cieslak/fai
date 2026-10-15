@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -270,6 +271,19 @@ class IntegrationMetadataTests(unittest.TestCase):
     def test_unterminated_template_is_rejected(self):
         with self.assertRaisesRegex(packages.PackageError, "unterminated integration template"):
             self.integration(args=["${fixture:missing"])
+
+
+class RepositoryTestStyleTests(unittest.TestCase):
+    def test_dedicated_fai_tests_use_named_cases_and_properties(self):
+        root = Path(__file__).resolve().parents[2] / "packages"
+        violations = []
+        for file in sorted(root.rglob("*.fai")):
+            if "test" not in file.relative_to(root).parts or ".fai" in file.parts:
+                continue
+            for line, text in enumerate(file.read_text(encoding="utf-8").splitlines(), 1):
+                if re.match(r"\s*(example\s*:|forall\s+)", text):
+                    violations.append(f"{file.relative_to(root)}:{line}")
+        self.assertEqual(violations, [], "dedicated tests must use Test.test/Test.property, not inline documentation contracts")
 
 
 if __name__ == "__main__":

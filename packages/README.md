@@ -22,8 +22,10 @@ example packages. Select them by names such as `llm-examples`, or run an explici
 example file. Their parent libraries do not acquire example-only dependencies.
 
 Repository CI reads normal and development dependencies directly from these
-manifests. Native `example` and `forall` declarations are the library tests;
-compiler-specific JIT/AOT, transport, and differential fixtures live in
+manifests. Inline `example` and `forall` declarations document nearby library
+implementations. Dedicated test sources use named `Test.test` cases and
+`Test.property` laws with explicit generators; `fai test` runs both forms.
+Compiler-specific JIT/AOT, transport, and differential fixtures live in
 `scripts/tests/`.
 Optional `ci.json` files contain only integration-program and external-fixture
 metadata; package identities and dependency edges come from `fai.toml`.

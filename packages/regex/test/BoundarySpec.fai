@@ -4,66 +4,146 @@ let test pattern input =
   match Regex.compile pattern with
   | Err error -> Err error
   | Ok regex -> Regex.isMatch regex input
-example: test "\\d+" "𝟚" = Ok true
-example: test "[0-9]+" "𝟚" = Ok false
-example: test "(?i)δ" "Δ" = Ok true
-example: test "(?mR)^x$" "\r\nx\r\n" = Ok true
-example: (match Regex.compileWith { Regex.options with dotMatchesNewline = true } "." with
-| Ok regex -> Regex.isMatch regex "\n" = Ok true
-| _ -> false)
-example: (match Regex.compileWith { Regex.options with unicode = false } "." with
-| Err error -> error.kind = RegexTypes.Syntax
-| _ -> false)
-example: (match Regex.compile "(a)\\1" with
-| Err error -> error.kind = RegexTypes.Unsupported
-| _ -> false)
-example: (match Regex.compile "é[" with
-| Err error ->
-  error.location = Some {
-    byteEnd = 3,
-    byteStart = 2,
-    column = 2,
-    endColumn = 3,
-    endLine = 1,
-    line = 1
-  }
-| _ -> false)
-example: (match Regex.compile "a" with
-| Ok regex -> Regex.findFromByte (-1) regex "a" |> Result.isErr
-| _ -> false)
-example: (match Regex.compile "" with
-| Ok regex ->
-  (Regex.findFromChar 1 regex "é" |> Result.map (Option.map Regex.span)) = Ok (Some {
-    endByte = 2,
-    endChar = 1,
-    startByte = 2,
-    startChar = 1
-  })
-| _ -> false)
-example: (match Regex.compile "\\Aa" with
-| Ok regex -> Regex.findFromByte 1 regex "ba" = Ok None
-| _ -> false)
-example: (match Regex.compile "\\ba" with
-| Ok regex -> Regex.findFromByte 1 regex "ba" = Ok None
-| _ -> false)
-example: (match Regex.compile "" with
-| Ok regex -> Regex.replaceAll regex "x" "" = Ok "x"
-| _ -> false)
-example: (match Regex.compile "z" with
-| Ok regex ->
-  Regex.replaceNWithLimits { Regex.limits with
-    maxOutputBytes = 1
-  } 0 regex "" "long" |> Result.isErr
-| _ -> false)
-example: (match Regex.compile "a" with
-| Ok regex ->
-  (match RegexTemplate.compileWith { RegexTemplate.options with maxBytes = -1 } regex "" with
-  | Err error -> error.kind = RegexTypes.InvalidOptions
-  | _ -> false)
-| _ -> false)
-example: (match Regex.compile "(?<名>a)" with
-| Ok regex ->
-  (match RegexTemplate.compile regex "${名}" with
-  | Ok template -> RegexTemplate.replace template "a" = Ok "a"
-  | _ -> false)
-| _ -> false)
+
+let case001 _ =
+  let testActual = test "\\d+" "𝟚" = Ok true
+  Expect.isTrue "test \"\\\\d+\" \"𝟚\" = Ok true" testActual
+
+let case002 _ =
+  let testActual = test "[0-9]+" "𝟚" = Ok false
+  Expect.isTrue "test \"[0-9]+\" \"𝟚\" = Ok false" testActual
+
+let case003 _ =
+  let testActual = test "(?i)δ" "Δ" = Ok true
+  Expect.isTrue "test \"(?i)δ\" \"Δ\" = Ok true" testActual
+
+let case004 _ =
+  let testActual = test "(?mR)^x$" "\r\nx\r\n" = Ok true
+  Expect.isTrue "test \"(?mR)^x$\" \"\\r\\nx\\r\\n\" = Ok true" testActual
+
+let case005 _ =
+  let testActual =
+    (match Regex.compileWith { Regex.options with dotMatchesNewline = true } "." with
+    | Ok regex -> Regex.isMatch regex "\n" = Ok true
+    | _ -> false)
+  Expect.isTrue "(match Regex.compileWith { Regex.options with dotMatchesNewline = true } \".\" with | Ok regex -> Regex.isMatch regex \"\\n\" = Ok true | _ -> false)" testActual
+
+let case006 _ =
+  let testActual =
+    (match Regex.compileWith { Regex.options with unicode = false } "." with
+    | Err error -> error.kind = RegexTypes.Syntax
+    | _ -> false)
+  Expect.isTrue "(match Regex.compileWith { Regex.options with unicode = false } \".\" with | Err error -> error.kind = RegexTypes.Syntax | _ -> false)" testActual
+
+let case007 _ =
+  let testActual =
+    (match Regex.compile "(a)\\1" with
+    | Err error -> error.kind = RegexTypes.Unsupported
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"(a)\\\\1\" with | Err error -> error.kind = RegexTypes.Unsupported | _ -> false)" testActual
+
+let case008 _ =
+  let testActual =
+    (match Regex.compile "é[" with
+    | Err error ->
+      error.location = Some {
+        byteEnd = 3,
+        byteStart = 2,
+        column = 2,
+        endColumn = 3,
+        endLine = 1,
+        line = 1
+      }
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"é[\" with | Err error -> error.location = Some { byteEnd = 3, byteStart = 2, column = 2, endColumn = 3, endLine = 1, line = 1 } | _ -> f…" testActual
+
+let case009 _ =
+  let testActual =
+    (match Regex.compile "a" with
+    | Ok regex -> Regex.findFromByte (-1) regex "a" |> Result.isErr
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"a\" with | Ok regex -> Regex.findFromByte (-1) regex \"a\" |> Result.isErr | _ -> false)" testActual
+
+let case010 _ =
+  let testActual =
+    (match Regex.compile "" with
+    | Ok regex ->
+      (Regex.findFromChar 1 regex "é" |> Result.map (Option.map Regex.span)) = Ok (Some {
+        endByte = 2,
+        endChar = 1,
+        startByte = 2,
+        startChar = 1
+      })
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"\" with | Ok regex -> (Regex.findFromChar 1 regex \"é\" |> Result.map (Option.map Regex.span)) = Ok (Some { endByte = 2, endChar = 1, star…" testActual
+
+let case011 _ =
+  let testActual =
+    (match Regex.compile "\\Aa" with
+    | Ok regex -> Regex.findFromByte 1 regex "ba" = Ok None
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"\\\\Aa\" with | Ok regex -> Regex.findFromByte 1 regex \"ba\" = Ok None | _ -> false)" testActual
+
+let case012 _ =
+  let testActual =
+    (match Regex.compile "\\ba" with
+    | Ok regex -> Regex.findFromByte 1 regex "ba" = Ok None
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"\\\\ba\" with | Ok regex -> Regex.findFromByte 1 regex \"ba\" = Ok None | _ -> false)" testActual
+
+let case013 _ =
+  let testActual =
+    (match Regex.compile "" with
+    | Ok regex -> Regex.replaceAll regex "x" "" = Ok "x"
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"\" with | Ok regex -> Regex.replaceAll regex \"x\" \"\" = Ok \"x\" | _ -> false)" testActual
+
+let case014 _ =
+  let testActual =
+    (match Regex.compile "z" with
+    | Ok regex ->
+      Regex.replaceNWithLimits { Regex.limits with
+        maxOutputBytes = 1
+      } 0 regex "" "long" |> Result.isErr
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"z\" with | Ok regex -> Regex.replaceNWithLimits { Regex.limits with maxOutputBytes = 1 } 0 regex \"\" \"long\" |> Result.isErr | _ -> false)" testActual
+
+let case015 _ =
+  let testActual =
+    (match Regex.compile "a" with
+    | Ok regex ->
+      (match RegexTemplate.compileWith { RegexTemplate.options with maxBytes = -1 } regex "" with
+      | Err error -> error.kind = RegexTypes.InvalidOptions
+      | _ -> false)
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"a\" with | Ok regex -> (match RegexTemplate.compileWith { RegexTemplate.options with maxBytes = -1 } regex \"\" with | Err error -> error.…" testActual
+
+let case016 _ =
+  let testActual =
+    (match Regex.compile "(?<名>a)" with
+    | Ok regex ->
+      (match RegexTemplate.compile regex "${名}" with
+      | Ok template -> RegexTemplate.replace template "a" = Ok "a"
+      | _ -> false)
+    | _ -> false)
+  Expect.isTrue "(match Regex.compile \"(?<名>a)\" with | Ok regex -> (match RegexTemplate.compile regex \"${名}\" with | Ok template -> RegexTemplate.replace template \"a\" = Ok \"a\"…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "RegexBoundarySpec" [
+  Test.test "test \"\\\\d+\" \"𝟚\" = Ok true" case001,
+  Test.test "test \"[0-9]+\" \"𝟚\" = Ok false" case002,
+  Test.test "test \"(?i)δ\" \"Δ\" = Ok true" case003,
+  Test.test "test \"(?mR)^x$\" \"\\r\\nx\\r\\n\" = Ok true" case004,
+  Test.test "(match Regex.compileWith { Regex.options with dotMatchesNewline = true } \".\" with | Ok regex -> Regex.isMatch regex \"\\n\" = Ok true | _ -> false)" case005,
+  Test.test "(match Regex.compileWith { Regex.options with unicode = false } \".\" with | Err error -> error.kind = RegexTypes.Syntax | _ -> false)" case006,
+  Test.test "(match Regex.compile \"(a)\\\\1\" with | Err error -> error.kind = RegexTypes.Unsupported | _ -> false)" case007,
+  Test.test "(match Regex.compile \"é[\" with | Err error -> error.location = Some { byteEnd = 3, byteStart = 2, column = 2, endColumn = 3, endLine = 1, line = 1 } | _ -> f…" case008,
+  Test.test "(match Regex.compile \"a\" with | Ok regex -> Regex.findFromByte (-1) regex \"a\" |> Result.isErr | _ -> false)" case009,
+  Test.test "(match Regex.compile \"\" with | Ok regex -> (Regex.findFromChar 1 regex \"é\" |> Result.map (Option.map Regex.span)) = Ok (Some { endByte = 2, endChar = 1, star…" case010,
+  Test.test "(match Regex.compile \"\\\\Aa\" with | Ok regex -> Regex.findFromByte 1 regex \"ba\" = Ok None | _ -> false)" case011,
+  Test.test "(match Regex.compile \"\\\\ba\" with | Ok regex -> Regex.findFromByte 1 regex \"ba\" = Ok None | _ -> false)" case012,
+  Test.test "(match Regex.compile \"\" with | Ok regex -> Regex.replaceAll regex \"x\" \"\" = Ok \"x\" | _ -> false)" case013,
+  Test.test "(match Regex.compile \"z\" with | Ok regex -> Regex.replaceNWithLimits { Regex.limits with maxOutputBytes = 1 } 0 regex \"\" \"long\" |> Result.isErr | _ -> false)" case014,
+  Test.test "(match Regex.compile \"a\" with | Ok regex -> (match RegexTemplate.compileWith { RegexTemplate.options with maxBytes = -1 } regex \"\" with | Err error -> error.…" case015,
+  Test.test "(match Regex.compile \"(?<名>a)\" with | Ok regex -> (match RegexTemplate.compile regex \"${名}\" with | Ok template -> RegexTemplate.replace template \"a\" = Ok \"a\"…" case016
+]

@@ -1,24 +1,96 @@
 module ScreenSpec
 
-example: Result.isErr (TuiScreen.create 100 0 9223372036854775807)
-example: Result.isErr (TuiScreen.create 100 9223372036854775807 0)
-example: TuiText.sanitize "a\u{1b}[2J\r\nb" = "a�[2J\nb"
-example: TuiText.sanitize "a\u{85}b" = "a�b"
-example: TuiText.startForCaret false 3 3 "界界x" = 1
-example: TuiText.indexAt false 10 0 1 "界x" = 0
-example: TuiText.indexAt false 10 0 2 "界x" = 1
-example: TuiText.indexAt false 2 1 0 "ab界x" = 2
-example: TuiText.wrap false 0 4 "text" = [||]
-example: TuiText.slice (-1) 1 "a\u{301}b" = "a\u{301}"
-forall text: TuiText.sanitize (TuiText.sanitize text) = TuiText.sanitize text
+let case001 _ =
+  let testActual = Result.isErr (TuiScreen.create 100 0 9223372036854775807)
+  Expect.isTrue "Result.isErr (TuiScreen.create 100 0 9223372036854775807)" testActual
+
+let case002 _ =
+  let testActual = Result.isErr (TuiScreen.create 100 9223372036854775807 0)
+  Expect.isTrue "Result.isErr (TuiScreen.create 100 9223372036854775807 0)" testActual
+
+let case003 _ =
+  let testActual = TuiText.sanitize "a\u{1b}[2J\r\nb"
+  let testExpected = "a�[2J\nb"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case004 _ =
+  let testActual = TuiText.sanitize "a\u{85}b"
+  let testExpected = "a�b"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case005 _ =
+  let testActual = TuiText.startForCaret false 3 3 "界界x"
+  let testExpected = 1
+  Expect.equal (Test.int).show testExpected testActual
+
+let case006 _ =
+  let testActual = TuiText.indexAt false 10 0 1 "界x"
+  let testExpected = 0
+  Expect.equal (Test.int).show testExpected testActual
+
+let case007 _ =
+  let testActual = TuiText.indexAt false 10 0 2 "界x"
+  let testExpected = 1
+  Expect.equal (Test.int).show testExpected testActual
+
+let case008 _ =
+  let testActual = TuiText.indexAt false 2 1 0 "ab界x"
+  let testExpected = 2
+  Expect.equal (Test.int).show testExpected testActual
+
+let case009 _ =
+  let testActual = TuiText.wrap false 0 4 "text"
+  let testExpected = [||]
+  Expect.equal ((Test.array Test.string)).show testExpected testActual
+
+let case010 _ =
+  let testActual = TuiText.slice (-1) 1 "a\u{301}b"
+  let testExpected = "a\u{301}"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case011 testInput =
+  let text = testInput
+  let testActual = TuiText.sanitize (TuiText.sanitize text)
+  let testExpected = TuiText.sanitize text
+  Expect.equal (Test.string).show testExpected testActual
 
 let blank = TuiScreen.create 12 4 3
-example: Result.map TuiScreen.size blank = Ok (4, 3)
-example: Result.isErr (TuiScreen.create 11 4 3)
-example: Result.map (fun screen -> TuiScreen.cell (-1) 0 screen) blank = Ok None
-example: Result.map (fun screen ->
-  TuiScreen.lines (TuiScreen.put false (TuiScreen.bounds screen) 4 0 TuiStyle.normal "x" screen)) blank = Ok [|
-  "    ",
-  "    ",
-  "    "
-|]
+
+let case012 _ =
+  let testActual = Result.map TuiScreen.size blank
+  let testExpected = Ok (4, 3)
+  Expect.equal ((Test.result (Test.tuple2 Test.int Test.int) Test.string)).show testExpected testActual
+
+let case013 _ =
+  let testActual = Result.isErr (TuiScreen.create 11 4 3)
+  Expect.isTrue "Result.isErr (TuiScreen.create 11 4 3)" testActual
+
+let case014 _ =
+  let testActual = Result.map (fun screen -> TuiScreen.cell (-1) 0 screen) blank = Ok None
+  Expect.isTrue "Result.map (fun screen -> TuiScreen.cell (-1) 0 screen) blank = Ok None" testActual
+
+let case015 _ =
+  let testActual =
+    Result.map (fun screen ->
+      TuiScreen.lines (TuiScreen.put false (TuiScreen.bounds screen) 4 0 TuiStyle.normal "x" screen)) blank
+  let testExpected = Ok [| "    ", "    ", "    " |]
+  Expect.equal ((Test.result (Test.array Test.string) Test.string)).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "ScreenSpec" [
+  Test.test "Result.isErr (TuiScreen.create 100 0 9223372036854775807)" case001,
+  Test.test "Result.isErr (TuiScreen.create 100 9223372036854775807 0)" case002,
+  Test.test "TuiText.sanitize \"a\\u{1b}[2J\\r\\nb\" = \"a�[2J\\nb\"" case003,
+  Test.test "TuiText.sanitize \"a\\u{85}b\" = \"a�b\"" case004,
+  Test.test "TuiText.startForCaret false 3 3 \"界界x\" = 1" case005,
+  Test.test "TuiText.indexAt false 10 0 1 \"界x\" = 0" case006,
+  Test.test "TuiText.indexAt false 10 0 2 \"界x\" = 1" case007,
+  Test.test "TuiText.indexAt false 2 1 0 \"ab界x\" = 2" case008,
+  Test.test "TuiText.wrap false 0 4 \"text\" = [||]" case009,
+  Test.test "TuiText.slice (-1) 1 \"a\\u{301}b\" = \"a\\u{301}\"" case010,
+  Test.property "property: TuiText.sanitize (TuiText.sanitize text) = TuiText.sanitize text" Test.string case011,
+  Test.test "Result.map TuiScreen.size blank = Ok (4, 3)" case012,
+  Test.test "Result.isErr (TuiScreen.create 11 4 3)" case013,
+  Test.test "Result.map (fun screen -> TuiScreen.cell (-1) 0 screen) blank = Ok None" case014,
+  Test.test "Result.map (fun screen -> TuiScreen.lines (TuiScreen.put false (TuiScreen.bounds screen) 4 0 TuiStyle.normal \"x\" screen)) blank = Ok [| \" \", \" \", \" \" |]" case015
+]

@@ -1,22 +1,52 @@
 module UuidValueSpec
 
 let inspect text = Result.map (fun uuid -> (Uuid.variant uuid, Uuid.version uuid)) (Uuid.parse text)
-example: inspect "00000000-0000-7000-0000-000000000000" = Ok (Uuid.Ncs, None)
-example: inspect "00000000-0000-7000-8000-000000000000" = Ok (Uuid.Rfc, Some 7)
-example: inspect "00000000-0000-f000-bfff-000000000000" = Ok (Uuid.Rfc, Some 15)
-example: inspect "00000000-0000-0000-8000-000000000000" = Ok (Uuid.Rfc, Some 0)
-example: inspect "00000000-0000-7000-c000-000000000000" = Ok (Uuid.Microsoft, None)
-example: inspect "00000000-0000-7000-e000-000000000000" = Ok (Uuid.Reserved, None)
-example: Uuid.version Uuid.nil = None && Uuid.variant Uuid.nil = Uuid.Ncs
-example: Uuid.version Uuid.max = None && Uuid.variant Uuid.max = Uuid.Reserved
-example: compare Uuid.nil Uuid.max < 0
+
+let case001 _ =
+  let testActual = inspect "00000000-0000-7000-0000-000000000000" = Ok (Uuid.Ncs, None)
+  Expect.isTrue "inspect \"00000000-0000-7000-0000-000000000000\" = Ok (Uuid.Ncs, None)" testActual
+
+let case002 _ =
+  let testActual = inspect "00000000-0000-7000-8000-000000000000" = Ok (Uuid.Rfc, Some 7)
+  Expect.isTrue "inspect \"00000000-0000-7000-8000-000000000000\" = Ok (Uuid.Rfc, Some 7)" testActual
+
+let case003 _ =
+  let testActual = inspect "00000000-0000-f000-bfff-000000000000" = Ok (Uuid.Rfc, Some 15)
+  Expect.isTrue "inspect \"00000000-0000-f000-bfff-000000000000\" = Ok (Uuid.Rfc, Some 15)" testActual
+
+let case004 _ =
+  let testActual = inspect "00000000-0000-0000-8000-000000000000" = Ok (Uuid.Rfc, Some 0)
+  Expect.isTrue "inspect \"00000000-0000-0000-8000-000000000000\" = Ok (Uuid.Rfc, Some 0)" testActual
+
+let case005 _ =
+  let testActual = inspect "00000000-0000-7000-c000-000000000000" = Ok (Uuid.Microsoft, None)
+  Expect.isTrue "inspect \"00000000-0000-7000-c000-000000000000\" = Ok (Uuid.Microsoft, None)" testActual
+
+let case006 _ =
+  let testActual = inspect "00000000-0000-7000-e000-000000000000" = Ok (Uuid.Reserved, None)
+  Expect.isTrue "inspect \"00000000-0000-7000-e000-000000000000\" = Ok (Uuid.Reserved, None)" testActual
+
+let case007 _ =
+  let testActual = Uuid.version Uuid.nil = None && Uuid.variant Uuid.nil = Uuid.Ncs
+  Expect.isTrue "Uuid.version Uuid.nil = None && Uuid.variant Uuid.nil = Uuid.Ncs" testActual
+
+let case008 _ =
+  let testActual = Uuid.version Uuid.max = None && Uuid.variant Uuid.max = Uuid.Reserved
+  Expect.isTrue "Uuid.version Uuid.max = None && Uuid.variant Uuid.max = Uuid.Reserved" testActual
+
+let case009 _ =
+  let testActual = compare Uuid.nil Uuid.max < 0
+  Expect.isTrue "compare Uuid.nil Uuid.max < 0" testActual
 
 let ordering =
   match (Uuid.parse "7fffffff-ffff-ffff-ffff-ffffffffffff", Uuid.parse "80000000-0000-0000-0000-000000000000") with
   | (Ok a, Ok b) ->
     a < b && compare a b < 0 && Uuid.toBytes a < Uuid.toBytes b && Uuid.toString a < Uuid.toString b
   | _ -> false
-example: ordering
+
+let case010 _ =
+  let testActual = ordering
+  Expect.isTrue "ordering" testActual
 
 let equalKeys =
   match (Uuid.parse "ABCDEF01-2345-4678-9ABC-DEF012345678", Uuid.parse "abcdef01-2345-4678-9abc-def012345678") with
@@ -26,10 +56,22 @@ let equalKeys =
       b
     ]) = 1 && Dict.get b (Dict.singleton a 42) = Some 42
   | _ -> false
-example: equalKeys
-example: Uuid.v7UnixMillis Uuid.nil = None && Uuid.v7Instant Uuid.max = None
-example: inspect "00000000-0000-7000-7fff-000000000000" = Ok (Uuid.Ncs, None)
-example: inspect "00000000-0000-7000-dfff-000000000000" = Ok (Uuid.Microsoft, None)
+
+let case011 _ =
+  let testActual = equalKeys
+  Expect.isTrue "equalKeys" testActual
+
+let case012 _ =
+  let testActual = Uuid.v7UnixMillis Uuid.nil = None && Uuid.v7Instant Uuid.max = None
+  Expect.isTrue "Uuid.v7UnixMillis Uuid.nil = None && Uuid.v7Instant Uuid.max = None" testActual
+
+let case013 _ =
+  let testActual = inspect "00000000-0000-7000-7fff-000000000000" = Ok (Uuid.Ncs, None)
+  Expect.isTrue "inspect \"00000000-0000-7000-7fff-000000000000\" = Ok (Uuid.Ncs, None)" testActual
+
+let case014 _ =
+  let testActual = inspect "00000000-0000-7000-dfff-000000000000" = Ok (Uuid.Microsoft, None)
+  Expect.isTrue "inspect \"00000000-0000-7000-dfff-000000000000\" = Ok (Uuid.Microsoft, None)" testActual
 
 let wordBytes word =
   List.map (fun index ->
@@ -42,4 +84,27 @@ let orderingMatches high low otherHigh otherLow =
   | (Ok a, Ok b) ->
     compare a b = compare left right && compare a b = compare (Uuid.toString a) (Uuid.toString b)
   | _ -> false
-forall high low otherHigh otherLow: orderingMatches high low otherHigh otherLow
+
+let case015 testInput =
+  let (high, low, otherHigh, otherLow) = testInput
+  let testActual = orderingMatches high low otherHigh otherLow
+  Expect.isTrue "property: orderingMatches high low otherHigh otherLow" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "UuidValueSpec" [
+  Test.test "inspect \"00000000-0000-7000-0000-000000000000\" = Ok (Uuid.Ncs, None)" case001,
+  Test.test "inspect \"00000000-0000-7000-8000-000000000000\" = Ok (Uuid.Rfc, Some 7)" case002,
+  Test.test "inspect \"00000000-0000-f000-bfff-000000000000\" = Ok (Uuid.Rfc, Some 15)" case003,
+  Test.test "inspect \"00000000-0000-0000-8000-000000000000\" = Ok (Uuid.Rfc, Some 0)" case004,
+  Test.test "inspect \"00000000-0000-7000-c000-000000000000\" = Ok (Uuid.Microsoft, None)" case005,
+  Test.test "inspect \"00000000-0000-7000-e000-000000000000\" = Ok (Uuid.Reserved, None)" case006,
+  Test.test "Uuid.version Uuid.nil = None && Uuid.variant Uuid.nil = Uuid.Ncs" case007,
+  Test.test "Uuid.version Uuid.max = None && Uuid.variant Uuid.max = Uuid.Reserved" case008,
+  Test.test "compare Uuid.nil Uuid.max < 0" case009,
+  Test.test "ordering" case010,
+  Test.test "equalKeys" case011,
+  Test.test "Uuid.v7UnixMillis Uuid.nil = None && Uuid.v7Instant Uuid.max = None" case012,
+  Test.test "inspect \"00000000-0000-7000-7fff-000000000000\" = Ok (Uuid.Ncs, None)" case013,
+  Test.test "inspect \"00000000-0000-7000-dfff-000000000000\" = Ok (Uuid.Microsoft, None)" case014,
+  Test.property "property: orderingMatches high low otherHigh otherLow" (Test.tuple4 Test.int Test.int Test.int Test.int) case015
+]

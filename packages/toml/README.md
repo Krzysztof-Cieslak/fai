@@ -6,7 +6,7 @@ the JSON package's checked binary64 converter. Explicit `inf` and `nan` tokens
 remain distinct from finite overflow. String scanning supports TOML 1.1 escapes
 and normalizes multiline line endings to LF while retaining original byte spans.
 
-Run native contracts with `fai test -C packages toml`.
+Run named tests and properties with `fai test -C packages toml`.
 
 `Toml.parse`/`parseBytes` return located documents; `Toml.value` extracts the value
 tree, and `Toml.find` retrieves a node using explicit `Key`/`Index` path segments.

@@ -1,64 +1,222 @@
 module DiffFailureSpec
 
 let bad text = Result.isErr (UnifiedDiff.parse text)
-example: bad "--- a\n+++ b\n@@ -0,1 +1,1 @@\n-x\n+y\n"
-example: bad "--- a\n+++ b\n@@ -1,-1 +1,1 @@\n-x\n+y\n"
-example: bad "--- a\n+++ b\n@@ -1,9223372036854775807 +1,1 @@\n-x\n+y\n"
-example: bad "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-x\n+y\n+extra\n"
-example: bad "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-x\n\\ No newline at end of file\n\\ No newline at end of file\n+y\n"
-example: bad "--- a\n+++ b\n@@ -1,2 +1,2 @@\n x\n\\ No newline at end of file\n y\n"
-example: bad "--- \"\\377\"\n+++ b\n"
-example: bad "--- \"a\"junk\n+++ b\n"
-example: bad "diff --git a/a b/a\nnew file mode 100644\n--- a/a\n+++ b/a\n"
-example: bad "diff --git a/a b/a\nnew file mode 120000\n--- /dev/null\n+++ b/a\n"
-example: bad "diff --git a/a b/a\nrename from a\nrename to b\n"
-example: bad "diff --cc a\n"
-example: bad "--- /dev/null\n+++ /dev/null\n"
-example: bad "--- \"a\\000b\"\n+++ b\n"
-example: bad "--- \"a\\012b\"\n+++ b\n"
-example: UnifiedDiff.parse "" = Ok [||]
-example: UnifiedDiff.parse "--- a\n+++ b\n@@ -1 +1 @@ function name\n-x\n+y\n" |> Result.isOk
-example: UnifiedDiff.parse "--- \"a\\040b\"\n+++ \"a\\040b\"\n" |> Result.isOk
+
+let case001 _ =
+  let testActual = bad "--- a\n+++ b\n@@ -0,1 +1,1 @@\n-x\n+y\n"
+  Expect.isTrue "bad \"--- a\\n+++ b\\n@@ -0,1 +1,1 @@\\n-x\\n+y\\n\"" testActual
+
+let case002 _ =
+  let testActual = bad "--- a\n+++ b\n@@ -1,-1 +1,1 @@\n-x\n+y\n"
+  Expect.isTrue "bad \"--- a\\n+++ b\\n@@ -1,-1 +1,1 @@\\n-x\\n+y\\n\"" testActual
+
+let case003 _ =
+  let testActual = bad "--- a\n+++ b\n@@ -1,9223372036854775807 +1,1 @@\n-x\n+y\n"
+  Expect.isTrue "bad \"--- a\\n+++ b\\n@@ -1,9223372036854775807 +1,1 @@\\n-x\\n+y\\n\"" testActual
+
+let case004 _ =
+  let testActual = bad "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-x\n+y\n+extra\n"
+  Expect.isTrue "bad \"--- a\\n+++ b\\n@@ -1,1 +1,1 @@\\n-x\\n+y\\n+extra\\n\"" testActual
+
+let case005 _ =
+  let testActual =
+    bad "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-x\n\\ No newline at end of file\n\\ No newline at end of file\n+y\n"
+  Expect.isTrue "bad \"--- a\\n+++ b\\n@@ -1,1 +1,1 @@\\n-x\\n\\\\ No newline at end of file\\n\\\\ No newline at end of file\\n+y\\n\"" testActual
+
+let case006 _ =
+  let testActual = bad "--- a\n+++ b\n@@ -1,2 +1,2 @@\n x\n\\ No newline at end of file\n y\n"
+  Expect.isTrue "bad \"--- a\\n+++ b\\n@@ -1,2 +1,2 @@\\n x\\n\\\\ No newline at end of file\\n y\\n\"" testActual
+
+let case007 _ =
+  let testActual = bad "--- \"\\377\"\n+++ b\n"
+  Expect.isTrue "bad \"--- \\\"\\\\377\\\"\\n+++ b\\n\"" testActual
+
+let case008 _ =
+  let testActual = bad "--- \"a\"junk\n+++ b\n"
+  Expect.isTrue "bad \"--- \\\"a\\\"junk\\n+++ b\\n\"" testActual
+
+let case009 _ =
+  let testActual = bad "diff --git a/a b/a\nnew file mode 100644\n--- a/a\n+++ b/a\n"
+  Expect.isTrue "bad \"diff --git a/a b/a\\nnew file mode 100644\\n--- a/a\\n+++ b/a\\n\"" testActual
+
+let case010 _ =
+  let testActual = bad "diff --git a/a b/a\nnew file mode 120000\n--- /dev/null\n+++ b/a\n"
+  Expect.isTrue "bad \"diff --git a/a b/a\\nnew file mode 120000\\n--- /dev/null\\n+++ b/a\\n\"" testActual
+
+let case011 _ =
+  let testActual = bad "diff --git a/a b/a\nrename from a\nrename to b\n"
+  Expect.isTrue "bad \"diff --git a/a b/a\\nrename from a\\nrename to b\\n\"" testActual
+
+let case012 _ =
+  let testActual = bad "diff --cc a\n"
+  Expect.isTrue "bad \"diff --cc a\\n\"" testActual
+
+let case013 _ =
+  let testActual = bad "--- /dev/null\n+++ /dev/null\n"
+  Expect.isTrue "bad \"--- /dev/null\\n+++ /dev/null\\n\"" testActual
+
+let case014 _ =
+  let testActual = bad "--- \"a\\000b\"\n+++ b\n"
+  Expect.isTrue "bad \"--- \\\"a\\\\000b\\\"\\n+++ b\\n\"" testActual
+
+let case015 _ =
+  let testActual = bad "--- \"a\\012b\"\n+++ b\n"
+  Expect.isTrue "bad \"--- \\\"a\\\\012b\\\"\\n+++ b\\n\"" testActual
+
+let case016 _ =
+  let testActual = UnifiedDiff.parse "" = Ok [||]
+  Expect.isTrue "UnifiedDiff.parse \"\" = Ok [||]" testActual
+
+let case017 _ =
+  let testActual =
+    UnifiedDiff.parse "--- a\n+++ b\n@@ -1 +1 @@ function name\n-x\n+y\n" |> Result.isOk
+  Expect.isTrue "UnifiedDiff.parse \"--- a\\n+++ b\\n@@ -1 +1 @@ function name\\n-x\\n+y\\n\" |> Result.isOk" testActual
+
+let case018 _ =
+  let testActual = UnifiedDiff.parse "--- \"a\\040b\"\n+++ \"a\\040b\"\n" |> Result.isOk
+  Expect.isTrue "UnifiedDiff.parse \"--- \\\"a\\\\040b\\\"\\n+++ \\\"a\\\\040b\\\"\\n\" |> Result.isOk" testActual
 
 let text = "--- a\n+++ a\n@@ -1,1 +1,1 @@\n-x\n+y\n"
 
 let parsed = Result.withDefault Array.empty (UnifiedDiff.parse text)
 
 let file = Array.unsafeGet 0 parsed
-example: UnifiedDiff.parseWith { UnifiedDiff.limits with maxFiles = 0 } text |> Result.isErr
-example: UnifiedDiff.parseWith { UnifiedDiff.limits with maxHunks = 0 } text |> Result.isErr
-example: UnifiedDiff.parseWith { UnifiedDiff.limits with maxLines = 1 } text |> Result.isErr
-example: UnifiedDiff.parseWith { UnifiedDiff.limits with maxInputBytes = 1 } text |> Result.isErr
-example: UnifiedDiff.toStringWith { UnifiedDiff.limits with
-  maxOutputBytes = 1
-} parsed |> Result.isErr
-example: Patch.applyFile file None |> Result.isErr
-example: Patch.applyFileWith Patch.limits (Patch.Relocate (-1)) file (Some "x\n") |> Result.isErr
-example: Patch.applyFileWith { Patch.limits with
-  maxSearchWork = 0
-} Patch.Strict file (Some "x\n") |> Result.isErr
-example: Patch.applyFileWith { Patch.limits with
-  maxOutputBytes = 1
-} Patch.Strict file (Some "x\n") |> Result.isErr
-example: Patch.applyBatch parsed [| ("a", "x\n"), ("a", "x\n") |] |> Result.isErr
-example: Patch.applyBatch (Array.append parsed parsed) [| ("a", "x\n") |] |> Result.isErr
-example: Patch.applyBatch parsed [|
-  ("a", "x\n")
-|] = Ok [| { path = "a", relocations = Array.empty, text = Some "y\n" } |]
-example: Patch.applyBatch (Array.append parsed [|
-  { file with newPath = Some "other", oldPath = Some "other" }
-|]) [| ("a", "x\n") |] |> Result.isErr
+
+let case019 _ =
+  let testActual =
+    UnifiedDiff.parseWith { UnifiedDiff.limits with maxFiles = 0 } text |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parseWith { UnifiedDiff.limits with maxFiles = 0 } text |> Result.isErr" testActual
+
+let case020 _ =
+  let testActual =
+    UnifiedDiff.parseWith { UnifiedDiff.limits with maxHunks = 0 } text |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parseWith { UnifiedDiff.limits with maxHunks = 0 } text |> Result.isErr" testActual
+
+let case021 _ =
+  let testActual =
+    UnifiedDiff.parseWith { UnifiedDiff.limits with maxLines = 1 } text |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parseWith { UnifiedDiff.limits with maxLines = 1 } text |> Result.isErr" testActual
+
+let case022 _ =
+  let testActual =
+    UnifiedDiff.parseWith { UnifiedDiff.limits with maxInputBytes = 1 } text |> Result.isErr
+  Expect.isTrue "UnifiedDiff.parseWith { UnifiedDiff.limits with maxInputBytes = 1 } text |> Result.isErr" testActual
+
+let case023 _ =
+  let testActual =
+    UnifiedDiff.toStringWith { UnifiedDiff.limits with maxOutputBytes = 1 } parsed |> Result.isErr
+  Expect.isTrue "UnifiedDiff.toStringWith { UnifiedDiff.limits with maxOutputBytes = 1 } parsed |> Result.isErr" testActual
+
+let case024 _ =
+  let testActual = Patch.applyFile file None |> Result.isErr
+  Expect.isTrue "Patch.applyFile file None |> Result.isErr" testActual
+
+let case025 _ =
+  let testActual =
+    Patch.applyFileWith Patch.limits (Patch.Relocate (-1)) file (Some "x\n") |> Result.isErr
+  Expect.isTrue "Patch.applyFileWith Patch.limits (Patch.Relocate (-1)) file (Some \"x\\n\") |> Result.isErr" testActual
+
+let case026 _ =
+  let testActual =
+    Patch.applyFileWith { Patch.limits with
+      maxSearchWork = 0
+    } Patch.Strict file (Some "x\n") |> Result.isErr
+  Expect.isTrue "Patch.applyFileWith { Patch.limits with maxSearchWork = 0 } Patch.Strict file (Some \"x\\n\") |> Result.isErr" testActual
+
+let case027 _ =
+  let testActual =
+    Patch.applyFileWith { Patch.limits with
+      maxOutputBytes = 1
+    } Patch.Strict file (Some "x\n") |> Result.isErr
+  Expect.isTrue "Patch.applyFileWith { Patch.limits with maxOutputBytes = 1 } Patch.Strict file (Some \"x\\n\") |> Result.isErr" testActual
+
+let case028 _ =
+  let testActual = Patch.applyBatch parsed [| ("a", "x\n"), ("a", "x\n") |] |> Result.isErr
+  Expect.isTrue "Patch.applyBatch parsed [| (\"a\", \"x\\n\"), (\"a\", \"x\\n\") |] |> Result.isErr" testActual
+
+let case029 _ =
+  let testActual = Patch.applyBatch (Array.append parsed parsed) [| ("a", "x\n") |] |> Result.isErr
+  Expect.isTrue "Patch.applyBatch (Array.append parsed parsed) [| (\"a\", \"x\\n\") |] |> Result.isErr" testActual
+
+let case030 _ =
+  let testActual =
+    Patch.applyBatch parsed [|
+      ("a", "x\n")
+    |] = Ok [| { path = "a", relocations = Array.empty, text = Some "y\n" } |]
+  Expect.isTrue "Patch.applyBatch parsed [| (\"a\", \"x\\n\") |] = Ok [| { path = \"a\", relocations = Array.empty, text = Some \"y\\n\" } |]" testActual
+
+let case031 _ =
+  let testActual =
+    Patch.applyBatch (Array.append parsed [|
+      { file with newPath = Some "other", oldPath = Some "other" }
+    |]) [| ("a", "x\n") |] |> Result.isErr
+  Expect.isTrue "Patch.applyBatch (Array.append parsed [| { file with newPath = Some \"other\", oldPath = Some \"other\" } |]) [| (\"a\", \"x\\n\") |] |> Result.isErr" testActual
 
 let invalidKey _ = 1 / 0
-example: Diff.diffByWith { Diff.limits with
-  maxWork = -1
-} Diff.options invalidKey [| 1 |] [| 2 |] |> Result.isErr
-example: DiffText.compareWith { DiffText.limits with
-  unicode = { DiffText.limits.unicode with maxWork = -1 }
-} DiffText.options "" "" |> Result.isErr
-example: DiffText.linesWith { DiffText.limits with
-  sequence = { Diff.limits with maxInputItems = 1 }
-} "a\nb\n" |> Result.isErr
-example: DiffInline.compareWith { DiffText.limits with
-  unicode = { DiffText.limits.unicode with maxMappings = 0 }
-} DiffText.options DiffInline.Graphemes "x" "y" |> Result.isErr
+
+let case032 _ =
+  let testActual =
+    Diff.diffByWith { Diff.limits with
+      maxWork = -1
+    } Diff.options invalidKey [| 1 |] [| 2 |] |> Result.isErr
+  Expect.isTrue "Diff.diffByWith { Diff.limits with maxWork = -1 } Diff.options invalidKey [| 1 |] [| 2 |] |> Result.isErr" testActual
+
+let case033 _ =
+  let testActual =
+    DiffText.compareWith { DiffText.limits with
+      unicode = { DiffText.limits.unicode with maxWork = -1 }
+    } DiffText.options "" "" |> Result.isErr
+  Expect.isTrue "DiffText.compareWith { DiffText.limits with unicode = { DiffText.limits.unicode with maxWork = -1 } } DiffText.options \"\" \"\" |> Result.isErr" testActual
+
+let case034 _ =
+  let testActual =
+    DiffText.linesWith { DiffText.limits with
+      sequence = { Diff.limits with maxInputItems = 1 }
+    } "a\nb\n" |> Result.isErr
+  Expect.isTrue "DiffText.linesWith { DiffText.limits with sequence = { Diff.limits with maxInputItems = 1 } } \"a\\nb\\n\" |> Result.isErr" testActual
+
+let case035 _ =
+  let testActual =
+    DiffInline.compareWith { DiffText.limits with
+      unicode = { DiffText.limits.unicode with maxMappings = 0 }
+    } DiffText.options DiffInline.Graphemes "x" "y" |> Result.isErr
+  Expect.isTrue "DiffInline.compareWith { DiffText.limits with unicode = { DiffText.limits.unicode with maxMappings = 0 } } DiffText.options DiffInline.Graphemes \"x\" \"y\" |> R…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DiffFailureSpec" [
+  Test.test "bad \"--- a\\n+++ b\\n@@ -0,1 +1,1 @@\\n-x\\n+y\\n\"" case001,
+  Test.test "bad \"--- a\\n+++ b\\n@@ -1,-1 +1,1 @@\\n-x\\n+y\\n\"" case002,
+  Test.test "bad \"--- a\\n+++ b\\n@@ -1,9223372036854775807 +1,1 @@\\n-x\\n+y\\n\"" case003,
+  Test.test "bad \"--- a\\n+++ b\\n@@ -1,1 +1,1 @@\\n-x\\n+y\\n+extra\\n\"" case004,
+  Test.test "bad \"--- a\\n+++ b\\n@@ -1,1 +1,1 @@\\n-x\\n\\\\ No newline at end of file\\n\\\\ No newline at end of file\\n+y\\n\"" case005,
+  Test.test "bad \"--- a\\n+++ b\\n@@ -1,2 +1,2 @@\\n x\\n\\\\ No newline at end of file\\n y\\n\"" case006,
+  Test.test "bad \"--- \\\"\\\\377\\\"\\n+++ b\\n\"" case007,
+  Test.test "bad \"--- \\\"a\\\"junk\\n+++ b\\n\"" case008,
+  Test.test "bad \"diff --git a/a b/a\\nnew file mode 100644\\n--- a/a\\n+++ b/a\\n\"" case009,
+  Test.test "bad \"diff --git a/a b/a\\nnew file mode 120000\\n--- /dev/null\\n+++ b/a\\n\"" case010,
+  Test.test "bad \"diff --git a/a b/a\\nrename from a\\nrename to b\\n\"" case011,
+  Test.test "bad \"diff --cc a\\n\"" case012,
+  Test.test "bad \"--- /dev/null\\n+++ /dev/null\\n\"" case013,
+  Test.test "bad \"--- \\\"a\\\\000b\\\"\\n+++ b\\n\"" case014,
+  Test.test "bad \"--- \\\"a\\\\012b\\\"\\n+++ b\\n\"" case015,
+  Test.test "UnifiedDiff.parse \"\" = Ok [||]" case016,
+  Test.test "UnifiedDiff.parse \"--- a\\n+++ b\\n@@ -1 +1 @@ function name\\n-x\\n+y\\n\" |> Result.isOk" case017,
+  Test.test "UnifiedDiff.parse \"--- \\\"a\\\\040b\\\"\\n+++ \\\"a\\\\040b\\\"\\n\" |> Result.isOk" case018,
+  Test.test "UnifiedDiff.parseWith { UnifiedDiff.limits with maxFiles = 0 } text |> Result.isErr" case019,
+  Test.test "UnifiedDiff.parseWith { UnifiedDiff.limits with maxHunks = 0 } text |> Result.isErr" case020,
+  Test.test "UnifiedDiff.parseWith { UnifiedDiff.limits with maxLines = 1 } text |> Result.isErr" case021,
+  Test.test "UnifiedDiff.parseWith { UnifiedDiff.limits with maxInputBytes = 1 } text |> Result.isErr" case022,
+  Test.test "UnifiedDiff.toStringWith { UnifiedDiff.limits with maxOutputBytes = 1 } parsed |> Result.isErr" case023,
+  Test.test "Patch.applyFile file None |> Result.isErr" case024,
+  Test.test "Patch.applyFileWith Patch.limits (Patch.Relocate (-1)) file (Some \"x\\n\") |> Result.isErr" case025,
+  Test.test "Patch.applyFileWith { Patch.limits with maxSearchWork = 0 } Patch.Strict file (Some \"x\\n\") |> Result.isErr" case026,
+  Test.test "Patch.applyFileWith { Patch.limits with maxOutputBytes = 1 } Patch.Strict file (Some \"x\\n\") |> Result.isErr" case027,
+  Test.test "Patch.applyBatch parsed [| (\"a\", \"x\\n\"), (\"a\", \"x\\n\") |] |> Result.isErr" case028,
+  Test.test "Patch.applyBatch (Array.append parsed parsed) [| (\"a\", \"x\\n\") |] |> Result.isErr" case029,
+  Test.test "Patch.applyBatch parsed [| (\"a\", \"x\\n\") |] = Ok [| { path = \"a\", relocations = Array.empty, text = Some \"y\\n\" } |]" case030,
+  Test.test "Patch.applyBatch (Array.append parsed [| { file with newPath = Some \"other\", oldPath = Some \"other\" } |]) [| (\"a\", \"x\\n\") |] |> Result.isErr" case031,
+  Test.test "Diff.diffByWith { Diff.limits with maxWork = -1 } Diff.options invalidKey [| 1 |] [| 2 |] |> Result.isErr" case032,
+  Test.test "DiffText.compareWith { DiffText.limits with unicode = { DiffText.limits.unicode with maxWork = -1 } } DiffText.options \"\" \"\" |> Result.isErr" case033,
+  Test.test "DiffText.linesWith { DiffText.limits with sequence = { Diff.limits with maxInputItems = 1 } } \"a\\nb\\n\" |> Result.isErr" case034,
+  Test.test "DiffInline.compareWith { DiffText.limits with unicode = { DiffText.limits.unicode with maxMappings = 0 } } DiffText.options DiffInline.Graphemes \"x\" \"y\" |> R…" case035
+]

@@ -117,7 +117,7 @@ rules preserve Git's byte-class and escape behavior; this includes Git's distinc
 treatment of literal uppercase class members versus ranges.
 
 Compatibility follows Git 2.55's corrected component semantics. Older Git releases had a
-literal-prefix optimization bug for patterns such as `a**/b`; contracts pin the
+literal-prefix optimization bug for patterns such as `a**/b`; tests pin the
 corrected behavior, while the live comparison uses equivalent class-prefixed
 forms for that edge. Git repository configuration and tracked-file state remain
 application inputs; the library evaluates the supplied rule sources.
@@ -167,7 +167,7 @@ lossless names, result/resource limits, callback failure and cancellation throug
 JIT and AOT. A Python 3 probe distinguishes lossless matching from the mounted
 filesystem's ability to create a non-UTF-8 filename. The Git fixture compares thousands of decisions with `git check-ignore`
 in an isolated temporary repository, with explicit case policy and configuration.
-Pure contracts additionally compare the automaton against an independent small
+Pure named properties additionally compare the automaton against an independent small
 wildcard interpreter and cover alternatives without exponential expansion.
 
 The coding-assistant example uses `find_files` to search root-relative patterns

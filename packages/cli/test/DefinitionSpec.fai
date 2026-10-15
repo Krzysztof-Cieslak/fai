@@ -4,38 +4,158 @@ let invalid parser =
   match Args.validateDefinition (Args.program (Args.described "tool" "") parser) with
   | Err error -> error.kind = Args.InvalidDefinition && error.index = None && error.token = None
   | Ok _ -> false
-example: invalid (Args.flag (Args.named "" ""))
-example: invalid (Args.flag (Args.named "--verbose" ""))
-example: invalid (Args.flag (Args.named "two words" ""))
-example: invalid (Args.flag (Args.named "é" ""))
-example: invalid (Args.flag (Args.short '1' (Args.named "one" "")))
-example: invalid (Args.flag (Args.short 'é' (Args.named "unicode" "")))
-example: invalid (Args.flag (Args.named "help" ""))
-example: invalid (Args.flag (Args.short 'h' (Args.named "other" "")))
-example: invalid (Args.map2 (fun a b ->
-  (a, b)) (Args.flag (Args.named "same" "")) (Args.option Args.string (Args.named "same" "")))
-example: invalid (Args.map2 (fun a b ->
-  (a, b)) (Args.flag (Args.short 'x' (Args.named "one" ""))) (Args.flag (Args.short 'x' (Args.named "two" ""))))
-example: invalid (Args.requiredOption (Args.metavar "" Args.int) (Args.named "number" ""))
-example: invalid (Args.option (Args.choice []) (Args.named "mode" ""))
-example: invalid (Args.option (Args.choice ["same", "same"]) (Args.named "mode" ""))
-example: invalid (Args.argument Args.string (Args.positional "" ""))
-example: invalid (Args.argument Args.string (Args.positional "TWO WORDS" ""))
-example: invalid (Args.argument Args.string (Args.positional "TWO\u{A0}WORDS" ""))
-example: invalid (Args.requiredOption (Args.metavar "N\u{2003}N" Args.int) (Args.named "number" ""))
-example: Args.validateDefinition (Args.program (Args.described "tool" "") (Args.argument Args.string (Args.positional "文件" "Input"))) = Ok ()
-example: invalid (Args.map2 (fun a b ->
-  (a, b)) (Args.argument Args.string (Args.positional "SAME" "")) (Args.argument Args.int (Args.positional "SAME" "")))
-example: invalid (Args.map2 (fun a b ->
-  (a, b)) (Args.optionalArgument Args.string (Args.positional "OPTIONAL" "")) (Args.argument Args.string (Args.positional "REQUIRED" "")))
-example: invalid (Args.map2 (fun a b ->
-  (a, b)) (Args.arguments Args.string (Args.positional "REST" "")) (Args.optionalArgument Args.string (Args.positional "LAST" "")))
-example: Result.isErr (Args.validateDefinition (Args.program (Args.described "" "") (Args.succeed ())))
-example: Result.isErr (Args.validateDefinition (Args.program (Args.described "bad\nname" "") (Args.succeed ())))
+
+let case001 _ =
+  let testActual = invalid (Args.flag (Args.named "" ""))
+  Expect.isTrue "invalid (Args.flag (Args.named \"\" \"\"))" testActual
+
+let case002 _ =
+  let testActual = invalid (Args.flag (Args.named "--verbose" ""))
+  Expect.isTrue "invalid (Args.flag (Args.named \"--verbose\" \"\"))" testActual
+
+let case003 _ =
+  let testActual = invalid (Args.flag (Args.named "two words" ""))
+  Expect.isTrue "invalid (Args.flag (Args.named \"two words\" \"\"))" testActual
+
+let case004 _ =
+  let testActual = invalid (Args.flag (Args.named "é" ""))
+  Expect.isTrue "invalid (Args.flag (Args.named \"é\" \"\"))" testActual
+
+let case005 _ =
+  let testActual = invalid (Args.flag (Args.short '1' (Args.named "one" "")))
+  Expect.isTrue "invalid (Args.flag (Args.short '1' (Args.named \"one\" \"\")))" testActual
+
+let case006 _ =
+  let testActual = invalid (Args.flag (Args.short 'é' (Args.named "unicode" "")))
+  Expect.isTrue "invalid (Args.flag (Args.short 'é' (Args.named \"unicode\" \"\")))" testActual
+
+let case007 _ =
+  let testActual = invalid (Args.flag (Args.named "help" ""))
+  Expect.isTrue "invalid (Args.flag (Args.named \"help\" \"\"))" testActual
+
+let case008 _ =
+  let testActual = invalid (Args.flag (Args.short 'h' (Args.named "other" "")))
+  Expect.isTrue "invalid (Args.flag (Args.short 'h' (Args.named \"other\" \"\")))" testActual
+
+let case009 _ =
+  let testActual =
+    invalid (Args.map2 (fun a b ->
+      (a, b)) (Args.flag (Args.named "same" "")) (Args.option Args.string (Args.named "same" "")))
+  Expect.isTrue "invalid (Args.map2 (fun a b -> (a, b)) (Args.flag (Args.named \"same\" \"\")) (Args.option Args.string (Args.named \"same\" \"\")))" testActual
+
+let case010 _ =
+  let testActual =
+    invalid (Args.map2 (fun a b ->
+      (a, b)) (Args.flag (Args.short 'x' (Args.named "one" ""))) (Args.flag (Args.short 'x' (Args.named "two" ""))))
+  Expect.isTrue "invalid (Args.map2 (fun a b -> (a, b)) (Args.flag (Args.short 'x' (Args.named \"one\" \"\"))) (Args.flag (Args.short 'x' (Args.named \"two\" \"\"))))" testActual
+
+let case011 _ =
+  let testActual = invalid (Args.requiredOption (Args.metavar "" Args.int) (Args.named "number" ""))
+  Expect.isTrue "invalid (Args.requiredOption (Args.metavar \"\" Args.int) (Args.named \"number\" \"\"))" testActual
+
+let case012 _ =
+  let testActual = invalid (Args.option (Args.choice []) (Args.named "mode" ""))
+  Expect.isTrue "invalid (Args.option (Args.choice []) (Args.named \"mode\" \"\"))" testActual
+
+let case013 _ =
+  let testActual = invalid (Args.option (Args.choice ["same", "same"]) (Args.named "mode" ""))
+  Expect.isTrue "invalid (Args.option (Args.choice [\"same\", \"same\"]) (Args.named \"mode\" \"\"))" testActual
+
+let case014 _ =
+  let testActual = invalid (Args.argument Args.string (Args.positional "" ""))
+  Expect.isTrue "invalid (Args.argument Args.string (Args.positional \"\" \"\"))" testActual
+
+let case015 _ =
+  let testActual = invalid (Args.argument Args.string (Args.positional "TWO WORDS" ""))
+  Expect.isTrue "invalid (Args.argument Args.string (Args.positional \"TWO WORDS\" \"\"))" testActual
+
+let case016 _ =
+  let testActual = invalid (Args.argument Args.string (Args.positional "TWO\u{A0}WORDS" ""))
+  Expect.isTrue "invalid (Args.argument Args.string (Args.positional \"TWO\\u{A0}WORDS\" \"\"))" testActual
+
+let case017 _ =
+  let testActual =
+    invalid (Args.requiredOption (Args.metavar "N\u{2003}N" Args.int) (Args.named "number" ""))
+  Expect.isTrue "invalid (Args.requiredOption (Args.metavar \"N\\u{2003}N\" Args.int) (Args.named \"number\" \"\"))" testActual
+
+let case018 _ =
+  let testActual =
+    Args.validateDefinition (Args.program (Args.described "tool" "") (Args.argument Args.string (Args.positional "文件" "Input"))) = Ok ()
+  Expect.isTrue "Args.validateDefinition (Args.program (Args.described \"tool\" \"\") (Args.argument Args.string (Args.positional \"文件\" \"Input\"))) = Ok ()" testActual
+
+let case019 _ =
+  let testActual =
+    invalid (Args.map2 (fun a b ->
+      (a, b)) (Args.argument Args.string (Args.positional "SAME" "")) (Args.argument Args.int (Args.positional "SAME" "")))
+  Expect.isTrue "invalid (Args.map2 (fun a b -> (a, b)) (Args.argument Args.string (Args.positional \"SAME\" \"\")) (Args.argument Args.int (Args.positional \"SAME\" \"\")))" testActual
+
+let case020 _ =
+  let testActual =
+    invalid (Args.map2 (fun a b ->
+      (a, b)) (Args.optionalArgument Args.string (Args.positional "OPTIONAL" "")) (Args.argument Args.string (Args.positional "REQUIRED" "")))
+  Expect.isTrue "invalid (Args.map2 (fun a b -> (a, b)) (Args.optionalArgument Args.string (Args.positional \"OPTIONAL\" \"\")) (Args.argument Args.string (Args.positional \"REQUI…" testActual
+
+let case021 _ =
+  let testActual =
+    invalid (Args.map2 (fun a b ->
+      (a, b)) (Args.arguments Args.string (Args.positional "REST" "")) (Args.optionalArgument Args.string (Args.positional "LAST" "")))
+  Expect.isTrue "invalid (Args.map2 (fun a b -> (a, b)) (Args.arguments Args.string (Args.positional \"REST\" \"\")) (Args.optionalArgument Args.string (Args.positional \"LAST\" \"\")))" testActual
+
+let case022 _ =
+  let testActual =
+    Result.isErr (Args.validateDefinition (Args.program (Args.described "" "") (Args.succeed ())))
+  Expect.isTrue "Result.isErr (Args.validateDefinition (Args.program (Args.described \"\" \"\") (Args.succeed ())))" testActual
+
+let case023 _ =
+  let testActual =
+    Result.isErr (Args.validateDefinition (Args.program (Args.described "bad\nname" "") (Args.succeed ())))
+  Expect.isTrue "Result.isErr (Args.validateDefinition (Args.program (Args.described \"bad\\nname\" \"\") (Args.succeed ())))" testActual
 
 let versioned parser = Args.program (Args.version "1.0" (Args.described "tool" "")) parser
-example: Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.named "version" ""))))
-example: Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.short 'V' (Args.named "verbose" "")))))
-example: Args.parse (Args.program (Args.described "tool" "") (Args.flag (Args.short 'V' (Args.named "version" "")))) [
-  "--version"
-] = Ok (Args.Parsed true)
+
+let case024 _ =
+  let testActual =
+    Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.named "version" ""))))
+  Expect.isTrue "Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.named \"version\" \"\"))))" testActual
+
+let case025 _ =
+  let testActual =
+    Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.short 'V' (Args.named "verbose" "")))))
+  Expect.isTrue "Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.short 'V' (Args.named \"verbose\" \"\")))))" testActual
+
+let case026 _ =
+  let testActual =
+    Args.parse (Args.program (Args.described "tool" "") (Args.flag (Args.short 'V' (Args.named "version" "")))) [
+      "--version"
+    ] = Ok (Args.Parsed true)
+  Expect.isTrue "Args.parse (Args.program (Args.described \"tool\" \"\") (Args.flag (Args.short 'V' (Args.named \"version\" \"\")))) [ \"--version\" ] = Ok (Args.Parsed true)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DefinitionSpec" [
+  Test.test "invalid (Args.flag (Args.named \"\" \"\"))" case001,
+  Test.test "invalid (Args.flag (Args.named \"--verbose\" \"\"))" case002,
+  Test.test "invalid (Args.flag (Args.named \"two words\" \"\"))" case003,
+  Test.test "invalid (Args.flag (Args.named \"é\" \"\"))" case004,
+  Test.test "invalid (Args.flag (Args.short '1' (Args.named \"one\" \"\")))" case005,
+  Test.test "invalid (Args.flag (Args.short 'é' (Args.named \"unicode\" \"\")))" case006,
+  Test.test "invalid (Args.flag (Args.named \"help\" \"\"))" case007,
+  Test.test "invalid (Args.flag (Args.short 'h' (Args.named \"other\" \"\")))" case008,
+  Test.test "invalid (Args.map2 (fun a b -> (a, b)) (Args.flag (Args.named \"same\" \"\")) (Args.option Args.string (Args.named \"same\" \"\")))" case009,
+  Test.test "invalid (Args.map2 (fun a b -> (a, b)) (Args.flag (Args.short 'x' (Args.named \"one\" \"\"))) (Args.flag (Args.short 'x' (Args.named \"two\" \"\"))))" case010,
+  Test.test "invalid (Args.requiredOption (Args.metavar \"\" Args.int) (Args.named \"number\" \"\"))" case011,
+  Test.test "invalid (Args.option (Args.choice []) (Args.named \"mode\" \"\"))" case012,
+  Test.test "invalid (Args.option (Args.choice [\"same\", \"same\"]) (Args.named \"mode\" \"\"))" case013,
+  Test.test "invalid (Args.argument Args.string (Args.positional \"\" \"\"))" case014,
+  Test.test "invalid (Args.argument Args.string (Args.positional \"TWO WORDS\" \"\"))" case015,
+  Test.test "invalid (Args.argument Args.string (Args.positional \"TWO\\u{A0}WORDS\" \"\"))" case016,
+  Test.test "invalid (Args.requiredOption (Args.metavar \"N\\u{2003}N\" Args.int) (Args.named \"number\" \"\"))" case017,
+  Test.test "Args.validateDefinition (Args.program (Args.described \"tool\" \"\") (Args.argument Args.string (Args.positional \"文件\" \"Input\"))) = Ok ()" case018,
+  Test.test "invalid (Args.map2 (fun a b -> (a, b)) (Args.argument Args.string (Args.positional \"SAME\" \"\")) (Args.argument Args.int (Args.positional \"SAME\" \"\")))" case019,
+  Test.test "invalid (Args.map2 (fun a b -> (a, b)) (Args.optionalArgument Args.string (Args.positional \"OPTIONAL\" \"\")) (Args.argument Args.string (Args.positional \"REQUI…" case020,
+  Test.test "invalid (Args.map2 (fun a b -> (a, b)) (Args.arguments Args.string (Args.positional \"REST\" \"\")) (Args.optionalArgument Args.string (Args.positional \"LAST\" \"\")))" case021,
+  Test.test "Result.isErr (Args.validateDefinition (Args.program (Args.described \"\" \"\") (Args.succeed ())))" case022,
+  Test.test "Result.isErr (Args.validateDefinition (Args.program (Args.described \"bad\\nname\" \"\") (Args.succeed ())))" case023,
+  Test.test "Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.named \"version\" \"\"))))" case024,
+  Test.test "Result.isErr (Args.validateDefinition (versioned (Args.flag (Args.short 'V' (Args.named \"verbose\" \"\")))))" case025,
+  Test.test "Args.parse (Args.program (Args.described \"tool\" \"\") (Args.flag (Args.short 'V' (Args.named \"version\" \"\")))) [ \"--version\" ] = Ok (Args.Parsed true)" case026
+]

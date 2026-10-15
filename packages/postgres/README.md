@@ -136,5 +136,5 @@ order and incomplete query responses. No external service is needed for it.
 
 CI provisions PostgreSQL on Linux, macOS and Windows and runs these Fai programs
 directly through JIT and AOT. Linux additionally tests a private-CA TLS endpoint.
-Package-only edits use the exact cached compiler; the ordinary package contracts
+Package-only edits use the exact cached compiler; the named package tests
 remain direct `fai test` commands.

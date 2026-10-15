@@ -215,3 +215,112 @@ let main r =
     "subscription checks passed"
   else
     "subscription checks failed")
+
+type Observed = Result HttpClient.EventResult HttpClient.Error * List (Option String) * List String * List String
+
+scenario : String -> Scenario -> (Observed -> Bool) -> Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let scenario name config check =
+  Test.test name (fun ctx -> Expect.isTrue name (check (run ctx.runtime config)))
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "SSE subscriptions" [
+  scenario "reconnections preserve only committed IDs and ordered notices" normal (fun observed ->
+    match observed with
+    | (result, headers, notices, events) ->
+      result = Ok {
+        reason = HttpClient.EventNoContent,
+        state = { lastEventId = "", received = 2, retryDelayMs = Some 7 }
+      } && headers = [
+        Some "seed",
+        Some "first",
+        None
+      ] && events = [
+        "one",
+        "two"
+      ] && notices = [
+        "opening",
+        "connected",
+        "reconnecting",
+        "opening",
+        "connected",
+        "reconnecting",
+        "opening"
+      ]),
+  scenario "explicit stop does not reconnect" { normal with
+    stop = true
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, _) ->
+      List.length headers = 1 && (match result with
+      | Ok outcome -> outcome.reason = HttpClient.EventStopped
+      | _ -> false)),
+  scenario "consumer failures are not replayed" { normal with
+    reject = true
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, _) ->
+      result = Err (HttpClient.Transport "consumer failure") && List.length headers = 1),
+  scenario "reconnection limits are enforced" { normal with
+    options = { quick with maxReconnects = Some 0 }
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, _) ->
+      result = Err (HttpClient.EventReconnectLimit 0) && List.length headers = 1),
+  scenario "heartbeats inherit the last committed ID" { normal with
+    responses = [|
+      (200, "text/event-stream", "id:retained\ndata:first\n\n"),
+      (200, "text/event-stream", ": heartbeat\n\ndata:second\n\n"),
+      (204, "", "")
+    |]
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, _) ->
+      Result.isOk result && headers = [Some "seed", Some "retained", Some "retained"]),
+  scenario "status errors terminate without reconnecting" { normal with
+    responses = [| (503, "text/event-stream", "") |]
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, _) ->
+      List.length headers = 1 && (match result with
+      | Err (HttpClient.EventStatus head) -> head.status = 503
+      | _ -> false)),
+  scenario "media errors terminate without consuming events" { normal with
+    responses = [| (200, "text/plain", "data: ignored\n\n") |]
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, events) ->
+      List.length headers = 1 && events = [] && (match result with
+      | Err (HttpClient.EventMediaType _ _) -> true
+      | _ -> false)),
+  scenario "read-idle timeouts reconnect" { normal with
+    options = { quick with events = { quick.events with readIdleTimeoutMs = Some 50 } },
+    responses = [| (200, "text/event-stream", ""), (204, "", "") |],
+    stallBody = true
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, _) -> Result.isOk result && List.length headers = 2),
+  scenario "connection timeouts reconnect" { normal with
+    options = { quick with events = { quick.events with connectTimeoutMs = Some 50 } },
+    responses = [| (200, "text/event-stream", ""), (204, "", "") |],
+    stallHead = true
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, _) -> Result.isOk result && List.length headers = 2),
+  scenario "the overall deadline bounds reconnection backoff" { normal with
+    options = { quick with
+      events = { quick.events with subscriptionTimeoutMs = Some 100 },
+      maxReconnectDelayMs = None,
+      minReconnectDelayMs = 10000,
+      reconnectDelayMs = 10000
+    }
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, _) ->
+      result = Err HttpClient.DeadlineExceeded && List.length headers = 1),
+  scenario "cancellation terminates a blocked subscription" { normal with
+    cancel = true,
+    stallBody = true
+  } (fun observed ->
+    match observed with
+    | (result, headers, _, _) -> result = Err HttpClient.Cancelled && List.length headers = 1)
+]

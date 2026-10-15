@@ -4,7 +4,7 @@ manifest-version = 1
 name = "yaml"
 version = "0.1.0"
 fai-version = "0.0.1 || ^0.1.0"
-test-dir = "test"
+test-dir = "."
 
 [dependencies]
 json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
@@ -16,7 +16,3 @@ path = "examples/Inspect.fai"
 [[bin]]
 name = "conformance"
 path = "examples/Conformance.fai"
-
-[[bin]]
-name = "runtime-checks"
-path = "examples/RuntimeChecks.fai"

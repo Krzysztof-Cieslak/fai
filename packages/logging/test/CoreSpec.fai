@@ -13,43 +13,123 @@ let record = {
   target = "test",
   timestamp = None
 }
-example: LogFilter.enabled LogFilter.defaults "test" LogTypes.Info
-example: not (LogFilter.enabled LogFilter.defaults "test" LogTypes.Debug)
-example: not (LogFilter.enabled { LogFilter.defaults with minimum = None } "test" LogTypes.Fatal)
-example: LogFilter.enabled { LogFilter.defaults with
-  overrides = [{ minimum = Some LogTypes.Trace, target = "db" }]
-} "db.pool" LogTypes.Debug
-example: not (LogFilter.enabled { LogFilter.defaults with
-  overrides = [{ minimum = Some LogTypes.Trace, target = "db" }]
-} "dbBackup" LogTypes.Debug)
-example: LogFilter.validate { LogFilter.defaults with
-  overrides = [{ minimum = None, target = "db" }, { minimum = None, target = "db" }]
-} |> Result.isErr
-example: LogField.merge limits [
-  LogField.int "x" 1,
-  LogField.int "x" 2
-] = Ok (Json.Object [| ("x", Json.Number (JsonNumber.fromInt 2)) |])
-example: LogField.merge limits [
-  LogField.float "x" (Float.fromBits 0x7ff0000000000000)
-] |> Result.isErr
-example: LogField.merge limits [
-  LogField.float "x" (Float.fromBits 0x7ff0000000000000),
-  LogField.int "x" 3
-] |> Result.isOk
-example: LogBudget.check limits (Json.Object [|
-  ("x", Json.Null),
-  ("x", Json.Null)
-|]) |> Result.isErr
-example: LogBudget.check { limits with maxRecordBytes = 3 } (Json.String "a") = Ok 3
-example: LogBudget.check { limits with maxRecordBytes = 2 } (Json.String "a") |> Result.isErr
-example: LogBudget.check { limits with
-  maxValueDepth = 1
-} (Json.Array [| Json.Array [| Json.Null |] |]) |> Result.isErr
-example: LogBudget.check { limits with
-  maxValueNodes = 1
-} (Json.Array [| Json.Null |]) |> Result.isErr
-example: (LogFormat.render limits LogFormat.JsonLines record |> Result.map (fun line ->
-  String.contains line "\n")) = Ok false
-example: (LogFormat.render limits (LogFormat.Human false) record |> Result.map (fun line ->
-  String.contains line "\n")) = Ok false
-forall text: LogBudget.check limits (Json.String text) = Ok (Bytes.length (Bytes.fromString (Json.toString (Json.String text))))
+
+let case001 _ =
+  let testActual = LogFilter.enabled LogFilter.defaults "test" LogTypes.Info
+  Expect.isTrue "LogFilter.enabled LogFilter.defaults \"test\" LogTypes.Info" testActual
+
+let case002 _ =
+  let testActual = not (LogFilter.enabled LogFilter.defaults "test" LogTypes.Debug)
+  Expect.isTrue "not (LogFilter.enabled LogFilter.defaults \"test\" LogTypes.Debug)" testActual
+
+let case003 _ =
+  let testActual =
+    not (LogFilter.enabled { LogFilter.defaults with minimum = None } "test" LogTypes.Fatal)
+  Expect.isTrue "not (LogFilter.enabled { LogFilter.defaults with minimum = None } \"test\" LogTypes.Fatal)" testActual
+
+let case004 _ =
+  let testActual =
+    LogFilter.enabled { LogFilter.defaults with
+      overrides = [{ minimum = Some LogTypes.Trace, target = "db" }]
+    } "db.pool" LogTypes.Debug
+  Expect.isTrue "LogFilter.enabled { LogFilter.defaults with overrides = [{ minimum = Some LogTypes.Trace, target = \"db\" }] } \"db.pool\" LogTypes.Debug" testActual
+
+let case005 _ =
+  let testActual =
+    not (LogFilter.enabled { LogFilter.defaults with
+      overrides = [{ minimum = Some LogTypes.Trace, target = "db" }]
+    } "dbBackup" LogTypes.Debug)
+  Expect.isTrue "not (LogFilter.enabled { LogFilter.defaults with overrides = [{ minimum = Some LogTypes.Trace, target = \"db\" }] } \"dbBackup\" LogTypes.Debug)" testActual
+
+let case006 _ =
+  let testActual =
+    LogFilter.validate { LogFilter.defaults with
+      overrides = [{ minimum = None, target = "db" }, { minimum = None, target = "db" }]
+    } |> Result.isErr
+  Expect.isTrue "LogFilter.validate { LogFilter.defaults with overrides = [{ minimum = None, target = \"db\" }, { minimum = None, target = \"db\" }] } |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual =
+    LogField.merge limits [
+      LogField.int "x" 1,
+      LogField.int "x" 2
+    ] = Ok (Json.Object [| ("x", Json.Number (JsonNumber.fromInt 2)) |])
+  Expect.isTrue "LogField.merge limits [ LogField.int \"x\" 1, LogField.int \"x\" 2 ] = Ok (Json.Object [| (\"x\", Json.Number (JsonNumber.fromInt 2)) |])" testActual
+
+let case008 _ =
+  let testActual =
+    LogField.merge limits [LogField.float "x" (Float.fromBits 0x7ff0000000000000)] |> Result.isErr
+  Expect.isTrue "LogField.merge limits [ LogField.float \"x\" (Float.fromBits 0x7ff0000000000000) ] |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual =
+    LogField.merge limits [
+      LogField.float "x" (Float.fromBits 0x7ff0000000000000),
+      LogField.int "x" 3
+    ] |> Result.isOk
+  Expect.isTrue "LogField.merge limits [ LogField.float \"x\" (Float.fromBits 0x7ff0000000000000), LogField.int \"x\" 3 ] |> Result.isOk" testActual
+
+let case010 _ =
+  let testActual =
+    LogBudget.check limits (Json.Object [| ("x", Json.Null), ("x", Json.Null) |]) |> Result.isErr
+  Expect.isTrue "LogBudget.check limits (Json.Object [| (\"x\", Json.Null), (\"x\", Json.Null) |]) |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = LogBudget.check { limits with maxRecordBytes = 3 } (Json.String "a") = Ok 3
+  Expect.isTrue "LogBudget.check { limits with maxRecordBytes = 3 } (Json.String \"a\") = Ok 3" testActual
+
+let case012 _ =
+  let testActual =
+    LogBudget.check { limits with maxRecordBytes = 2 } (Json.String "a") |> Result.isErr
+  Expect.isTrue "LogBudget.check { limits with maxRecordBytes = 2 } (Json.String \"a\") |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual =
+    LogBudget.check { limits with
+      maxValueDepth = 1
+    } (Json.Array [| Json.Array [| Json.Null |] |]) |> Result.isErr
+  Expect.isTrue "LogBudget.check { limits with maxValueDepth = 1 } (Json.Array [| Json.Array [| Json.Null |] |]) |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual =
+    LogBudget.check { limits with maxValueNodes = 1 } (Json.Array [| Json.Null |]) |> Result.isErr
+  Expect.isTrue "LogBudget.check { limits with maxValueNodes = 1 } (Json.Array [| Json.Null |]) |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual =
+    (LogFormat.render limits LogFormat.JsonLines record |> Result.map (fun line ->
+      String.contains line "\n")) = Ok false
+  Expect.isTrue "(LogFormat.render limits LogFormat.JsonLines record |> Result.map (fun line -> String.contains line \"\\n\")) = Ok false" testActual
+
+let case016 _ =
+  let testActual =
+    (LogFormat.render limits (LogFormat.Human false) record |> Result.map (fun line ->
+      String.contains line "\n")) = Ok false
+  Expect.isTrue "(LogFormat.render limits (LogFormat.Human false) record |> Result.map (fun line -> String.contains line \"\\n\")) = Ok false" testActual
+
+let case017 testInput =
+  let text = testInput
+  let testActual =
+    LogBudget.check limits (Json.String text) = Ok (Bytes.length (Bytes.fromString (Json.toString (Json.String text))))
+  Expect.isTrue "property: LogBudget.check limits (Json.String text) = Ok (Bytes.length (Bytes.fromString (Json.toString (Json.String text))))" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LogCoreSpec" [
+  Test.test "LogFilter.enabled LogFilter.defaults \"test\" LogTypes.Info" case001,
+  Test.test "not (LogFilter.enabled LogFilter.defaults \"test\" LogTypes.Debug)" case002,
+  Test.test "not (LogFilter.enabled { LogFilter.defaults with minimum = None } \"test\" LogTypes.Fatal)" case003,
+  Test.test "LogFilter.enabled { LogFilter.defaults with overrides = [{ minimum = Some LogTypes.Trace, target = \"db\" }] } \"db.pool\" LogTypes.Debug" case004,
+  Test.test "not (LogFilter.enabled { LogFilter.defaults with overrides = [{ minimum = Some LogTypes.Trace, target = \"db\" }] } \"dbBackup\" LogTypes.Debug)" case005,
+  Test.test "LogFilter.validate { LogFilter.defaults with overrides = [{ minimum = None, target = \"db\" }, { minimum = None, target = \"db\" }] } |> Result.isErr" case006,
+  Test.test "LogField.merge limits [ LogField.int \"x\" 1, LogField.int \"x\" 2 ] = Ok (Json.Object [| (\"x\", Json.Number (JsonNumber.fromInt 2)) |])" case007,
+  Test.test "LogField.merge limits [ LogField.float \"x\" (Float.fromBits 0x7ff0000000000000) ] |> Result.isErr" case008,
+  Test.test "LogField.merge limits [ LogField.float \"x\" (Float.fromBits 0x7ff0000000000000), LogField.int \"x\" 3 ] |> Result.isOk" case009,
+  Test.test "LogBudget.check limits (Json.Object [| (\"x\", Json.Null), (\"x\", Json.Null) |]) |> Result.isErr" case010,
+  Test.test "LogBudget.check { limits with maxRecordBytes = 3 } (Json.String \"a\") = Ok 3" case011,
+  Test.test "LogBudget.check { limits with maxRecordBytes = 2 } (Json.String \"a\") |> Result.isErr" case012,
+  Test.test "LogBudget.check { limits with maxValueDepth = 1 } (Json.Array [| Json.Array [| Json.Null |] |]) |> Result.isErr" case013,
+  Test.test "LogBudget.check { limits with maxValueNodes = 1 } (Json.Array [| Json.Null |]) |> Result.isErr" case014,
+  Test.test "(LogFormat.render limits LogFormat.JsonLines record |> Result.map (fun line -> String.contains line \"\\n\")) = Ok false" case015,
+  Test.test "(LogFormat.render limits (LogFormat.Human false) record |> Result.map (fun line -> String.contains line \"\\n\")) = Ok false" case016,
+  Test.property "property: LogBudget.check limits (Json.String text) = Ok (Bytes.length (Bytes.fromString (Json.toString (Json.String text))))" Test.string case017
+]

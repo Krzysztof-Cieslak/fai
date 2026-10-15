@@ -19,7 +19,7 @@ let produce r cleaned frames write =
   let finished = r.concurrency.send cleaned ()
   result
 
-session : Runtime -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, Net, Tls }
+session : Runtime -> Listener -> Nursery -> Test.Check / { Clock, Concurrency, Net, Tls }
 let session r listener nursery =
   let gate = r.concurrency.channel 1
   let cleaned = r.concurrency.channel 1
@@ -48,13 +48,29 @@ let session r listener nursery =
     match result with
     | Ok result -> result.reason = HttpClient.EventStopped && result.state.received = 1
     | Err _ -> false
-  r.console.writeLine (if passed && cleanup = Some (Some ()) then
-    "heartbeat idle check passed"
-  else
-    "heartbeat idle check failed")
+  Expect.all [
+    Expect.isTrue "heartbeats keep the connection alive until its event arrives" passed,
+    Expect.isTrue "stopping the consumer joins the producer" (cleanup = Some (Some ()))
+  ]
+
+heartbeat : Test.Context -> Test.Check / { Clock, Concurrency, Net, Tls }
+let heartbeat ctx =
+  match ctx.runtime.net.listen 0 with
+  | Err error -> Test.error error
+  | Ok listener -> ctx.runtime.concurrency.scope (session ctx.runtime listener)
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "SSE heartbeats" [
+  Test.test "idle heartbeats preserve source reads and producer cleanup" heartbeat
+]
 
 public main : Runtime -> Unit / { Clock, Concurrency, Console, Net, Tls }
 let main r =
   match r.net.listen 0 with
   | Err error -> r.console.writeLine error
-  | Ok listener -> r.concurrency.scope (session r listener)
+  | Ok listener ->
+    let checked = r.concurrency.scope (session r listener)
+    r.console.writeLine (if checked = Test.pass then
+      "heartbeat idle check passed"
+    else
+      "heartbeat idle check failed")

@@ -11,41 +11,126 @@ let url req = Result.map (fun wire -> Url.toString wire.url) (prepared req)
 let header name req = Result.map (fun wire -> Headers.getAll name wire.headers) (prepared req)
 
 let body req = Result.map (fun wire -> Bytes.toString wire.body) (prepared req)
-example: HttpClient.validateConfig cfg = Ok ()
-example: url (HttpClient.get "users/42") = Ok "https://api.test/v1/users/42"
-example: url (HttpClient.get "/users") = Ok "https://api.test/users"
-example: url (HttpClient.get "../users") = Ok "https://api.test/users"
-example: url (HttpClient.get "https://other.test/x") = Ok "https://other.test/x"
-example: url (HttpClient.get "") = Ok "https://api.test/v1/"
-example: url (HttpClient.get "users?q=old" |> HttpClient.query "q" "a b" |> HttpClient.query "unicode" "é😀") = Ok "https://api.test/v1/users?q=old&q=a%20b&unicode=%C3%A9%F0%9F%98%80"
-example: header "x-one" (HttpClient.get "" |> HttpClient.header "X-One" "a" |> HttpClient.header "x-one" "b") = Ok [
-  "b"
-]
-example: header "x-one" (HttpClient.get "" |> HttpClient.addHeader "X-One" "a" |> HttpClient.addHeader "x-one" "b") = Ok [
-  "a",
-  "b"
-]
-example: header "x-one" (HttpClient.get "" |> HttpClient.header "X-One" "a" |> HttpClient.removeHeader "x-one") = Ok []
-example: header "Content-Length" (HttpClient.post "" |> HttpClient.header "Content-Length" "999" |> HttpClient.textBody "hi") = Ok []
-example: body (HttpClient.post "" |> HttpClient.textBody "é😀") = Ok (Some "é😀")
-example: body (HttpClient.post "" |> HttpClient.formBody [
-  ("a b", "&="),
-  ("a b", "")
-]) = Ok (Some "a%20b=%26%3D&a%20b=")
-example: body (HttpClient.post "" |> HttpClient.jsonBody JsonEncode.int 42) = Ok (Some "42")
-example: header "content-type" (HttpClient.post "" |> HttpClient.jsonBody JsonEncode.int 42) = Ok [
-  "application/json"
-]
-example: Result.isErr (prepared (HttpClient.get "ftp://api.test/file"))
-example: Result.isErr (prepared (HttpClient.get "https://user:pass@api.test/file"))
-example: Result.isErr (prepared (HttpClient.get "/bad path"))
-example: Result.isErr (prepared (HttpClient.get "" |> HttpClient.header "bad name" "value"))
-example: Result.isErr (prepared (HttpClient.get "" |> HttpClient.header "Name" "value\r\nOther: x"))
-example: Result.isErr (prepared (HttpClient.request (Http.Custom "GET\r\n") ""))
-example: Result.isErr (HttpClient.validateConfig (HttpClient.config "/relative"))
-example: Result.isErr (HttpClient.validateConfig { cfg with timeoutMs = Some 0 })
-example: Result.isErr (HttpClient.validateConfig { cfg with maxBodyBytes = (-1) })
-example: HttpClient.validateConfig { cfg with maxBodyBytes = 0, timeoutMs = None } = Ok ()
+
+let case001 _ =
+  let testActual = HttpClient.validateConfig cfg = Ok ()
+  Expect.isTrue "HttpClient.validateConfig cfg = Ok ()" testActual
+
+let case002 _ =
+  let testActual = url (HttpClient.get "users/42") = Ok "https://api.test/v1/users/42"
+  Expect.isTrue "url (HttpClient.get \"users/42\") = Ok \"https://api.test/v1/users/42\"" testActual
+
+let case003 _ =
+  let testActual = url (HttpClient.get "/users") = Ok "https://api.test/users"
+  Expect.isTrue "url (HttpClient.get \"/users\") = Ok \"https://api.test/users\"" testActual
+
+let case004 _ =
+  let testActual = url (HttpClient.get "../users") = Ok "https://api.test/users"
+  Expect.isTrue "url (HttpClient.get \"../users\") = Ok \"https://api.test/users\"" testActual
+
+let case005 _ =
+  let testActual = url (HttpClient.get "https://other.test/x") = Ok "https://other.test/x"
+  Expect.isTrue "url (HttpClient.get \"https://other.test/x\") = Ok \"https://other.test/x\"" testActual
+
+let case006 _ =
+  let testActual = url (HttpClient.get "") = Ok "https://api.test/v1/"
+  Expect.isTrue "url (HttpClient.get \"\") = Ok \"https://api.test/v1/\"" testActual
+
+let case007 _ =
+  let testActual =
+    url (HttpClient.get "users?q=old" |> HttpClient.query "q" "a b" |> HttpClient.query "unicode" "é😀") = Ok "https://api.test/v1/users?q=old&q=a%20b&unicode=%C3%A9%F0%9F%98%80"
+  Expect.isTrue "url (HttpClient.get \"users?q=old\" |> HttpClient.query \"q\" \"a b\" |> HttpClient.query \"unicode\" \"é😀\") = Ok \"https://api.test/v1/users?q=old&q=a%20b&unicode=%C3…" testActual
+
+let case008 _ =
+  let testActual =
+    header "x-one" (HttpClient.get "" |> HttpClient.header "X-One" "a" |> HttpClient.header "x-one" "b") = Ok [
+      "b"
+    ]
+  Expect.isTrue "header \"x-one\" (HttpClient.get \"\" |> HttpClient.header \"X-One\" \"a\" |> HttpClient.header \"x-one\" \"b\") = Ok [ \"b\" ]" testActual
+
+let case009 _ =
+  let testActual =
+    header "x-one" (HttpClient.get "" |> HttpClient.addHeader "X-One" "a" |> HttpClient.addHeader "x-one" "b") = Ok [
+      "a",
+      "b"
+    ]
+  Expect.isTrue "header \"x-one\" (HttpClient.get \"\" |> HttpClient.addHeader \"X-One\" \"a\" |> HttpClient.addHeader \"x-one\" \"b\") = Ok [ \"a\", \"b\" ]" testActual
+
+let case010 _ =
+  let testActual =
+    header "x-one" (HttpClient.get "" |> HttpClient.header "X-One" "a" |> HttpClient.removeHeader "x-one") = Ok []
+  Expect.isTrue "header \"x-one\" (HttpClient.get \"\" |> HttpClient.header \"X-One\" \"a\" |> HttpClient.removeHeader \"x-one\") = Ok []" testActual
+
+let case011 _ =
+  let testActual =
+    header "Content-Length" (HttpClient.post "" |> HttpClient.header "Content-Length" "999" |> HttpClient.textBody "hi") = Ok []
+  Expect.isTrue "header \"Content-Length\" (HttpClient.post \"\" |> HttpClient.header \"Content-Length\" \"999\" |> HttpClient.textBody \"hi\") = Ok []" testActual
+
+let case012 _ =
+  let testActual = body (HttpClient.post "" |> HttpClient.textBody "é😀") = Ok (Some "é😀")
+  Expect.isTrue "body (HttpClient.post \"\" |> HttpClient.textBody \"é😀\") = Ok (Some \"é😀\")" testActual
+
+let case013 _ =
+  let testActual =
+    body (HttpClient.post "" |> HttpClient.formBody [
+      ("a b", "&="),
+      ("a b", "")
+    ]) = Ok (Some "a%20b=%26%3D&a%20b=")
+  Expect.isTrue "body (HttpClient.post \"\" |> HttpClient.formBody [ (\"a b\", \"&=\"), (\"a b\", \"\") ]) = Ok (Some \"a%20b=%26%3D&a%20b=\")" testActual
+
+let case014 _ =
+  let testActual =
+    body (HttpClient.post "" |> HttpClient.jsonBody JsonEncode.int 42) = Ok (Some "42")
+  Expect.isTrue "body (HttpClient.post \"\" |> HttpClient.jsonBody JsonEncode.int 42) = Ok (Some \"42\")" testActual
+
+let case015 _ =
+  let testActual =
+    header "content-type" (HttpClient.post "" |> HttpClient.jsonBody JsonEncode.int 42) = Ok [
+      "application/json"
+    ]
+  Expect.isTrue "header \"content-type\" (HttpClient.post \"\" |> HttpClient.jsonBody JsonEncode.int 42) = Ok [ \"application/json\" ]" testActual
+
+let case016 _ =
+  let testActual = Result.isErr (prepared (HttpClient.get "ftp://api.test/file"))
+  Expect.isTrue "Result.isErr (prepared (HttpClient.get \"ftp://api.test/file\"))" testActual
+
+let case017 _ =
+  let testActual = Result.isErr (prepared (HttpClient.get "https://user:pass@api.test/file"))
+  Expect.isTrue "Result.isErr (prepared (HttpClient.get \"https://user:pass@api.test/file\"))" testActual
+
+let case018 _ =
+  let testActual = Result.isErr (prepared (HttpClient.get "/bad path"))
+  Expect.isTrue "Result.isErr (prepared (HttpClient.get \"/bad path\"))" testActual
+
+let case019 _ =
+  let testActual =
+    Result.isErr (prepared (HttpClient.get "" |> HttpClient.header "bad name" "value"))
+  Expect.isTrue "Result.isErr (prepared (HttpClient.get \"\" |> HttpClient.header \"bad name\" \"value\"))" testActual
+
+let case020 _ =
+  let testActual =
+    Result.isErr (prepared (HttpClient.get "" |> HttpClient.header "Name" "value\r\nOther: x"))
+  Expect.isTrue "Result.isErr (prepared (HttpClient.get \"\" |> HttpClient.header \"Name\" \"value\\r\\nOther: x\"))" testActual
+
+let case021 _ =
+  let testActual = Result.isErr (prepared (HttpClient.request (Http.Custom "GET\r\n") ""))
+  Expect.isTrue "Result.isErr (prepared (HttpClient.request (Http.Custom \"GET\\r\\n\") \"\"))" testActual
+
+let case022 _ =
+  let testActual = Result.isErr (HttpClient.validateConfig (HttpClient.config "/relative"))
+  Expect.isTrue "Result.isErr (HttpClient.validateConfig (HttpClient.config \"/relative\"))" testActual
+
+let case023 _ =
+  let testActual = Result.isErr (HttpClient.validateConfig { cfg with timeoutMs = Some 0 })
+  Expect.isTrue "Result.isErr (HttpClient.validateConfig { cfg with timeoutMs = Some 0 })" testActual
+
+let case024 _ =
+  let testActual = Result.isErr (HttpClient.validateConfig { cfg with maxBodyBytes = (-1) })
+  Expect.isTrue "Result.isErr (HttpClient.validateConfig { cfg with maxBodyBytes = (-1) })" testActual
+
+let case025 _ =
+  let testActual = HttpClient.validateConfig { cfg with maxBodyBytes = 0, timeoutMs = None } = Ok ()
+  Expect.isTrue "HttpClient.validateConfig { cfg with maxBodyBytes = 0, timeoutMs = None } = Ok ()" testActual
 
 let authenticated = { cfg with
   headers = Headers.fromList [("Authorization", "Bearer secret"), ("X-Default", "yes")]
@@ -53,27 +138,96 @@ let authenticated = { cfg with
 
 let headers config req =
   Result.map (fun wire -> Headers.toList wire.headers) (HttpClient.prepare config req)
-example: headers authenticated (HttpClient.get "users") = Ok [
-  ("Authorization", "Bearer secret"),
-  ("X-Default", "yes")
-]
-example: headers authenticated (HttpClient.get "https://other.test/") = Ok []
-example: headers authenticated (HttpClient.get "https://API.TEST:443/v1/users") = Ok [
-  ("Authorization", "Bearer secret"),
-  ("X-Default", "yes")
-]
-example: headers authenticated (HttpClient.get "users" |> HttpClient.header "authorization" "other") = Ok [
-  ("X-Default", "yes"),
-  ("authorization", "other")
-]
-example: headers authenticated (HttpClient.get "users" |> HttpClient.removeHeader "AUTHORIZATION") = Ok [
-  ("X-Default", "yes")
-]
+
+let case026 _ =
+  let testActual =
+    headers authenticated (HttpClient.get "users") = Ok [
+      ("Authorization", "Bearer secret"),
+      ("X-Default", "yes")
+    ]
+  Expect.isTrue "headers authenticated (HttpClient.get \"users\") = Ok [ (\"Authorization\", \"Bearer secret\"), (\"X-Default\", \"yes\") ]" testActual
+
+let case027 _ =
+  let testActual = headers authenticated (HttpClient.get "https://other.test/") = Ok []
+  Expect.isTrue "headers authenticated (HttpClient.get \"https://other.test/\") = Ok []" testActual
+
+let case028 _ =
+  let testActual =
+    headers authenticated (HttpClient.get "https://API.TEST:443/v1/users") = Ok [
+      ("Authorization", "Bearer secret"),
+      ("X-Default", "yes")
+    ]
+  Expect.isTrue "headers authenticated (HttpClient.get \"https://API.TEST:443/v1/users\") = Ok [ (\"Authorization\", \"Bearer secret\"), (\"X-Default\", \"yes\") ]" testActual
+
+let case029 _ =
+  let testActual =
+    headers authenticated (HttpClient.get "users" |> HttpClient.header "authorization" "other") = Ok [
+      ("X-Default", "yes"),
+      ("authorization", "other")
+    ]
+  Expect.isTrue "headers authenticated (HttpClient.get \"users\" |> HttpClient.header \"authorization\" \"other\") = Ok [ (\"X-Default\", \"yes\"), (\"authorization\", \"other\") ]" testActual
+
+let case030 _ =
+  let testActual =
+    headers authenticated (HttpClient.get "users" |> HttpClient.removeHeader "AUTHORIZATION") = Ok [
+      ("X-Default", "yes")
+    ]
+  Expect.isTrue "headers authenticated (HttpClient.get \"users\" |> HttpClient.removeHeader \"AUTHORIZATION\") = Ok [ (\"X-Default\", \"yes\") ]" testActual
 
 let reject value = Err { message = "not encodable", path = [JsonEncode.Field "x"] }
-example: prepared (HttpClient.post "" |> HttpClient.jsonBody reject ()) = Err (HttpClient.Encoding {
-  message = "not encodable",
-  path = [JsonEncode.Field "x"]
-})
-forall text: body (HttpClient.post "" |> HttpClient.textBody text) = Ok (Some text)
-forall value: body (HttpClient.post "" |> HttpClient.jsonBody JsonEncode.int value) = Ok (Some (Int.toString value))
+
+let case031 _ =
+  let testActual =
+    prepared (HttpClient.post "" |> HttpClient.jsonBody reject ()) = Err (HttpClient.Encoding {
+      message = "not encodable",
+      path = [JsonEncode.Field "x"]
+    })
+  Expect.isTrue "prepared (HttpClient.post \"\" |> HttpClient.jsonBody reject ()) = Err (HttpClient.Encoding { message = \"not encodable\", path = [JsonEncode.Field \"x\"] })" testActual
+
+let case032 testInput =
+  let text = testInput
+  let testActual = body (HttpClient.post "" |> HttpClient.textBody text) = Ok (Some text)
+  Expect.isTrue "property: body (HttpClient.post \"\" |> HttpClient.textBody text) = Ok (Some text)" testActual
+
+let case033 testInput =
+  let value = testInput
+  let testActual =
+    body (HttpClient.post "" |> HttpClient.jsonBody JsonEncode.int value) = Ok (Some (Int.toString value))
+  Expect.isTrue "property: body (HttpClient.post \"\" |> HttpClient.jsonBody JsonEncode.int value) = Ok (Some (Int.toString value))" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "RequestSpec" [
+  Test.test "HttpClient.validateConfig cfg = Ok ()" case001,
+  Test.test "url (HttpClient.get \"users/42\") = Ok \"https://api.test/v1/users/42\"" case002,
+  Test.test "url (HttpClient.get \"/users\") = Ok \"https://api.test/users\"" case003,
+  Test.test "url (HttpClient.get \"../users\") = Ok \"https://api.test/users\"" case004,
+  Test.test "url (HttpClient.get \"https://other.test/x\") = Ok \"https://other.test/x\"" case005,
+  Test.test "url (HttpClient.get \"\") = Ok \"https://api.test/v1/\"" case006,
+  Test.test "url (HttpClient.get \"users?q=old\" |> HttpClient.query \"q\" \"a b\" |> HttpClient.query \"unicode\" \"é😀\") = Ok \"https://api.test/v1/users?q=old&q=a%20b&unicode=%C3…" case007,
+  Test.test "header \"x-one\" (HttpClient.get \"\" |> HttpClient.header \"X-One\" \"a\" |> HttpClient.header \"x-one\" \"b\") = Ok [ \"b\" ]" case008,
+  Test.test "header \"x-one\" (HttpClient.get \"\" |> HttpClient.addHeader \"X-One\" \"a\" |> HttpClient.addHeader \"x-one\" \"b\") = Ok [ \"a\", \"b\" ]" case009,
+  Test.test "header \"x-one\" (HttpClient.get \"\" |> HttpClient.header \"X-One\" \"a\" |> HttpClient.removeHeader \"x-one\") = Ok []" case010,
+  Test.test "header \"Content-Length\" (HttpClient.post \"\" |> HttpClient.header \"Content-Length\" \"999\" |> HttpClient.textBody \"hi\") = Ok []" case011,
+  Test.test "body (HttpClient.post \"\" |> HttpClient.textBody \"é😀\") = Ok (Some \"é😀\")" case012,
+  Test.test "body (HttpClient.post \"\" |> HttpClient.formBody [ (\"a b\", \"&=\"), (\"a b\", \"\") ]) = Ok (Some \"a%20b=%26%3D&a%20b=\")" case013,
+  Test.test "body (HttpClient.post \"\" |> HttpClient.jsonBody JsonEncode.int 42) = Ok (Some \"42\")" case014,
+  Test.test "header \"content-type\" (HttpClient.post \"\" |> HttpClient.jsonBody JsonEncode.int 42) = Ok [ \"application/json\" ]" case015,
+  Test.test "Result.isErr (prepared (HttpClient.get \"ftp://api.test/file\"))" case016,
+  Test.test "Result.isErr (prepared (HttpClient.get \"https://user:pass@api.test/file\"))" case017,
+  Test.test "Result.isErr (prepared (HttpClient.get \"/bad path\"))" case018,
+  Test.test "Result.isErr (prepared (HttpClient.get \"\" |> HttpClient.header \"bad name\" \"value\"))" case019,
+  Test.test "Result.isErr (prepared (HttpClient.get \"\" |> HttpClient.header \"Name\" \"value\\r\\nOther: x\"))" case020,
+  Test.test "Result.isErr (prepared (HttpClient.request (Http.Custom \"GET\\r\\n\") \"\"))" case021,
+  Test.test "Result.isErr (HttpClient.validateConfig (HttpClient.config \"/relative\"))" case022,
+  Test.test "Result.isErr (HttpClient.validateConfig { cfg with timeoutMs = Some 0 })" case023,
+  Test.test "Result.isErr (HttpClient.validateConfig { cfg with maxBodyBytes = (-1) })" case024,
+  Test.test "HttpClient.validateConfig { cfg with maxBodyBytes = 0, timeoutMs = None } = Ok ()" case025,
+  Test.test "headers authenticated (HttpClient.get \"users\") = Ok [ (\"Authorization\", \"Bearer secret\"), (\"X-Default\", \"yes\") ]" case026,
+  Test.test "headers authenticated (HttpClient.get \"https://other.test/\") = Ok []" case027,
+  Test.test "headers authenticated (HttpClient.get \"https://API.TEST:443/v1/users\") = Ok [ (\"Authorization\", \"Bearer secret\"), (\"X-Default\", \"yes\") ]" case028,
+  Test.test "headers authenticated (HttpClient.get \"users\" |> HttpClient.header \"authorization\" \"other\") = Ok [ (\"X-Default\", \"yes\"), (\"authorization\", \"other\") ]" case029,
+  Test.test "headers authenticated (HttpClient.get \"users\" |> HttpClient.removeHeader \"AUTHORIZATION\") = Ok [ (\"X-Default\", \"yes\") ]" case030,
+  Test.test "prepared (HttpClient.post \"\" |> HttpClient.jsonBody reject ()) = Err (HttpClient.Encoding { message = \"not encodable\", path = [JsonEncode.Field \"x\"] })" case031,
+  Test.property "property: body (HttpClient.post \"\" |> HttpClient.textBody text) = Ok (Some text)" Test.string case032,
+  Test.property "property: body (HttpClient.post \"\" |> HttpClient.jsonBody JsonEncode.int value) = Ok (Some (Int.toString value))" Test.int case033
+]

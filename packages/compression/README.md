@@ -122,5 +122,5 @@ python3 scripts/package_integrations.py compression --no-dependents --fai /path/
 
 Native engine tests cover independent zlib-rs interoperability, arbitrary binary
 inputs/chunking, shared snapshots, header/trailer failures and bounded storage.
-Package contracts and JIT/AOT fixtures cover the public APIs and streamed effects.
+Named package tests and JIT/AOT fixtures cover the public APIs and streamed effects.
 Archives, HTTP content negotiation, Brotli and Zstandard are separate future work.

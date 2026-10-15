@@ -71,3 +71,41 @@ let main env =
     "Compression runtime checks passed"
   else
     "Compression runtime checks FAILED")
+
+sharedDecode : Test.Context -> Test.Check / { Concurrency }
+let sharedDecode ctx =
+  let shared = Result.withDefault Bytes.empty (Gzip.compress payload)
+  Expect.isTrue "shared compressed buffers decode independently" (Async.parallel ctx.runtime.concurrency [
+    fun _ -> Gzip.decompress shared = Ok payload,
+    fun _ -> Gzip.decompress shared = Ok payload
+  ] = [true, true])
+
+sharedSnapshots : Test.Context -> Test.Check / { Concurrency }
+let sharedSnapshots ctx =
+  let shared = Result.withDefault Bytes.empty (Gzip.compress payload)
+  Expect.ok Compression.errorToString (fun decoder ->
+    Expect.isTrue "decoder snapshots retain value semantics" (match Async.parallel ctx.runtime.concurrency [
+      fun _ -> Compression.feedDecoder decoder shared 0,
+      fun _ -> Compression.feedDecoder decoder shared 0
+    ] with
+    | [a, b] -> a = b
+    | _ -> false)) (Gzip.decoder Compression.decodeOptions)
+
+effectCheck : Test.Context -> Test.Check / { Clock, Console }
+let effectCheck ctx =
+  Expect.isTrue "source and callback effects are forwarded" (checkEffects ctx.runtime)
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Console }
+let tests = Test.describe "compression runtime" [
+  Test.test "gzip large-buffer round trip" (fun _ ->
+    Expect.isTrue "gzip" (roundTrip Compression.Gzip)),
+  Test.test "zlib large-buffer round trip" (fun _ ->
+    Expect.isTrue "zlib" (roundTrip Compression.Zlib)),
+  Test.test "raw DEFLATE large-buffer round trip" (fun _ ->
+    Expect.isTrue "raw DEFLATE" (roundTrip Compression.RawDeflate)),
+  Test.test "streamed chunks retain their total length" (fun _ ->
+    Expect.isTrue "complete stream" checkStream),
+  Test.test "concurrent decompression" sharedDecode,
+  Test.test "concurrent immutable decoder snapshots" sharedSnapshots,
+  Test.test "mixed source and callback effects" effectCheck
+]

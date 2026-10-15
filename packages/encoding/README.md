@@ -172,5 +172,5 @@ integration exercises large buffers and fixed-chunk streams through JIT and AOT.
 PostgreSQL authentication, LLM image payloads, and TUI clipboard output use this
 package through manifest dependencies and explicit module imports.
 `PgAuth.base64Decode` adapts the structured error to its existing String
-error channel. Interoperability contracts also compare standard Base64 output
+error channel. Interoperability properties also compare standard Base64 output
 with the embedded HTTP helper.

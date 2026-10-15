@@ -6,18 +6,89 @@ let integer text =
   match JsonNumber.fromString text with
   | Err e -> Err e.message
   | Ok number -> JsonNumber.toInt number
-example: compact " {\"a\": 1, \"a\": 2} " = Ok "{\"a\":1,\"a\":2}"
-example: compact "[1e99999,-0.00,18446744073709551616]" = Ok "[1e99999,-0.00,18446744073709551616]"
-example: compact "\"\\uD83D\\uDE00\"" = Ok "\"😀\""
-example: compact "\"\\u0000\\b\\f\\n\\r\\t\\/\\\\\\\"\"" = Ok "\"\\u0000\\b\\f\\n\\r\\t/\\\\\\\"\""
-example: Result.isErr (Json.parse "[1,]")
-example: Result.isErr (Json.parse "{\"x\":1,}")
-example: Result.isErr (Json.parse "\"\\uD800\"")
-example: Result.isErr (Json.parse "null true")
-example: Result.isErr (Json.parseBytes (Bytes.fromList [34, 255, 34]))
-example: integer "1.000e3" = Ok 1000
-example: integer "-9223372036854775808" = Ok (-9223372036854775808)
-example: Result.isErr (integer "9223372036854775808")
-example: Result.isErr (integer "1.01")
-forall text: Json.parse (Json.toString (Json.String text)) = Ok (Json.String text)
-forall value: JsonNumber.toInt (JsonNumber.fromInt value) = Ok value
+
+let case001 _ =
+  let testActual = compact " {\"a\": 1, \"a\": 2} " = Ok "{\"a\":1,\"a\":2}"
+  Expect.isTrue "compact \" {\\\"a\\\": 1, \\\"a\\\": 2} \" = Ok \"{\\\"a\\\":1,\\\"a\\\":2}\"" testActual
+
+let case002 _ =
+  let testActual =
+    compact "[1e99999,-0.00,18446744073709551616]" = Ok "[1e99999,-0.00,18446744073709551616]"
+  Expect.isTrue "compact \"[1e99999,-0.00,18446744073709551616]\" = Ok \"[1e99999,-0.00,18446744073709551616]\"" testActual
+
+let case003 _ =
+  let testActual = compact "\"\\uD83D\\uDE00\"" = Ok "\"😀\""
+  Expect.isTrue "compact \"\\\"\\\\uD83D\\\\uDE00\\\"\" = Ok \"\\\"😀\\\"\"" testActual
+
+let case004 _ =
+  let testActual =
+    compact "\"\\u0000\\b\\f\\n\\r\\t\\/\\\\\\\"\"" = Ok "\"\\u0000\\b\\f\\n\\r\\t/\\\\\\\"\""
+  Expect.isTrue "compact \"\\\"\\\\u0000\\\\b\\\\f\\\\n\\\\r\\\\t\\\\/\\\\\\\\\\\\\\\"\\\"\" = Ok \"\\\"\\\\u0000\\\\b\\\\f\\\\n\\\\r\\\\t/\\\\\\\\\\\\\\\"\\\"\"" testActual
+
+let case005 _ =
+  let testActual = Result.isErr (Json.parse "[1,]")
+  Expect.isTrue "Result.isErr (Json.parse \"[1,]\")" testActual
+
+let case006 _ =
+  let testActual = Result.isErr (Json.parse "{\"x\":1,}")
+  Expect.isTrue "Result.isErr (Json.parse \"{\\\"x\\\":1,}\")" testActual
+
+let case007 _ =
+  let testActual = Result.isErr (Json.parse "\"\\uD800\"")
+  Expect.isTrue "Result.isErr (Json.parse \"\\\"\\\\uD800\\\"\")" testActual
+
+let case008 _ =
+  let testActual = Result.isErr (Json.parse "null true")
+  Expect.isTrue "Result.isErr (Json.parse \"null true\")" testActual
+
+let case009 _ =
+  let testActual = Result.isErr (Json.parseBytes (Bytes.fromList [34, 255, 34]))
+  Expect.isTrue "Result.isErr (Json.parseBytes (Bytes.fromList [34, 255, 34]))" testActual
+
+let case010 _ =
+  let testActual = integer "1.000e3"
+  let testExpected = Ok 1000
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case011 _ =
+  let testActual = integer "-9223372036854775808"
+  let testExpected = Ok (-9223372036854775808)
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case012 _ =
+  let testActual = Result.isErr (integer "9223372036854775808")
+  Expect.isTrue "Result.isErr (integer \"9223372036854775808\")" testActual
+
+let case013 _ =
+  let testActual = Result.isErr (integer "1.01")
+  Expect.isTrue "Result.isErr (integer \"1.01\")" testActual
+
+let case014 testInput =
+  let text = testInput
+  let testActual = Json.parse (Json.toString (Json.String text)) = Ok (Json.String text)
+  Expect.isTrue "property: Json.parse (Json.toString (Json.String text)) = Ok (Json.String text)" testActual
+
+let case015 testInput =
+  let value = testInput
+  let testActual = JsonNumber.toInt (JsonNumber.fromInt value)
+  let testExpected = Ok value
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "JsonSpec" [
+  Test.test "compact \" {\\\"a\\\": 1, \\\"a\\\": 2} \" = Ok \"{\\\"a\\\":1,\\\"a\\\":2}\"" case001,
+  Test.test "compact \"[1e99999,-0.00,18446744073709551616]\" = Ok \"[1e99999,-0.00,18446744073709551616]\"" case002,
+  Test.test "compact \"\\\"\\\\uD83D\\\\uDE00\\\"\" = Ok \"\\\"😀\\\"\"" case003,
+  Test.test "compact \"\\\"\\\\u0000\\\\b\\\\f\\\\n\\\\r\\\\t\\\\/\\\\\\\\\\\\\\\"\\\"\" = Ok \"\\\"\\\\u0000\\\\b\\\\f\\\\n\\\\r\\\\t/\\\\\\\\\\\\\\\"\\\"\"" case004,
+  Test.test "Result.isErr (Json.parse \"[1,]\")" case005,
+  Test.test "Result.isErr (Json.parse \"{\\\"x\\\":1,}\")" case006,
+  Test.test "Result.isErr (Json.parse \"\\\"\\\\uD800\\\"\")" case007,
+  Test.test "Result.isErr (Json.parse \"null true\")" case008,
+  Test.test "Result.isErr (Json.parseBytes (Bytes.fromList [34, 255, 34]))" case009,
+  Test.test "integer \"1.000e3\" = Ok 1000" case010,
+  Test.test "integer \"-9223372036854775808\" = Ok (-9223372036854775808)" case011,
+  Test.test "Result.isErr (integer \"9223372036854775808\")" case012,
+  Test.test "Result.isErr (integer \"1.01\")" case013,
+  Test.property "property: Json.parse (Json.toString (Json.String text)) = Ok (Json.String text)" Test.string case014,
+  Test.property "property: JsonNumber.toInt (JsonNumber.fromInt value) = Ok value" Test.int case015
+]

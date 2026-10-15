@@ -52,34 +52,66 @@ let step result event =
 
 run : List Json.Value -> Result LlmStream.State LlmTypes.Error
 let run events = List.foldl step (Ok (LlmStream.initial LlmTypes.Anthropic)) events
-example: (run [
-  started,
-  block,
-  delta "hel",
-  delta "lo",
-  stopped,
-  usage 2 "end_turn",
-  ended
-] |> Result.map (fun state -> Llm.text state.response)) = Ok "hello"
-example: (run [
-  started,
-  block,
-  delta "a",
-  stopped,
-  usage 2 "end_turn",
-  usage 5 "end_turn",
-  ended
-] |> Result.map (fun state -> state.response.usage.outputTokens)) = Ok (Some 5)
-example: run [started, delta "missing"] |> Result.isErr
-example: run [started, block, block] |> Result.isErr
-example: run [started, block, ended] |> Result.isErr
-example: run [started, usage 1 "end_turn", ended, ended] |> Result.isErr
-example: run [obj [("type", str "ping")], started, usage 1 "end_turn", ended] |> Result.isOk
-example: run [started, obj [("type", str "future_event")], usage 1 "end_turn", ended] |> Result.isOk
-example: run [
-  started,
-  obj [("type", str "error"), ("error", obj [("type", str "overloaded_error")])]
-] |> Result.isErr
+
+let case001 _ =
+  let testActual =
+    (run [
+      started,
+      block,
+      delta "hel",
+      delta "lo",
+      stopped,
+      usage 2 "end_turn",
+      ended
+    ] |> Result.map (fun state -> Llm.text state.response)) = Ok "hello"
+  Expect.isTrue "(run [ started, block, delta \"hel\", delta \"lo\", stopped, usage 2 \"end_turn\", ended ] |> Result.map (fun state -> Llm.text state.response)) = Ok \"hello\"" testActual
+
+let case002 _ =
+  let testActual =
+    (run [
+      started,
+      block,
+      delta "a",
+      stopped,
+      usage 2 "end_turn",
+      usage 5 "end_turn",
+      ended
+    ] |> Result.map (fun state -> state.response.usage.outputTokens)) = Ok (Some 5)
+  Expect.isTrue "(run [ started, block, delta \"a\", stopped, usage 2 \"end_turn\", usage 5 \"end_turn\", ended ] |> Result.map (fun state -> state.response.usage.outputTokens)) = …" testActual
+
+let case003 _ =
+  let testActual = run [started, delta "missing"] |> Result.isErr
+  Expect.isTrue "run [started, delta \"missing\"] |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual = run [started, block, block] |> Result.isErr
+  Expect.isTrue "run [started, block, block] |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual = run [started, block, ended] |> Result.isErr
+  Expect.isTrue "run [started, block, ended] |> Result.isErr" testActual
+
+let case006 _ =
+  let testActual = run [started, usage 1 "end_turn", ended, ended] |> Result.isErr
+  Expect.isTrue "run [started, usage 1 \"end_turn\", ended, ended] |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual =
+    run [obj [("type", str "ping")], started, usage 1 "end_turn", ended] |> Result.isOk
+  Expect.isTrue "run [obj [(\"type\", str \"ping\")], started, usage 1 \"end_turn\", ended] |> Result.isOk" testActual
+
+let case008 _ =
+  let testActual =
+    run [started, obj [("type", str "future_event")], usage 1 "end_turn", ended] |> Result.isOk
+  Expect.isTrue "run [started, obj [(\"type\", str \"future_event\")], usage 1 \"end_turn\", ended] |> Result.isOk" testActual
+
+let case009 _ =
+  let testActual =
+    run [
+      started,
+      obj [("type", str "error"), ("error", obj [("type", str "overloaded_error")])]
+    ] |> Result.isErr
+  Expect.isTrue "run [ started, obj [(\"type\", str \"error\"), (\"error\", obj [(\"type\", str \"overloaded_error\")])] ] |> Result.isErr" testActual
 
 let tool = obj [
   ("type", str "content_block_start"),
@@ -97,24 +129,36 @@ let args text = obj [
   ("index", num 0),
   ("delta", obj [("type", str "input_json_delta"), ("partial_json", str text)])
 ]
-example: (run [
-  started,
-  tool,
-  args "{\"path\":",
-  args "\"a\"}",
-  stopped,
-  usage 5 "tool_use",
-  ended
-] |> Result.map (fun state -> List.length state.response.toolCalls)) = Ok 1
-example: run [started, tool, args "{broken", stopped, usage 5 "tool_use", ended] |> Result.isErr
-example: (run [
-  started,
-  tool,
-  args "{partial",
-  stopped,
-  usage 5 "max_tokens",
-  ended
-] |> Result.map (fun state -> state.response.toolCalls)) = Ok []
+
+let case010 _ =
+  let testActual =
+    (run [
+      started,
+      tool,
+      args "{\"path\":",
+      args "\"a\"}",
+      stopped,
+      usage 5 "tool_use",
+      ended
+    ] |> Result.map (fun state -> List.length state.response.toolCalls)) = Ok 1
+  Expect.isTrue "(run [ started, tool, args \"{\\\"path\\\":\", args \"\\\"a\\\"}\", stopped, usage 5 \"tool_use\", ended ] |> Result.map (fun state -> List.length state.response.toolCalls…" testActual
+
+let case011 _ =
+  let testActual =
+    run [started, tool, args "{broken", stopped, usage 5 "tool_use", ended] |> Result.isErr
+  Expect.isTrue "run [started, tool, args \"{broken\", stopped, usage 5 \"tool_use\", ended] |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual =
+    (run [
+      started,
+      tool,
+      args "{partial",
+      stopped,
+      usage 5 "max_tokens",
+      ended
+    ] |> Result.map (fun state -> state.response.toolCalls)) = Ok []
+  Expect.isTrue "(run [ started, tool, args \"{partial\", stopped, usage 5 \"max_tokens\", ended ] |> Result.map (fun state -> state.response.toolCalls)) = Ok []" testActual
 
 let thinking = obj [
   ("type", str "content_block_start"),
@@ -137,7 +181,32 @@ let retained result =
     | [LlmTypes.Native LlmTypes.Anthropic value] ->
       String.contains (Json.toString value) "opaque-signature"
     | _ -> false
-example: retained (run [started, thinking, signature, stopped, usage 5 "end_turn", ended])
-example: LlmAnthropic.encode Llm.limits { Llm.request "fixture" with
-  providerOptions = LlmTypes.OpenAIOptions { reasoningEffort = None, store = false }
-} |> Result.isErr
+
+let case013 _ =
+  let testActual = retained (run [started, thinking, signature, stopped, usage 5 "end_turn", ended])
+  Expect.isTrue "retained (run [started, thinking, signature, stopped, usage 5 \"end_turn\", ended])" testActual
+
+let case014 _ =
+  let testActual =
+    LlmAnthropic.encode Llm.limits { Llm.request "fixture" with
+      providerOptions = LlmTypes.OpenAIOptions { reasoningEffort = None, store = false }
+    } |> Result.isErr
+  Expect.isTrue "LlmAnthropic.encode Llm.limits { Llm.request \"fixture\" with providerOptions = LlmTypes.OpenAIOptions { reasoningEffort = None, store = false } } |> Result.isErr" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LlmAnthropicSpec" [
+  Test.test "(run [ started, block, delta \"hel\", delta \"lo\", stopped, usage 2 \"end_turn\", ended ] |> Result.map (fun state -> Llm.text state.response)) = Ok \"hello\"" case001,
+  Test.test "(run [ started, block, delta \"a\", stopped, usage 2 \"end_turn\", usage 5 \"end_turn\", ended ] |> Result.map (fun state -> state.response.usage.outputTokens)) = …" case002,
+  Test.test "run [started, delta \"missing\"] |> Result.isErr" case003,
+  Test.test "run [started, block, block] |> Result.isErr" case004,
+  Test.test "run [started, block, ended] |> Result.isErr" case005,
+  Test.test "run [started, usage 1 \"end_turn\", ended, ended] |> Result.isErr" case006,
+  Test.test "run [obj [(\"type\", str \"ping\")], started, usage 1 \"end_turn\", ended] |> Result.isOk" case007,
+  Test.test "run [started, obj [(\"type\", str \"future_event\")], usage 1 \"end_turn\", ended] |> Result.isOk" case008,
+  Test.test "run [ started, obj [(\"type\", str \"error\"), (\"error\", obj [(\"type\", str \"overloaded_error\")])] ] |> Result.isErr" case009,
+  Test.test "(run [ started, tool, args \"{\\\"path\\\":\", args \"\\\"a\\\"}\", stopped, usage 5 \"tool_use\", ended ] |> Result.map (fun state -> List.length state.response.toolCalls…" case010,
+  Test.test "run [started, tool, args \"{broken\", stopped, usage 5 \"tool_use\", ended] |> Result.isErr" case011,
+  Test.test "(run [ started, tool, args \"{partial\", stopped, usage 5 \"max_tokens\", ended ] |> Result.map (fun state -> state.response.toolCalls)) = Ok []" case012,
+  Test.test "retained (run [started, thinking, signature, stopped, usage 5 \"end_turn\", ended])" case013,
+  Test.test "LlmAnthropic.encode Llm.limits { Llm.request \"fixture\" with providerOptions = LlmTypes.OpenAIOptions { reasoningEffort = None, store = false } } |> Result.isErr" case014
+]

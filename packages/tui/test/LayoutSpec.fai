@@ -6,23 +6,36 @@ let themed =
   TuiLayout.render { TuiLayout.context 5 1 with
     theme = { TuiStyle.defaultTheme with normal = red }
   } TuiState.empty (Ui.text [] "hello")
-example: Result.map (fun frame ->
-  Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) themed = Ok (Some red)
+
+let case001 _ =
+  let testActual =
+    Result.map (fun frame ->
+      Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) themed = Ok (Some red)
+  Expect.isTrue "Result.map (fun frame -> Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) themed = Ok (Some red)" testActual
 
 let inherited =
   TuiLayout.render (TuiLayout.context 5 1) TuiState.empty (Ui.column [
     Ui.style red
   ] [Ui.text [] "hello"])
-example: Result.map (fun frame ->
-  Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) inherited = Ok (Some red)
+
+let case002 _ =
+  let testActual =
+    Result.map (fun frame ->
+      Option.map (fun cell ->
+        cell.style) (TuiScreen.cell 0 0 frame.screen)) inherited = Ok (Some red)
+  Expect.isTrue "Result.map (fun frame -> Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) inherited = Ok (Some red)" testActual
 
 let reset =
   TuiLayout.render (TuiLayout.context 5 1) TuiState.empty (Ui.column [
     Ui.style red
   ] [Ui.text [Ui.style TuiStyle.normal] "hello"])
-example: Result.map (fun frame ->
-  Option.map (fun cell ->
-    cell.style) (TuiScreen.cell 0 0 frame.screen)) reset = Ok (Some TuiStyle.normal)
+
+let case003 _ =
+  let testActual =
+    Result.map (fun frame ->
+      Option.map (fun cell ->
+        cell.style) (TuiScreen.cell 0 0 frame.screen)) reset = Ok (Some TuiStyle.normal)
+  Expect.isTrue "Result.map (fun frame -> Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) reset = Ok (Some TuiStyle.normal)" testActual
 
 let scrollTree =
   Ui.scroll (Ui.id "scroll") [] (Ui.column [] [
@@ -32,17 +45,30 @@ let scrollTree =
 
 let revealed =
   TuiLayout.render (TuiLayout.context 10 2) (TuiState.focus (Some (Ui.id "last")) TuiState.empty) scrollTree
-example: Result.map (fun frame ->
-  (TuiState.get (Ui.id "scroll") frame.state).scroll) revealed = Ok 3
-example: Result.map (fun frame ->
-  Result.map (fun frame ->
-    (TuiState.get (Ui.id "scroll") frame.state).scroll) (TuiLayout.render (TuiLayout.context 10 2) (TuiState.scrollTo (Ui.id "scroll") 0 frame.state) scrollTree)) revealed = Ok (Ok 0)
+
+let case004 _ =
+  let testActual =
+    Result.map (fun frame -> (TuiState.get (Ui.id "scroll") frame.state).scroll) revealed
+  let testExpected = Ok 3
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case005 _ =
+  let testActual =
+    Result.map (fun frame ->
+      Result.map (fun frame ->
+        (TuiState.get (Ui.id "scroll") frame.state).scroll) (TuiLayout.render (TuiLayout.context 10 2) (TuiState.scrollTo (Ui.id "scroll") 0 frame.state) scrollTree)) revealed
+  let testExpected = Ok (Ok 0)
+  Expect.equal ((Test.result (Test.result Test.int Test.string) Test.string)).show testExpected testActual
 
 let narrow =
   TuiLayout.render (TuiLayout.context 20 5) TuiState.empty (Ui.column [] [
     Ui.button (Ui.id "narrow") [Ui.width (Ui.cells 3)] { label = "x", onPress = 0 }
   ])
-example: Result.map (fun frame -> (Array.unsafeGet 0 frame.hits).rect.width) narrow = Ok 3
+
+let case006 _ =
+  let testActual = Result.map (fun frame -> (Array.unsafeGet 0 frame.hits).rect.width) narrow
+  let testExpected = Ok 3
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
 
 let button name = Ui.button (Ui.id name) [Ui.width Ui.fill] { label = name, onPress = name }
 
@@ -52,8 +78,11 @@ let row =
     button "b",
     button "c"
   ])
-example: Result.map (fun frame ->
-  Array.map (fun hit -> hit.rect.width) frame.hits) row = Ok [| 3, 3, 4 |]
+
+let case007 _ =
+  let testActual = Result.map (fun frame -> Array.map (fun hit -> hit.rect.width) frame.hits) row
+  let testExpected = Ok [| 3, 3, 4 |]
+  Expect.equal ((Test.result (Test.array Test.int) Test.string)).show testExpected testActual
 
 let onlyVisible index = if index < 0 || index >= 4 then 1 / 0 else index
 
@@ -73,12 +102,24 @@ let browser = Ui.list (Ui.id "items") [] {
 }
 
 let frame = TuiLayout.render (TuiLayout.context 8 4) TuiState.empty browser
-example: Result.map (fun frame -> frame.messages) frame = Ok [4]
-example: Result.map (fun frame ->
-  TuiScreen.lines frame.screen) frame = Ok [| "0       ", "1       ", "2       ", "3       " |]
-example: Result.map (fun frame ->
-  Result.map (fun next ->
-    next.messages) (TuiLayout.render (TuiLayout.context 8 4) frame.state browser)) frame = Ok (Ok [])
+
+let case008 _ =
+  let testActual = Result.map (fun frame -> frame.messages) frame
+  let testExpected = Ok [4]
+  Expect.equal ((Test.result (Test.list Test.int) Test.string)).show testExpected testActual
+
+let case009 _ =
+  let testActual = Result.map (fun frame -> TuiScreen.lines frame.screen) frame
+  let testExpected = Ok [| "0       ", "1       ", "2       ", "3       " |]
+  Expect.equal ((Test.result (Test.array Test.string) Test.string)).show testExpected testActual
+
+let case010 _ =
+  let testActual =
+    Result.map (fun frame ->
+      Result.map (fun next ->
+        next.messages) (TuiLayout.render (TuiLayout.context 8 4) frame.state browser)) frame
+  let testExpected = Ok (Ok [])
+  Expect.equal ((Test.result (Test.result (Test.list Test.int) Test.string) Test.string)).show testExpected testActual
 
 let textSource = {
   count = 1000000,
@@ -90,10 +131,31 @@ let transcript =
     follow = false,
     source = textSource
   })
-example: Result.map (fun frame ->
-  TuiScreen.lines frame.screen) transcript = Ok [| "0       ", "1       ", "2       ", "3       " |]
+
+let case011 _ =
+  let testActual = Result.map (fun frame -> TuiScreen.lines frame.screen) transcript
+  let testExpected = Ok [| "0       ", "1       ", "2       ", "3       " |]
+  Expect.equal ((Test.result (Test.array Test.string) Test.string)).show testExpected testActual
 
 let deep = Ui.column [] [Ui.column [] [Ui.text [] "too deep"]]
-example: Result.isErr (TuiLayout.render { TuiLayout.context 8 4 with
-  maxDepth = 1
-} TuiState.empty deep)
+
+let case012 _ =
+  let testActual =
+    Result.isErr (TuiLayout.render { TuiLayout.context 8 4 with maxDepth = 1 } TuiState.empty deep)
+  Expect.isTrue "Result.isErr (TuiLayout.render { TuiLayout.context 8 4 with maxDepth = 1 } TuiState.empty deep)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LayoutSpec" [
+  Test.test "Result.map (fun frame -> Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) themed = Ok (Some red)" case001,
+  Test.test "Result.map (fun frame -> Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) inherited = Ok (Some red)" case002,
+  Test.test "Result.map (fun frame -> Option.map (fun cell -> cell.style) (TuiScreen.cell 0 0 frame.screen)) reset = Ok (Some TuiStyle.normal)" case003,
+  Test.test "Result.map (fun frame -> (TuiState.get (Ui.id \"scroll\") frame.state).scroll) revealed = Ok 3" case004,
+  Test.test "Result.map (fun frame -> Result.map (fun frame -> (TuiState.get (Ui.id \"scroll\") frame.state).scroll) (TuiLayout.render (TuiLayout.context 10 2) (TuiState.sc…" case005,
+  Test.test "Result.map (fun frame -> (Array.unsafeGet 0 frame.hits).rect.width) narrow = Ok 3" case006,
+  Test.test "Result.map (fun frame -> Array.map (fun hit -> hit.rect.width) frame.hits) row = Ok [| 3, 3, 4 |]" case007,
+  Test.test "Result.map (fun frame -> frame.messages) frame = Ok [4]" case008,
+  Test.test "Result.map (fun frame -> TuiScreen.lines frame.screen) frame = Ok [| \"0 \", \"1 \", \"2 \", \"3 \" |]" case009,
+  Test.test "Result.map (fun frame -> Result.map (fun next -> next.messages) (TuiLayout.render (TuiLayout.context 8 4) frame.state browser)) frame = Ok (Ok [])" case010,
+  Test.test "Result.map (fun frame -> TuiScreen.lines frame.screen) transcript = Ok [| \"0 \", \"1 \", \"2 \", \"3 \" |]" case011,
+  Test.test "Result.isErr (TuiLayout.render { TuiLayout.context 8 4 with maxDepth = 1 } TuiState.empty deep)" case012
+]

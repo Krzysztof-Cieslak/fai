@@ -28,3 +28,27 @@ let main env =
     "Decimal codec runtime checks passed"
   else
     "Decimal codec runtime checks FAILED")
+
+let exact = Result.withDefault Decimal.nan (Decimal.parse "9007199254740993.123456789")
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "decimal codec boundaries" [
+  Test.test "JSON preserves exact decimal digits" (fun _ ->
+    Expect.isTrue "JSON round trip" (match JsonEncode.toString DecimalJson.encoder exact with
+    | Ok text -> JsonDecode.fromString DecimalJson.decoder text = Ok exact
+    | _ -> false)),
+  Test.test "YAML preserves exact decimal digits" (fun _ ->
+    Expect.isTrue "YAML round trip" (match YamlEncode.toString DecimalYaml.encoder exact with
+    | Ok text -> YamlDecode.fromString DecimalYaml.decoder text = Ok exact
+    | _ -> false)),
+  Test.test "SQL preserves exact decimal digits" (fun _ ->
+    Expect.isTrue "SQL round trip" (match DecimalSql.toSql exact with
+    | Ok value -> DecimalSql.fromSql value = Ok exact
+    | _ -> false)),
+  Test.test "SQL represents NaN explicitly" (fun _ ->
+    Expect.isTrue "SQL NaN" (match DecimalSql.toSql Decimal.nan with
+    | Ok value -> SqlDecimal.toString value = "NaN"
+    | _ -> false)),
+  Test.test "JSON rejects NaN" (fun _ ->
+    Expect.isTrue "non-finite JSON encoding fails" (Result.isErr (JsonEncode.toString DecimalJson.encoder Decimal.nan)))
+]

@@ -56,3 +56,27 @@ let main env =
     else
       "SQLite UUID checks FAILED")
   | _ -> env.console.writeLine "SQLite UUID fixture construction failed"
+
+checkUuids : Test.Context -> Test.Check / { SqliteHost.Sqlite }
+let checkUuids ctx =
+  let env = { console = ctx.runtime.console, sqlite = SqliteHost.native }
+  match (Uuid.v7FromRandom 1645557742000 (Bytes.fromList [
+    12,
+    195,
+    24,
+    196,
+    220,
+    12,
+    12,
+    7,
+    57,
+    143
+  ]), SqlUuid.parse "01234567-89AB-CDEF-0123-456789ABCDEF") with
+  | (Ok generated, Ok legacy) ->
+    Expect.ok Sql.errorToString (Expect.isTrue "generated, legacy, nil and max UUIDs retain canonical text storage") (Sqlite.withMemory env (query generated legacy))
+  | _ -> Test.error "could not construct the UUID fixtures"
+
+tests : Test.Suite Test.Context { SqliteHost.Sqlite }
+let tests = Test.describe "SQLite UUIDs" [
+  Test.test "UUID values retain their identity and canonical storage" checkUuids
+]

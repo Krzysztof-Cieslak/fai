@@ -1,41 +1,103 @@
 module ProcessPipelineSpec
 
-example: Process.validatePipeline Process.defaults (Process.pipeline [
-  Process.command "a" [] |> Process.stdout Process.Discard,
-  Process.command "b" []
-]) |> Result.isErr
-example: Process.validatePipeline Process.defaults (Process.pipeline [
-  Process.command "a" [],
-  Process.command "b" [] |> Process.stdin Process.Inherit
-]) |> Result.isErr
-example: Process.validatePipeline Process.defaults (Process.pipeline [
-  Process.command "a" [],
-  Process.command "b" [] |> Process.stdout Process.Discard
-]) = Ok ()
-example: Process.validatePipeline Process.defaults (Process.pipeline []) |> Result.isErr
-example: Process.validatePipeline Process.defaults (Process.pipeline [
-  Process.command "a" []
-]) = Ok ()
-example: Process.validatePipeline { Process.defaults with
-  maxPipelineStages = 1
-} (Process.pipeline [Process.command "a" [], Process.command "b" []]) |> Result.isErr
-example: Process.validatePipeline Process.defaults (Process.pipeline [
-  Process.command "a" [],
-  Process.command "" []
-]) |> Result.isErr
-example: Process.validatePipeline Process.defaults (Process.pipeline [
-  Process.command "a" [] |> Process.stdinText "input",
-  Process.command "b" []
-]) = Ok ()
-example: Process.validatePipeline Process.defaults (Process.pipeline [
-  Process.command "a" [],
-  Process.command "b" [] |> Process.stdinText "input"
-]) |> Result.isErr
-example: Process.expectLastSuccess { Process.emptyOutput with
-  exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)]
-} |> Result.isOk
-example: Process.expectSuccess { Process.emptyOutput with
-  exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)]
-} |> Result.isErr
-forall names: List.map (fun command ->
-  (Process.describe command).launch.executable) (Process.stages (Process.pipeline (List.map (fun name -> Process.command name []) names))) = names
+let case001 _ =
+  let testActual =
+    Process.validatePipeline Process.defaults (Process.pipeline [
+      Process.command "a" [] |> Process.stdout Process.Discard,
+      Process.command "b" []
+    ]) |> Result.isErr
+  Expect.isTrue "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [] |> Process.stdout Process.Discard, Process.command \"b\" [] ]) |> Result.i…" testActual
+
+let case002 _ =
+  let testActual =
+    Process.validatePipeline Process.defaults (Process.pipeline [
+      Process.command "a" [],
+      Process.command "b" [] |> Process.stdin Process.Inherit
+    ]) |> Result.isErr
+  Expect.isTrue "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [], Process.command \"b\" [] |> Process.stdin Process.Inherit ]) |> Result.isErr" testActual
+
+let case003 _ =
+  let testActual =
+    Process.validatePipeline Process.defaults (Process.pipeline [
+      Process.command "a" [],
+      Process.command "b" [] |> Process.stdout Process.Discard
+    ]) = Ok ()
+  Expect.isTrue "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [], Process.command \"b\" [] |> Process.stdout Process.Discard ]) = Ok ()" testActual
+
+let case004 _ =
+  let testActual = Process.validatePipeline Process.defaults (Process.pipeline []) |> Result.isErr
+  Expect.isTrue "Process.validatePipeline Process.defaults (Process.pipeline []) |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    Process.validatePipeline Process.defaults (Process.pipeline [Process.command "a" []]) = Ok ()
+  Expect.isTrue "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [] ]) = Ok ()" testActual
+
+let case006 _ =
+  let testActual =
+    Process.validatePipeline { Process.defaults with
+      maxPipelineStages = 1
+    } (Process.pipeline [Process.command "a" [], Process.command "b" []]) |> Result.isErr
+  Expect.isTrue "Process.validatePipeline { Process.defaults with maxPipelineStages = 1 } (Process.pipeline [Process.command \"a\" [], Process.command \"b\" []]) |> Result.isErr" testActual
+
+let case007 _ =
+  let testActual =
+    Process.validatePipeline Process.defaults (Process.pipeline [
+      Process.command "a" [],
+      Process.command "" []
+    ]) |> Result.isErr
+  Expect.isTrue "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [], Process.command \"\" [] ]) |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual =
+    Process.validatePipeline Process.defaults (Process.pipeline [
+      Process.command "a" [] |> Process.stdinText "input",
+      Process.command "b" []
+    ]) = Ok ()
+  Expect.isTrue "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [] |> Process.stdinText \"input\", Process.command \"b\" [] ]) = Ok ()" testActual
+
+let case009 _ =
+  let testActual =
+    Process.validatePipeline Process.defaults (Process.pipeline [
+      Process.command "a" [],
+      Process.command "b" [] |> Process.stdinText "input"
+    ]) |> Result.isErr
+  Expect.isTrue "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [], Process.command \"b\" [] |> Process.stdinText \"input\" ]) |> Result.isErr" testActual
+
+let case010 _ =
+  let testActual =
+    Process.expectLastSuccess { Process.emptyOutput with
+      exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)]
+    } |> Result.isOk
+  Expect.isTrue "Process.expectLastSuccess { Process.emptyOutput with exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)] } |> Result.isOk" testActual
+
+let case011 _ =
+  let testActual =
+    Process.expectSuccess { Process.emptyOutput with
+      exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)]
+    } |> Result.isErr
+  Expect.isTrue "Process.expectSuccess { Process.emptyOutput with exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)] } |> Result.isErr" testActual
+
+let case012 testInput =
+  let names = testInput
+  let testActual =
+    List.map (fun command ->
+      (Process.describe command).launch.executable) (Process.stages (Process.pipeline (List.map (fun name -> Process.command name []) names)))
+  let testExpected = names
+  Expect.equal ((Test.list Test.string)).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "ProcessPipelineSpec" [
+  Test.test "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [] |> Process.stdout Process.Discard, Process.command \"b\" [] ]) |> Result.i…" case001,
+  Test.test "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [], Process.command \"b\" [] |> Process.stdin Process.Inherit ]) |> Result.isErr" case002,
+  Test.test "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [], Process.command \"b\" [] |> Process.stdout Process.Discard ]) = Ok ()" case003,
+  Test.test "Process.validatePipeline Process.defaults (Process.pipeline []) |> Result.isErr" case004,
+  Test.test "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [] ]) = Ok ()" case005,
+  Test.test "Process.validatePipeline { Process.defaults with maxPipelineStages = 1 } (Process.pipeline [Process.command \"a\" [], Process.command \"b\" []]) |> Result.isErr" case006,
+  Test.test "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [], Process.command \"\" [] ]) |> Result.isErr" case007,
+  Test.test "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [] |> Process.stdinText \"input\", Process.command \"b\" [] ]) = Ok ()" case008,
+  Test.test "Process.validatePipeline Process.defaults (Process.pipeline [ Process.command \"a\" [], Process.command \"b\" [] |> Process.stdinText \"input\" ]) |> Result.isErr" case009,
+  Test.test "Process.expectLastSuccess { Process.emptyOutput with exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)] } |> Result.isOk" case010,
+  Test.test "Process.expectSuccess { Process.emptyOutput with exits = [Some (ProcessHost.Exited 37), Some (ProcessHost.Exited 0)] } |> Result.isErr" case011,
+  Test.property "property: List.map (fun command -> (Process.describe command).launch.executable) (Process.stages (Process.pipeline (List.map (fun name -> Process.command nam…" (Test.list Test.string) case012
+]

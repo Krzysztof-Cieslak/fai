@@ -2,74 +2,242 @@ module EncodingBase32Spec
 
 let vector plain encoded =
   Base32.encode (Bytes.fromString plain) = encoded && Base32.decode encoded = Ok (Bytes.fromString plain)
-example: vector "" ""
-example: vector "f" "MY======"
-example: vector "fo" "MZXQ===="
-example: vector "foo" "MZXW6==="
-example: vector "foob" "MZXW6YQ="
-example: vector "fooba" "MZXW6YTB"
-example: vector "foobar" "MZXW6YTBOI======"
-example: Base32.decode "my======" |> Result.isErr
-example: Base32.decodeWith {
-  caseInsensitive = true,
-  padding = Encoding.RequirePadding
-} "mY======" = Ok (Bytes.fromString "f")
-example: Base32.decodeWith {
-  caseInsensitive = true,
-  padding = Encoding.AllowPadding
-} "mzxw6" = Ok (Bytes.fromString "foo")
-example: Base32.decodeWith {
-  caseInsensitive = true,
-  padding = Encoding.AllowPadding
-} "01" |> Result.isErr
-example: Base32.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString "foob") = "MZXW6YQ"
-example: Base32.decodeWith {
-  caseInsensitive = false,
-  padding = Encoding.ForbidPadding
-} "MZXW6YQ" = Ok (Bytes.fromString "foob")
-example: Base32.decodeWith {
-  caseInsensitive = false,
-  padding = Encoding.AllowPadding
-} "MY=====" |> Result.isErr
-example: Base32.decodeWith {
-  caseInsensitive = false,
-  padding = Encoding.ForbidPadding
-} "MY======" |> Result.isErr
-example: Base32.decode "MZ======" |> Result.isErr
-example: Base32.decode "MZXR====" |> Result.isErr
-example: Base32.decode "MZXW7===" |> Result.isErr
-example: Base32.decode "MZXW6YR=" |> Result.isErr
-example: Base32.decodeBytes (Bytes.fromString "MY======") = Ok (Bytes.fromString "f")
+
+let case001 _ =
+  let testActual = vector "" ""
+  Expect.isTrue "vector \"\" \"\"" testActual
+
+let case002 _ =
+  let testActual = vector "f" "MY======"
+  Expect.isTrue "vector \"f\" \"MY======\"" testActual
+
+let case003 _ =
+  let testActual = vector "fo" "MZXQ===="
+  Expect.isTrue "vector \"fo\" \"MZXQ====\"" testActual
+
+let case004 _ =
+  let testActual = vector "foo" "MZXW6==="
+  Expect.isTrue "vector \"foo\" \"MZXW6===\"" testActual
+
+let case005 _ =
+  let testActual = vector "foob" "MZXW6YQ="
+  Expect.isTrue "vector \"foob\" \"MZXW6YQ=\"" testActual
+
+let case006 _ =
+  let testActual = vector "fooba" "MZXW6YTB"
+  Expect.isTrue "vector \"fooba\" \"MZXW6YTB\"" testActual
+
+let case007 _ =
+  let testActual = vector "foobar" "MZXW6YTBOI======"
+  Expect.isTrue "vector \"foobar\" \"MZXW6YTBOI======\"" testActual
+
+let case008 _ =
+  let testActual = Base32.decode "my======" |> Result.isErr
+  Expect.isTrue "Base32.decode \"my======\" |> Result.isErr" testActual
+
+let case009 _ =
+  let testActual =
+    Base32.decodeWith {
+      caseInsensitive = true,
+      padding = Encoding.RequirePadding
+    } "mY======" = Ok (Bytes.fromString "f")
+  Expect.isTrue "Base32.decodeWith { caseInsensitive = true, padding = Encoding.RequirePadding } \"mY======\" = Ok (Bytes.fromString \"f\")" testActual
+
+let case010 _ =
+  let testActual =
+    Base32.decodeWith {
+      caseInsensitive = true,
+      padding = Encoding.AllowPadding
+    } "mzxw6" = Ok (Bytes.fromString "foo")
+  Expect.isTrue "Base32.decodeWith { caseInsensitive = true, padding = Encoding.AllowPadding } \"mzxw6\" = Ok (Bytes.fromString \"foo\")" testActual
+
+let case011 _ =
+  let testActual =
+    Base32.decodeWith {
+      caseInsensitive = true,
+      padding = Encoding.AllowPadding
+    } "01" |> Result.isErr
+  Expect.isTrue "Base32.decodeWith { caseInsensitive = true, padding = Encoding.AllowPadding } \"01\" |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual = Base32.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString "foob")
+  let testExpected = "MZXW6YQ"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case013 _ =
+  let testActual =
+    Base32.decodeWith {
+      caseInsensitive = false,
+      padding = Encoding.ForbidPadding
+    } "MZXW6YQ" = Ok (Bytes.fromString "foob")
+  Expect.isTrue "Base32.decodeWith { caseInsensitive = false, padding = Encoding.ForbidPadding } \"MZXW6YQ\" = Ok (Bytes.fromString \"foob\")" testActual
+
+let case014 _ =
+  let testActual =
+    Base32.decodeWith {
+      caseInsensitive = false,
+      padding = Encoding.AllowPadding
+    } "MY=====" |> Result.isErr
+  Expect.isTrue "Base32.decodeWith { caseInsensitive = false, padding = Encoding.AllowPadding } \"MY=====\" |> Result.isErr" testActual
+
+let case015 _ =
+  let testActual =
+    Base32.decodeWith {
+      caseInsensitive = false,
+      padding = Encoding.ForbidPadding
+    } "MY======" |> Result.isErr
+  Expect.isTrue "Base32.decodeWith { caseInsensitive = false, padding = Encoding.ForbidPadding } \"MY======\" |> Result.isErr" testActual
+
+let case016 _ =
+  let testActual = Base32.decode "MZ======" |> Result.isErr
+  Expect.isTrue "Base32.decode \"MZ======\" |> Result.isErr" testActual
+
+let case017 _ =
+  let testActual = Base32.decode "MZXR====" |> Result.isErr
+  Expect.isTrue "Base32.decode \"MZXR====\" |> Result.isErr" testActual
+
+let case018 _ =
+  let testActual = Base32.decode "MZXW7===" |> Result.isErr
+  Expect.isTrue "Base32.decode \"MZXW7===\" |> Result.isErr" testActual
+
+let case019 _ =
+  let testActual = Base32.decode "MZXW6YR=" |> Result.isErr
+  Expect.isTrue "Base32.decode \"MZXW6YR=\" |> Result.isErr" testActual
+
+let case020 _ =
+  let testActual = Base32.decodeBytes (Bytes.fromString "MY======") = Ok (Bytes.fromString "f")
+  Expect.isTrue "Base32.decodeBytes (Bytes.fromString \"MY======\") = Ok (Bytes.fromString \"f\")" testActual
 
 let hexVector plain encoded =
   Base32Hex.encode (Bytes.fromString plain) = encoded && Base32Hex.decode encoded = Ok (Bytes.fromString plain)
-example: hexVector "" ""
-example: hexVector "f" "CO======"
-example: hexVector "fo" "CPNG===="
-example: hexVector "foo" "CPNMU==="
-example: hexVector "foob" "CPNMUOG="
-example: hexVector "fooba" "CPNMUOJ1"
-example: hexVector "foobar" "CPNMUOJ1E8======"
-example: Base32Hex.decode "co======" |> Result.isErr
-example: Base32Hex.decodeWith {
-  caseInsensitive = true,
-  padding = Encoding.RequirePadding
-} "cO======" = Ok (Bytes.fromString "f")
-example: Base32Hex.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString "foob") = "CPNMUOG"
-example: Base32Hex.decodeWith {
-  caseInsensitive = false,
-  padding = Encoding.ForbidPadding
-} "CPNMUOG" = Ok (Bytes.fromString "foob")
-example: Base32Hex.decodeWith {
-  caseInsensitive = true,
-  padding = Encoding.AllowPadding
-} "cpnmu" = Ok (Bytes.fromString "foo")
-example: Base32Hex.decode "CP======" |> Result.isErr
-example: Base32Hex.decode "CPNH====" |> Result.isErr
-example: Base32Hex.decode "CPNMV===" |> Result.isErr
-example: Base32Hex.decode "CPNMUOH=" |> Result.isErr
-example: Base32Hex.decode "MY======" |> Result.isErr
-example: Base32Hex.decodeBytesWith {
-  caseInsensitive = true,
-  padding = Encoding.RequirePadding
-} (Bytes.fromString "co======") = Ok (Bytes.fromString "f")
+
+let case021 _ =
+  let testActual = hexVector "" ""
+  Expect.isTrue "hexVector \"\" \"\"" testActual
+
+let case022 _ =
+  let testActual = hexVector "f" "CO======"
+  Expect.isTrue "hexVector \"f\" \"CO======\"" testActual
+
+let case023 _ =
+  let testActual = hexVector "fo" "CPNG===="
+  Expect.isTrue "hexVector \"fo\" \"CPNG====\"" testActual
+
+let case024 _ =
+  let testActual = hexVector "foo" "CPNMU==="
+  Expect.isTrue "hexVector \"foo\" \"CPNMU===\"" testActual
+
+let case025 _ =
+  let testActual = hexVector "foob" "CPNMUOG="
+  Expect.isTrue "hexVector \"foob\" \"CPNMUOG=\"" testActual
+
+let case026 _ =
+  let testActual = hexVector "fooba" "CPNMUOJ1"
+  Expect.isTrue "hexVector \"fooba\" \"CPNMUOJ1\"" testActual
+
+let case027 _ =
+  let testActual = hexVector "foobar" "CPNMUOJ1E8======"
+  Expect.isTrue "hexVector \"foobar\" \"CPNMUOJ1E8======\"" testActual
+
+let case028 _ =
+  let testActual = Base32Hex.decode "co======" |> Result.isErr
+  Expect.isTrue "Base32Hex.decode \"co======\" |> Result.isErr" testActual
+
+let case029 _ =
+  let testActual =
+    Base32Hex.decodeWith {
+      caseInsensitive = true,
+      padding = Encoding.RequirePadding
+    } "cO======" = Ok (Bytes.fromString "f")
+  Expect.isTrue "Base32Hex.decodeWith { caseInsensitive = true, padding = Encoding.RequirePadding } \"cO======\" = Ok (Bytes.fromString \"f\")" testActual
+
+let case030 _ =
+  let testActual = Base32Hex.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString "foob")
+  let testExpected = "CPNMUOG"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case031 _ =
+  let testActual =
+    Base32Hex.decodeWith {
+      caseInsensitive = false,
+      padding = Encoding.ForbidPadding
+    } "CPNMUOG" = Ok (Bytes.fromString "foob")
+  Expect.isTrue "Base32Hex.decodeWith { caseInsensitive = false, padding = Encoding.ForbidPadding } \"CPNMUOG\" = Ok (Bytes.fromString \"foob\")" testActual
+
+let case032 _ =
+  let testActual =
+    Base32Hex.decodeWith {
+      caseInsensitive = true,
+      padding = Encoding.AllowPadding
+    } "cpnmu" = Ok (Bytes.fromString "foo")
+  Expect.isTrue "Base32Hex.decodeWith { caseInsensitive = true, padding = Encoding.AllowPadding } \"cpnmu\" = Ok (Bytes.fromString \"foo\")" testActual
+
+let case033 _ =
+  let testActual = Base32Hex.decode "CP======" |> Result.isErr
+  Expect.isTrue "Base32Hex.decode \"CP======\" |> Result.isErr" testActual
+
+let case034 _ =
+  let testActual = Base32Hex.decode "CPNH====" |> Result.isErr
+  Expect.isTrue "Base32Hex.decode \"CPNH====\" |> Result.isErr" testActual
+
+let case035 _ =
+  let testActual = Base32Hex.decode "CPNMV===" |> Result.isErr
+  Expect.isTrue "Base32Hex.decode \"CPNMV===\" |> Result.isErr" testActual
+
+let case036 _ =
+  let testActual = Base32Hex.decode "CPNMUOH=" |> Result.isErr
+  Expect.isTrue "Base32Hex.decode \"CPNMUOH=\" |> Result.isErr" testActual
+
+let case037 _ =
+  let testActual = Base32Hex.decode "MY======" |> Result.isErr
+  Expect.isTrue "Base32Hex.decode \"MY======\" |> Result.isErr" testActual
+
+let case038 _ =
+  let testActual =
+    Base32Hex.decodeBytesWith {
+      caseInsensitive = true,
+      padding = Encoding.RequirePadding
+    } (Bytes.fromString "co======") = Ok (Bytes.fromString "f")
+  Expect.isTrue "Base32Hex.decodeBytesWith { caseInsensitive = true, padding = Encoding.RequirePadding } (Bytes.fromString \"co======\") = Ok (Bytes.fromString \"f\")" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "EncodingBase32Spec" [
+  Test.test "vector \"\" \"\"" case001,
+  Test.test "vector \"f\" \"MY======\"" case002,
+  Test.test "vector \"fo\" \"MZXQ====\"" case003,
+  Test.test "vector \"foo\" \"MZXW6===\"" case004,
+  Test.test "vector \"foob\" \"MZXW6YQ=\"" case005,
+  Test.test "vector \"fooba\" \"MZXW6YTB\"" case006,
+  Test.test "vector \"foobar\" \"MZXW6YTBOI======\"" case007,
+  Test.test "Base32.decode \"my======\" |> Result.isErr" case008,
+  Test.test "Base32.decodeWith { caseInsensitive = true, padding = Encoding.RequirePadding } \"mY======\" = Ok (Bytes.fromString \"f\")" case009,
+  Test.test "Base32.decodeWith { caseInsensitive = true, padding = Encoding.AllowPadding } \"mzxw6\" = Ok (Bytes.fromString \"foo\")" case010,
+  Test.test "Base32.decodeWith { caseInsensitive = true, padding = Encoding.AllowPadding } \"01\" |> Result.isErr" case011,
+  Test.test "Base32.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString \"foob\") = \"MZXW6YQ\"" case012,
+  Test.test "Base32.decodeWith { caseInsensitive = false, padding = Encoding.ForbidPadding } \"MZXW6YQ\" = Ok (Bytes.fromString \"foob\")" case013,
+  Test.test "Base32.decodeWith { caseInsensitive = false, padding = Encoding.AllowPadding } \"MY=====\" |> Result.isErr" case014,
+  Test.test "Base32.decodeWith { caseInsensitive = false, padding = Encoding.ForbidPadding } \"MY======\" |> Result.isErr" case015,
+  Test.test "Base32.decode \"MZ======\" |> Result.isErr" case016,
+  Test.test "Base32.decode \"MZXR====\" |> Result.isErr" case017,
+  Test.test "Base32.decode \"MZXW7===\" |> Result.isErr" case018,
+  Test.test "Base32.decode \"MZXW6YR=\" |> Result.isErr" case019,
+  Test.test "Base32.decodeBytes (Bytes.fromString \"MY======\") = Ok (Bytes.fromString \"f\")" case020,
+  Test.test "hexVector \"\" \"\"" case021,
+  Test.test "hexVector \"f\" \"CO======\"" case022,
+  Test.test "hexVector \"fo\" \"CPNG====\"" case023,
+  Test.test "hexVector \"foo\" \"CPNMU===\"" case024,
+  Test.test "hexVector \"foob\" \"CPNMUOG=\"" case025,
+  Test.test "hexVector \"fooba\" \"CPNMUOJ1\"" case026,
+  Test.test "hexVector \"foobar\" \"CPNMUOJ1E8======\"" case027,
+  Test.test "Base32Hex.decode \"co======\" |> Result.isErr" case028,
+  Test.test "Base32Hex.decodeWith { caseInsensitive = true, padding = Encoding.RequirePadding } \"cO======\" = Ok (Bytes.fromString \"f\")" case029,
+  Test.test "Base32Hex.encodeWith { padding = Encoding.Unpadded } (Bytes.fromString \"foob\") = \"CPNMUOG\"" case030,
+  Test.test "Base32Hex.decodeWith { caseInsensitive = false, padding = Encoding.ForbidPadding } \"CPNMUOG\" = Ok (Bytes.fromString \"foob\")" case031,
+  Test.test "Base32Hex.decodeWith { caseInsensitive = true, padding = Encoding.AllowPadding } \"cpnmu\" = Ok (Bytes.fromString \"foo\")" case032,
+  Test.test "Base32Hex.decode \"CP======\" |> Result.isErr" case033,
+  Test.test "Base32Hex.decode \"CPNH====\" |> Result.isErr" case034,
+  Test.test "Base32Hex.decode \"CPNMV===\" |> Result.isErr" case035,
+  Test.test "Base32Hex.decode \"CPNMUOH=\" |> Result.isErr" case036,
+  Test.test "Base32Hex.decode \"MY======\" |> Result.isErr" case037,
+  Test.test "Base32Hex.decodeBytesWith { caseInsensitive = true, padding = Encoding.RequirePadding } (Bytes.fromString \"co======\") = Ok (Bytes.fromString \"f\")" case038
+]

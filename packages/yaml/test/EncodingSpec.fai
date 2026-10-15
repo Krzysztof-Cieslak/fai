@@ -3,42 +3,63 @@ module YamlEncodingSpec
 let scalar bytes =
   Result.map (fun value ->
     value = YamlData.String "é") (Yaml.loadBytes (Bytes.fromList bytes)) = Ok true
-example: scalar [0xc3, 0xa9]
-example: scalar [0xef, 0xbb, 0xbf, 0xc3, 0xa9]
-example: scalar [0xff, 0xfe, 0xe9, 0x00]
-example: scalar [0xfe, 0xff, 0x00, 0xe9]
-example: scalar [0xff, 0xfe, 0, 0, 0xe9, 0, 0, 0]
-example: scalar [0, 0, 0xfe, 0xff, 0, 0, 0, 0xe9]
-example: Yaml.loadBytes (Bytes.fromList [0x61, 0, 0x62, 0]) = Ok (YamlData.String "ab")
-example: Yaml.loadBytes (Bytes.fromList [0, 0x61, 0, 0x62]) = Ok (YamlData.String "ab")
-example: Yaml.loadBytes (Bytes.fromList [0x61, 0, 0, 0, 0x62, 0, 0, 0]) = Ok (YamlData.String "ab")
-example: Yaml.loadBytes (Bytes.fromList [0, 0, 0, 0x61, 0, 0, 0, 0x62]) = Ok (YamlData.String "ab")
-example: Yaml.loadBytes (Bytes.fromList [
-  0xff,
-  0xfe,
-  0x3d,
-  0xd8,
-  0,
-  0xde
-]) = Ok (YamlData.String "😀")
-example: Yaml.loadBytes (Bytes.fromList [
-  0xfe,
-  0xff,
-  0xd8,
-  0x3d,
-  0xde,
-  0
-]) = Ok (YamlData.String "😀")
-example: Yaml.loadBytes (Bytes.fromList [
-  0xff,
-  0xfe,
-  0,
-  0,
-  0,
-  0xf6,
-  1,
-  0
-]) = Ok (YamlData.String "😀")
+
+let case001 _ =
+  let testActual = scalar [0xc3, 0xa9]
+  Expect.isTrue "scalar [0xc3, 0xa9]" testActual
+
+let case002 _ =
+  let testActual = scalar [0xef, 0xbb, 0xbf, 0xc3, 0xa9]
+  Expect.isTrue "scalar [0xef, 0xbb, 0xbf, 0xc3, 0xa9]" testActual
+
+let case003 _ =
+  let testActual = scalar [0xff, 0xfe, 0xe9, 0x00]
+  Expect.isTrue "scalar [0xff, 0xfe, 0xe9, 0x00]" testActual
+
+let case004 _ =
+  let testActual = scalar [0xfe, 0xff, 0x00, 0xe9]
+  Expect.isTrue "scalar [0xfe, 0xff, 0x00, 0xe9]" testActual
+
+let case005 _ =
+  let testActual = scalar [0xff, 0xfe, 0, 0, 0xe9, 0, 0, 0]
+  Expect.isTrue "scalar [0xff, 0xfe, 0, 0, 0xe9, 0, 0, 0]" testActual
+
+let case006 _ =
+  let testActual = scalar [0, 0, 0xfe, 0xff, 0, 0, 0, 0xe9]
+  Expect.isTrue "scalar [0, 0, 0xfe, 0xff, 0, 0, 0, 0xe9]" testActual
+
+let case007 _ =
+  let testActual = Yaml.loadBytes (Bytes.fromList [0x61, 0, 0x62, 0]) = Ok (YamlData.String "ab")
+  Expect.isTrue "Yaml.loadBytes (Bytes.fromList [0x61, 0, 0x62, 0]) = Ok (YamlData.String \"ab\")" testActual
+
+let case008 _ =
+  let testActual = Yaml.loadBytes (Bytes.fromList [0, 0x61, 0, 0x62]) = Ok (YamlData.String "ab")
+  Expect.isTrue "Yaml.loadBytes (Bytes.fromList [0, 0x61, 0, 0x62]) = Ok (YamlData.String \"ab\")" testActual
+
+let case009 _ =
+  let testActual =
+    Yaml.loadBytes (Bytes.fromList [0x61, 0, 0, 0, 0x62, 0, 0, 0]) = Ok (YamlData.String "ab")
+  Expect.isTrue "Yaml.loadBytes (Bytes.fromList [0x61, 0, 0, 0, 0x62, 0, 0, 0]) = Ok (YamlData.String \"ab\")" testActual
+
+let case010 _ =
+  let testActual =
+    Yaml.loadBytes (Bytes.fromList [0, 0, 0, 0x61, 0, 0, 0, 0x62]) = Ok (YamlData.String "ab")
+  Expect.isTrue "Yaml.loadBytes (Bytes.fromList [0, 0, 0, 0x61, 0, 0, 0, 0x62]) = Ok (YamlData.String \"ab\")" testActual
+
+let case011 _ =
+  let testActual =
+    Yaml.loadBytes (Bytes.fromList [0xff, 0xfe, 0x3d, 0xd8, 0, 0xde]) = Ok (YamlData.String "😀")
+  Expect.isTrue "Yaml.loadBytes (Bytes.fromList [ 0xff, 0xfe, 0x3d, 0xd8, 0, 0xde ]) = Ok (YamlData.String \"😀\")" testActual
+
+let case012 _ =
+  let testActual =
+    Yaml.loadBytes (Bytes.fromList [0xfe, 0xff, 0xd8, 0x3d, 0xde, 0]) = Ok (YamlData.String "😀")
+  Expect.isTrue "Yaml.loadBytes (Bytes.fromList [ 0xfe, 0xff, 0xd8, 0x3d, 0xde, 0 ]) = Ok (YamlData.String \"😀\")" testActual
+
+let case013 _ =
+  let testActual =
+    Yaml.loadBytes (Bytes.fromList [0xff, 0xfe, 0, 0, 0, 0xf6, 1, 0]) = Ok (YamlData.String "😀")
+  Expect.isTrue "Yaml.loadBytes (Bytes.fromList [ 0xff, 0xfe, 0, 0, 0, 0xf6, 1, 0 ]) = Ok (YamlData.String \"😀\")" testActual
 
 let bad bytes offset =
   match Yaml.parseBytes (Bytes.fromList bytes) with
@@ -46,18 +67,54 @@ let bad bytes offset =
     error.kind = YamlTypes.InvalidEncoding && Option.map (fun span ->
       span.start.byte) error.primary = Some offset
   | _ -> false
-example: bad [255] 0
-example: bad [0xc0, 0xaf] 0
-example: bad [0xed, 0xa0, 0x80] 0
-example: bad [0xf4, 0x90, 0x80, 0x80] 0
-example: bad [0xe2, 0x82] 0
-example: bad [0xff, 0xfe, 0x61] 2
-example: bad [0xff, 0xfe, 0, 0xd8] 2
-example: bad [0xff, 0xfe, 0, 0xdc] 2
-example: bad [0, 0, 0xfe, 0xff, 0, 0x11, 0, 0] 4
-example: bad [0xef, 0xbb, 0xbf, 0] 3
-example: bad [0x7f] 0
-example: bad [0xef, 0xbf, 0xbe] 0
+
+let case014 _ =
+  let testActual = bad [255] 0
+  Expect.isTrue "bad [255] 0" testActual
+
+let case015 _ =
+  let testActual = bad [0xc0, 0xaf] 0
+  Expect.isTrue "bad [0xc0, 0xaf] 0" testActual
+
+let case016 _ =
+  let testActual = bad [0xed, 0xa0, 0x80] 0
+  Expect.isTrue "bad [0xed, 0xa0, 0x80] 0" testActual
+
+let case017 _ =
+  let testActual = bad [0xf4, 0x90, 0x80, 0x80] 0
+  Expect.isTrue "bad [0xf4, 0x90, 0x80, 0x80] 0" testActual
+
+let case018 _ =
+  let testActual = bad [0xe2, 0x82] 0
+  Expect.isTrue "bad [0xe2, 0x82] 0" testActual
+
+let case019 _ =
+  let testActual = bad [0xff, 0xfe, 0x61] 2
+  Expect.isTrue "bad [0xff, 0xfe, 0x61] 2" testActual
+
+let case020 _ =
+  let testActual = bad [0xff, 0xfe, 0, 0xd8] 2
+  Expect.isTrue "bad [0xff, 0xfe, 0, 0xd8] 2" testActual
+
+let case021 _ =
+  let testActual = bad [0xff, 0xfe, 0, 0xdc] 2
+  Expect.isTrue "bad [0xff, 0xfe, 0, 0xdc] 2" testActual
+
+let case022 _ =
+  let testActual = bad [0, 0, 0xfe, 0xff, 0, 0x11, 0, 0] 4
+  Expect.isTrue "bad [0, 0, 0xfe, 0xff, 0, 0x11, 0, 0] 4" testActual
+
+let case023 _ =
+  let testActual = bad [0xef, 0xbb, 0xbf, 0] 3
+  Expect.isTrue "bad [0xef, 0xbb, 0xbf, 0] 3" testActual
+
+let case024 _ =
+  let testActual = bad [0x7f] 0
+  Expect.isTrue "bad [0x7f] 0" testActual
+
+let case025 _ =
+  let testActual = bad [0xef, 0xbf, 0xbe] 0
+  Expect.isTrue "bad [0xef, 0xbf, 0xbe] 0" testActual
 
 let utf16 bytes =
   Bytes.fromList (255 :: 254 :: List.concat (List.map (fun byte -> [byte, 0]) bytes))
@@ -73,15 +130,63 @@ let duplicate =
     } && Option.map (fun span ->
       span.start) error.secondary = Some { byte = 2, column = 1, line = 1 }
   | _ -> false
-example: duplicate
-example: (match Yaml.load "é: 1\r\né: 2" with
-| Err error ->
-  Option.map (fun span -> span.start) error.primary = Some { byte = 7, column = 1, line = 2 }
-| _ -> false)
-example: (match Yaml.parse "# comment\n" with
-| Ok document -> (YamlDocument.span document).start = { byte = 10, column = 1, line = 2 }
-| _ -> false)
-example: (match Yaml.parse "\"\\u0041\"" with
-| Ok document ->
-  YamlDocument.spelling document (YamlDocument.root document) = Some (Bytes.fromString "\"\\u0041\"")
-| _ -> false)
+
+let case026 _ =
+  let testActual = duplicate
+  Expect.isTrue "duplicate" testActual
+
+let case027 _ =
+  let testActual =
+    (match Yaml.load "é: 1\r\né: 2" with
+    | Err error ->
+      Option.map (fun span -> span.start) error.primary = Some { byte = 7, column = 1, line = 2 }
+    | _ -> false)
+  Expect.isTrue "(match Yaml.load \"é: 1\\r\\né: 2\" with | Err error -> Option.map (fun span -> span.start) error.primary = Some { byte = 7, column = 1, line = 2 } | _ -> false)" testActual
+
+let case028 _ =
+  let testActual =
+    (match Yaml.parse "# comment\n" with
+    | Ok document -> (YamlDocument.span document).start = { byte = 10, column = 1, line = 2 }
+    | _ -> false)
+  Expect.isTrue "(match Yaml.parse \"# comment\\n\" with | Ok document -> (YamlDocument.span document).start = { byte = 10, column = 1, line = 2 } | _ -> false)" testActual
+
+let case029 _ =
+  let testActual =
+    (match Yaml.parse "\"\\u0041\"" with
+    | Ok document ->
+      YamlDocument.spelling document (YamlDocument.root document) = Some (Bytes.fromString "\"\\u0041\"")
+    | _ -> false)
+  Expect.isTrue "(match Yaml.parse \"\\\"\\\\u0041\\\"\" with | Ok document -> YamlDocument.spelling document (YamlDocument.root document) = Some (Bytes.fromString \"\\\"\\\\u0041\\\"\") | _…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "YamlEncodingSpec" [
+  Test.test "scalar [0xc3, 0xa9]" case001,
+  Test.test "scalar [0xef, 0xbb, 0xbf, 0xc3, 0xa9]" case002,
+  Test.test "scalar [0xff, 0xfe, 0xe9, 0x00]" case003,
+  Test.test "scalar [0xfe, 0xff, 0x00, 0xe9]" case004,
+  Test.test "scalar [0xff, 0xfe, 0, 0, 0xe9, 0, 0, 0]" case005,
+  Test.test "scalar [0, 0, 0xfe, 0xff, 0, 0, 0, 0xe9]" case006,
+  Test.test "Yaml.loadBytes (Bytes.fromList [0x61, 0, 0x62, 0]) = Ok (YamlData.String \"ab\")" case007,
+  Test.test "Yaml.loadBytes (Bytes.fromList [0, 0x61, 0, 0x62]) = Ok (YamlData.String \"ab\")" case008,
+  Test.test "Yaml.loadBytes (Bytes.fromList [0x61, 0, 0, 0, 0x62, 0, 0, 0]) = Ok (YamlData.String \"ab\")" case009,
+  Test.test "Yaml.loadBytes (Bytes.fromList [0, 0, 0, 0x61, 0, 0, 0, 0x62]) = Ok (YamlData.String \"ab\")" case010,
+  Test.test "Yaml.loadBytes (Bytes.fromList [ 0xff, 0xfe, 0x3d, 0xd8, 0, 0xde ]) = Ok (YamlData.String \"😀\")" case011,
+  Test.test "Yaml.loadBytes (Bytes.fromList [ 0xfe, 0xff, 0xd8, 0x3d, 0xde, 0 ]) = Ok (YamlData.String \"😀\")" case012,
+  Test.test "Yaml.loadBytes (Bytes.fromList [ 0xff, 0xfe, 0, 0, 0, 0xf6, 1, 0 ]) = Ok (YamlData.String \"😀\")" case013,
+  Test.test "bad [255] 0" case014,
+  Test.test "bad [0xc0, 0xaf] 0" case015,
+  Test.test "bad [0xed, 0xa0, 0x80] 0" case016,
+  Test.test "bad [0xf4, 0x90, 0x80, 0x80] 0" case017,
+  Test.test "bad [0xe2, 0x82] 0" case018,
+  Test.test "bad [0xff, 0xfe, 0x61] 2" case019,
+  Test.test "bad [0xff, 0xfe, 0, 0xd8] 2" case020,
+  Test.test "bad [0xff, 0xfe, 0, 0xdc] 2" case021,
+  Test.test "bad [0, 0, 0xfe, 0xff, 0, 0x11, 0, 0] 4" case022,
+  Test.test "bad [0xef, 0xbb, 0xbf, 0] 3" case023,
+  Test.test "bad [0x7f] 0" case024,
+  Test.test "bad [0xef, 0xbf, 0xbe] 0" case025,
+  Test.test "duplicate" case026,
+  Test.test "(match Yaml.load \"é: 1\\r\\né: 2\" with | Err error -> Option.map (fun span -> span.start) error.primary = Some { byte = 7, column = 1, line = 2 } | _ -> false)" case027,
+  Test.test "(match Yaml.parse \"# comment\\n\" with | Ok document -> (YamlDocument.span document).start = { byte = 10, column = 1, line = 2 } | _ -> false)" case028,
+  Test.test "(match Yaml.parse \"\\\"\\\\u0041\\\"\" with | Ok document -> YamlDocument.spelling document (YamlDocument.root document) = Some (Bytes.fromString \"\\\"\\\\u0041\\\"\") | _…" case029
+]

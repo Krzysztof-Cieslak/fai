@@ -44,26 +44,107 @@ let increment =
 let jsonBody text = Http.stringBody text
 
 let media = Some "application/json"
-example: status (run increment media (jsonBody "{\"n\":1}")) = 200
-example: body (run increment media (jsonBody "{\"n\":1}")) = Ok "2"
-example: status (run increment media (jsonBody "{\"n\":false}")) = 400
-example: status (run increment media (jsonBody "{\"n\":1,\"n\":2}")) = 400
-example: status (run increment media (jsonBody "{")) = 400
-example: status (run increment media (Http.bytesBody (Bytes.fromList [255]))) = 400
-example: status (run increment None (jsonBody "{\"n\":1}")) = 415
-example: status (run increment (Some "text/plain") (jsonBody "{\"n\":1}")) = 415
-example: status (run increment (Some "application/jsonp") (jsonBody "{\"n\":1}")) = 415
-example: status (run increment (Some "application/+json") (jsonBody "{\"n\":1}")) = 415
-example: status (run increment (Some "application/*+json") (jsonBody "{\"n\":1}")) = 415
-example: status (run increment (Some "application/a b+json") (jsonBody "{\"n\":1}")) = 415
-example: status (run increment (Some "application/vnd.example+json") (jsonBody "{\"n\":1}")) = 200
-example: status (run increment (Some "Application/JSON; charset=utf-8") (jsonBody "{\"n\":1}")) = 200
-example: status (run increment None (Stream.failed "must not read")) = 415
-example: failed "broken body" (run increment media (Stream.failed "broken body"))
-example: body (run (Web.json (Json.String "é😀\n")) None Http.emptyBody) = Ok "\"é😀\\n\""
-example: status (run (Web.respondJson 201 Json.Null) None Http.emptyBody) = 201
-example: status (run (Web.respondJsonWith 201 JsonEncode.int 3) None Http.emptyBody) = 201
-example: failed "$: non-finite Float is not a JSON number" (run (Web.jsonWith JsonEncode.float (Float.fromBits 0x7ff0000000000000)) None Http.emptyBody)
+
+let case001 _ =
+  let testActual = status (run increment media (jsonBody "{\"n\":1}"))
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
+let case002 _ =
+  let testActual = body (run increment media (jsonBody "{\"n\":1}"))
+  let testExpected = Ok "2"
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual = status (run increment media (jsonBody "{\"n\":false}"))
+  let testExpected = 400
+  Expect.equal (Test.int).show testExpected testActual
+
+let case004 _ =
+  let testActual = status (run increment media (jsonBody "{\"n\":1,\"n\":2}"))
+  let testExpected = 400
+  Expect.equal (Test.int).show testExpected testActual
+
+let case005 _ =
+  let testActual = status (run increment media (jsonBody "{"))
+  let testExpected = 400
+  Expect.equal (Test.int).show testExpected testActual
+
+let case006 _ =
+  let testActual = status (run increment media (Http.bytesBody (Bytes.fromList [255])))
+  let testExpected = 400
+  Expect.equal (Test.int).show testExpected testActual
+
+let case007 _ =
+  let testActual = status (run increment None (jsonBody "{\"n\":1}"))
+  let testExpected = 415
+  Expect.equal (Test.int).show testExpected testActual
+
+let case008 _ =
+  let testActual = status (run increment (Some "text/plain") (jsonBody "{\"n\":1}"))
+  let testExpected = 415
+  Expect.equal (Test.int).show testExpected testActual
+
+let case009 _ =
+  let testActual = status (run increment (Some "application/jsonp") (jsonBody "{\"n\":1}"))
+  let testExpected = 415
+  Expect.equal (Test.int).show testExpected testActual
+
+let case010 _ =
+  let testActual = status (run increment (Some "application/+json") (jsonBody "{\"n\":1}"))
+  let testExpected = 415
+  Expect.equal (Test.int).show testExpected testActual
+
+let case011 _ =
+  let testActual = status (run increment (Some "application/*+json") (jsonBody "{\"n\":1}"))
+  let testExpected = 415
+  Expect.equal (Test.int).show testExpected testActual
+
+let case012 _ =
+  let testActual = status (run increment (Some "application/a b+json") (jsonBody "{\"n\":1}"))
+  let testExpected = 415
+  Expect.equal (Test.int).show testExpected testActual
+
+let case013 _ =
+  let testActual =
+    status (run increment (Some "application/vnd.example+json") (jsonBody "{\"n\":1}"))
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
+let case014 _ =
+  let testActual =
+    status (run increment (Some "Application/JSON; charset=utf-8") (jsonBody "{\"n\":1}"))
+  let testExpected = 200
+  Expect.equal (Test.int).show testExpected testActual
+
+let case015 _ =
+  let testActual = status (run increment None (Stream.failed "must not read"))
+  let testExpected = 415
+  Expect.equal (Test.int).show testExpected testActual
+
+let case016 _ =
+  let testActual = failed "broken body" (run increment media (Stream.failed "broken body"))
+  Expect.isTrue "failed \"broken body\" (run increment media (Stream.failed \"broken body\"))" testActual
+
+let case017 _ =
+  let testActual = body (run (Web.json (Json.String "é😀\n")) None Http.emptyBody)
+  let testExpected = Ok "\"é😀\\n\""
+  Expect.equal ((Test.result Test.string Test.string)).show testExpected testActual
+
+let case018 _ =
+  let testActual = status (run (Web.respondJson 201 Json.Null) None Http.emptyBody)
+  let testExpected = 201
+  Expect.equal (Test.int).show testExpected testActual
+
+let case019 _ =
+  let testActual = status (run (Web.respondJsonWith 201 JsonEncode.int 3) None Http.emptyBody)
+  let testExpected = 201
+  Expect.equal (Test.int).show testExpected testActual
+
+let case020 _ =
+  let testActual =
+    failed "$: non-finite Float is not a JSON number" (run (Web.jsonWith JsonEncode.float (Float.fromBits 0x7ff0000000000000)) None Http.emptyBody)
+  Expect.isTrue "failed \"$: non-finite Float is not a JSON number\" (run (Web.jsonWith JsonEncode.float (Float.fromBits 0x7ff0000000000000)) None Http.emptyBody)" testActual
 
 let marked = Web.chain [
   Web.setHeader "X-Test" "kept",
@@ -73,10 +154,26 @@ let marked = Web.chain [
   Web.setHeader "Content-Type" "old",
   Web.json Json.Null
 ]
-example: Headers.get "Content-Type" (headers (run marked None Http.emptyBody)) = Some "application/json"
-example: Headers.get "Content-Length" (headers (run marked None Http.emptyBody)) = None
-example: Headers.get "X-Test" (headers (run marked None Http.emptyBody)) = Some "kept"
-example: Headers.getAll "Set-Cookie" (headers (run marked None Http.emptyBody)) = ["a=1", "b=2"]
+
+let case021 _ =
+  let testActual = Headers.get "Content-Type" (headers (run marked None Http.emptyBody))
+  let testExpected = Some "application/json"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case022 _ =
+  let testActual = Headers.get "Content-Length" (headers (run marked None Http.emptyBody))
+  let testExpected = None
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case023 _ =
+  let testActual = Headers.get "X-Test" (headers (run marked None Http.emptyBody))
+  let testExpected = Some "kept"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case024 _ =
+  let testActual = Headers.getAll "Set-Cookie" (headers (run marked None Http.emptyBody))
+  let testExpected = ["a=1", "b=2"]
+  Expect.equal ((Test.list Test.string)).show testExpected testActual
 
 read : JsonDecode.Decoder 'a -> Option String -> Stream Bytes 'e -> Result 'a Web.JsonBodyError / 'e
 let read decoder media body =
@@ -89,12 +186,58 @@ let read decoder media body =
       | Some value -> Headers.set "Content-Type" value Headers.empty
     let request = ctx.request
     Web.readJson decoder { ctx with request = { request with body = body, headers = headers } }
-example: read JsonDecode.int media (jsonBody "1") = Ok 1
-example: read JsonDecode.int None (jsonBody "1") = Err (Web.UnsupportedJsonMediaType None)
-example: read JsonDecode.int media (Stream.failed "broken") = Err (Web.JsonBodyReadError "broken")
-example: read JsonDecode.int media (jsonBody "?") = Err (Web.InvalidJson (JsonDecode.Syntax {
-  column = 1,
-  line = 1,
-  message = "expected JSON value",
-  offset = 0
-}))
+
+let case025 _ =
+  let testActual = read JsonDecode.int media (jsonBody "1") = Ok 1
+  Expect.isTrue "read JsonDecode.int media (jsonBody \"1\") = Ok 1" testActual
+
+let case026 _ =
+  let testActual = read JsonDecode.int None (jsonBody "1") = Err (Web.UnsupportedJsonMediaType None)
+  Expect.isTrue "read JsonDecode.int None (jsonBody \"1\") = Err (Web.UnsupportedJsonMediaType None)" testActual
+
+let case027 _ =
+  let testActual =
+    read JsonDecode.int media (Stream.failed "broken") = Err (Web.JsonBodyReadError "broken")
+  Expect.isTrue "read JsonDecode.int media (Stream.failed \"broken\") = Err (Web.JsonBodyReadError \"broken\")" testActual
+
+let case028 _ =
+  let testActual =
+    read JsonDecode.int media (jsonBody "?") = Err (Web.InvalidJson (JsonDecode.Syntax {
+      column = 1,
+      line = 1,
+      message = "expected JSON value",
+      offset = 0
+    }))
+  Expect.isTrue "read JsonDecode.int media (jsonBody \"?\") = Err (Web.InvalidJson (JsonDecode.Syntax { column = 1, line = 1, message = \"expected JSON value\", offset = 0 }))" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "WebJsonSpec" [
+  Test.test "status (run increment media (jsonBody \"{\\\"n\\\":1}\")) = 200" case001,
+  Test.test "body (run increment media (jsonBody \"{\\\"n\\\":1}\")) = Ok \"2\"" case002,
+  Test.test "status (run increment media (jsonBody \"{\\\"n\\\":false}\")) = 400" case003,
+  Test.test "status (run increment media (jsonBody \"{\\\"n\\\":1,\\\"n\\\":2}\")) = 400" case004,
+  Test.test "status (run increment media (jsonBody \"{\")) = 400" case005,
+  Test.test "status (run increment media (Http.bytesBody (Bytes.fromList [255]))) = 400" case006,
+  Test.test "status (run increment None (jsonBody \"{\\\"n\\\":1}\")) = 415" case007,
+  Test.test "status (run increment (Some \"text/plain\") (jsonBody \"{\\\"n\\\":1}\")) = 415" case008,
+  Test.test "status (run increment (Some \"application/jsonp\") (jsonBody \"{\\\"n\\\":1}\")) = 415" case009,
+  Test.test "status (run increment (Some \"application/+json\") (jsonBody \"{\\\"n\\\":1}\")) = 415" case010,
+  Test.test "status (run increment (Some \"application/*+json\") (jsonBody \"{\\\"n\\\":1}\")) = 415" case011,
+  Test.test "status (run increment (Some \"application/a b+json\") (jsonBody \"{\\\"n\\\":1}\")) = 415" case012,
+  Test.test "status (run increment (Some \"application/vnd.example+json\") (jsonBody \"{\\\"n\\\":1}\")) = 200" case013,
+  Test.test "status (run increment (Some \"Application/JSON; charset=utf-8\") (jsonBody \"{\\\"n\\\":1}\")) = 200" case014,
+  Test.test "status (run increment None (Stream.failed \"must not read\")) = 415" case015,
+  Test.test "failed \"broken body\" (run increment media (Stream.failed \"broken body\"))" case016,
+  Test.test "body (run (Web.json (Json.String \"é😀\\n\")) None Http.emptyBody) = Ok \"\\\"é😀\\\\n\\\"\"" case017,
+  Test.test "status (run (Web.respondJson 201 Json.Null) None Http.emptyBody) = 201" case018,
+  Test.test "status (run (Web.respondJsonWith 201 JsonEncode.int 3) None Http.emptyBody) = 201" case019,
+  Test.test "failed \"$: non-finite Float is not a JSON number\" (run (Web.jsonWith JsonEncode.float (Float.fromBits 0x7ff0000000000000)) None Http.emptyBody)" case020,
+  Test.test "Headers.get \"Content-Type\" (headers (run marked None Http.emptyBody)) = Some \"application/json\"" case021,
+  Test.test "Headers.get \"Content-Length\" (headers (run marked None Http.emptyBody)) = None" case022,
+  Test.test "Headers.get \"X-Test\" (headers (run marked None Http.emptyBody)) = Some \"kept\"" case023,
+  Test.test "Headers.getAll \"Set-Cookie\" (headers (run marked None Http.emptyBody)) = [\"a=1\", \"b=2\"]" case024,
+  Test.test "read JsonDecode.int media (jsonBody \"1\") = Ok 1" case025,
+  Test.test "read JsonDecode.int None (jsonBody \"1\") = Err (Web.UnsupportedJsonMediaType None)" case026,
+  Test.test "read JsonDecode.int media (Stream.failed \"broken\") = Err (Web.JsonBodyReadError \"broken\")" case027,
+  Test.test "read JsonDecode.int media (jsonBody \"?\") = Err (Web.InvalidJson (JsonDecode.Syntax { column = 1, line = 1, message = \"expected JSON value\", offset = 0 }))" case028
+]

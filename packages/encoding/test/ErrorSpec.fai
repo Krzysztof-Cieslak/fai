@@ -4,66 +4,278 @@ let errorAt kind offset result =
   match result with
   | Err error -> error.kind = kind && error.offset = Some offset
   | Ok _ -> false
-example: Base64.decode "!AAA" = Err {
-  kind = Encoding.InvalidCharacter,
-  message = "character is outside the encoding alphabet",
-  offset = Some 0
-}
-example: errorAt Encoding.InvalidCharacter 0 (Base64.decode "!A")
-example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA A")
-example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA\tA")
-example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA\r\n")
-example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA\u{0}A")
-example: errorAt Encoding.InvalidCharacter 2 (Base64.decode "AAé=")
-example: errorAt Encoding.InvalidCharacter 4 (Base64.decode "AAAA😀")
-example: errorAt Encoding.InvalidCharacter 0 (Base64.decode "\u{feff}AAAA")
-example: errorAt Encoding.InvalidCharacter 1 (Base64.decodeBytes (Bytes.fromList [65, 255, 65, 65]))
-example: errorAt Encoding.InvalidLength 1 (Base64.decode "A")
-example: errorAt Encoding.InvalidLength 5 (Base64.decode "AAAAA")
-example: errorAt Encoding.InvalidPadding 2 (Base64.decode "AA")
-example: errorAt Encoding.InvalidPadding 3 (Base64.decode "AAA")
-example: errorAt Encoding.InvalidPadding 0 (Base64.decode "====")
-example: errorAt Encoding.InvalidPadding 1 (Base64.decode "A===")
-example: errorAt Encoding.InvalidPadding 3 (Base64.decode "AA=")
-example: errorAt Encoding.InvalidPadding 3 (Base64.decode "AA=A")
-example: errorAt Encoding.InvalidPadding 4 (Base64.decode "AAAA=")
-example: errorAt Encoding.InvalidPadding 4 (Base64.decode "AA===")
-example: errorAt Encoding.InvalidPadding 4 (Base64.decode "AA==AAAA")
-example: errorAt Encoding.NonCanonicalBits 1 (Base64.decode "AB==")
-example: errorAt Encoding.NonCanonicalBits 2 (Base64.decode "AAB=")
-example: errorAt Encoding.NonCanonicalBits 5 (Base64.decode "AAAAAB==")
-example: errorAt Encoding.NonCanonicalBits 1 (Base64Url.decode "AB")
-example: errorAt Encoding.NonCanonicalBits 2 (Base64Url.decode "AAB")
-example: errorAt Encoding.InvalidPadding 2 (Base64Url.decode "AA==")
-example: errorAt Encoding.InvalidLength 1 (Hex.decode "0")
-example: errorAt Encoding.InvalidLength 3 (Hex.decode "000")
-example: errorAt Encoding.InvalidCharacter 2 (Hex.decode "00é")
-example: errorAt Encoding.InvalidCharacter 0 (Hex.decodeBytes (Bytes.fromList [255]))
-example: errorAt Encoding.InvalidPadding 2 (Hex.decode "00=")
-example: errorAt Encoding.InvalidLength 1 (Base32.decode "A")
-example: errorAt Encoding.InvalidLength 3 (Base32.decode "AAA")
-example: errorAt Encoding.InvalidLength 6 (Base32.decode "AAAAAA")
-example: errorAt Encoding.InvalidPadding 2 (Base32.decode "AA")
-example: errorAt Encoding.InvalidPadding 4 (Base32.decode "AAAA")
-example: errorAt Encoding.InvalidPadding 5 (Base32.decode "AAAAA")
-example: errorAt Encoding.InvalidPadding 7 (Base32.decode "AAAAAAA")
-example: errorAt Encoding.InvalidPadding 7 (Base32.decode "AA=====")
-example: errorAt Encoding.InvalidPadding 3 (Base32.decode "AA=A====")
-example: errorAt Encoding.InvalidPadding 8 (Base32.decode "AA=======")
-example: errorAt Encoding.NonCanonicalBits 1 (Base32.decode "AB======")
-example: errorAt Encoding.NonCanonicalBits 3 (Base32.decode "AAAB====")
-example: errorAt Encoding.NonCanonicalBits 4 (Base32.decode "AAAAB===")
-example: errorAt Encoding.NonCanonicalBits 6 (Base32.decode "AAAAAAB=")
-example: errorAt Encoding.InvalidCharacter 0 (Base32Hex.decode "WW======")
-example: errorAt Encoding.InvalidLength 3 (Base32Hex.decode "000")
-example: errorAt Encoding.NonCanonicalBits 1 (Base32Hex.decode "01======")
-example: Encoding.errorToString {
-  kind = Encoding.InvalidLength,
-  message = "incomplete encoding group",
-  offset = Some 3
-} = "incomplete encoding group at byte 3"
-example: Encoding.errorToString {
-  kind = Encoding.Overflow,
-  message = "too long",
-  offset = None
-} = "too long"
+
+let case001 _ =
+  let testActual =
+    Base64.decode "!AAA" = Err {
+      kind = Encoding.InvalidCharacter,
+      message = "character is outside the encoding alphabet",
+      offset = Some 0
+    }
+  Expect.isTrue "Base64.decode \"!AAA\" = Err { kind = Encoding.InvalidCharacter, message = \"character is outside the encoding alphabet\", offset = Some 0 }" testActual
+
+let case002 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 0 (Base64.decode "!A")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 0 (Base64.decode \"!A\")" testActual
+
+let case003 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA A")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AA A\")" testActual
+
+let case004 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA\tA")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AA\\tA\")" testActual
+
+let case005 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA\r\n")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AA\\r\\n\")" testActual
+
+let case006 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 2 (Base64.decode "AA\u{0}A")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AA\\u{0}A\")" testActual
+
+let case007 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 2 (Base64.decode "AAé=")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AAé=\")" testActual
+
+let case008 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 4 (Base64.decode "AAAA😀")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 4 (Base64.decode \"AAAA😀\")" testActual
+
+let case009 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 0 (Base64.decode "\u{feff}AAAA")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 0 (Base64.decode \"\\u{feff}AAAA\")" testActual
+
+let case010 _ =
+  let testActual =
+    errorAt Encoding.InvalidCharacter 1 (Base64.decodeBytes (Bytes.fromList [65, 255, 65, 65]))
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 1 (Base64.decodeBytes (Bytes.fromList [65, 255, 65, 65]))" testActual
+
+let case011 _ =
+  let testActual = errorAt Encoding.InvalidLength 1 (Base64.decode "A")
+  Expect.isTrue "errorAt Encoding.InvalidLength 1 (Base64.decode \"A\")" testActual
+
+let case012 _ =
+  let testActual = errorAt Encoding.InvalidLength 5 (Base64.decode "AAAAA")
+  Expect.isTrue "errorAt Encoding.InvalidLength 5 (Base64.decode \"AAAAA\")" testActual
+
+let case013 _ =
+  let testActual = errorAt Encoding.InvalidPadding 2 (Base64.decode "AA")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 2 (Base64.decode \"AA\")" testActual
+
+let case014 _ =
+  let testActual = errorAt Encoding.InvalidPadding 3 (Base64.decode "AAA")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 3 (Base64.decode \"AAA\")" testActual
+
+let case015 _ =
+  let testActual = errorAt Encoding.InvalidPadding 0 (Base64.decode "====")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 0 (Base64.decode \"====\")" testActual
+
+let case016 _ =
+  let testActual = errorAt Encoding.InvalidPadding 1 (Base64.decode "A===")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 1 (Base64.decode \"A===\")" testActual
+
+let case017 _ =
+  let testActual = errorAt Encoding.InvalidPadding 3 (Base64.decode "AA=")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 3 (Base64.decode \"AA=\")" testActual
+
+let case018 _ =
+  let testActual = errorAt Encoding.InvalidPadding 3 (Base64.decode "AA=A")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 3 (Base64.decode \"AA=A\")" testActual
+
+let case019 _ =
+  let testActual = errorAt Encoding.InvalidPadding 4 (Base64.decode "AAAA=")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 4 (Base64.decode \"AAAA=\")" testActual
+
+let case020 _ =
+  let testActual = errorAt Encoding.InvalidPadding 4 (Base64.decode "AA===")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 4 (Base64.decode \"AA===\")" testActual
+
+let case021 _ =
+  let testActual = errorAt Encoding.InvalidPadding 4 (Base64.decode "AA==AAAA")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 4 (Base64.decode \"AA==AAAA\")" testActual
+
+let case022 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 1 (Base64.decode "AB==")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 1 (Base64.decode \"AB==\")" testActual
+
+let case023 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 2 (Base64.decode "AAB=")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 2 (Base64.decode \"AAB=\")" testActual
+
+let case024 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 5 (Base64.decode "AAAAAB==")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 5 (Base64.decode \"AAAAAB==\")" testActual
+
+let case025 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 1 (Base64Url.decode "AB")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 1 (Base64Url.decode \"AB\")" testActual
+
+let case026 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 2 (Base64Url.decode "AAB")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 2 (Base64Url.decode \"AAB\")" testActual
+
+let case027 _ =
+  let testActual = errorAt Encoding.InvalidPadding 2 (Base64Url.decode "AA==")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 2 (Base64Url.decode \"AA==\")" testActual
+
+let case028 _ =
+  let testActual = errorAt Encoding.InvalidLength 1 (Hex.decode "0")
+  Expect.isTrue "errorAt Encoding.InvalidLength 1 (Hex.decode \"0\")" testActual
+
+let case029 _ =
+  let testActual = errorAt Encoding.InvalidLength 3 (Hex.decode "000")
+  Expect.isTrue "errorAt Encoding.InvalidLength 3 (Hex.decode \"000\")" testActual
+
+let case030 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 2 (Hex.decode "00é")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 2 (Hex.decode \"00é\")" testActual
+
+let case031 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 0 (Hex.decodeBytes (Bytes.fromList [255]))
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 0 (Hex.decodeBytes (Bytes.fromList [255]))" testActual
+
+let case032 _ =
+  let testActual = errorAt Encoding.InvalidPadding 2 (Hex.decode "00=")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 2 (Hex.decode \"00=\")" testActual
+
+let case033 _ =
+  let testActual = errorAt Encoding.InvalidLength 1 (Base32.decode "A")
+  Expect.isTrue "errorAt Encoding.InvalidLength 1 (Base32.decode \"A\")" testActual
+
+let case034 _ =
+  let testActual = errorAt Encoding.InvalidLength 3 (Base32.decode "AAA")
+  Expect.isTrue "errorAt Encoding.InvalidLength 3 (Base32.decode \"AAA\")" testActual
+
+let case035 _ =
+  let testActual = errorAt Encoding.InvalidLength 6 (Base32.decode "AAAAAA")
+  Expect.isTrue "errorAt Encoding.InvalidLength 6 (Base32.decode \"AAAAAA\")" testActual
+
+let case036 _ =
+  let testActual = errorAt Encoding.InvalidPadding 2 (Base32.decode "AA")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 2 (Base32.decode \"AA\")" testActual
+
+let case037 _ =
+  let testActual = errorAt Encoding.InvalidPadding 4 (Base32.decode "AAAA")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 4 (Base32.decode \"AAAA\")" testActual
+
+let case038 _ =
+  let testActual = errorAt Encoding.InvalidPadding 5 (Base32.decode "AAAAA")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 5 (Base32.decode \"AAAAA\")" testActual
+
+let case039 _ =
+  let testActual = errorAt Encoding.InvalidPadding 7 (Base32.decode "AAAAAAA")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 7 (Base32.decode \"AAAAAAA\")" testActual
+
+let case040 _ =
+  let testActual = errorAt Encoding.InvalidPadding 7 (Base32.decode "AA=====")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 7 (Base32.decode \"AA=====\")" testActual
+
+let case041 _ =
+  let testActual = errorAt Encoding.InvalidPadding 3 (Base32.decode "AA=A====")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 3 (Base32.decode \"AA=A====\")" testActual
+
+let case042 _ =
+  let testActual = errorAt Encoding.InvalidPadding 8 (Base32.decode "AA=======")
+  Expect.isTrue "errorAt Encoding.InvalidPadding 8 (Base32.decode \"AA=======\")" testActual
+
+let case043 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 1 (Base32.decode "AB======")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 1 (Base32.decode \"AB======\")" testActual
+
+let case044 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 3 (Base32.decode "AAAB====")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 3 (Base32.decode \"AAAB====\")" testActual
+
+let case045 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 4 (Base32.decode "AAAAB===")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 4 (Base32.decode \"AAAAB===\")" testActual
+
+let case046 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 6 (Base32.decode "AAAAAAB=")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 6 (Base32.decode \"AAAAAAB=\")" testActual
+
+let case047 _ =
+  let testActual = errorAt Encoding.InvalidCharacter 0 (Base32Hex.decode "WW======")
+  Expect.isTrue "errorAt Encoding.InvalidCharacter 0 (Base32Hex.decode \"WW======\")" testActual
+
+let case048 _ =
+  let testActual = errorAt Encoding.InvalidLength 3 (Base32Hex.decode "000")
+  Expect.isTrue "errorAt Encoding.InvalidLength 3 (Base32Hex.decode \"000\")" testActual
+
+let case049 _ =
+  let testActual = errorAt Encoding.NonCanonicalBits 1 (Base32Hex.decode "01======")
+  Expect.isTrue "errorAt Encoding.NonCanonicalBits 1 (Base32Hex.decode \"01======\")" testActual
+
+let case050 _ =
+  let testActual = Encoding.errorToString {
+    kind = Encoding.InvalidLength,
+    message = "incomplete encoding group",
+    offset = Some 3
+  }
+  let testExpected = "incomplete encoding group at byte 3"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case051 _ =
+  let testActual = Encoding.errorToString {
+    kind = Encoding.Overflow,
+    message = "too long",
+    offset = None
+  }
+  let testExpected = "too long"
+  Expect.equal (Test.string).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "EncodingErrorSpec" [
+  Test.test "Base64.decode \"!AAA\" = Err { kind = Encoding.InvalidCharacter, message = \"character is outside the encoding alphabet\", offset = Some 0 }" case001,
+  Test.test "errorAt Encoding.InvalidCharacter 0 (Base64.decode \"!A\")" case002,
+  Test.test "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AA A\")" case003,
+  Test.test "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AA\\tA\")" case004,
+  Test.test "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AA\\r\\n\")" case005,
+  Test.test "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AA\\u{0}A\")" case006,
+  Test.test "errorAt Encoding.InvalidCharacter 2 (Base64.decode \"AAé=\")" case007,
+  Test.test "errorAt Encoding.InvalidCharacter 4 (Base64.decode \"AAAA😀\")" case008,
+  Test.test "errorAt Encoding.InvalidCharacter 0 (Base64.decode \"\\u{feff}AAAA\")" case009,
+  Test.test "errorAt Encoding.InvalidCharacter 1 (Base64.decodeBytes (Bytes.fromList [65, 255, 65, 65]))" case010,
+  Test.test "errorAt Encoding.InvalidLength 1 (Base64.decode \"A\")" case011,
+  Test.test "errorAt Encoding.InvalidLength 5 (Base64.decode \"AAAAA\")" case012,
+  Test.test "errorAt Encoding.InvalidPadding 2 (Base64.decode \"AA\")" case013,
+  Test.test "errorAt Encoding.InvalidPadding 3 (Base64.decode \"AAA\")" case014,
+  Test.test "errorAt Encoding.InvalidPadding 0 (Base64.decode \"====\")" case015,
+  Test.test "errorAt Encoding.InvalidPadding 1 (Base64.decode \"A===\")" case016,
+  Test.test "errorAt Encoding.InvalidPadding 3 (Base64.decode \"AA=\")" case017,
+  Test.test "errorAt Encoding.InvalidPadding 3 (Base64.decode \"AA=A\")" case018,
+  Test.test "errorAt Encoding.InvalidPadding 4 (Base64.decode \"AAAA=\")" case019,
+  Test.test "errorAt Encoding.InvalidPadding 4 (Base64.decode \"AA===\")" case020,
+  Test.test "errorAt Encoding.InvalidPadding 4 (Base64.decode \"AA==AAAA\")" case021,
+  Test.test "errorAt Encoding.NonCanonicalBits 1 (Base64.decode \"AB==\")" case022,
+  Test.test "errorAt Encoding.NonCanonicalBits 2 (Base64.decode \"AAB=\")" case023,
+  Test.test "errorAt Encoding.NonCanonicalBits 5 (Base64.decode \"AAAAAB==\")" case024,
+  Test.test "errorAt Encoding.NonCanonicalBits 1 (Base64Url.decode \"AB\")" case025,
+  Test.test "errorAt Encoding.NonCanonicalBits 2 (Base64Url.decode \"AAB\")" case026,
+  Test.test "errorAt Encoding.InvalidPadding 2 (Base64Url.decode \"AA==\")" case027,
+  Test.test "errorAt Encoding.InvalidLength 1 (Hex.decode \"0\")" case028,
+  Test.test "errorAt Encoding.InvalidLength 3 (Hex.decode \"000\")" case029,
+  Test.test "errorAt Encoding.InvalidCharacter 2 (Hex.decode \"00é\")" case030,
+  Test.test "errorAt Encoding.InvalidCharacter 0 (Hex.decodeBytes (Bytes.fromList [255]))" case031,
+  Test.test "errorAt Encoding.InvalidPadding 2 (Hex.decode \"00=\")" case032,
+  Test.test "errorAt Encoding.InvalidLength 1 (Base32.decode \"A\")" case033,
+  Test.test "errorAt Encoding.InvalidLength 3 (Base32.decode \"AAA\")" case034,
+  Test.test "errorAt Encoding.InvalidLength 6 (Base32.decode \"AAAAAA\")" case035,
+  Test.test "errorAt Encoding.InvalidPadding 2 (Base32.decode \"AA\")" case036,
+  Test.test "errorAt Encoding.InvalidPadding 4 (Base32.decode \"AAAA\")" case037,
+  Test.test "errorAt Encoding.InvalidPadding 5 (Base32.decode \"AAAAA\")" case038,
+  Test.test "errorAt Encoding.InvalidPadding 7 (Base32.decode \"AAAAAAA\")" case039,
+  Test.test "errorAt Encoding.InvalidPadding 7 (Base32.decode \"AA=====\")" case040,
+  Test.test "errorAt Encoding.InvalidPadding 3 (Base32.decode \"AA=A====\")" case041,
+  Test.test "errorAt Encoding.InvalidPadding 8 (Base32.decode \"AA=======\")" case042,
+  Test.test "errorAt Encoding.NonCanonicalBits 1 (Base32.decode \"AB======\")" case043,
+  Test.test "errorAt Encoding.NonCanonicalBits 3 (Base32.decode \"AAAB====\")" case044,
+  Test.test "errorAt Encoding.NonCanonicalBits 4 (Base32.decode \"AAAAB===\")" case045,
+  Test.test "errorAt Encoding.NonCanonicalBits 6 (Base32.decode \"AAAAAAB=\")" case046,
+  Test.test "errorAt Encoding.InvalidCharacter 0 (Base32Hex.decode \"WW======\")" case047,
+  Test.test "errorAt Encoding.InvalidLength 3 (Base32Hex.decode \"000\")" case048,
+  Test.test "errorAt Encoding.NonCanonicalBits 1 (Base32Hex.decode \"01======\")" case049,
+  Test.test "Encoding.errorToString { kind = Encoding.InvalidLength, message = \"incomplete encoding group\", offset = Some 3 } = \"incomplete encoding group at byte 3\"" case050,
+  Test.test "Encoding.errorToString { kind = Encoding.Overflow, message = \"too long\", offset = None } = \"too long\"" case051
+]

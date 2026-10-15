@@ -139,4 +139,4 @@ normalization row, including all twenty required normalization relationships.
 It rejects missing coverage. JIT/AOT fixtures also exercise long canonical
 ordering, cursor aliases, repeated transformations, mapped composition and
 parallel immutable use. Normalization/folding idempotence, reconstruction,
-byte boundaries and limit failures have ordinary Fai contracts.
+byte boundaries and limit failures have named Fai tests and properties.

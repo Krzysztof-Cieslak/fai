@@ -83,3 +83,34 @@ let main r =
     "event fold checks passed"
   else
     "event fold checks FAILED")
+
+scenario : String -> Case -> (HttpClient.EventFold String String -> Bool) -> Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let scenario name case check =
+  Test.test name (fun ctx ->
+    Expect.ok HttpClient.errorToString (fun result ->
+      Expect.isTrue name (check result)) (run ctx.runtime case))
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "stateful SSE folds" [
+  scenario "EOF retains state and response metadata" basic (fun result ->
+    result.value = "ab" && result.outcome = Ok HttpClient.EventEof && (match result.head with
+    | Some head -> Headers.get "X-Request-Id" head.headers = Some "fold-request"
+    | None -> false)),
+  scenario "explicit stop retains the last committed event" { basic with
+    stop = true
+  } (fun result -> result.value = "a" && result.outcome = Ok HttpClient.EventStopped),
+  scenario "typed consumer errors retain committed state" { basic with
+    reject = true
+  } (fun result ->
+    result.value = "a" && result.outcome = Err (HttpClient.FoldConsumerError "typed rejection")),
+  scenario "status errors preserve bounded response previews" { basic with
+    status = 429
+  } (fun result ->
+    result.truncated && Bytes.length result.preview = 8 && (match result.outcome with
+    | Err (HttpClient.FoldHttpError (HttpClient.EventStatus head)) -> head.status = 429
+    | _ -> false)),
+  scenario "consumer time counts toward the deadline" { basic with
+    slow = true,
+    total = Some 50
+  } (fun result -> result.outcome = Err (HttpClient.FoldHttpError HttpClient.DeadlineExceeded))
+]

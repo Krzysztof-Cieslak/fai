@@ -7,66 +7,187 @@ let number value = YamlData.Integer (YamlNumber.integerFromInt value)
 let sequence values = YamlData.Sequence (Array.fromList values)
 
 let mapping values = YamlData.Mapping (Array.fromList values)
-example: Yaml.load "" = Ok YamlData.Null
-example: Yaml.load "# comment\n" = Ok YamlData.Null
-example: Result.map List.length (Yaml.parseAll "# comment\n") = Ok 0
-example: Yaml.load "null" = Ok YamlData.Null
-example: Yaml.load "TRUE" = Ok (YamlData.Boolean true)
-example: Yaml.load "on" = Ok (YamlData.String "on")
-example: Yaml.load "yes" = Ok (YamlData.String "yes")
-example: Yaml.load "2024-01-01" = Ok (YamlData.String "2024-01-01")
-example: Yaml.load "\"true\"" = Ok (YamlData.String "true")
-example: Yaml.load "[1, 2, 3]" = Ok (sequence [number 1, number 2, number 3])
-example: Yaml.load "- 1\n- 2\n- 3" = Ok (sequence [number 1, number 2, number 3])
-example: Yaml.load "a: 1\nb: true" = Ok (mapping [("a", number 1), ("b", YamlData.Boolean true)])
-example: Yaml.load "a:\n  b: 1\nc: 2" = Ok (mapping [
-  ("a", mapping [("b", number 1)]),
-  ("c", number 2)
-])
-example: Yaml.load "a:\n- 1\n- 2\nb: 3" = Ok (mapping [
-  ("a", sequence [number 1, number 2]),
-  ("b", number 3)
-])
-example: Yaml.load "a: &x [1, 2]\nb: *x" = Ok (mapping [
-  ("a", sequence [number 1, number 2]),
-  ("b", sequence [number 1, number 2])
-])
-example: Yaml.load "{a: 1, a: 2}" |> Result.isErr
-example: Yaml.load "[a: 1, a: 2]" |> Result.isOk
-example: Yaml.load "true: 1" |> Result.isErr
-example: Yaml.load "\"true\": 1" = Ok (mapping [("true", number 1)])
-example: Yaml.parse "? [1, 2]\n: 3" |> Result.isOk
-example: Yaml.load "? [1, 2]\n: 3" |> Result.isErr
-example: Yaml.parse "&x [*x]" |> Result.isOk
-example: (match Yaml.load "&x [*x]" with
-| Err error -> error.kind = YamlTypes.CyclicAlias
-| _ -> false)
-example: Yaml.parse "*absent" |> Result.isErr
-example: Yaml.load "!custom value" |> Result.isErr
-example: Yaml.load "!!str true" = Ok (YamlData.String "true")
-example: Yaml.load "!!bool \"true\"" = Ok (YamlData.Boolean true)
-example: Yaml.load "!!int \"12\"" = Ok (number 12)
-example: Yaml.load "!!int nope" |> Result.isErr
-example: Yaml.load "[a, b,]" = Ok (sequence [YamlData.String "a", YamlData.String "b"])
-example: Yaml.load "[a,,b]" |> Result.isErr
-example: Yaml.load "--- one\n--- two" |> Result.isErr
-example: Result.map List.length (Yaml.parseAll "--- one\n...\n--- two") = Ok 2
-example: Yaml.load "|\n  hello\n  world\n" = Ok (YamlData.String "hello\nworld\n")
-example: Yaml.load ">\n  hello\n  world\n" = Ok (YamlData.String "hello world\n")
-example: Yaml.load "|-\n  hello\n" = Ok (YamlData.String "hello")
-example: Yaml.load "|+\n  hello\n\n" = Ok (YamlData.String "hello\n\n")
+
+let case001 _ =
+  let testActual = Yaml.load "" = Ok YamlData.Null
+  Expect.isTrue "Yaml.load \"\" = Ok YamlData.Null" testActual
+
+let case002 _ =
+  let testActual = Yaml.load "# comment\n" = Ok YamlData.Null
+  Expect.isTrue "Yaml.load \"# comment\\n\" = Ok YamlData.Null" testActual
+
+let case003 _ =
+  let testActual = Result.map List.length (Yaml.parseAll "# comment\n") = Ok 0
+  Expect.isTrue "Result.map List.length (Yaml.parseAll \"# comment\\n\") = Ok 0" testActual
+
+let case004 _ =
+  let testActual = Yaml.load "null" = Ok YamlData.Null
+  Expect.isTrue "Yaml.load \"null\" = Ok YamlData.Null" testActual
+
+let case005 _ =
+  let testActual = Yaml.load "TRUE" = Ok (YamlData.Boolean true)
+  Expect.isTrue "Yaml.load \"TRUE\" = Ok (YamlData.Boolean true)" testActual
+
+let case006 _ =
+  let testActual = Yaml.load "on" = Ok (YamlData.String "on")
+  Expect.isTrue "Yaml.load \"on\" = Ok (YamlData.String \"on\")" testActual
+
+let case007 _ =
+  let testActual = Yaml.load "yes" = Ok (YamlData.String "yes")
+  Expect.isTrue "Yaml.load \"yes\" = Ok (YamlData.String \"yes\")" testActual
+
+let case008 _ =
+  let testActual = Yaml.load "2024-01-01" = Ok (YamlData.String "2024-01-01")
+  Expect.isTrue "Yaml.load \"2024-01-01\" = Ok (YamlData.String \"2024-01-01\")" testActual
+
+let case009 _ =
+  let testActual = Yaml.load "\"true\"" = Ok (YamlData.String "true")
+  Expect.isTrue "Yaml.load \"\\\"true\\\"\" = Ok (YamlData.String \"true\")" testActual
+
+let case010 _ =
+  let testActual = Yaml.load "[1, 2, 3]" = Ok (sequence [number 1, number 2, number 3])
+  Expect.isTrue "Yaml.load \"[1, 2, 3]\" = Ok (sequence [number 1, number 2, number 3])" testActual
+
+let case011 _ =
+  let testActual = Yaml.load "- 1\n- 2\n- 3" = Ok (sequence [number 1, number 2, number 3])
+  Expect.isTrue "Yaml.load \"- 1\\n- 2\\n- 3\" = Ok (sequence [number 1, number 2, number 3])" testActual
+
+let case012 _ =
+  let testActual =
+    Yaml.load "a: 1\nb: true" = Ok (mapping [("a", number 1), ("b", YamlData.Boolean true)])
+  Expect.isTrue "Yaml.load \"a: 1\\nb: true\" = Ok (mapping [(\"a\", number 1), (\"b\", YamlData.Boolean true)])" testActual
+
+let case013 _ =
+  let testActual =
+    Yaml.load "a:\n  b: 1\nc: 2" = Ok (mapping [("a", mapping [("b", number 1)]), ("c", number 2)])
+  Expect.isTrue "Yaml.load \"a:\\n b: 1\\nc: 2\" = Ok (mapping [ (\"a\", mapping [(\"b\", number 1)]), (\"c\", number 2) ])" testActual
+
+let case014 _ =
+  let testActual =
+    Yaml.load "a:\n- 1\n- 2\nb: 3" = Ok (mapping [
+      ("a", sequence [number 1, number 2]),
+      ("b", number 3)
+    ])
+  Expect.isTrue "Yaml.load \"a:\\n- 1\\n- 2\\nb: 3\" = Ok (mapping [ (\"a\", sequence [number 1, number 2]), (\"b\", number 3) ])" testActual
+
+let case015 _ =
+  let testActual =
+    Yaml.load "a: &x [1, 2]\nb: *x" = Ok (mapping [
+      ("a", sequence [number 1, number 2]),
+      ("b", sequence [number 1, number 2])
+    ])
+  Expect.isTrue "Yaml.load \"a: &x [1, 2]\\nb: *x\" = Ok (mapping [ (\"a\", sequence [number 1, number 2]), (\"b\", sequence [number 1, number 2]) ])" testActual
+
+let case016 _ =
+  let testActual = Yaml.load "{a: 1, a: 2}" |> Result.isErr
+  Expect.isTrue "Yaml.load \"{a: 1, a: 2}\" |> Result.isErr" testActual
+
+let case017 _ =
+  let testActual = Yaml.load "[a: 1, a: 2]" |> Result.isOk
+  Expect.isTrue "Yaml.load \"[a: 1, a: 2]\" |> Result.isOk" testActual
+
+let case018 _ =
+  let testActual = Yaml.load "true: 1" |> Result.isErr
+  Expect.isTrue "Yaml.load \"true: 1\" |> Result.isErr" testActual
+
+let case019 _ =
+  let testActual = Yaml.load "\"true\": 1" = Ok (mapping [("true", number 1)])
+  Expect.isTrue "Yaml.load \"\\\"true\\\": 1\" = Ok (mapping [(\"true\", number 1)])" testActual
+
+let case020 _ =
+  let testActual = Yaml.parse "? [1, 2]\n: 3" |> Result.isOk
+  Expect.isTrue "Yaml.parse \"? [1, 2]\\n: 3\" |> Result.isOk" testActual
+
+let case021 _ =
+  let testActual = Yaml.load "? [1, 2]\n: 3" |> Result.isErr
+  Expect.isTrue "Yaml.load \"? [1, 2]\\n: 3\" |> Result.isErr" testActual
+
+let case022 _ =
+  let testActual = Yaml.parse "&x [*x]" |> Result.isOk
+  Expect.isTrue "Yaml.parse \"&x [*x]\" |> Result.isOk" testActual
+
+let case023 _ =
+  let testActual =
+    (match Yaml.load "&x [*x]" with
+    | Err error -> error.kind = YamlTypes.CyclicAlias
+    | _ -> false)
+  Expect.isTrue "(match Yaml.load \"&x [*x]\" with | Err error -> error.kind = YamlTypes.CyclicAlias | _ -> false)" testActual
+
+let case024 _ =
+  let testActual = Yaml.parse "*absent" |> Result.isErr
+  Expect.isTrue "Yaml.parse \"*absent\" |> Result.isErr" testActual
+
+let case025 _ =
+  let testActual = Yaml.load "!custom value" |> Result.isErr
+  Expect.isTrue "Yaml.load \"!custom value\" |> Result.isErr" testActual
+
+let case026 _ =
+  let testActual = Yaml.load "!!str true" = Ok (YamlData.String "true")
+  Expect.isTrue "Yaml.load \"!!str true\" = Ok (YamlData.String \"true\")" testActual
+
+let case027 _ =
+  let testActual = Yaml.load "!!bool \"true\"" = Ok (YamlData.Boolean true)
+  Expect.isTrue "Yaml.load \"!!bool \\\"true\\\"\" = Ok (YamlData.Boolean true)" testActual
+
+let case028 _ =
+  let testActual = Yaml.load "!!int \"12\"" = Ok (number 12)
+  Expect.isTrue "Yaml.load \"!!int \\\"12\\\"\" = Ok (number 12)" testActual
+
+let case029 _ =
+  let testActual = Yaml.load "!!int nope" |> Result.isErr
+  Expect.isTrue "Yaml.load \"!!int nope\" |> Result.isErr" testActual
+
+let case030 _ =
+  let testActual = Yaml.load "[a, b,]" = Ok (sequence [YamlData.String "a", YamlData.String "b"])
+  Expect.isTrue "Yaml.load \"[a, b,]\" = Ok (sequence [YamlData.String \"a\", YamlData.String \"b\"])" testActual
+
+let case031 _ =
+  let testActual = Yaml.load "[a,,b]" |> Result.isErr
+  Expect.isTrue "Yaml.load \"[a,,b]\" |> Result.isErr" testActual
+
+let case032 _ =
+  let testActual = Yaml.load "--- one\n--- two" |> Result.isErr
+  Expect.isTrue "Yaml.load \"--- one\\n--- two\" |> Result.isErr" testActual
+
+let case033 _ =
+  let testActual = Result.map List.length (Yaml.parseAll "--- one\n...\n--- two") = Ok 2
+  Expect.isTrue "Result.map List.length (Yaml.parseAll \"--- one\\n...\\n--- two\") = Ok 2" testActual
+
+let case034 _ =
+  let testActual = Yaml.load "|\n  hello\n  world\n" = Ok (YamlData.String "hello\nworld\n")
+  Expect.isTrue "Yaml.load \"|\\n hello\\n world\\n\" = Ok (YamlData.String \"hello\\nworld\\n\")" testActual
+
+let case035 _ =
+  let testActual = Yaml.load ">\n  hello\n  world\n" = Ok (YamlData.String "hello world\n")
+  Expect.isTrue "Yaml.load \">\\n hello\\n world\\n\" = Ok (YamlData.String \"hello world\\n\")" testActual
+
+let case036 _ =
+  let testActual = Yaml.load "|-\n  hello\n" = Ok (YamlData.String "hello")
+  Expect.isTrue "Yaml.load \"|-\\n hello\\n\" = Ok (YamlData.String \"hello\")" testActual
+
+let case037 _ =
+  let testActual = Yaml.load "|+\n  hello\n\n" = Ok (YamlData.String "hello\n\n")
+  Expect.isTrue "Yaml.load \"|+\\n hello\\n\\n\" = Ok (YamlData.String \"hello\\n\\n\")" testActual
 
 let merges = "base: &base {a: 1, b: 2}\nresult: {<<: *base, b: 3}"
-example: Yaml.load merges = Ok (mapping [
-  ("base", mapping [("a", number 1), ("b", number 2)]),
-  ("result", mapping [("<<", mapping [("a", number 1), ("b", number 2)]), ("b", number 3)])
-])
-example: Yaml.loadWith Yaml.defaults { YamlProject.defaults with
-  mergeKeys = true
-} merges = Ok (mapping [
-  ("base", mapping [("a", number 1), ("b", number 2)]),
-  ("result", mapping [("b", number 3), ("a", number 1)])
-])
+
+let case038 _ =
+  let testActual =
+    Yaml.load merges = Ok (mapping [
+      ("base", mapping [("a", number 1), ("b", number 2)]),
+      ("result", mapping [("<<", mapping [("a", number 1), ("b", number 2)]), ("b", number 3)])
+    ])
+  Expect.isTrue "Yaml.load merges = Ok (mapping [ (\"base\", mapping [(\"a\", number 1), (\"b\", number 2)]), (\"result\", mapping [(\"<<\", mapping [(\"a\", number 1), (\"b\", number 2)])…" testActual
+
+let case039 _ =
+  let testActual =
+    Yaml.loadWith Yaml.defaults { YamlProject.defaults with
+      mergeKeys = true
+    } merges = Ok (mapping [
+      ("base", mapping [("a", number 1), ("b", number 2)]),
+      ("result", mapping [("b", number 3), ("a", number 1)])
+    ])
+  Expect.isTrue "Yaml.loadWith Yaml.defaults { YamlProject.defaults with mergeKeys = true } merges = Ok (mapping [ (\"base\", mapping [(\"a\", number 1), (\"b\", number 2)]), (\"res…" testActual
 
 let handler = {
   run = fun content ->
@@ -75,18 +196,81 @@ let handler = {
     | _ -> Err "expected scalar",
   tag = "!upper"
 }
-example: Yaml.loadWith Yaml.defaults { YamlProject.defaults with
-  handlers = [handler]
-} "!upper hello" = Ok (YamlData.String "HELLO")
+
+let case040 _ =
+  let testActual =
+    Yaml.loadWith Yaml.defaults { YamlProject.defaults with
+      handlers = [handler]
+    } "!upper hello" = Ok (YamlData.String "HELLO")
+  Expect.isTrue "Yaml.loadWith Yaml.defaults { YamlProject.defaults with handlers = [handler] } \"!upper hello\" = Ok (YamlData.String \"HELLO\")" testActual
 
 let roundtrip value =
   match Yaml.toString value with
   | Err _ -> false
   | Ok text -> Yaml.load text = Ok value
-example: roundtrip (mapping [
-  ("on", YamlData.String "true"),
-  ("x", sequence [number 1, YamlData.Null])
-])
-example: roundtrip (YamlData.String "a\nb\n")
-example: roundtrip (YamlData.Float YamlNumber.PositiveInfinity)
-example: roundtrip (YamlData.Float (YamlNumber.Finite (Result.withDefault (JsonNumber.fromInt 0) (JsonNumber.fromString "1e999"))))
+
+let case041 _ =
+  let testActual =
+    roundtrip (mapping [("on", YamlData.String "true"), ("x", sequence [number 1, YamlData.Null])])
+  Expect.isTrue "roundtrip (mapping [ (\"on\", YamlData.String \"true\"), (\"x\", sequence [number 1, YamlData.Null]) ])" testActual
+
+let case042 _ =
+  let testActual = roundtrip (YamlData.String "a\nb\n")
+  Expect.isTrue "roundtrip (YamlData.String \"a\\nb\\n\")" testActual
+
+let case043 _ =
+  let testActual = roundtrip (YamlData.Float YamlNumber.PositiveInfinity)
+  Expect.isTrue "roundtrip (YamlData.Float YamlNumber.PositiveInfinity)" testActual
+
+let case044 _ =
+  let testActual =
+    roundtrip (YamlData.Float (YamlNumber.Finite (Result.withDefault (JsonNumber.fromInt 0) (JsonNumber.fromString "1e999"))))
+  Expect.isTrue "roundtrip (YamlData.Float (YamlNumber.Finite (Result.withDefault (JsonNumber.fromInt 0) (JsonNumber.fromString \"1e999\"))))" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "YamlCoreSpec" [
+  Test.test "Yaml.load \"\" = Ok YamlData.Null" case001,
+  Test.test "Yaml.load \"# comment\\n\" = Ok YamlData.Null" case002,
+  Test.test "Result.map List.length (Yaml.parseAll \"# comment\\n\") = Ok 0" case003,
+  Test.test "Yaml.load \"null\" = Ok YamlData.Null" case004,
+  Test.test "Yaml.load \"TRUE\" = Ok (YamlData.Boolean true)" case005,
+  Test.test "Yaml.load \"on\" = Ok (YamlData.String \"on\")" case006,
+  Test.test "Yaml.load \"yes\" = Ok (YamlData.String \"yes\")" case007,
+  Test.test "Yaml.load \"2024-01-01\" = Ok (YamlData.String \"2024-01-01\")" case008,
+  Test.test "Yaml.load \"\\\"true\\\"\" = Ok (YamlData.String \"true\")" case009,
+  Test.test "Yaml.load \"[1, 2, 3]\" = Ok (sequence [number 1, number 2, number 3])" case010,
+  Test.test "Yaml.load \"- 1\\n- 2\\n- 3\" = Ok (sequence [number 1, number 2, number 3])" case011,
+  Test.test "Yaml.load \"a: 1\\nb: true\" = Ok (mapping [(\"a\", number 1), (\"b\", YamlData.Boolean true)])" case012,
+  Test.test "Yaml.load \"a:\\n b: 1\\nc: 2\" = Ok (mapping [ (\"a\", mapping [(\"b\", number 1)]), (\"c\", number 2) ])" case013,
+  Test.test "Yaml.load \"a:\\n- 1\\n- 2\\nb: 3\" = Ok (mapping [ (\"a\", sequence [number 1, number 2]), (\"b\", number 3) ])" case014,
+  Test.test "Yaml.load \"a: &x [1, 2]\\nb: *x\" = Ok (mapping [ (\"a\", sequence [number 1, number 2]), (\"b\", sequence [number 1, number 2]) ])" case015,
+  Test.test "Yaml.load \"{a: 1, a: 2}\" |> Result.isErr" case016,
+  Test.test "Yaml.load \"[a: 1, a: 2]\" |> Result.isOk" case017,
+  Test.test "Yaml.load \"true: 1\" |> Result.isErr" case018,
+  Test.test "Yaml.load \"\\\"true\\\": 1\" = Ok (mapping [(\"true\", number 1)])" case019,
+  Test.test "Yaml.parse \"? [1, 2]\\n: 3\" |> Result.isOk" case020,
+  Test.test "Yaml.load \"? [1, 2]\\n: 3\" |> Result.isErr" case021,
+  Test.test "Yaml.parse \"&x [*x]\" |> Result.isOk" case022,
+  Test.test "(match Yaml.load \"&x [*x]\" with | Err error -> error.kind = YamlTypes.CyclicAlias | _ -> false)" case023,
+  Test.test "Yaml.parse \"*absent\" |> Result.isErr" case024,
+  Test.test "Yaml.load \"!custom value\" |> Result.isErr" case025,
+  Test.test "Yaml.load \"!!str true\" = Ok (YamlData.String \"true\")" case026,
+  Test.test "Yaml.load \"!!bool \\\"true\\\"\" = Ok (YamlData.Boolean true)" case027,
+  Test.test "Yaml.load \"!!int \\\"12\\\"\" = Ok (number 12)" case028,
+  Test.test "Yaml.load \"!!int nope\" |> Result.isErr" case029,
+  Test.test "Yaml.load \"[a, b,]\" = Ok (sequence [YamlData.String \"a\", YamlData.String \"b\"])" case030,
+  Test.test "Yaml.load \"[a,,b]\" |> Result.isErr" case031,
+  Test.test "Yaml.load \"--- one\\n--- two\" |> Result.isErr" case032,
+  Test.test "Result.map List.length (Yaml.parseAll \"--- one\\n...\\n--- two\") = Ok 2" case033,
+  Test.test "Yaml.load \"|\\n hello\\n world\\n\" = Ok (YamlData.String \"hello\\nworld\\n\")" case034,
+  Test.test "Yaml.load \">\\n hello\\n world\\n\" = Ok (YamlData.String \"hello world\\n\")" case035,
+  Test.test "Yaml.load \"|-\\n hello\\n\" = Ok (YamlData.String \"hello\")" case036,
+  Test.test "Yaml.load \"|+\\n hello\\n\\n\" = Ok (YamlData.String \"hello\\n\\n\")" case037,
+  Test.test "Yaml.load merges = Ok (mapping [ (\"base\", mapping [(\"a\", number 1), (\"b\", number 2)]), (\"result\", mapping [(\"<<\", mapping [(\"a\", number 1), (\"b\", number 2)])…" case038,
+  Test.test "Yaml.loadWith Yaml.defaults { YamlProject.defaults with mergeKeys = true } merges = Ok (mapping [ (\"base\", mapping [(\"a\", number 1), (\"b\", number 2)]), (\"res…" case039,
+  Test.test "Yaml.loadWith Yaml.defaults { YamlProject.defaults with handlers = [handler] } \"!upper hello\" = Ok (YamlData.String \"HELLO\")" case040,
+  Test.test "roundtrip (mapping [ (\"on\", YamlData.String \"true\"), (\"x\", sequence [number 1, YamlData.Null]) ])" case041,
+  Test.test "roundtrip (YamlData.String \"a\\nb\\n\")" case042,
+  Test.test "roundtrip (YamlData.Float YamlNumber.PositiveInfinity)" case043,
+  Test.test "roundtrip (YamlData.Float (YamlNumber.Finite (Result.withDefault (JsonNumber.fromInt 0) (JsonNumber.fromString \"1e999\"))))" case044
+]

@@ -105,3 +105,62 @@ let main env =
     "UUID runtime checks passed"
   else
     "UUID runtime checks FAILED")
+
+let fixedV7 millis = Uuid.v7 { clock = fixedClock millis, entropy = fixedEntropy 10 v7Bytes }
+
+nativeV4 : Test.Context -> Test.Check / { Crypto.Entropy }
+let nativeV4 _ =
+  Expect.ok Uuid.errorToString (fun uuid ->
+    Expect.isTrue "valid v4 value and codecs" (Uuid.isV4 uuid && Uuid.parse (Uuid.toString uuid) = Ok uuid && Bytes.length (Uuid.toBytes uuid) = 16)) (Uuid.v4 Crypto.systemEntropy)
+
+nativeV7 : Test.Context -> Test.Check / { Clock, Crypto.Entropy }
+let nativeV7 ctx =
+  Expect.ok Uuid.errorToString (fun uuid ->
+    Expect.isTrue "valid v7 value and codecs" (Uuid.isV7 uuid && Option.isSome (Uuid.v7UnixMillis uuid) && Uuid.fromBytes (Uuid.toBytes uuid) = Ok uuid)) (Uuid.v7 {
+    clock = ctx.runtime.clock,
+    entropy = Crypto.systemEntropy
+  })
+
+tests : Test.Suite Test.Context { Clock, Crypto.Entropy }
+let tests = Test.describe "UUID generation" [
+  Test.test "v4 RFC vector" (fun _ ->
+    Expect.isTrue "v4 bits" (Result.map Uuid.toString (Uuid.v4 (fixedEntropy 16 v4Bytes)) = Ok "919108f7-52d1-4320-9bac-f847db4148a8")),
+  Test.test "v7 RFC vector" (fun _ ->
+    Expect.isTrue "v7 bits" (Result.map Uuid.toString (fixedV7 1645557742000) = Ok "017f22e2-79b0-7cc3-98c4-dc0c0c07398f")),
+  Test.test "stateless generation" (fun _ ->
+    Expect.isTrue "equal input produces equal output" (fixedV7 1645557742000 = fixedV7 1645557742000)),
+  Test.test "clock rollback" (fun _ ->
+    Expect.isTrue "timestamps follow the actual clock" (match (fixedV7 1645557741999, fixedV7 1645557742000) with
+    | (Ok earlier, Ok later) -> earlier < later && Uuid.v7UnixMillis earlier = Some 1645557741999
+    | _ -> false)),
+  Test.test "v4 entropy failure" (fun _ ->
+    Expect.isTrue "provider details survive" (match Uuid.v4 failedEntropy with
+    | Err error ->
+      error.kind = Uuid.EntropyFailure && error.cause = Some "fixture entropy failure" && Uuid.errorToString error = "UUID entropy request failed: fixture entropy failure"
+    | _ -> false)),
+  Test.test "v7 entropy failure" (fun _ ->
+    Expect.isTrue "provider failure kind" (errorKind Uuid.EntropyFailure (Uuid.v7At failedEntropy 0))),
+  Test.test "short v4 entropy" (fun _ ->
+    Expect.isTrue "expected and actual lengths" (wrongLength 16 15 (Uuid.v4 (fixedEntropy 16 (Bytes.fromList (List.range 0 15)))))),
+  Test.test "long v4 entropy" (fun _ ->
+    Expect.isTrue "expected and actual lengths" (wrongLength 16 17 (Uuid.v4 (fixedEntropy 16 (Bytes.fromList (List.range 0 17)))))),
+  Test.test "short v7 entropy" (fun _ ->
+    Expect.isTrue "expected and actual lengths" (wrongLength 10 9 (Uuid.v7At (fixedEntropy 10 (Bytes.fromList (List.range 0 9))) 0))),
+  Test.test "long v7 entropy" (fun _ ->
+    Expect.isTrue "expected and actual lengths" (wrongLength 10 11 (Uuid.v7At (fixedEntropy 10 (Bytes.fromList (List.range 0 11))) 0))),
+  Test.test "negative timestamp preflight" (fun _ ->
+    Expect.isTrue "invalid timestamps do not request entropy" (errorKind Uuid.TimestampOutOfRange (Uuid.v7At trapEntropy (-1)))),
+  Test.test "oversized timestamp preflight" (fun _ ->
+    Expect.isTrue "invalid timestamps do not request entropy" (errorKind Uuid.TimestampOutOfRange (Uuid.v7At trapEntropy 281474976710656))),
+  Test.test "invalid clock preflight" (fun _ ->
+    Expect.isTrue "invalid clock values do not request entropy" (errorKind Uuid.TimestampOutOfRange (Uuid.v7 {
+      clock = fixedClock (-1),
+      entropy = trapEntropy
+    }))),
+  Test.test "epoch timestamp" (fun _ ->
+    Expect.isTrue "epoch timestamp survives" (Result.map Uuid.v7UnixMillis (Uuid.v7At (fixedEntropy 10 v7Bytes) 0) = Ok (Some 0))),
+  Test.test "maximum timestamp" (fun _ ->
+    Expect.isTrue "maximum timestamp survives" (Result.map Uuid.v7UnixMillis (Uuid.v7At (fixedEntropy 10 v7Bytes) 281474976710655) = Ok (Some 281474976710655))),
+  Test.test "OS-backed v4" nativeV4,
+  Test.test "OS-backed v7" nativeV7
+]

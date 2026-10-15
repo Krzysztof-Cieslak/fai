@@ -108,3 +108,20 @@ let inDirectory env directory =
     match check env directory.path "one\ntwo\nthree\n" "zero\none\nthree\nfour\n" with
     | Err error -> Err error
     | Ok second -> Ok (first && second)
+
+gitCase : String -> String -> Test.Context -> Test.Check / { Concurrency, FileSystem, ProcessHost.Process }
+let gitCase old new ctx =
+  let env = {
+    concurrency = ctx.runtime.concurrency,
+    console = ctx.runtime.console,
+    env = ctx.runtime.env,
+    fs = ctx.runtime.fs,
+    process = ProcessHost.native
+  }
+  Expect.ok identity (Expect.isTrue "both Git and Fai reconstruct the target") (check env ctx.tempRoot old new)
+
+tests : Test.Suite Test.Context { Concurrency, FileSystem, ProcessHost.Process }
+let tests = Test.describe "Git patch interoperability" [
+  Test.test "Unicode and newline changes round trip" (gitCase "a\r\nβ\r\nold" "a\r\nγ\r\nnew\n"),
+  Test.test "insertions and deletions round trip" (gitCase "one\ntwo\nthree\n" "zero\none\nthree\nfour\n")
+]

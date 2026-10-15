@@ -5,33 +5,103 @@ let user =
     age = age,
     name = name
   }) (YamlDecode.field "name" YamlDecode.string) (YamlDecode.field "age" YamlDecode.int)
-example: YamlDecode.fromString user "name: Ada\nage: 37" = Ok { age = 37, name = "Ada" }
-example: YamlDecode.fromString (YamlDecode.list YamlDecode.int) "[1, 2, 3]" = Ok [1, 2, 3]
-example: YamlDecode.fromString (YamlDecode.optionalField "name" YamlDecode.string) "{}" = Ok None
-example: YamlDecode.fromString (YamlDecode.optionalField "name" YamlDecode.string) "name: null" |> Result.isErr
-example: YamlDecode.fromString (YamlDecode.optionalField "name" (YamlDecode.nullable YamlDecode.string)) "name: null" = Ok (Some None)
-example: YamlDecode.fromString YamlDecode.string "!!str false" = Ok "false"
-example: YamlDecode.fromString YamlDecode.int "9223372036854775808" |> Result.isErr
-example: (match YamlDecode.fromString user "name: Ada\nage: nope" with
-| Err (YamlDecode.Data (YamlDecode.Failure error)) ->
-  error.path = [
-    YamlTypes.Field "age"
-  ] && Option.map (fun span -> span.start) error.primary = Some { byte = 15, column = 6, line = 2 }
-| _ -> false)
-example: (match YamlDecode.fromString (YamlDecode.field "name" YamlDecode.string) "name: A\nname: B" with
-| Err (YamlDecode.Load error) -> error.kind = YamlTypes.DuplicateKey
-| _ -> false)
-example: YamlDecode.decode (YamlDecode.succeed 1) (YamlData.Mapping [|
-  ("ignored", YamlData.Null),
-  ("ignored", YamlData.Null)
-|]) |> Result.isErr
-example: YamlDecode.fromString (YamlDecode.oneOf [
-  YamlDecode.map Int.toString YamlDecode.int,
-  YamlDecode.string
-]) "42" = Ok "42"
-example: YamlDecode.fromString (YamlDecode.keyValuePairs YamlDecode.int) "{b: 2, a: 1}" = Ok [
-  ("b", 2),
-  ("a", 1)
+
+let case001 _ =
+  let testActual = YamlDecode.fromString user "name: Ada\nage: 37" = Ok { age = 37, name = "Ada" }
+  Expect.isTrue "YamlDecode.fromString user \"name: Ada\\nage: 37\" = Ok { age = 37, name = \"Ada\" }" testActual
+
+let case002 _ =
+  let testActual = YamlDecode.fromString (YamlDecode.list YamlDecode.int) "[1, 2, 3]" = Ok [1, 2, 3]
+  Expect.isTrue "YamlDecode.fromString (YamlDecode.list YamlDecode.int) \"[1, 2, 3]\" = Ok [1, 2, 3]" testActual
+
+let case003 _ =
+  let testActual =
+    YamlDecode.fromString (YamlDecode.optionalField "name" YamlDecode.string) "{}" = Ok None
+  Expect.isTrue "YamlDecode.fromString (YamlDecode.optionalField \"name\" YamlDecode.string) \"{}\" = Ok None" testActual
+
+let case004 _ =
+  let testActual =
+    YamlDecode.fromString (YamlDecode.optionalField "name" YamlDecode.string) "name: null" |> Result.isErr
+  Expect.isTrue "YamlDecode.fromString (YamlDecode.optionalField \"name\" YamlDecode.string) \"name: null\" |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    YamlDecode.fromString (YamlDecode.optionalField "name" (YamlDecode.nullable YamlDecode.string)) "name: null" = Ok (Some None)
+  Expect.isTrue "YamlDecode.fromString (YamlDecode.optionalField \"name\" (YamlDecode.nullable YamlDecode.string)) \"name: null\" = Ok (Some None)" testActual
+
+let case006 _ =
+  let testActual = YamlDecode.fromString YamlDecode.string "!!str false" = Ok "false"
+  Expect.isTrue "YamlDecode.fromString YamlDecode.string \"!!str false\" = Ok \"false\"" testActual
+
+let case007 _ =
+  let testActual = YamlDecode.fromString YamlDecode.int "9223372036854775808" |> Result.isErr
+  Expect.isTrue "YamlDecode.fromString YamlDecode.int \"9223372036854775808\" |> Result.isErr" testActual
+
+let case008 _ =
+  let testActual =
+    (match YamlDecode.fromString user "name: Ada\nage: nope" with
+    | Err (YamlDecode.Data (YamlDecode.Failure error)) ->
+      error.path = [
+        YamlTypes.Field "age"
+      ] && Option.map (fun span ->
+        span.start) error.primary = Some { byte = 15, column = 6, line = 2 }
+    | _ -> false)
+  Expect.isTrue "(match YamlDecode.fromString user \"name: Ada\\nage: nope\" with | Err (YamlDecode.Data (YamlDecode.Failure error)) -> error.path = [ YamlTypes.Field \"age\" ] &&…" testActual
+
+let case009 _ =
+  let testActual =
+    (match YamlDecode.fromString (YamlDecode.field "name" YamlDecode.string) "name: A\nname: B" with
+    | Err (YamlDecode.Load error) -> error.kind = YamlTypes.DuplicateKey
+    | _ -> false)
+  Expect.isTrue "(match YamlDecode.fromString (YamlDecode.field \"name\" YamlDecode.string) \"name: A\\nname: B\" with | Err (YamlDecode.Load error) -> error.kind = YamlTypes.Dupl…" testActual
+
+let case010 _ =
+  let testActual =
+    YamlDecode.decode (YamlDecode.succeed 1) (YamlData.Mapping [|
+      ("ignored", YamlData.Null),
+      ("ignored", YamlData.Null)
+    |]) |> Result.isErr
+  Expect.isTrue "YamlDecode.decode (YamlDecode.succeed 1) (YamlData.Mapping [| (\"ignored\", YamlData.Null), (\"ignored\", YamlData.Null) |]) |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual =
+    YamlDecode.fromString (YamlDecode.oneOf [
+      YamlDecode.map Int.toString YamlDecode.int,
+      YamlDecode.string
+    ]) "42" = Ok "42"
+  Expect.isTrue "YamlDecode.fromString (YamlDecode.oneOf [ YamlDecode.map Int.toString YamlDecode.int, YamlDecode.string ]) \"42\" = Ok \"42\"" testActual
+
+let case012 _ =
+  let testActual =
+    YamlDecode.fromString (YamlDecode.keyValuePairs YamlDecode.int) "{b: 2, a: 1}" = Ok [
+      ("b", 2),
+      ("a", 1)
+    ]
+  Expect.isTrue "YamlDecode.fromString (YamlDecode.keyValuePairs YamlDecode.int) \"{b: 2, a: 1}\" = Ok [ (\"b\", 2), (\"a\", 1) ]" testActual
+
+let case013 _ =
+  let testActual =
+    YamlEncode.object [("x", YamlEncode.int 1), ("x", YamlEncode.int 2)] |> Result.isErr
+  Expect.isTrue "YamlEncode.object [(\"x\", YamlEncode.int 1), (\"x\", YamlEncode.int 2)] |> Result.isErr" testActual
+
+let case014 _ =
+  let testActual = YamlEncode.toString (YamlEncode.list YamlEncode.int) [1, 2] = Ok "- 1\n- 2\n"
+  Expect.isTrue "YamlEncode.toString (YamlEncode.list YamlEncode.int) [1, 2] = Ok \"- 1\\n- 2\\n\"" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "YamlDecodeSpec" [
+  Test.test "YamlDecode.fromString user \"name: Ada\\nage: 37\" = Ok { age = 37, name = \"Ada\" }" case001,
+  Test.test "YamlDecode.fromString (YamlDecode.list YamlDecode.int) \"[1, 2, 3]\" = Ok [1, 2, 3]" case002,
+  Test.test "YamlDecode.fromString (YamlDecode.optionalField \"name\" YamlDecode.string) \"{}\" = Ok None" case003,
+  Test.test "YamlDecode.fromString (YamlDecode.optionalField \"name\" YamlDecode.string) \"name: null\" |> Result.isErr" case004,
+  Test.test "YamlDecode.fromString (YamlDecode.optionalField \"name\" (YamlDecode.nullable YamlDecode.string)) \"name: null\" = Ok (Some None)" case005,
+  Test.test "YamlDecode.fromString YamlDecode.string \"!!str false\" = Ok \"false\"" case006,
+  Test.test "YamlDecode.fromString YamlDecode.int \"9223372036854775808\" |> Result.isErr" case007,
+  Test.test "(match YamlDecode.fromString user \"name: Ada\\nage: nope\" with | Err (YamlDecode.Data (YamlDecode.Failure error)) -> error.path = [ YamlTypes.Field \"age\" ] &&…" case008,
+  Test.test "(match YamlDecode.fromString (YamlDecode.field \"name\" YamlDecode.string) \"name: A\\nname: B\" with | Err (YamlDecode.Load error) -> error.kind = YamlTypes.Dupl…" case009,
+  Test.test "YamlDecode.decode (YamlDecode.succeed 1) (YamlData.Mapping [| (\"ignored\", YamlData.Null), (\"ignored\", YamlData.Null) |]) |> Result.isErr" case010,
+  Test.test "YamlDecode.fromString (YamlDecode.oneOf [ YamlDecode.map Int.toString YamlDecode.int, YamlDecode.string ]) \"42\" = Ok \"42\"" case011,
+  Test.test "YamlDecode.fromString (YamlDecode.keyValuePairs YamlDecode.int) \"{b: 2, a: 1}\" = Ok [ (\"b\", 2), (\"a\", 1) ]" case012,
+  Test.test "YamlEncode.object [(\"x\", YamlEncode.int 1), (\"x\", YamlEncode.int 2)] |> Result.isErr" case013,
+  Test.test "YamlEncode.toString (YamlEncode.list YamlEncode.int) [1, 2] = Ok \"- 1\\n- 2\\n\"" case014
 ]
-example: YamlEncode.object [("x", YamlEncode.int 1), ("x", YamlEncode.int 2)] |> Result.isErr
-example: YamlEncode.toString (YamlEncode.list YamlEncode.int) [1, 2] = Ok "- 1\n- 2\n"

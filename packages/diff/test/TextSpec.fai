@@ -6,34 +6,75 @@ let kinds options old new =
   Result.map (fun result ->
     Array.map (fun change ->
       change.kind) (DiffText.changes result)) (DiffText.compareWith DiffText.limits options old new)
-example: kinds DiffText.options "a\n" "a\n" = Ok [| DiffText.Equal |]
-example: kinds { DiffText.options with
-  case = DiffText.UnicodeInsensitive
-} "Straße\n" "STRASSE\n" = Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  case = DiffText.AsciiInsensitive
-} "A\n" "a\n" = Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  normalization = Some UnicodeNormalize.NFC
-} "á\n" "a\u{301}\n" = Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  whitespace = DiffText.IgnoreTrailing
-} "a \t\n" "a\n" = Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  whitespace = DiffText.CollapseRuns
-} "a \t b\n" "a b\n" = Ok [| DiffText.Equivalent |]
-example: kinds { DiffText.options with
-  whitespace = DiffText.IgnoreAll
-} "a b\n" "ab\n" = Ok [| DiffText.Equivalent |]
-example: DiffText.lines "" = Ok [||]
-example: DiffText.lines "a\r\nb" = Ok [|
-  { content = { end = 1, start = 0 }, span = { end = 3, start = 0 } },
-  { content = { end = 4, start = 3 }, span = { end = 4, start = 3 } }
-|]
-example: Result.map Array.length (DiffText.lines "a\n") = Ok 1
-example: kinds { DiffText.options with
-  whitespace = DiffText.IgnoreAll
-} "a\r\n" "a\n" <> Ok [| DiffText.Equivalent |]
+
+let case001 _ =
+  let testActual = kinds DiffText.options "a\n" "a\n" = Ok [| DiffText.Equal |]
+  Expect.isTrue "kinds DiffText.options \"a\\n\" \"a\\n\" = Ok [| DiffText.Equal |]" testActual
+
+let case002 _ =
+  let testActual =
+    kinds { DiffText.options with
+      case = DiffText.UnicodeInsensitive
+    } "Straße\n" "STRASSE\n" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with case = DiffText.UnicodeInsensitive } \"Straße\\n\" \"STRASSE\\n\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case003 _ =
+  let testActual =
+    kinds { DiffText.options with
+      case = DiffText.AsciiInsensitive
+    } "A\n" "a\n" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with case = DiffText.AsciiInsensitive } \"A\\n\" \"a\\n\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case004 _ =
+  let testActual =
+    kinds { DiffText.options with
+      normalization = Some UnicodeNormalize.NFC
+    } "á\n" "a\u{301}\n" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with normalization = Some UnicodeNormalize.NFC } \"á\\n\" \"a\\u{301}\\n\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case005 _ =
+  let testActual =
+    kinds { DiffText.options with
+      whitespace = DiffText.IgnoreTrailing
+    } "a \t\n" "a\n" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with whitespace = DiffText.IgnoreTrailing } \"a \\t\\n\" \"a\\n\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case006 _ =
+  let testActual =
+    kinds { DiffText.options with
+      whitespace = DiffText.CollapseRuns
+    } "a \t b\n" "a b\n" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with whitespace = DiffText.CollapseRuns } \"a \\t b\\n\" \"a b\\n\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case007 _ =
+  let testActual =
+    kinds { DiffText.options with
+      whitespace = DiffText.IgnoreAll
+    } "a b\n" "ab\n" = Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with whitespace = DiffText.IgnoreAll } \"a b\\n\" \"ab\\n\" = Ok [| DiffText.Equivalent |]" testActual
+
+let case008 _ =
+  let testActual = DiffText.lines "" = Ok [||]
+  Expect.isTrue "DiffText.lines \"\" = Ok [||]" testActual
+
+let case009 _ =
+  let testActual =
+    DiffText.lines "a\r\nb" = Ok [|
+      { content = { end = 1, start = 0 }, span = { end = 3, start = 0 } },
+      { content = { end = 4, start = 3 }, span = { end = 4, start = 3 } }
+    |]
+  Expect.isTrue "DiffText.lines \"a\\r\\nb\" = Ok [| { content = { end = 1, start = 0 }, span = { end = 3, start = 0 } }, { content = { end = 4, start = 3 }, span = { end = 4, st…" testActual
+
+let case010 _ =
+  let testActual = Result.map Array.length (DiffText.lines "a\n") = Ok 1
+  Expect.isTrue "Result.map Array.length (DiffText.lines \"a\\n\") = Ok 1" testActual
+
+let case011 _ =
+  let testActual =
+    kinds { DiffText.options with
+      whitespace = DiffText.IgnoreAll
+    } "a\r\n" "a\n" <> Ok [| DiffText.Equivalent |]
+  Expect.isTrue "kinds { DiffText.options with whitespace = DiffText.IgnoreAll } \"a\\r\\n\" \"a\\n\" <> Ok [| DiffText.Equivalent |]" testActual
 
 let contextHunk =
   match DiffText.compare "a\nb\nc\n" "a\nx\nc\n" with
@@ -44,4 +85,23 @@ let contextHunk =
     | Ok hunks ->
       Array.length hunks = 1 && Result.map (fun h ->
         h.oldText) (DiffText.detach result (Array.unsafeGet 0 hunks)) = Ok "a\nb\nc\n"
-example: contextHunk
+
+let case012 _ =
+  let testActual = contextHunk
+  Expect.isTrue "contextHunk" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DiffTextSpec" [
+  Test.test "kinds DiffText.options \"a\\n\" \"a\\n\" = Ok [| DiffText.Equal |]" case001,
+  Test.test "kinds { DiffText.options with case = DiffText.UnicodeInsensitive } \"Straße\\n\" \"STRASSE\\n\" = Ok [| DiffText.Equivalent |]" case002,
+  Test.test "kinds { DiffText.options with case = DiffText.AsciiInsensitive } \"A\\n\" \"a\\n\" = Ok [| DiffText.Equivalent |]" case003,
+  Test.test "kinds { DiffText.options with normalization = Some UnicodeNormalize.NFC } \"á\\n\" \"a\\u{301}\\n\" = Ok [| DiffText.Equivalent |]" case004,
+  Test.test "kinds { DiffText.options with whitespace = DiffText.IgnoreTrailing } \"a \\t\\n\" \"a\\n\" = Ok [| DiffText.Equivalent |]" case005,
+  Test.test "kinds { DiffText.options with whitespace = DiffText.CollapseRuns } \"a \\t b\\n\" \"a b\\n\" = Ok [| DiffText.Equivalent |]" case006,
+  Test.test "kinds { DiffText.options with whitespace = DiffText.IgnoreAll } \"a b\\n\" \"ab\\n\" = Ok [| DiffText.Equivalent |]" case007,
+  Test.test "DiffText.lines \"\" = Ok [||]" case008,
+  Test.test "DiffText.lines \"a\\r\\nb\" = Ok [| { content = { end = 1, start = 0 }, span = { end = 3, start = 0 } }, { content = { end = 4, start = 3 }, span = { end = 4, st…" case009,
+  Test.test "Result.map Array.length (DiffText.lines \"a\\n\") = Ok 1" case010,
+  Test.test "kinds { DiffText.options with whitespace = DiffText.IgnoreAll } \"a\\r\\n\" \"a\\n\" <> Ok [| DiffText.Equivalent |]" case011,
+  Test.test "contextHunk" case012
+]

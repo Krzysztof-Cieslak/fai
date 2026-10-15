@@ -4,48 +4,83 @@ let spans pattern input =
   match Regex.compile pattern with
   | Err error -> Err error
   | Ok regex -> Result.map (Array.map Regex.span) (Regex.findAll regex input)
-example: spans "" "é" = Ok [|
-  { endByte = 0, endChar = 0, startByte = 0, startChar = 0 },
-  { endByte = 2, endChar = 1, startByte = 2, startChar = 1 }
-|]
-example: spans "a*" "aa" = Ok [| { endByte = 2, endChar = 2, startByte = 0, startChar = 0 } |]
-example: spans "" "" = Ok [| { endByte = 0, endChar = 0, startByte = 0, startChar = 0 } |]
-example: (match RegexBytes.compile "" with
-| Err _ -> false
-| Ok regex ->
-  (RegexBytes.findAll regex (Bytes.fromString "é") |> Result.map (Array.map RegexBytes.span)) = Ok [|
-    { endByte = 0, startByte = 0 },
-    { endByte = 1, startByte = 1 },
-    { endByte = 2, startByte = 2 }
-  |])
-example: (match Regex.compile "." with
-| Err _ -> false
-| Ok regex ->
-  (match Regex.cursor regex "é🙂" with
-  | Err _ -> false
-  | Ok cursor -> Regex.next cursor = Regex.next cursor))
-example: (match Regex.compile "." with
-| Err _ -> false
-| Ok regex ->
-  (Regex.findAllWithLimits { Regex.limits with
-    maxResults = 1
-  } regex "é" |> Result.map Array.length) = Ok 1)
-example: (match Regex.compile "." with
-| Err _ -> false
-| Ok regex ->
-  Regex.findAllWithLimits { Regex.limits with maxResults = 1 } regex "é🙂" |> Result.isErr)
-example: (match Regex.compile "a*" with
-| Err _ -> false
-| Ok regex ->
-  (Regex.findAllWithLimits { Regex.limits with
-    maxResults = 1
-  } regex "aa" |> Result.map Array.length) = Ok 1)
-example: (match Regex.compile "." with
-| Err _ -> false
-| Ok regex ->
-  (Regex.findAllWithLimits { Regex.limits with
-    maxResults = 0
-  } regex "" |> Result.map Array.length) = Ok 0)
+
+let case001 _ =
+  let testActual =
+    spans "" "é" = Ok [|
+      { endByte = 0, endChar = 0, startByte = 0, startChar = 0 },
+      { endByte = 2, endChar = 1, startByte = 2, startChar = 1 }
+    |]
+  Expect.isTrue "spans \"\" \"é\" = Ok [| { endByte = 0, endChar = 0, startByte = 0, startChar = 0 }, { endByte = 2, endChar = 1, startByte = 2, startChar = 1 } |]" testActual
+
+let case002 _ =
+  let testActual =
+    spans "a*" "aa" = Ok [| { endByte = 2, endChar = 2, startByte = 0, startChar = 0 } |]
+  Expect.isTrue "spans \"a*\" \"aa\" = Ok [| { endByte = 2, endChar = 2, startByte = 0, startChar = 0 } |]" testActual
+
+let case003 _ =
+  let testActual = spans "" "" = Ok [| { endByte = 0, endChar = 0, startByte = 0, startChar = 0 } |]
+  Expect.isTrue "spans \"\" \"\" = Ok [| { endByte = 0, endChar = 0, startByte = 0, startChar = 0 } |]" testActual
+
+let case004 _ =
+  let testActual =
+    (match RegexBytes.compile "" with
+    | Err _ -> false
+    | Ok regex ->
+      (RegexBytes.findAll regex (Bytes.fromString "é") |> Result.map (Array.map RegexBytes.span)) = Ok [|
+        { endByte = 0, startByte = 0 },
+        { endByte = 1, startByte = 1 },
+        { endByte = 2, startByte = 2 }
+      |])
+  Expect.isTrue "(match RegexBytes.compile \"\" with | Err _ -> false | Ok regex -> (RegexBytes.findAll regex (Bytes.fromString \"é\") |> Result.map (Array.map RegexBytes.span)) …" testActual
+
+let case005 _ =
+  let testActual =
+    (match Regex.compile "." with
+    | Err _ -> false
+    | Ok regex ->
+      (match Regex.cursor regex "é🙂" with
+      | Err _ -> false
+      | Ok cursor -> Regex.next cursor = Regex.next cursor))
+  Expect.isTrue "(match Regex.compile \".\" with | Err _ -> false | Ok regex -> (match Regex.cursor regex \"é🙂\" with | Err _ -> false | Ok cursor -> Regex.next cursor = Regex.ne…" testActual
+
+let case006 _ =
+  let testActual =
+    (match Regex.compile "." with
+    | Err _ -> false
+    | Ok regex ->
+      (Regex.findAllWithLimits { Regex.limits with
+        maxResults = 1
+      } regex "é" |> Result.map Array.length) = Ok 1)
+  Expect.isTrue "(match Regex.compile \".\" with | Err _ -> false | Ok regex -> (Regex.findAllWithLimits { Regex.limits with maxResults = 1 } regex \"é\" |> Result.map Array.leng…" testActual
+
+let case007 _ =
+  let testActual =
+    (match Regex.compile "." with
+    | Err _ -> false
+    | Ok regex ->
+      Regex.findAllWithLimits { Regex.limits with maxResults = 1 } regex "é🙂" |> Result.isErr)
+  Expect.isTrue "(match Regex.compile \".\" with | Err _ -> false | Ok regex -> Regex.findAllWithLimits { Regex.limits with maxResults = 1 } regex \"é🙂\" |> Result.isErr)" testActual
+
+let case008 _ =
+  let testActual =
+    (match Regex.compile "a*" with
+    | Err _ -> false
+    | Ok regex ->
+      (Regex.findAllWithLimits { Regex.limits with
+        maxResults = 1
+      } regex "aa" |> Result.map Array.length) = Ok 1)
+  Expect.isTrue "(match Regex.compile \"a*\" with | Err _ -> false | Ok regex -> (Regex.findAllWithLimits { Regex.limits with maxResults = 1 } regex \"aa\" |> Result.map Array.le…" testActual
+
+let case009 _ =
+  let testActual =
+    (match Regex.compile "." with
+    | Err _ -> false
+    | Ok regex ->
+      (Regex.findAllWithLimits { Regex.limits with
+        maxResults = 0
+      } regex "" |> Result.map Array.length) = Ok 0)
+  Expect.isTrue "(match Regex.compile \".\" with | Err _ -> false | Ok regex -> (Regex.findAllWithLimits { Regex.limits with maxResults = 0 } regex \"\" |> Result.map Array.lengt…" testActual
 
 let stopped =
   match Regex.compile "." with
@@ -56,7 +91,10 @@ let stopped =
         maxResults = 1
       } regex "abc" 0 (fun count found -> Ok (count + 1, RegexTypes.Stop))
     result.outcome = Ok () && result.state = 1 && result.stopped
-example: stopped
+
+let case010 _ =
+  let testActual = stopped
+  Expect.isTrue "stopped" testActual
 
 let failed =
   match Regex.compile "." with
@@ -69,9 +107,33 @@ let failed =
         else
           Ok (text ++ Regex.text found, RegexTypes.Continue))
     result.outcome = Err (RegexTypes.CallbackError "stop here") && result.state = "a" && result.visited = 1
-example: failed
-forall input: match Regex.compile "." with
-| Err _ -> false
-| Ok regex ->
-  (Regex.findAll regex input |> Result.map (fun matches ->
-    Array.length matches)) = Ok (String.length input - List.length (String.split "\n" input) + 1)
+
+let case011 _ =
+  let testActual = failed
+  Expect.isTrue "failed" testActual
+
+let case012 testInput =
+  let input = testInput
+  let testActual =
+    match Regex.compile "." with
+    | Err _ -> false
+    | Ok regex ->
+      (Regex.findAll regex input |> Result.map (fun matches ->
+        Array.length matches)) = Ok (String.length input - List.length (String.split "\n" input) + 1)
+  Expect.isTrue "property: match Regex.compile \".\" with | Err _ -> false | Ok regex -> (Regex.findAll regex input |> Result.map (fun matches -> Array.length matches)) = Ok (S…" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "RegexCursorSpec" [
+  Test.test "spans \"\" \"é\" = Ok [| { endByte = 0, endChar = 0, startByte = 0, startChar = 0 }, { endByte = 2, endChar = 1, startByte = 2, startChar = 1 } |]" case001,
+  Test.test "spans \"a*\" \"aa\" = Ok [| { endByte = 2, endChar = 2, startByte = 0, startChar = 0 } |]" case002,
+  Test.test "spans \"\" \"\" = Ok [| { endByte = 0, endChar = 0, startByte = 0, startChar = 0 } |]" case003,
+  Test.test "(match RegexBytes.compile \"\" with | Err _ -> false | Ok regex -> (RegexBytes.findAll regex (Bytes.fromString \"é\") |> Result.map (Array.map RegexBytes.span)) …" case004,
+  Test.test "(match Regex.compile \".\" with | Err _ -> false | Ok regex -> (match Regex.cursor regex \"é🙂\" with | Err _ -> false | Ok cursor -> Regex.next cursor = Regex.ne…" case005,
+  Test.test "(match Regex.compile \".\" with | Err _ -> false | Ok regex -> (Regex.findAllWithLimits { Regex.limits with maxResults = 1 } regex \"é\" |> Result.map Array.leng…" case006,
+  Test.test "(match Regex.compile \".\" with | Err _ -> false | Ok regex -> Regex.findAllWithLimits { Regex.limits with maxResults = 1 } regex \"é🙂\" |> Result.isErr)" case007,
+  Test.test "(match Regex.compile \"a*\" with | Err _ -> false | Ok regex -> (Regex.findAllWithLimits { Regex.limits with maxResults = 1 } regex \"aa\" |> Result.map Array.le…" case008,
+  Test.test "(match Regex.compile \".\" with | Err _ -> false | Ok regex -> (Regex.findAllWithLimits { Regex.limits with maxResults = 0 } regex \"\" |> Result.map Array.lengt…" case009,
+  Test.test "stopped" case010,
+  Test.test "failed" case011,
+  Test.property "property: match Regex.compile \".\" with | Err _ -> false | Ok regex -> (Regex.findAll regex input |> Result.map (fun matches -> Array.length matches)) = Ok (S…" Test.string case012
+]

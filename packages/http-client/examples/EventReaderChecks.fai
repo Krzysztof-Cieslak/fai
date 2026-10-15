@@ -101,3 +101,58 @@ let main r =
     "event reader checks passed"
   else
     "event reader checks failed")
+
+scenario : String -> Case -> ((Result HttpClient.EventResult HttpClient.Error * Int) -> Bool) -> Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let scenario name case check =
+  Test.test name (fun ctx -> Expect.isTrue name (check (run ctx.runtime case)))
+
+tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
+let tests = Test.describe "SSE event readers" [
+  scenario "POST streams retain committed IDs and retry hints" { basic with
+    method = Http.POST
+  } (fun pair ->
+    match pair with
+    | (result, count) ->
+      result = Ok {
+        reason = HttpClient.EventEof,
+        state = { lastEventId = "x", received = 2, retryDelayMs = Some 7 }
+      } && count = 2),
+  scenario "stop does not parse a later malformed line" { basic with
+    body = "data:a\n\nxxxxxxxxxxxxxxxx",
+    options = { basic.options with limits = { maxEventBytes = 10, maxLineBytes = 6 } },
+    stop = true
+  } (fun pair ->
+    match pair with
+    | (result, count) ->
+      count = 1 && (match result with
+      | Ok outcome -> outcome.reason = HttpClient.EventStopped
+      | _ -> false)),
+  scenario "204 responses do not invoke consumers" { basic with
+    status = 204
+  } (fun pair ->
+    match pair with
+    | (result, count) ->
+      count = 0 && (match result with
+      | Ok outcome -> outcome.reason = HttpClient.EventNoContent
+      | _ -> false)),
+  scenario "wrong media types do not invoke consumers" { basic with
+    media = "text/plain"
+  } (fun pair ->
+    match pair with
+    | (result, count) ->
+      count = 0 && (match result with
+      | Err (HttpClient.EventMediaType _ _) -> true
+      | _ -> false)),
+  scenario "callback time is excluded from read-idle time" { basic with
+    options = { basic.options with readIdleTimeoutMs = Some 100 },
+    slowConsumer = true
+  } (fun pair ->
+    match pair with
+    | (result, count) -> Result.isOk result && count = 2),
+  scenario "response headers obey the connection deadline" { basic with
+    options = { basic.options with connectTimeoutMs = Some 50 },
+    slowHead = true
+  } (fun pair ->
+    match pair with
+    | (result, count) -> result = Err HttpClient.EventConnectTimeout && count = 0)
+]

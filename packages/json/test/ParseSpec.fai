@@ -3,29 +3,98 @@ module ParseSpec
 // Pin both the reason and the exact byte/scalar location of malformed input.
 let rejected source offset line column message =
   Json.parse source = Err { column = column, line = line, message = message, offset = offset }
-example: rejected "" 0 1 1 "expected JSON value"
-example: rejected "[1,]" 3 1 4 "expected JSON value"
-example: rejected "{\"a\":1,}" 7 1 8 "expected object member name"
-example: rejected "{\"a\" 1}" 5 1 6 "expected colon after member name"
-example: rejected "[1 2]" 3 1 4 "expected comma or closing bracket"
-example: rejected "null true" 5 1 6 "unexpected text after JSON value"
-example: rejected "01" 1 1 2 "leading zero in number"
-example: rejected "1." 2 1 3 "expected fractional digit"
-example: rejected "1e+" 3 1 4 "expected exponent digit"
-example: rejected "\"abc" 4 1 5 "unterminated string"
-example: rejected "tru" 3 1 4 "invalid JSON literal"
-example: rejected "\"a\nb\"" 2 1 3 "unescaped control character"
-example: rejected "\"\\ud800\"" 7 1 8 "expected low-surrogate escape"
-example: rejected "\"\\udc00\"" 3 1 4 "unpaired low surrogate"
-example: rejected "\"\\x\"" 2 1 3 "invalid string escape"
-example: rejected "[\n\"é😀\",?]" 11 2 6 "expected JSON value"
-example: rejected "\u{FEFF}null" 0 1 1 "expected JSON value"
-example: rejected "+1" 0 1 1 "expected JSON value"
-example: rejected "NaN" 0 1 1 "expected JSON value"
-example: rejected "// comment\nnull" 0 1 1 "expected JSON value"
-example: rejected "[" 1 1 2 "expected JSON value"
-example: rejected "{" 1 1 2 "expected object member name"
-example: rejected "\"\\u00G0\"" 5 1 6 "expected hexadecimal escape digit"
+
+let case001 _ =
+  let testActual = rejected "" 0 1 1 "expected JSON value"
+  Expect.isTrue "rejected \"\" 0 1 1 \"expected JSON value\"" testActual
+
+let case002 _ =
+  let testActual = rejected "[1,]" 3 1 4 "expected JSON value"
+  Expect.isTrue "rejected \"[1,]\" 3 1 4 \"expected JSON value\"" testActual
+
+let case003 _ =
+  let testActual = rejected "{\"a\":1,}" 7 1 8 "expected object member name"
+  Expect.isTrue "rejected \"{\\\"a\\\":1,}\" 7 1 8 \"expected object member name\"" testActual
+
+let case004 _ =
+  let testActual = rejected "{\"a\" 1}" 5 1 6 "expected colon after member name"
+  Expect.isTrue "rejected \"{\\\"a\\\" 1}\" 5 1 6 \"expected colon after member name\"" testActual
+
+let case005 _ =
+  let testActual = rejected "[1 2]" 3 1 4 "expected comma or closing bracket"
+  Expect.isTrue "rejected \"[1 2]\" 3 1 4 \"expected comma or closing bracket\"" testActual
+
+let case006 _ =
+  let testActual = rejected "null true" 5 1 6 "unexpected text after JSON value"
+  Expect.isTrue "rejected \"null true\" 5 1 6 \"unexpected text after JSON value\"" testActual
+
+let case007 _ =
+  let testActual = rejected "01" 1 1 2 "leading zero in number"
+  Expect.isTrue "rejected \"01\" 1 1 2 \"leading zero in number\"" testActual
+
+let case008 _ =
+  let testActual = rejected "1." 2 1 3 "expected fractional digit"
+  Expect.isTrue "rejected \"1.\" 2 1 3 \"expected fractional digit\"" testActual
+
+let case009 _ =
+  let testActual = rejected "1e+" 3 1 4 "expected exponent digit"
+  Expect.isTrue "rejected \"1e+\" 3 1 4 \"expected exponent digit\"" testActual
+
+let case010 _ =
+  let testActual = rejected "\"abc" 4 1 5 "unterminated string"
+  Expect.isTrue "rejected \"\\\"abc\" 4 1 5 \"unterminated string\"" testActual
+
+let case011 _ =
+  let testActual = rejected "tru" 3 1 4 "invalid JSON literal"
+  Expect.isTrue "rejected \"tru\" 3 1 4 \"invalid JSON literal\"" testActual
+
+let case012 _ =
+  let testActual = rejected "\"a\nb\"" 2 1 3 "unescaped control character"
+  Expect.isTrue "rejected \"\\\"a\\nb\\\"\" 2 1 3 \"unescaped control character\"" testActual
+
+let case013 _ =
+  let testActual = rejected "\"\\ud800\"" 7 1 8 "expected low-surrogate escape"
+  Expect.isTrue "rejected \"\\\"\\\\ud800\\\"\" 7 1 8 \"expected low-surrogate escape\"" testActual
+
+let case014 _ =
+  let testActual = rejected "\"\\udc00\"" 3 1 4 "unpaired low surrogate"
+  Expect.isTrue "rejected \"\\\"\\\\udc00\\\"\" 3 1 4 \"unpaired low surrogate\"" testActual
+
+let case015 _ =
+  let testActual = rejected "\"\\x\"" 2 1 3 "invalid string escape"
+  Expect.isTrue "rejected \"\\\"\\\\x\\\"\" 2 1 3 \"invalid string escape\"" testActual
+
+let case016 _ =
+  let testActual = rejected "[\n\"é😀\",?]" 11 2 6 "expected JSON value"
+  Expect.isTrue "rejected \"[\\n\\\"é😀\\\",?]\" 11 2 6 \"expected JSON value\"" testActual
+
+let case017 _ =
+  let testActual = rejected "\u{FEFF}null" 0 1 1 "expected JSON value"
+  Expect.isTrue "rejected \"\\u{FEFF}null\" 0 1 1 \"expected JSON value\"" testActual
+
+let case018 _ =
+  let testActual = rejected "+1" 0 1 1 "expected JSON value"
+  Expect.isTrue "rejected \"+1\" 0 1 1 \"expected JSON value\"" testActual
+
+let case019 _ =
+  let testActual = rejected "NaN" 0 1 1 "expected JSON value"
+  Expect.isTrue "rejected \"NaN\" 0 1 1 \"expected JSON value\"" testActual
+
+let case020 _ =
+  let testActual = rejected "// comment\nnull" 0 1 1 "expected JSON value"
+  Expect.isTrue "rejected \"// comment\\nnull\" 0 1 1 \"expected JSON value\"" testActual
+
+let case021 _ =
+  let testActual = rejected "[" 1 1 2 "expected JSON value"
+  Expect.isTrue "rejected \"[\" 1 1 2 \"expected JSON value\"" testActual
+
+let case022 _ =
+  let testActual = rejected "{" 1 1 2 "expected object member name"
+  Expect.isTrue "rejected \"{\" 1 1 2 \"expected object member name\"" testActual
+
+let case023 _ =
+  let testActual = rejected "\"\\u00G0\"" 5 1 6 "expected hexadecimal escape digit"
+  Expect.isTrue "rejected \"\\\"\\\\u00G0\\\"\" 5 1 6 \"expected hexadecimal escape digit\"" testActual
 
 let invalidBytes bytes =
   Json.parseBytes (Bytes.fromList bytes) = Err {
@@ -34,25 +103,61 @@ let invalidBytes bytes =
     message = "invalid UTF-8",
     offset = 1
   }
-example: invalidBytes [34, 192, 128, 34]
-example: invalidBytes [34, 237, 160, 128, 34]
-example: invalidBytes [34, 240, 159]
-example: invalidBytes [34, 244, 144, 128, 128, 34]
-example: invalidBytes [34, 128, 34]
+
+let case024 _ =
+  let testActual = invalidBytes [34, 192, 128, 34]
+  Expect.isTrue "invalidBytes [34, 192, 128, 34]" testActual
+
+let case025 _ =
+  let testActual = invalidBytes [34, 237, 160, 128, 34]
+  Expect.isTrue "invalidBytes [34, 237, 160, 128, 34]" testActual
+
+let case026 _ =
+  let testActual = invalidBytes [34, 240, 159]
+  Expect.isTrue "invalidBytes [34, 240, 159]" testActual
+
+let case027 _ =
+  let testActual = invalidBytes [34, 244, 144, 128, 128, 34]
+  Expect.isTrue "invalidBytes [34, 244, 144, 128, 128, 34]" testActual
+
+let case028 _ =
+  let testActual = invalidBytes [34, 128, 34]
+  Expect.isTrue "invalidBytes [34, 128, 34]" testActual
 
 let nested count =
   String.joinArray "" (Array.repeat count "[") ++ "0" ++ String.joinArray "" (Array.repeat count "]")
-example: rejected (nested 257) 256 1 257 "maximum JSON nesting exceeded"
-example: Result.map Json.toString (Json.parse (nested 256)) = Ok (nested 256)
-example: Result.map Json.toString (Json.parseWith {
-  maxDepth = 4096
-} (nested 2000)) = Ok (nested 2000)
-example: Result.isErr (Json.parseWith { maxDepth = (-1) } "null")
-example: Json.parseWith { maxDepth = 0 } "42" = Ok (Json.Number (JsonNumber.fromInt 42))
+
+let case029 _ =
+  let testActual = rejected (nested 257) 256 1 257 "maximum JSON nesting exceeded"
+  Expect.isTrue "rejected (nested 257) 256 1 257 \"maximum JSON nesting exceeded\"" testActual
+
+let case030 _ =
+  let testActual = Result.map Json.toString (Json.parse (nested 256)) = Ok (nested 256)
+  Expect.isTrue "Result.map Json.toString (Json.parse (nested 256)) = Ok (nested 256)" testActual
+
+let case031 _ =
+  let testActual =
+    Result.map Json.toString (Json.parseWith { maxDepth = 4096 } (nested 2000)) = Ok (nested 2000)
+  Expect.isTrue "Result.map Json.toString (Json.parseWith { maxDepth = 4096 } (nested 2000)) = Ok (nested 2000)" testActual
+
+let case032 _ =
+  let testActual = Result.isErr (Json.parseWith { maxDepth = (-1) } "null")
+  Expect.isTrue "Result.isErr (Json.parseWith { maxDepth = (-1) } \"null\")" testActual
+
+let case033 _ =
+  let testActual = Json.parseWith { maxDepth = 0 } "42" = Ok (Json.Number (JsonNumber.fromInt 42))
+  Expect.isTrue "Json.parseWith { maxDepth = 0 } \"42\" = Ok (Json.Number (JsonNumber.fromInt 42))" testActual
 
 let wide = "[" ++ String.joinArray "," (Array.repeat 10000 "null") ++ "]"
-example: Result.map Json.toString (Json.parse wide) = Ok wide
-example: Result.map Json.toPrettyString (Json.parse "{\"a\":[1,{}]}") = Ok "{\n  \"a\": [\n    1,\n    {}\n  ]\n}"
+
+let case034 _ =
+  let testActual = Result.map Json.toString (Json.parse wide) = Ok wide
+  Expect.isTrue "Result.map Json.toString (Json.parse wide) = Ok wide" testActual
+
+let case035 _ =
+  let testActual =
+    Result.map Json.toPrettyString (Json.parse "{\"a\":[1,{}]}") = Ok "{\n  \"a\": [\n    1,\n    {}\n  ]\n}"
+  Expect.isTrue "Result.map Json.toPrettyString (Json.parse \"{\\\"a\\\":[1,{}]}\") = Ok \"{\\n \\\"a\\\": [\\n 1,\\n {}\\n ]\\n}\"" testActual
 
 // Generate trees through a representation with no opaque number fields.
 type Tree =
@@ -67,5 +172,108 @@ let value tree =
   | Text text -> Json.String text
   | Integer n -> Json.Number (JsonNumber.fromInt n)
   | Sequence trees -> Json.Array (Array.fromList (List.map value trees))
-forall tree: Json.parse (Json.toString (value tree)) = Ok (value tree)
-forall tree: Json.parse (Json.toPrettyString (value tree)) = Ok (value tree)
+
+let case036 testInput =
+  let tree = testInput
+  let testActual = Json.parse (Json.toString (value tree)) = Ok (value tree)
+  Expect.isTrue "property: Json.parse (Json.toString (value tree)) = Ok (value tree)" testActual
+
+let case037 testInput =
+  let tree = testInput
+  let testActual = Json.parse (Json.toPrettyString (value tree)) = Ok (value tree)
+  Expect.isTrue "property: Json.parse (Json.toPrettyString (value tree)) = Ok (value tree)" testActual
+
+treeArbitrary : Test.Arbitrary Tree
+let treeArbitrary = { gen = treeGen, show = treeShow, shrink = treeShrink }
+
+treeChildren : Int -> Int -> Test.Seed -> (List Tree * Test.Seed)
+let treeChildren size count seed =
+  if count <= 0 then
+    ([], seed)
+  else
+    let (first, next) = treeGen size seed
+    let (rest, final) = treeChildren size (count - 1) next
+    (first :: rest, final)
+
+childTrees : Int -> Test.Seed -> (List Tree * Test.Seed)
+let childTrees size seed =
+  let (raw, next) = Test.int.gen size seed
+  let count = if raw < 0 then -raw else raw
+  treeChildren ((size - 1) / (count + 1)) count next
+
+treeGen : Test.Gen Tree
+let treeGen size seed =
+  if size <= 0 then
+    (Empty, seed)
+  else
+    let (choice, next) = Test.int.gen 3 seed
+    let tag = Int.and choice 3
+    if tag = 0 then
+      (Empty, next)
+    else if tag = 1 then
+      let (text, final) = Test.string.gen size next
+      (Text text, final)
+    else if tag = 2 then
+      let (number, final) = Test.int.gen size next
+      (Integer number, final)
+    else
+      let (children, final) = childTrees size next
+      (Sequence children, final)
+
+treeShow : Tree -> String
+let treeShow tree = Json.toString (value tree)
+
+treeShrink : Tree -> List Tree
+let treeShrink tree =
+  match tree with
+  | Empty -> []
+  | Text text -> Empty :: List.map Text (Test.string.shrink text)
+  | Integer n -> Empty :: List.map Integer (Test.int.shrink n)
+  | Sequence children -> Empty :: List.append children (List.map Sequence (shrinkTrees children))
+
+shrinkTrees : List Tree -> List (List Tree)
+let shrinkTrees children =
+  match children with
+  | [] -> []
+  | first :: rest -> rest :: [] :: List.map (fun smaller -> smaller :: rest) (treeShrink first)
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "ParseSpec" [
+  Test.test "rejected \"\" 0 1 1 \"expected JSON value\"" case001,
+  Test.test "rejected \"[1,]\" 3 1 4 \"expected JSON value\"" case002,
+  Test.test "rejected \"{\\\"a\\\":1,}\" 7 1 8 \"expected object member name\"" case003,
+  Test.test "rejected \"{\\\"a\\\" 1}\" 5 1 6 \"expected colon after member name\"" case004,
+  Test.test "rejected \"[1 2]\" 3 1 4 \"expected comma or closing bracket\"" case005,
+  Test.test "rejected \"null true\" 5 1 6 \"unexpected text after JSON value\"" case006,
+  Test.test "rejected \"01\" 1 1 2 \"leading zero in number\"" case007,
+  Test.test "rejected \"1.\" 2 1 3 \"expected fractional digit\"" case008,
+  Test.test "rejected \"1e+\" 3 1 4 \"expected exponent digit\"" case009,
+  Test.test "rejected \"\\\"abc\" 4 1 5 \"unterminated string\"" case010,
+  Test.test "rejected \"tru\" 3 1 4 \"invalid JSON literal\"" case011,
+  Test.test "rejected \"\\\"a\\nb\\\"\" 2 1 3 \"unescaped control character\"" case012,
+  Test.test "rejected \"\\\"\\\\ud800\\\"\" 7 1 8 \"expected low-surrogate escape\"" case013,
+  Test.test "rejected \"\\\"\\\\udc00\\\"\" 3 1 4 \"unpaired low surrogate\"" case014,
+  Test.test "rejected \"\\\"\\\\x\\\"\" 2 1 3 \"invalid string escape\"" case015,
+  Test.test "rejected \"[\\n\\\"é😀\\\",?]\" 11 2 6 \"expected JSON value\"" case016,
+  Test.test "rejected \"\\u{FEFF}null\" 0 1 1 \"expected JSON value\"" case017,
+  Test.test "rejected \"+1\" 0 1 1 \"expected JSON value\"" case018,
+  Test.test "rejected \"NaN\" 0 1 1 \"expected JSON value\"" case019,
+  Test.test "rejected \"// comment\\nnull\" 0 1 1 \"expected JSON value\"" case020,
+  Test.test "rejected \"[\" 1 1 2 \"expected JSON value\"" case021,
+  Test.test "rejected \"{\" 1 1 2 \"expected object member name\"" case022,
+  Test.test "rejected \"\\\"\\\\u00G0\\\"\" 5 1 6 \"expected hexadecimal escape digit\"" case023,
+  Test.test "invalidBytes [34, 192, 128, 34]" case024,
+  Test.test "invalidBytes [34, 237, 160, 128, 34]" case025,
+  Test.test "invalidBytes [34, 240, 159]" case026,
+  Test.test "invalidBytes [34, 244, 144, 128, 128, 34]" case027,
+  Test.test "invalidBytes [34, 128, 34]" case028,
+  Test.test "rejected (nested 257) 256 1 257 \"maximum JSON nesting exceeded\"" case029,
+  Test.test "Result.map Json.toString (Json.parse (nested 256)) = Ok (nested 256)" case030,
+  Test.test "Result.map Json.toString (Json.parseWith { maxDepth = 4096 } (nested 2000)) = Ok (nested 2000)" case031,
+  Test.test "Result.isErr (Json.parseWith { maxDepth = (-1) } \"null\")" case032,
+  Test.test "Json.parseWith { maxDepth = 0 } \"42\" = Ok (Json.Number (JsonNumber.fromInt 42))" case033,
+  Test.test "Result.map Json.toString (Json.parse wide) = Ok wide" case034,
+  Test.test "Result.map Json.toPrettyString (Json.parse \"{\\\"a\\\":[1,{}]}\") = Ok \"{\\n \\\"a\\\": [\\n 1,\\n {}\\n ]\\n}\"" case035,
+  Test.property "property: Json.parse (Json.toString (value tree)) = Ok (value tree)" treeArbitrary case036,
+  Test.property "property: Json.parse (Json.toPrettyString (value tree)) = Ok (value tree)" treeArbitrary case037
+]

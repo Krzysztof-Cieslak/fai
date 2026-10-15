@@ -59,3 +59,23 @@ let main env =
     "Decimal runtime checks passed"
   else
     "Decimal runtime checks FAILED")
+
+parallelArithmetic : Test.Context -> Test.Check / { Concurrency }
+let parallelArithmetic ctx =
+  Expect.isTrue "both tasks retain exact immutable values" (Async.parallel ctx.runtime.concurrency [
+    fun _ -> multiplyRound 0,
+    fun _ -> multiplyRound 0
+  ] = [true, true])
+
+tests : Test.Suite Test.Context { Concurrency }
+let tests = Test.describe "decimal runtime" [
+  Test.test "large carry and division" (fun _ ->
+    Expect.isTrue "large coefficients remain exact" big),
+  Test.test "repeated arithmetic" (fun _ ->
+    Expect.isTrue "fixed-scale results retain exact values" (multiplyRound 0)),
+  Test.test "Float conversion" (fun _ ->
+    Expect.isTrue "exact and shortest Float conversions remain distinct" nativeFloat),
+  Test.test "exact large quotient" (fun _ ->
+    Expect.isTrue "long division retains every digit" exactDivision),
+  Test.test "parallel immutable values" parallelArithmetic
+]

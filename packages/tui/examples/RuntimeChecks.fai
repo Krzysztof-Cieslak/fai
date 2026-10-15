@@ -211,3 +211,25 @@ let main r =
     "TUI runtime checks passed"
   else
     "TUI runtime checks failed")
+
+scenario : String -> (Runtime -> Bool / { Clock, Concurrency }) -> Test.Suite Test.Context { Clock, Concurrency }
+let scenario name check =
+  Test.test name (fun ctx ->
+    Expect.isTrue name (check {
+      clock = ctx.runtime.clock,
+      concurrency = ctx.runtime.concurrency,
+      console = ctx.runtime.console
+    }))
+
+tests : Test.Suite Test.Context { Clock, Concurrency }
+let tests = Test.describe "headless TUI lifecycle" [
+  scenario "keyboard events update the model before quit" keyboard,
+  scenario "latest commands replace obsolete work" latest,
+  scenario "subscriptions deliver their messages" subscription,
+  scenario "queued stale commands cannot update the model" queuedStale,
+  scenario "a bounded mailbox applies backpressure" backpressure,
+  scenario "completed subscriptions do not restart" completedOnce,
+  scenario "removed subscriptions release their task slot" removedSubscription,
+  scenario "write and close failures are both retained" writeFailure,
+  scenario "the backend closes before cooperative jobs are joined" cleanupOrder
+]

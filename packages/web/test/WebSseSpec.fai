@@ -18,10 +18,14 @@ let rendered =
     | None -> Err "no response"
     | Some response ->
       Ok (response.status, Headers.get "Content-Type" response.headers, Headers.get "Content-Length" response.headers, Headers.get "Transfer-Encoding" response.headers, Headers.get "X-Trace" response.headers, Headers.getAll "Set-Cookie" response.headers, Stream.toList (Sse.events Sse.defaults response.body))
-example: rendered = Ok (200, Some "text/event-stream", None, Some "chunked", Some "yes", [
-  "a=1",
-  "b=2"
-], Ok [{ data = "hello", eventType = "message", lastEventId = "" }])
+
+let case001 _ =
+  let testActual =
+    rendered = Ok (200, Some "text/event-stream", None, Some "chunked", Some "yes", [
+      "a=1",
+      "b=2"
+    ], Ok [{ data = "hello", eventType = "message", lastEventId = "" }])
+  Expect.isTrue "rendered = Ok (200, Some \"text/event-stream\", None, Some \"chunked\", Some \"yes\", [ \"a=1\", \"b=2\" ], Ok [{ data = \"hello\", eventType = \"message\", lastEventId = …" testActual
 
 let lastId =
   match Web.mockContext Http.GET "/events" with
@@ -29,13 +33,44 @@ let lastId =
   | Ok context -> Web.lastEventId { context with
     request = { context.request with headers = Headers.fromList [("last-event-id", "42")] }
   }
-example: lastId = Some "42"
-example: SseServer.validate SseServer.defaults = Ok ()
-example: SseServer.validate { heartbeatIntervalMs = Some 15 } = Ok ()
-example: SseServer.validate {
-  heartbeatIntervalMs = Some 0
-} = Err "SSE heartbeat interval must be positive"
-example: SseServer.validate {
-  heartbeatIntervalMs = Some (-1)
-} = Err "SSE heartbeat interval must be positive"
-example: SseServer.validate { heartbeatIntervalMs = Some 9223372036854775807 } = Ok ()
+
+let case002 _ =
+  let testActual = lastId
+  let testExpected = Some "42"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual = SseServer.validate SseServer.defaults
+  let testExpected = Ok ()
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+let case004 _ =
+  let testActual = SseServer.validate { heartbeatIntervalMs = Some 15 }
+  let testExpected = Ok ()
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+let case005 _ =
+  let testActual = SseServer.validate { heartbeatIntervalMs = Some 0 }
+  let testExpected = Err "SSE heartbeat interval must be positive"
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+let case006 _ =
+  let testActual = SseServer.validate { heartbeatIntervalMs = Some (-1) }
+  let testExpected = Err "SSE heartbeat interval must be positive"
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+let case007 _ =
+  let testActual = SseServer.validate { heartbeatIntervalMs = Some 9223372036854775807 }
+  let testExpected = Ok ()
+  Expect.equal ((Test.result Test.unit Test.string)).show testExpected testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "WebSseSpec" [
+  Test.test "rendered = Ok (200, Some \"text/event-stream\", None, Some \"chunked\", Some \"yes\", [ \"a=1\", \"b=2\" ], Ok [{ data = \"hello\", eventType = \"message\", lastEventId = …" case001,
+  Test.test "lastId = Some \"42\"" case002,
+  Test.test "SseServer.validate SseServer.defaults = Ok ()" case003,
+  Test.test "SseServer.validate { heartbeatIntervalMs = Some 15 } = Ok ()" case004,
+  Test.test "SseServer.validate { heartbeatIntervalMs = Some 0 } = Err \"SSE heartbeat interval must be positive\"" case005,
+  Test.test "SseServer.validate { heartbeatIntervalMs = Some (-1) } = Err \"SSE heartbeat interval must be positive\"" case006,
+  Test.test "SseServer.validate { heartbeatIntervalMs = Some 9223372036854775807 } = Ok ()" case007
+]

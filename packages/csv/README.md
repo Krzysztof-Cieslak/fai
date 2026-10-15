@@ -29,7 +29,7 @@ change results. Field assembly uses reversed byte and field lists with one final
 materialization, keeping each incremental append constant-time even with parser
 snapshots sharing earlier input.
 
-Run contracts with `fai test -C packages csv`.
+Run named tests and properties with `fai test -C packages csv`.
 
 `Csv.parse` reads String input; `parseBytes` accepts UTF-8 bytes. `CsvBytes.parse`
 reads arbitrary bytes. All return checked arrays of opaque records; `fields`,
@@ -163,7 +163,7 @@ values normally. Parsing and field assembly are linear in input size.
 
 ## Verification
 
-Native Fai contracts cover byte/text round trips, every two-chunk split of
+Named Fai tests cover byte/text round trips, every two-chunk split of
 generated inputs, generated multi-chunk partitions, locations, headers, quotas,
 typed failures and writer progress. The executable fixtures exercise 20,000-row
 streams, multi-chunk fields, actual files, expired handles, early stop, typed

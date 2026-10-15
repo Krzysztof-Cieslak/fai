@@ -6,37 +6,148 @@ let kind expected result =
   match result with
   | Err error -> error.kind = expected
   | _ -> false
-example: Decimal.add Decimal.nan (decimal "1") = Ok Decimal.nan
-example: Decimal.subtract Decimal.nan Decimal.nan = Ok Decimal.nan
-example: Decimal.multiply Decimal.nan Decimal.zero = Ok Decimal.nan
-example: Decimal.divideExact Decimal.nan Decimal.zero = Ok Decimal.nan
-example: Decimal.add Decimal.positiveInfinity Decimal.positiveInfinity = Ok Decimal.positiveInfinity
-example: kind Decimal.InvalidOperation (Decimal.add Decimal.positiveInfinity Decimal.negativeInfinity)
-example: kind Decimal.InvalidOperation (Decimal.subtract Decimal.positiveInfinity Decimal.positiveInfinity)
-example: kind Decimal.InvalidOperation (Decimal.multiply Decimal.positiveInfinity Decimal.zero)
-example: Decimal.multiply Decimal.negativeInfinity (decimal "-2") = Ok Decimal.positiveInfinity
-example: Decimal.divideExact (decimal "12") Decimal.negativeInfinity = Ok Decimal.zero
-example: Decimal.divideExact Decimal.positiveInfinity (decimal "-2") = Ok Decimal.negativeInfinity
-example: kind Decimal.InvalidOperation (Decimal.divideExact Decimal.positiveInfinity Decimal.negativeInfinity)
-example: kind Decimal.DivisionByZero (Decimal.divideExact Decimal.zero Decimal.zero)
-example: kind Decimal.DivisionByZero (Decimal.divideExact Decimal.positiveInfinity Decimal.zero)
-example: kind Decimal.NonTerminating (Decimal.divideExact Decimal.one (decimal "7"))
-example: Decimal.roundToScale 2 Decimal.Exact Decimal.nan = Ok {
-  inexact = false,
-  value = Decimal.nan
-}
-example: Decimal.roundToPrecision 2 Decimal.HalfEven Decimal.positiveInfinity = Ok {
-  inexact = false,
-  value = Decimal.positiveInfinity
-}
-example: Decimal.negate Decimal.nan = Decimal.nan
-example: Decimal.abs Decimal.negativeInfinity = Decimal.positiveInfinity
-example: Decimal.isFinite Decimal.zero && Decimal.isInfinite Decimal.positiveInfinity && Decimal.isNaN Decimal.nan
-example: Decimal.parts Decimal.nan = None
-example: Decimal.fromParts {
-  coefficient = "0012300",
-  exponent = -4,
-  negative = false
-} = Decimal.parse "1.23"
-example: Decimal.fromParts { coefficient = "0", exponent = 0, negative = true } = Ok Decimal.zero
-example: Decimal.fromParts { coefficient = "-1", exponent = 0, negative = false } |> Result.isErr
+
+let case001 _ =
+  let testActual = Decimal.add Decimal.nan (decimal "1") = Ok Decimal.nan
+  Expect.isTrue "Decimal.add Decimal.nan (decimal \"1\") = Ok Decimal.nan" testActual
+
+let case002 _ =
+  let testActual = Decimal.subtract Decimal.nan Decimal.nan = Ok Decimal.nan
+  Expect.isTrue "Decimal.subtract Decimal.nan Decimal.nan = Ok Decimal.nan" testActual
+
+let case003 _ =
+  let testActual = Decimal.multiply Decimal.nan Decimal.zero = Ok Decimal.nan
+  Expect.isTrue "Decimal.multiply Decimal.nan Decimal.zero = Ok Decimal.nan" testActual
+
+let case004 _ =
+  let testActual = Decimal.divideExact Decimal.nan Decimal.zero = Ok Decimal.nan
+  Expect.isTrue "Decimal.divideExact Decimal.nan Decimal.zero = Ok Decimal.nan" testActual
+
+let case005 _ =
+  let testActual =
+    Decimal.add Decimal.positiveInfinity Decimal.positiveInfinity = Ok Decimal.positiveInfinity
+  Expect.isTrue "Decimal.add Decimal.positiveInfinity Decimal.positiveInfinity = Ok Decimal.positiveInfinity" testActual
+
+let case006 _ =
+  let testActual =
+    kind Decimal.InvalidOperation (Decimal.add Decimal.positiveInfinity Decimal.negativeInfinity)
+  Expect.isTrue "kind Decimal.InvalidOperation (Decimal.add Decimal.positiveInfinity Decimal.negativeInfinity)" testActual
+
+let case007 _ =
+  let testActual =
+    kind Decimal.InvalidOperation (Decimal.subtract Decimal.positiveInfinity Decimal.positiveInfinity)
+  Expect.isTrue "kind Decimal.InvalidOperation (Decimal.subtract Decimal.positiveInfinity Decimal.positiveInfinity)" testActual
+
+let case008 _ =
+  let testActual =
+    kind Decimal.InvalidOperation (Decimal.multiply Decimal.positiveInfinity Decimal.zero)
+  Expect.isTrue "kind Decimal.InvalidOperation (Decimal.multiply Decimal.positiveInfinity Decimal.zero)" testActual
+
+let case009 _ =
+  let testActual =
+    Decimal.multiply Decimal.negativeInfinity (decimal "-2") = Ok Decimal.positiveInfinity
+  Expect.isTrue "Decimal.multiply Decimal.negativeInfinity (decimal \"-2\") = Ok Decimal.positiveInfinity" testActual
+
+let case010 _ =
+  let testActual = Decimal.divideExact (decimal "12") Decimal.negativeInfinity = Ok Decimal.zero
+  Expect.isTrue "Decimal.divideExact (decimal \"12\") Decimal.negativeInfinity = Ok Decimal.zero" testActual
+
+let case011 _ =
+  let testActual =
+    Decimal.divideExact Decimal.positiveInfinity (decimal "-2") = Ok Decimal.negativeInfinity
+  Expect.isTrue "Decimal.divideExact Decimal.positiveInfinity (decimal \"-2\") = Ok Decimal.negativeInfinity" testActual
+
+let case012 _ =
+  let testActual =
+    kind Decimal.InvalidOperation (Decimal.divideExact Decimal.positiveInfinity Decimal.negativeInfinity)
+  Expect.isTrue "kind Decimal.InvalidOperation (Decimal.divideExact Decimal.positiveInfinity Decimal.negativeInfinity)" testActual
+
+let case013 _ =
+  let testActual = kind Decimal.DivisionByZero (Decimal.divideExact Decimal.zero Decimal.zero)
+  Expect.isTrue "kind Decimal.DivisionByZero (Decimal.divideExact Decimal.zero Decimal.zero)" testActual
+
+let case014 _ =
+  let testActual =
+    kind Decimal.DivisionByZero (Decimal.divideExact Decimal.positiveInfinity Decimal.zero)
+  Expect.isTrue "kind Decimal.DivisionByZero (Decimal.divideExact Decimal.positiveInfinity Decimal.zero)" testActual
+
+let case015 _ =
+  let testActual = kind Decimal.NonTerminating (Decimal.divideExact Decimal.one (decimal "7"))
+  Expect.isTrue "kind Decimal.NonTerminating (Decimal.divideExact Decimal.one (decimal \"7\"))" testActual
+
+let case016 _ =
+  let testActual =
+    Decimal.roundToScale 2 Decimal.Exact Decimal.nan = Ok { inexact = false, value = Decimal.nan }
+  Expect.isTrue "Decimal.roundToScale 2 Decimal.Exact Decimal.nan = Ok { inexact = false, value = Decimal.nan }" testActual
+
+let case017 _ =
+  let testActual =
+    Decimal.roundToPrecision 2 Decimal.HalfEven Decimal.positiveInfinity = Ok {
+      inexact = false,
+      value = Decimal.positiveInfinity
+    }
+  Expect.isTrue "Decimal.roundToPrecision 2 Decimal.HalfEven Decimal.positiveInfinity = Ok { inexact = false, value = Decimal.positiveInfinity }" testActual
+
+let case018 _ =
+  let testActual = Decimal.negate Decimal.nan = Decimal.nan
+  Expect.isTrue "Decimal.negate Decimal.nan = Decimal.nan" testActual
+
+let case019 _ =
+  let testActual = Decimal.abs Decimal.negativeInfinity = Decimal.positiveInfinity
+  Expect.isTrue "Decimal.abs Decimal.negativeInfinity = Decimal.positiveInfinity" testActual
+
+let case020 _ =
+  let testActual =
+    Decimal.isFinite Decimal.zero && Decimal.isInfinite Decimal.positiveInfinity && Decimal.isNaN Decimal.nan
+  Expect.isTrue "Decimal.isFinite Decimal.zero && Decimal.isInfinite Decimal.positiveInfinity && Decimal.isNaN Decimal.nan" testActual
+
+let case021 _ =
+  let testActual = Decimal.parts Decimal.nan = None
+  Expect.isTrue "Decimal.parts Decimal.nan = None" testActual
+
+let case022 _ =
+  let testActual =
+    Decimal.fromParts {
+      coefficient = "0012300",
+      exponent = -4,
+      negative = false
+    } = Decimal.parse "1.23"
+  Expect.isTrue "Decimal.fromParts { coefficient = \"0012300\", exponent = -4, negative = false } = Decimal.parse \"1.23\"" testActual
+
+let case023 _ =
+  let testActual =
+    Decimal.fromParts { coefficient = "0", exponent = 0, negative = true } = Ok Decimal.zero
+  Expect.isTrue "Decimal.fromParts { coefficient = \"0\", exponent = 0, negative = true } = Ok Decimal.zero" testActual
+
+let case024 _ =
+  let testActual =
+    Decimal.fromParts { coefficient = "-1", exponent = 0, negative = false } |> Result.isErr
+  Expect.isTrue "Decimal.fromParts { coefficient = \"-1\", exponent = 0, negative = false } |> Result.isErr" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DecimalSpecialSpec" [
+  Test.test "Decimal.add Decimal.nan (decimal \"1\") = Ok Decimal.nan" case001,
+  Test.test "Decimal.subtract Decimal.nan Decimal.nan = Ok Decimal.nan" case002,
+  Test.test "Decimal.multiply Decimal.nan Decimal.zero = Ok Decimal.nan" case003,
+  Test.test "Decimal.divideExact Decimal.nan Decimal.zero = Ok Decimal.nan" case004,
+  Test.test "Decimal.add Decimal.positiveInfinity Decimal.positiveInfinity = Ok Decimal.positiveInfinity" case005,
+  Test.test "kind Decimal.InvalidOperation (Decimal.add Decimal.positiveInfinity Decimal.negativeInfinity)" case006,
+  Test.test "kind Decimal.InvalidOperation (Decimal.subtract Decimal.positiveInfinity Decimal.positiveInfinity)" case007,
+  Test.test "kind Decimal.InvalidOperation (Decimal.multiply Decimal.positiveInfinity Decimal.zero)" case008,
+  Test.test "Decimal.multiply Decimal.negativeInfinity (decimal \"-2\") = Ok Decimal.positiveInfinity" case009,
+  Test.test "Decimal.divideExact (decimal \"12\") Decimal.negativeInfinity = Ok Decimal.zero" case010,
+  Test.test "Decimal.divideExact Decimal.positiveInfinity (decimal \"-2\") = Ok Decimal.negativeInfinity" case011,
+  Test.test "kind Decimal.InvalidOperation (Decimal.divideExact Decimal.positiveInfinity Decimal.negativeInfinity)" case012,
+  Test.test "kind Decimal.DivisionByZero (Decimal.divideExact Decimal.zero Decimal.zero)" case013,
+  Test.test "kind Decimal.DivisionByZero (Decimal.divideExact Decimal.positiveInfinity Decimal.zero)" case014,
+  Test.test "kind Decimal.NonTerminating (Decimal.divideExact Decimal.one (decimal \"7\"))" case015,
+  Test.test "Decimal.roundToScale 2 Decimal.Exact Decimal.nan = Ok { inexact = false, value = Decimal.nan }" case016,
+  Test.test "Decimal.roundToPrecision 2 Decimal.HalfEven Decimal.positiveInfinity = Ok { inexact = false, value = Decimal.positiveInfinity }" case017,
+  Test.test "Decimal.negate Decimal.nan = Decimal.nan" case018,
+  Test.test "Decimal.abs Decimal.negativeInfinity = Decimal.positiveInfinity" case019,
+  Test.test "Decimal.isFinite Decimal.zero && Decimal.isInfinite Decimal.positiveInfinity && Decimal.isNaN Decimal.nan" case020,
+  Test.test "Decimal.parts Decimal.nan = None" case021,
+  Test.test "Decimal.fromParts { coefficient = \"0012300\", exponent = -4, negative = false } = Decimal.parse \"1.23\"" case022,
+  Test.test "Decimal.fromParts { coefficient = \"0\", exponent = 0, negative = true } = Ok Decimal.zero" case023,
+  Test.test "Decimal.fromParts { coefficient = \"-1\", exponent = 0, negative = false } |> Result.isErr" case024
+]

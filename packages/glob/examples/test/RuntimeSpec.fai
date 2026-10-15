@@ -1,0 +1,4 @@
+module GlobRuntimeSpec
+
+tests : Test.Suite Test.Context { Clock, Concurrency, FileSystem, ProcessHost.Process }
+let tests = GlobRuntimeChecks.tests

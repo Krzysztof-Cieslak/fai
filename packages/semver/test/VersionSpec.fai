@@ -1,63 +1,256 @@
 module SemverVersionSpec
 
 let roundTrip text = Result.map Semver.toString (Semver.parse text) = Ok text
-example: roundTrip "0.0.0"
-example: roundTrip "1.2.3"
-example: roundTrip "1.2.3-alpha.1"
-example: roundTrip "1.2.3-0.3.7"
-example: roundTrip "1.2.3-x.7.z.92"
-example: roundTrip "1.2.3-x-y-z.--"
-example: roundTrip "1.2.3+001.000"
-example: roundTrip "1.2.3-beta+exp.sha.5114f85"
-example: roundTrip "18446744073709551616.999999999999999999999999999999.0"
-example: roundTrip "1.0.0-99999999999999999999999999999999"
-example: roundTrip "1.0.0-01a+01"
-example: Result.map Semver.toString (Semver.parseTag "v1.2.3-rc.1+Build") = Ok "1.2.3-rc.1+Build"
-example: Result.map Semver.toString (Semver.parseTag "1.2.3") = Ok "1.2.3"
+
+let case001 _ =
+  let testActual = roundTrip "0.0.0"
+  Expect.isTrue "roundTrip \"0.0.0\"" testActual
+
+let case002 _ =
+  let testActual = roundTrip "1.2.3"
+  Expect.isTrue "roundTrip \"1.2.3\"" testActual
+
+let case003 _ =
+  let testActual = roundTrip "1.2.3-alpha.1"
+  Expect.isTrue "roundTrip \"1.2.3-alpha.1\"" testActual
+
+let case004 _ =
+  let testActual = roundTrip "1.2.3-0.3.7"
+  Expect.isTrue "roundTrip \"1.2.3-0.3.7\"" testActual
+
+let case005 _ =
+  let testActual = roundTrip "1.2.3-x.7.z.92"
+  Expect.isTrue "roundTrip \"1.2.3-x.7.z.92\"" testActual
+
+let case006 _ =
+  let testActual = roundTrip "1.2.3-x-y-z.--"
+  Expect.isTrue "roundTrip \"1.2.3-x-y-z.--\"" testActual
+
+let case007 _ =
+  let testActual = roundTrip "1.2.3+001.000"
+  Expect.isTrue "roundTrip \"1.2.3+001.000\"" testActual
+
+let case008 _ =
+  let testActual = roundTrip "1.2.3-beta+exp.sha.5114f85"
+  Expect.isTrue "roundTrip \"1.2.3-beta+exp.sha.5114f85\"" testActual
+
+let case009 _ =
+  let testActual = roundTrip "18446744073709551616.999999999999999999999999999999.0"
+  Expect.isTrue "roundTrip \"18446744073709551616.999999999999999999999999999999.0\"" testActual
+
+let case010 _ =
+  let testActual = roundTrip "1.0.0-99999999999999999999999999999999"
+  Expect.isTrue "roundTrip \"1.0.0-99999999999999999999999999999999\"" testActual
+
+let case011 _ =
+  let testActual = roundTrip "1.0.0-01a+01"
+  Expect.isTrue "roundTrip \"1.0.0-01a+01\"" testActual
+
+let case012 _ =
+  let testActual =
+    Result.map Semver.toString (Semver.parseTag "v1.2.3-rc.1+Build") = Ok "1.2.3-rc.1+Build"
+  Expect.isTrue "Result.map Semver.toString (Semver.parseTag \"v1.2.3-rc.1+Build\") = Ok \"1.2.3-rc.1+Build\"" testActual
+
+let case013 _ =
+  let testActual = Result.map Semver.toString (Semver.parseTag "1.2.3") = Ok "1.2.3"
+  Expect.isTrue "Result.map Semver.toString (Semver.parseTag \"1.2.3\") = Ok \"1.2.3\"" testActual
 
 let errorAt kind offset text =
   match Semver.parse text with
   | Err error -> error.kind = kind && error.offset = Some offset
   | Ok _ -> false
-example: errorAt Semver.InvalidComponent 0 ""
-example: errorAt Semver.InvalidVersion 1 "1"
-example: errorAt Semver.InvalidVersion 3 "1.2"
-example: errorAt Semver.InvalidVersion 5 "1.2.3.4"
-example: errorAt Semver.InvalidComponent 0 "v1.2.3"
-example: errorAt Semver.InvalidComponent 0 " 1.2.3"
-example: errorAt Semver.InvalidVersion 5 "1.2.3 "
-example: errorAt Semver.InvalidVersion 5 "1.2.3\n"
-example: errorAt Semver.InvalidComponent 0 "+1.2.3"
-example: errorAt Semver.InvalidComponent 0 "-1.2.3"
-example: errorAt Semver.InvalidComponent 2 "1..3"
-example: errorAt Semver.InvalidComponent 4 "1.2."
-example: errorAt Semver.LeadingZero 1 "01.2.3"
-example: errorAt Semver.LeadingZero 3 "1.02.3"
-example: errorAt Semver.LeadingZero 5 "1.2.03"
-example: errorAt Semver.InvalidIdentifier 6 "1.2.3-"
-example: errorAt Semver.InvalidIdentifier 6 "1.2.3+"
-example: errorAt Semver.InvalidIdentifier 8 "1.2.3-a."
-example: errorAt Semver.InvalidIdentifier 8 "1.2.3+a."
-example: errorAt Semver.InvalidIdentifier 8 "1.2.3-a..b"
-example: errorAt Semver.InvalidIdentifier 8 "1.2.3+a..b"
-example: errorAt Semver.InvalidIdentifier 6 "1.2.3-é"
-example: errorAt Semver.InvalidIdentifier 6 "1.2.3+é"
-example: errorAt Semver.InvalidVersion 7 "1.2.3-a_b"
-example: errorAt Semver.InvalidVersion 7 "1.2.3+a_b"
-example: errorAt Semver.InvalidVersion 7 "1.2.3+a+b"
-example: errorAt Semver.LeadingZero 7 "1.2.3-00"
-example: errorAt Semver.LeadingZero 9 "1.2.3-a.01"
-example: errorAt Semver.InvalidVersion 5 "1.2.3\u{0}"
-example: (match Semver.parseTag "vv1.2.3" with
-| Err error -> error.offset = Some 1
-| _ -> false)
-example: (match Semver.parseTag "V1.2.3" with
-| Err error -> error.offset = Some 0
-| _ -> false)
-example: (match Semver.parseTag "v1.02.3" with
-| Err error -> error.offset = Some 4 && error.component = Some "minor"
-| _ -> false)
-example: (match Semver.parse "1.2.3-a.01" with
-| Err error ->
-  error.component = Some "prerelease" && error.identifier = Some 1 && error.message = "numeric prerelease identifiers cannot have leading zeros"
-| _ -> false)
+
+let case014 _ =
+  let testActual = errorAt Semver.InvalidComponent 0 ""
+  Expect.isTrue "errorAt Semver.InvalidComponent 0 \"\"" testActual
+
+let case015 _ =
+  let testActual = errorAt Semver.InvalidVersion 1 "1"
+  Expect.isTrue "errorAt Semver.InvalidVersion 1 \"1\"" testActual
+
+let case016 _ =
+  let testActual = errorAt Semver.InvalidVersion 3 "1.2"
+  Expect.isTrue "errorAt Semver.InvalidVersion 3 \"1.2\"" testActual
+
+let case017 _ =
+  let testActual = errorAt Semver.InvalidVersion 5 "1.2.3.4"
+  Expect.isTrue "errorAt Semver.InvalidVersion 5 \"1.2.3.4\"" testActual
+
+let case018 _ =
+  let testActual = errorAt Semver.InvalidComponent 0 "v1.2.3"
+  Expect.isTrue "errorAt Semver.InvalidComponent 0 \"v1.2.3\"" testActual
+
+let case019 _ =
+  let testActual = errorAt Semver.InvalidComponent 0 " 1.2.3"
+  Expect.isTrue "errorAt Semver.InvalidComponent 0 \" 1.2.3\"" testActual
+
+let case020 _ =
+  let testActual = errorAt Semver.InvalidVersion 5 "1.2.3 "
+  Expect.isTrue "errorAt Semver.InvalidVersion 5 \"1.2.3 \"" testActual
+
+let case021 _ =
+  let testActual = errorAt Semver.InvalidVersion 5 "1.2.3\n"
+  Expect.isTrue "errorAt Semver.InvalidVersion 5 \"1.2.3\\n\"" testActual
+
+let case022 _ =
+  let testActual = errorAt Semver.InvalidComponent 0 "+1.2.3"
+  Expect.isTrue "errorAt Semver.InvalidComponent 0 \"+1.2.3\"" testActual
+
+let case023 _ =
+  let testActual = errorAt Semver.InvalidComponent 0 "-1.2.3"
+  Expect.isTrue "errorAt Semver.InvalidComponent 0 \"-1.2.3\"" testActual
+
+let case024 _ =
+  let testActual = errorAt Semver.InvalidComponent 2 "1..3"
+  Expect.isTrue "errorAt Semver.InvalidComponent 2 \"1..3\"" testActual
+
+let case025 _ =
+  let testActual = errorAt Semver.InvalidComponent 4 "1.2."
+  Expect.isTrue "errorAt Semver.InvalidComponent 4 \"1.2.\"" testActual
+
+let case026 _ =
+  let testActual = errorAt Semver.LeadingZero 1 "01.2.3"
+  Expect.isTrue "errorAt Semver.LeadingZero 1 \"01.2.3\"" testActual
+
+let case027 _ =
+  let testActual = errorAt Semver.LeadingZero 3 "1.02.3"
+  Expect.isTrue "errorAt Semver.LeadingZero 3 \"1.02.3\"" testActual
+
+let case028 _ =
+  let testActual = errorAt Semver.LeadingZero 5 "1.2.03"
+  Expect.isTrue "errorAt Semver.LeadingZero 5 \"1.2.03\"" testActual
+
+let case029 _ =
+  let testActual = errorAt Semver.InvalidIdentifier 6 "1.2.3-"
+  Expect.isTrue "errorAt Semver.InvalidIdentifier 6 \"1.2.3-\"" testActual
+
+let case030 _ =
+  let testActual = errorAt Semver.InvalidIdentifier 6 "1.2.3+"
+  Expect.isTrue "errorAt Semver.InvalidIdentifier 6 \"1.2.3+\"" testActual
+
+let case031 _ =
+  let testActual = errorAt Semver.InvalidIdentifier 8 "1.2.3-a."
+  Expect.isTrue "errorAt Semver.InvalidIdentifier 8 \"1.2.3-a.\"" testActual
+
+let case032 _ =
+  let testActual = errorAt Semver.InvalidIdentifier 8 "1.2.3+a."
+  Expect.isTrue "errorAt Semver.InvalidIdentifier 8 \"1.2.3+a.\"" testActual
+
+let case033 _ =
+  let testActual = errorAt Semver.InvalidIdentifier 8 "1.2.3-a..b"
+  Expect.isTrue "errorAt Semver.InvalidIdentifier 8 \"1.2.3-a..b\"" testActual
+
+let case034 _ =
+  let testActual = errorAt Semver.InvalidIdentifier 8 "1.2.3+a..b"
+  Expect.isTrue "errorAt Semver.InvalidIdentifier 8 \"1.2.3+a..b\"" testActual
+
+let case035 _ =
+  let testActual = errorAt Semver.InvalidIdentifier 6 "1.2.3-é"
+  Expect.isTrue "errorAt Semver.InvalidIdentifier 6 \"1.2.3-é\"" testActual
+
+let case036 _ =
+  let testActual = errorAt Semver.InvalidIdentifier 6 "1.2.3+é"
+  Expect.isTrue "errorAt Semver.InvalidIdentifier 6 \"1.2.3+é\"" testActual
+
+let case037 _ =
+  let testActual = errorAt Semver.InvalidVersion 7 "1.2.3-a_b"
+  Expect.isTrue "errorAt Semver.InvalidVersion 7 \"1.2.3-a_b\"" testActual
+
+let case038 _ =
+  let testActual = errorAt Semver.InvalidVersion 7 "1.2.3+a_b"
+  Expect.isTrue "errorAt Semver.InvalidVersion 7 \"1.2.3+a_b\"" testActual
+
+let case039 _ =
+  let testActual = errorAt Semver.InvalidVersion 7 "1.2.3+a+b"
+  Expect.isTrue "errorAt Semver.InvalidVersion 7 \"1.2.3+a+b\"" testActual
+
+let case040 _ =
+  let testActual = errorAt Semver.LeadingZero 7 "1.2.3-00"
+  Expect.isTrue "errorAt Semver.LeadingZero 7 \"1.2.3-00\"" testActual
+
+let case041 _ =
+  let testActual = errorAt Semver.LeadingZero 9 "1.2.3-a.01"
+  Expect.isTrue "errorAt Semver.LeadingZero 9 \"1.2.3-a.01\"" testActual
+
+let case042 _ =
+  let testActual = errorAt Semver.InvalidVersion 5 "1.2.3\u{0}"
+  Expect.isTrue "errorAt Semver.InvalidVersion 5 \"1.2.3\\u{0}\"" testActual
+
+let case043 _ =
+  let testActual =
+    (match Semver.parseTag "vv1.2.3" with
+    | Err error -> error.offset = Some 1
+    | _ -> false)
+  Expect.isTrue "(match Semver.parseTag \"vv1.2.3\" with | Err error -> error.offset = Some 1 | _ -> false)" testActual
+
+let case044 _ =
+  let testActual =
+    (match Semver.parseTag "V1.2.3" with
+    | Err error -> error.offset = Some 0
+    | _ -> false)
+  Expect.isTrue "(match Semver.parseTag \"V1.2.3\" with | Err error -> error.offset = Some 0 | _ -> false)" testActual
+
+let case045 _ =
+  let testActual =
+    (match Semver.parseTag "v1.02.3" with
+    | Err error -> error.offset = Some 4 && error.component = Some "minor"
+    | _ -> false)
+  Expect.isTrue "(match Semver.parseTag \"v1.02.3\" with | Err error -> error.offset = Some 4 && error.component = Some \"minor\" | _ -> false)" testActual
+
+let case046 _ =
+  let testActual =
+    (match Semver.parse "1.2.3-a.01" with
+    | Err error ->
+      error.component = Some "prerelease" && error.identifier = Some 1 && error.message = "numeric prerelease identifiers cannot have leading zeros"
+    | _ -> false)
+  Expect.isTrue "(match Semver.parse \"1.2.3-a.01\" with | Err error -> error.component = Some \"prerelease\" && error.identifier = Some 1 && error.message = \"numeric prerelease …" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SemverVersionSpec" [
+  Test.test "roundTrip \"0.0.0\"" case001,
+  Test.test "roundTrip \"1.2.3\"" case002,
+  Test.test "roundTrip \"1.2.3-alpha.1\"" case003,
+  Test.test "roundTrip \"1.2.3-0.3.7\"" case004,
+  Test.test "roundTrip \"1.2.3-x.7.z.92\"" case005,
+  Test.test "roundTrip \"1.2.3-x-y-z.--\"" case006,
+  Test.test "roundTrip \"1.2.3+001.000\"" case007,
+  Test.test "roundTrip \"1.2.3-beta+exp.sha.5114f85\"" case008,
+  Test.test "roundTrip \"18446744073709551616.999999999999999999999999999999.0\"" case009,
+  Test.test "roundTrip \"1.0.0-99999999999999999999999999999999\"" case010,
+  Test.test "roundTrip \"1.0.0-01a+01\"" case011,
+  Test.test "Result.map Semver.toString (Semver.parseTag \"v1.2.3-rc.1+Build\") = Ok \"1.2.3-rc.1+Build\"" case012,
+  Test.test "Result.map Semver.toString (Semver.parseTag \"1.2.3\") = Ok \"1.2.3\"" case013,
+  Test.test "errorAt Semver.InvalidComponent 0 \"\"" case014,
+  Test.test "errorAt Semver.InvalidVersion 1 \"1\"" case015,
+  Test.test "errorAt Semver.InvalidVersion 3 \"1.2\"" case016,
+  Test.test "errorAt Semver.InvalidVersion 5 \"1.2.3.4\"" case017,
+  Test.test "errorAt Semver.InvalidComponent 0 \"v1.2.3\"" case018,
+  Test.test "errorAt Semver.InvalidComponent 0 \" 1.2.3\"" case019,
+  Test.test "errorAt Semver.InvalidVersion 5 \"1.2.3 \"" case020,
+  Test.test "errorAt Semver.InvalidVersion 5 \"1.2.3\\n\"" case021,
+  Test.test "errorAt Semver.InvalidComponent 0 \"+1.2.3\"" case022,
+  Test.test "errorAt Semver.InvalidComponent 0 \"-1.2.3\"" case023,
+  Test.test "errorAt Semver.InvalidComponent 2 \"1..3\"" case024,
+  Test.test "errorAt Semver.InvalidComponent 4 \"1.2.\"" case025,
+  Test.test "errorAt Semver.LeadingZero 1 \"01.2.3\"" case026,
+  Test.test "errorAt Semver.LeadingZero 3 \"1.02.3\"" case027,
+  Test.test "errorAt Semver.LeadingZero 5 \"1.2.03\"" case028,
+  Test.test "errorAt Semver.InvalidIdentifier 6 \"1.2.3-\"" case029,
+  Test.test "errorAt Semver.InvalidIdentifier 6 \"1.2.3+\"" case030,
+  Test.test "errorAt Semver.InvalidIdentifier 8 \"1.2.3-a.\"" case031,
+  Test.test "errorAt Semver.InvalidIdentifier 8 \"1.2.3+a.\"" case032,
+  Test.test "errorAt Semver.InvalidIdentifier 8 \"1.2.3-a..b\"" case033,
+  Test.test "errorAt Semver.InvalidIdentifier 8 \"1.2.3+a..b\"" case034,
+  Test.test "errorAt Semver.InvalidIdentifier 6 \"1.2.3-é\"" case035,
+  Test.test "errorAt Semver.InvalidIdentifier 6 \"1.2.3+é\"" case036,
+  Test.test "errorAt Semver.InvalidVersion 7 \"1.2.3-a_b\"" case037,
+  Test.test "errorAt Semver.InvalidVersion 7 \"1.2.3+a_b\"" case038,
+  Test.test "errorAt Semver.InvalidVersion 7 \"1.2.3+a+b\"" case039,
+  Test.test "errorAt Semver.LeadingZero 7 \"1.2.3-00\"" case040,
+  Test.test "errorAt Semver.LeadingZero 9 \"1.2.3-a.01\"" case041,
+  Test.test "errorAt Semver.InvalidVersion 5 \"1.2.3\\u{0}\"" case042,
+  Test.test "(match Semver.parseTag \"vv1.2.3\" with | Err error -> error.offset = Some 1 | _ -> false)" case043,
+  Test.test "(match Semver.parseTag \"V1.2.3\" with | Err error -> error.offset = Some 0 | _ -> false)" case044,
+  Test.test "(match Semver.parseTag \"v1.02.3\" with | Err error -> error.offset = Some 4 && error.component = Some \"minor\" | _ -> false)" case045,
+  Test.test "(match Semver.parse \"1.2.3-a.01\" with | Err error -> error.component = Some \"prerelease\" && error.identifier = Some 1 && error.message = \"numeric prerelease …" case046
+]

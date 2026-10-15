@@ -15,4 +15,4 @@ Duplicate names report both locations. Invalid UTF-8, NUL and bare CR fail.
 `parseWith`/`parseBytesWith` accept explicit limits: 4 MiB and 1,024 entries by
 default. Locations use zero-based byte ranges and one-based scalar line/columns.
 
-Run `fai test -C packages dotenv` for native Fai contracts.
+Run `fai test -C packages dotenv` for named Fai tests and properties.

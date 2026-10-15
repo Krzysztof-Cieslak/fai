@@ -980,7 +980,7 @@ Opaque `JsonNumber.Number` values validate arbitrary decimal text, convert exact
 to in-range `Int`s, and round to finite binary64 with ties to even. Non-finite
 Float encoding and numeric overflow return errors. Applications declare source
 package dependencies in `fai.toml`; package modules are not embedded in std.
-Source packages own ordinary Fai contracts: run `fai test -C packages --package json` or
+Source packages own named Fai tests and inline contracts: run `fai test -C packages --package json` or
 `fai test -C packages --package web` directly, retaining the warm daemon. Each
 package's `fai.toml` also supplies dependency-aware CI selection; optional `ci.json`
 files declare native integration programs and pinned fixtures. Compiler-only

@@ -29,3 +29,18 @@ let main env =
     | Ok rows ->
       Array.length rows = 1 && Sql.values (Array.unsafeGet 0 rows) = values && (Array.unsafeGet 1 (Sql.columns (Array.unsafeGet 0 rows))).name = "lo"
   env.console.writeLine (if valid then "SQL value checks passed" else "SQL value checks failed")
+
+checkValues : Test.Context -> Test.Check / { SqliteHost.Sqlite }
+let checkValues ctx =
+  let env = { console = ctx.runtime.console, sqlite = SqliteHost.native }
+  Expect.ok Sql.errorToString (fun rows -> Expect.all [
+    Expect.equal Int.toString 1 (Array.length rows),
+    Expect.isTrue "SQL scalar values and column names survive the native boundary" (match Array.get 0 rows with
+    | None -> false
+    | Some row -> Sql.values row = values && (Array.unsafeGet 1 (Sql.columns row)).name = "lo")
+  ]) (Sqlite.withMemory env query)
+
+tests : Test.Suite Test.Context { SqliteHost.Sqlite }
+let tests = Test.describe "SQLite native values" [
+  Test.test "NULL, full-width integers, text and blobs round trip" checkValues
+]

@@ -8,7 +8,7 @@ save : Runtime -> Path -> HttpClient.Response (Stream Bytes { Concurrency, Net, 
 let save r path response =
   Result.mapError HttpClient.ConsumerFailure (Stream.toFile r path response.body)
 
-session : Runtime -> Path -> Listener -> Nursery -> Unit / { Clock, Concurrency, Console, FileSystem, Net, Tls }
+session : Runtime -> Path -> Listener -> Nursery -> Test.Check / { Clock, Concurrency, FileSystem, Net, Tls }
 let session r path listener nursery =
   let server = r.concurrency.spawn nursery (fun _ -> Http.serveListener r listener handler)
   let cfg =
@@ -20,10 +20,10 @@ let session r path listener nursery =
       HttpClient.get "" |> HttpClient.expectBytes |> HttpClient.withResponse client (save r path))
   let stopped = r.concurrency.cancel server
   let bytes = r.fs.readFile path
-  r.console.writeLine (if result = Ok () && bytes = Ok content then
-    "download check passed"
-  else
-    "download check failed")
+  Expect.all [
+    Expect.ok HttpClient.errorToString (fun _ -> Test.pass) result,
+    Expect.ok FileSystem.errorToString (Expect.equal identity content) bytes
+  ]
 
 public main : Runtime -> Unit / { Clock, Concurrency, Console, Env, FileSystem, Net, Tls }
 let main r =
@@ -34,5 +34,25 @@ let main r =
     | Ok path ->
       match r.net.listen 0 with
       | Err error -> r.console.writeLine error
-      | Ok listener -> r.concurrency.scope (session r path listener)
+      | Ok listener ->
+        let checked = r.concurrency.scope (session r path listener)
+        r.console.writeLine (if checked = Test.pass then
+          "download check passed"
+        else
+          "download check failed")
   | _ -> r.console.writeError "usage: DownloadCheck OUTPUT_FILE\n"
+
+download : Test.Context -> Test.Check / { Clock, Concurrency, FileSystem, Net, Tls }
+let download ctx =
+  match Path.fromString "download.txt" with
+  | Err error -> Test.error (Path.errorToString error)
+  | Ok name ->
+    match ctx.runtime.net.listen 0 with
+    | Err error -> Test.error error
+    | Ok listener ->
+      ctx.runtime.concurrency.scope (session ctx.runtime (Path.join ctx.tempRoot name) listener)
+
+tests : Test.Suite Test.Context { Clock, Concurrency, FileSystem, Net, Tls }
+let tests = Test.describe "HTTP downloads" [
+  Test.test "streamed downloads bypass buffering limits and preserve UTF-8" download
+]

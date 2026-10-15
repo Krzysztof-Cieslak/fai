@@ -26,21 +26,63 @@ let decodeChunks decoder chunks output =
 
 let partitionedEncode encoder encode chunks =
   encodeChunks encoder (List.map Bytes.fromList chunks) [] = encode (Bytes.fromList (List.concat chunks))
-forall chunks: partitionedEncode (Hex.encoder Hex.encodeOptions) Hex.encode chunks
-forall chunks: partitionedEncode (Base64.encoder Base64.encodeOptions) Base64.encode chunks
-forall chunks: partitionedEncode (Base64Url.encoder Base64Url.encodeOptions) Base64Url.encode chunks
-forall chunks: partitionedEncode (Base32.encoder Base32.encodeOptions) Base32.encode chunks
-forall chunks: partitionedEncode (Base32Hex.encoder Base32Hex.encodeOptions) Base32Hex.encode chunks
+
+let case001 testInput =
+  let chunks = testInput
+  let testActual = partitionedEncode (Hex.encoder Hex.encodeOptions) Hex.encode chunks
+  Expect.isTrue "property: partitionedEncode (Hex.encoder Hex.encodeOptions) Hex.encode chunks" testActual
+
+let case002 testInput =
+  let chunks = testInput
+  let testActual = partitionedEncode (Base64.encoder Base64.encodeOptions) Base64.encode chunks
+  Expect.isTrue "property: partitionedEncode (Base64.encoder Base64.encodeOptions) Base64.encode chunks" testActual
+
+let case003 testInput =
+  let chunks = testInput
+  let testActual =
+    partitionedEncode (Base64Url.encoder Base64Url.encodeOptions) Base64Url.encode chunks
+  Expect.isTrue "property: partitionedEncode (Base64Url.encoder Base64Url.encodeOptions) Base64Url.encode chunks" testActual
+
+let case004 testInput =
+  let chunks = testInput
+  let testActual = partitionedEncode (Base32.encoder Base32.encodeOptions) Base32.encode chunks
+  Expect.isTrue "property: partitionedEncode (Base32.encoder Base32.encodeOptions) Base32.encode chunks" testActual
+
+let case005 testInput =
+  let chunks = testInput
+  let testActual =
+    partitionedEncode (Base32Hex.encoder Base32Hex.encodeOptions) Base32Hex.encode chunks
+  Expect.isTrue "property: partitionedEncode (Base32Hex.encoder Base32Hex.encodeOptions) Base32Hex.encode chunks" testActual
 
 let partitionedDecode decoder chunks =
   decodeChunks decoder (List.map Bytes.fromList chunks) [] = decodeChunks decoder [
     Bytes.fromList (List.concat chunks)
   ] []
-forall chunks: partitionedDecode (Hex.decoder Hex.decodeOptions) chunks
-forall chunks: partitionedDecode (Base64.decoder Base64.decodeOptions) chunks
-forall chunks: partitionedDecode (Base64Url.decoder Base64Url.decodeOptions) chunks
-forall chunks: partitionedDecode (Base32.decoder Base32.decodeOptions) chunks
-forall chunks: partitionedDecode (Base32Hex.decoder Base32Hex.decodeOptions) chunks
+
+let case006 testInput =
+  let chunks = testInput
+  let testActual = partitionedDecode (Hex.decoder Hex.decodeOptions) chunks
+  Expect.isTrue "property: partitionedDecode (Hex.decoder Hex.decodeOptions) chunks" testActual
+
+let case007 testInput =
+  let chunks = testInput
+  let testActual = partitionedDecode (Base64.decoder Base64.decodeOptions) chunks
+  Expect.isTrue "property: partitionedDecode (Base64.decoder Base64.decodeOptions) chunks" testActual
+
+let case008 testInput =
+  let chunks = testInput
+  let testActual = partitionedDecode (Base64Url.decoder Base64Url.decodeOptions) chunks
+  Expect.isTrue "property: partitionedDecode (Base64Url.decoder Base64Url.decodeOptions) chunks" testActual
+
+let case009 testInput =
+  let chunks = testInput
+  let testActual = partitionedDecode (Base32.decoder Base32.decodeOptions) chunks
+  Expect.isTrue "property: partitionedDecode (Base32.decoder Base32.decodeOptions) chunks" testActual
+
+let case010 testInput =
+  let chunks = testInput
+  let testActual = partitionedDecode (Base32Hex.decoder Base32Hex.decodeOptions) chunks
+  Expect.isTrue "property: partitionedDecode (Base32Hex.decoder Base32Hex.decodeOptions) chunks" testActual
 
 let splitAt input seed =
   let bound = Bytes.length input + 1
@@ -57,85 +99,267 @@ let splitAt input seed =
 let encodedPartitions encode decoder values seed =
   let input = Bytes.fromList values
   decodeChunks decoder (splitAt (Bytes.fromString (encode input)) seed) [] = (input, None)
-forall values seed: encodedPartitions Hex.encode (Hex.decoder Hex.decodeOptions) values seed
-forall values seed: encodedPartitions Base64.encode (Base64.decoder Base64.decodeOptions) values seed
-forall values seed: encodedPartitions Base64Url.encode (Base64Url.decoder Base64Url.decodeOptions) values seed
-forall values seed: encodedPartitions Base32.encode (Base32.decoder Base32.decodeOptions) values seed
-forall values seed: encodedPartitions Base32Hex.encode (Base32Hex.decoder Base32Hex.decodeOptions) values seed
-forall values seed: encodedPartitions (Base64.encodeWith {
-  padding = Encoding.Unpadded
-}) (Base64.decoder { padding = Encoding.AllowPadding }) values seed
-forall values seed: encodedPartitions (Base32.encodeWith {
-  padding = Encoding.Unpadded
-}) (Base32.decoder { caseInsensitive = false, padding = Encoding.AllowPadding }) values seed
+
+let case011 testInput =
+  let (values, seed) = testInput
+  let testActual = encodedPartitions Hex.encode (Hex.decoder Hex.decodeOptions) values seed
+  Expect.isTrue "property: encodedPartitions Hex.encode (Hex.decoder Hex.decodeOptions) values seed" testActual
+
+let case012 testInput =
+  let (values, seed) = testInput
+  let testActual = encodedPartitions Base64.encode (Base64.decoder Base64.decodeOptions) values seed
+  Expect.isTrue "property: encodedPartitions Base64.encode (Base64.decoder Base64.decodeOptions) values seed" testActual
+
+let case013 testInput =
+  let (values, seed) = testInput
+  let testActual =
+    encodedPartitions Base64Url.encode (Base64Url.decoder Base64Url.decodeOptions) values seed
+  Expect.isTrue "property: encodedPartitions Base64Url.encode (Base64Url.decoder Base64Url.decodeOptions) values seed" testActual
+
+let case014 testInput =
+  let (values, seed) = testInput
+  let testActual = encodedPartitions Base32.encode (Base32.decoder Base32.decodeOptions) values seed
+  Expect.isTrue "property: encodedPartitions Base32.encode (Base32.decoder Base32.decodeOptions) values seed" testActual
+
+let case015 testInput =
+  let (values, seed) = testInput
+  let testActual =
+    encodedPartitions Base32Hex.encode (Base32Hex.decoder Base32Hex.decodeOptions) values seed
+  Expect.isTrue "property: encodedPartitions Base32Hex.encode (Base32Hex.decoder Base32Hex.decodeOptions) values seed" testActual
+
+let case016 testInput =
+  let (values, seed) = testInput
+  let testActual =
+    encodedPartitions (Base64.encodeWith {
+      padding = Encoding.Unpadded
+    }) (Base64.decoder { padding = Encoding.AllowPadding }) values seed
+  Expect.isTrue "property: encodedPartitions (Base64.encodeWith { padding = Encoding.Unpadded }) (Base64.decoder { padding = Encoding.AllowPadding }) values seed" testActual
+
+let case017 testInput =
+  let (values, seed) = testInput
+  let testActual =
+    encodedPartitions (Base32.encodeWith {
+      padding = Encoding.Unpadded
+    }) (Base32.decoder { caseInsensitive = false, padding = Encoding.AllowPadding }) values seed
+  Expect.isTrue "property: encodedPartitions (Base32.encodeWith { padding = Encoding.Unpadded }) (Base32.decoder { caseInsensitive = false, padding = Encoding.AllowPadding })…" testActual
 
 let allSplits decoder text =
   let input = Bytes.fromString text
   let expected = decodeChunks decoder [input] []
   List.all (fun index ->
     decodeChunks decoder (splitAt input index) [] = expected) (List.range 0 (Bytes.length input + 1))
-example: allSplits (Base64.decoder Base64.decodeOptions) "Zm9vYg=="
-example: allSplits (Base32.decoder Base32.decodeOptions) "MZXW6YTBOI======"
-example: allSplits (Base32Hex.decoder Base32Hex.decodeOptions) "CPNMUOJ1E8======"
-example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAAB=="
-example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAAA==AAAA"
-example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAAAB="
-example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAA"
-example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAAA="
-example: allSplits (Base64.decoder Base64.decodeOptions) "AAAAé="
-example: allSplits (Base32.decoder Base32.decodeOptions) "MZXW6YTBAB======"
-example: allSplits (Base32.decoder Base32.decodeOptions) "MZXW6YTBAA====="
-example: allSplits (Hex.decoder Hex.decodeOptions) "0001ffg0"
-example: allSplits (Base64Url.decoder Base64Url.decodeOptions) "-_8"
+
+let case018 _ =
+  let testActual = allSplits (Base64.decoder Base64.decodeOptions) "Zm9vYg=="
+  Expect.isTrue "allSplits (Base64.decoder Base64.decodeOptions) \"Zm9vYg==\"" testActual
+
+let case019 _ =
+  let testActual = allSplits (Base32.decoder Base32.decodeOptions) "MZXW6YTBOI======"
+  Expect.isTrue "allSplits (Base32.decoder Base32.decodeOptions) \"MZXW6YTBOI======\"" testActual
+
+let case020 _ =
+  let testActual = allSplits (Base32Hex.decoder Base32Hex.decodeOptions) "CPNMUOJ1E8======"
+  Expect.isTrue "allSplits (Base32Hex.decoder Base32Hex.decodeOptions) \"CPNMUOJ1E8======\"" testActual
+
+let case021 _ =
+  let testActual = allSplits (Base64.decoder Base64.decodeOptions) "AAAAAB=="
+  Expect.isTrue "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAAB==\"" testActual
+
+let case022 _ =
+  let testActual = allSplits (Base64.decoder Base64.decodeOptions) "AAAAAA==AAAA"
+  Expect.isTrue "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAAA==AAAA\"" testActual
+
+let case023 _ =
+  let testActual = allSplits (Base64.decoder Base64.decodeOptions) "AAAAAAB="
+  Expect.isTrue "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAAAB=\"" testActual
+
+let case024 _ =
+  let testActual = allSplits (Base64.decoder Base64.decodeOptions) "AAAAA"
+  Expect.isTrue "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAA\"" testActual
+
+let case025 _ =
+  let testActual = allSplits (Base64.decoder Base64.decodeOptions) "AAAAAA="
+  Expect.isTrue "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAAA=\"" testActual
+
+let case026 _ =
+  let testActual = allSplits (Base64.decoder Base64.decodeOptions) "AAAAé="
+  Expect.isTrue "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAé=\"" testActual
+
+let case027 _ =
+  let testActual = allSplits (Base32.decoder Base32.decodeOptions) "MZXW6YTBAB======"
+  Expect.isTrue "allSplits (Base32.decoder Base32.decodeOptions) \"MZXW6YTBAB======\"" testActual
+
+let case028 _ =
+  let testActual = allSplits (Base32.decoder Base32.decodeOptions) "MZXW6YTBAA====="
+  Expect.isTrue "allSplits (Base32.decoder Base32.decodeOptions) \"MZXW6YTBAA=====\"" testActual
+
+let case029 _ =
+  let testActual = allSplits (Hex.decoder Hex.decodeOptions) "0001ffg0"
+  Expect.isTrue "allSplits (Hex.decoder Hex.decodeOptions) \"0001ffg0\"" testActual
+
+let case030 _ =
+  let testActual = allSplits (Base64Url.decoder Base64Url.decodeOptions) "-_8"
+  Expect.isTrue "allSplits (Base64Url.decoder Base64Url.decodeOptions) \"-_8\"" testActual
 
 let encoder = Base64.encoder Base64.encodeOptions
 
 let first = Encoding.feedEncoder encoder (Bytes.fromString "f")
-example: first.output = "" && Encoding.finishEncoder first.encoder = "Zg=="
-example: Encoding.finishEncoder encoder = ""
-example: encodeChunks first.encoder [Bytes.fromString "oo"] [] = "Zm9v"
-example: encodeChunks first.encoder [Bytes.fromString "ar"] [] = "ZmFy"
-example: Encoding.feedEncoder first.encoder Bytes.empty = { encoder = first.encoder, output = "" }
+
+let case031 _ =
+  let testActual = first.output = "" && Encoding.finishEncoder first.encoder = "Zg=="
+  Expect.isTrue "first.output = \"\" && Encoding.finishEncoder first.encoder = \"Zg==\"" testActual
+
+let case032 _ =
+  let testActual = Encoding.finishEncoder encoder
+  let testExpected = ""
+  Expect.equal (Test.string).show testExpected testActual
+
+let case033 _ =
+  let testActual = encodeChunks first.encoder [Bytes.fromString "oo"] []
+  let testExpected = "Zm9v"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case034 _ =
+  let testActual = encodeChunks first.encoder [Bytes.fromString "ar"] []
+  let testExpected = "ZmFy"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case035 _ =
+  let testActual =
+    Encoding.feedEncoder first.encoder Bytes.empty = { encoder = first.encoder, output = "" }
+  Expect.isTrue "Encoding.feedEncoder first.encoder Bytes.empty = { encoder = first.encoder, output = \"\" }" testActual
 
 let decoder = Base64.decoder Base64.decodeOptions
 
 let head = Encoding.feedDecoder decoder (Bytes.fromString "Zg")
-example: head.output = Bytes.empty && head.consumed = 2 && head.error = None && Encoding.decoderOffset head.decoder = 2
-example: decodeChunks head.decoder [Bytes.fromString "=="] [] = (Bytes.fromString "f", None)
-example: decodeChunks head.decoder [Bytes.fromString "AA"] [] = (Bytes.fromList [102, 0, 0], None)
-example: decodeChunks decoder [Bytes.fromString "Zm9v"] [] = (Bytes.fromString "foo", None)
-example: Encoding.feedDecoder head.decoder Bytes.empty = {
-  consumed = 0,
-  decoder = head.decoder,
-  error = None,
-  output = Bytes.empty
-}
+
+let case036 _ =
+  let testActual =
+    head.output = Bytes.empty && head.consumed = 2 && head.error = None && Encoding.decoderOffset head.decoder = 2
+  Expect.isTrue "head.output = Bytes.empty && head.consumed = 2 && head.error = None && Encoding.decoderOffset head.decoder = 2" testActual
+
+let case037 _ =
+  let testActual =
+    decodeChunks head.decoder [Bytes.fromString "=="] [] = (Bytes.fromString "f", None)
+  Expect.isTrue "decodeChunks head.decoder [Bytes.fromString \"==\"] [] = (Bytes.fromString \"f\", None)" testActual
+
+let case038 _ =
+  let testActual =
+    decodeChunks head.decoder [Bytes.fromString "AA"] [] = (Bytes.fromList [102, 0, 0], None)
+  Expect.isTrue "decodeChunks head.decoder [Bytes.fromString \"AA\"] [] = (Bytes.fromList [102, 0, 0], None)" testActual
+
+let case039 _ =
+  let testActual =
+    decodeChunks decoder [Bytes.fromString "Zm9v"] [] = (Bytes.fromString "foo", None)
+  Expect.isTrue "decodeChunks decoder [Bytes.fromString \"Zm9v\"] [] = (Bytes.fromString \"foo\", None)" testActual
+
+let case040 _ =
+  let testActual =
+    Encoding.feedDecoder head.decoder Bytes.empty = {
+      consumed = 0,
+      decoder = head.decoder,
+      error = None,
+      output = Bytes.empty
+    }
+  Expect.isTrue "Encoding.feedDecoder head.decoder Bytes.empty = { consumed = 0, decoder = head.decoder, error = None, output = Bytes.empty }" testActual
 
 let bad = Encoding.feedDecoder decoder (Bytes.fromString "Zm9v!")
-example: bad.consumed = 4 && bad.output = Bytes.fromString "foo" && bad.error = Some {
-  kind = Encoding.InvalidCharacter,
-  message = "character is outside the encoding alphabet",
-  offset = Some 4
-}
-example: Encoding.feedDecoder bad.decoder (Bytes.fromString "AAAA") = {
-  consumed = 0,
-  decoder = bad.decoder,
-  error = bad.error,
-  output = Bytes.empty
-}
-example: Encoding.feedDecoder bad.decoder Bytes.empty = {
-  consumed = 0,
-  decoder = bad.decoder,
-  error = bad.error,
-  output = Bytes.empty
-}
-example: (match Encoding.finishDecoder bad.decoder with
-| Err error -> Some error = bad.error
-| Ok _ -> false)
+
+let case041 _ =
+  let testActual =
+    bad.consumed = 4 && bad.output = Bytes.fromString "foo" && bad.error = Some {
+      kind = Encoding.InvalidCharacter,
+      message = "character is outside the encoding alphabet",
+      offset = Some 4
+    }
+  Expect.isTrue "bad.consumed = 4 && bad.output = Bytes.fromString \"foo\" && bad.error = Some { kind = Encoding.InvalidCharacter, message = \"character is outside the encoding …" testActual
+
+let case042 _ =
+  let testActual =
+    Encoding.feedDecoder bad.decoder (Bytes.fromString "AAAA") = {
+      consumed = 0,
+      decoder = bad.decoder,
+      error = bad.error,
+      output = Bytes.empty
+    }
+  Expect.isTrue "Encoding.feedDecoder bad.decoder (Bytes.fromString \"AAAA\") = { consumed = 0, decoder = bad.decoder, error = bad.error, output = Bytes.empty }" testActual
+
+let case043 _ =
+  let testActual =
+    Encoding.feedDecoder bad.decoder Bytes.empty = {
+      consumed = 0,
+      decoder = bad.decoder,
+      error = bad.error,
+      output = Bytes.empty
+    }
+  Expect.isTrue "Encoding.feedDecoder bad.decoder Bytes.empty = { consumed = 0, decoder = bad.decoder, error = bad.error, output = Bytes.empty }" testActual
+
+let case044 _ =
+  let testActual =
+    (match Encoding.finishDecoder bad.decoder with
+    | Err error -> Some error = bad.error
+    | Ok _ -> false)
+  Expect.isTrue "(match Encoding.finishDecoder bad.decoder with | Err error -> Some error = bad.error | Ok _ -> false)" testActual
 
 let urlTail =
   Encoding.feedDecoder (Base64Url.decoder Base64Url.decodeOptions) (Bytes.fromString "Zg")
-example: urlTail.output = Bytes.empty && Encoding.finishDecoder urlTail.decoder = Ok (Bytes.fromString "f")
-example: decodeChunks urlTail.decoder [
-  Bytes.fromString "AA"
-] [] = (Bytes.fromList [102, 0, 0], None)
+
+let case045 _ =
+  let testActual =
+    urlTail.output = Bytes.empty && Encoding.finishDecoder urlTail.decoder = Ok (Bytes.fromString "f")
+  Expect.isTrue "urlTail.output = Bytes.empty && Encoding.finishDecoder urlTail.decoder = Ok (Bytes.fromString \"f\")" testActual
+
+let case046 _ =
+  let testActual =
+    decodeChunks urlTail.decoder [Bytes.fromString "AA"] [] = (Bytes.fromList [102, 0, 0], None)
+  Expect.isTrue "decodeChunks urlTail.decoder [ Bytes.fromString \"AA\" ] [] = (Bytes.fromList [102, 0, 0], None)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "EncodingIncrementalSpec" [
+  Test.property "property: partitionedEncode (Hex.encoder Hex.encodeOptions) Hex.encode chunks" (Test.list (Test.list Test.int)) case001,
+  Test.property "property: partitionedEncode (Base64.encoder Base64.encodeOptions) Base64.encode chunks" (Test.list (Test.list Test.int)) case002,
+  Test.property "property: partitionedEncode (Base64Url.encoder Base64Url.encodeOptions) Base64Url.encode chunks" (Test.list (Test.list Test.int)) case003,
+  Test.property "property: partitionedEncode (Base32.encoder Base32.encodeOptions) Base32.encode chunks" (Test.list (Test.list Test.int)) case004,
+  Test.property "property: partitionedEncode (Base32Hex.encoder Base32Hex.encodeOptions) Base32Hex.encode chunks" (Test.list (Test.list Test.int)) case005,
+  Test.property "property: partitionedDecode (Hex.decoder Hex.decodeOptions) chunks" (Test.list (Test.list Test.int)) case006,
+  Test.property "property: partitionedDecode (Base64.decoder Base64.decodeOptions) chunks" (Test.list (Test.list Test.int)) case007,
+  Test.property "property: partitionedDecode (Base64Url.decoder Base64Url.decodeOptions) chunks" (Test.list (Test.list Test.int)) case008,
+  Test.property "property: partitionedDecode (Base32.decoder Base32.decodeOptions) chunks" (Test.list (Test.list Test.int)) case009,
+  Test.property "property: partitionedDecode (Base32Hex.decoder Base32Hex.decodeOptions) chunks" (Test.list (Test.list Test.int)) case010,
+  Test.property "property: encodedPartitions Hex.encode (Hex.decoder Hex.decodeOptions) values seed" (Test.tuple2 (Test.list Test.int) Test.int) case011,
+  Test.property "property: encodedPartitions Base64.encode (Base64.decoder Base64.decodeOptions) values seed" (Test.tuple2 (Test.list Test.int) Test.int) case012,
+  Test.property "property: encodedPartitions Base64Url.encode (Base64Url.decoder Base64Url.decodeOptions) values seed" (Test.tuple2 (Test.list Test.int) Test.int) case013,
+  Test.property "property: encodedPartitions Base32.encode (Base32.decoder Base32.decodeOptions) values seed" (Test.tuple2 (Test.list Test.int) Test.int) case014,
+  Test.property "property: encodedPartitions Base32Hex.encode (Base32Hex.decoder Base32Hex.decodeOptions) values seed" (Test.tuple2 (Test.list Test.int) Test.int) case015,
+  Test.property "property: encodedPartitions (Base64.encodeWith { padding = Encoding.Unpadded }) (Base64.decoder { padding = Encoding.AllowPadding }) values seed" (Test.tuple2 (Test.list Test.int) Test.int) case016,
+  Test.property "property: encodedPartitions (Base32.encodeWith { padding = Encoding.Unpadded }) (Base32.decoder { caseInsensitive = false, padding = Encoding.AllowPadding })…" (Test.tuple2 (Test.list Test.int) Test.int) case017,
+  Test.test "allSplits (Base64.decoder Base64.decodeOptions) \"Zm9vYg==\"" case018,
+  Test.test "allSplits (Base32.decoder Base32.decodeOptions) \"MZXW6YTBOI======\"" case019,
+  Test.test "allSplits (Base32Hex.decoder Base32Hex.decodeOptions) \"CPNMUOJ1E8======\"" case020,
+  Test.test "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAAB==\"" case021,
+  Test.test "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAAA==AAAA\"" case022,
+  Test.test "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAAAB=\"" case023,
+  Test.test "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAA\"" case024,
+  Test.test "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAAA=\"" case025,
+  Test.test "allSplits (Base64.decoder Base64.decodeOptions) \"AAAAé=\"" case026,
+  Test.test "allSplits (Base32.decoder Base32.decodeOptions) \"MZXW6YTBAB======\"" case027,
+  Test.test "allSplits (Base32.decoder Base32.decodeOptions) \"MZXW6YTBAA=====\"" case028,
+  Test.test "allSplits (Hex.decoder Hex.decodeOptions) \"0001ffg0\"" case029,
+  Test.test "allSplits (Base64Url.decoder Base64Url.decodeOptions) \"-_8\"" case030,
+  Test.test "first.output = \"\" && Encoding.finishEncoder first.encoder = \"Zg==\"" case031,
+  Test.test "Encoding.finishEncoder encoder = \"\"" case032,
+  Test.test "encodeChunks first.encoder [Bytes.fromString \"oo\"] [] = \"Zm9v\"" case033,
+  Test.test "encodeChunks first.encoder [Bytes.fromString \"ar\"] [] = \"ZmFy\"" case034,
+  Test.test "Encoding.feedEncoder first.encoder Bytes.empty = { encoder = first.encoder, output = \"\" }" case035,
+  Test.test "head.output = Bytes.empty && head.consumed = 2 && head.error = None && Encoding.decoderOffset head.decoder = 2" case036,
+  Test.test "decodeChunks head.decoder [Bytes.fromString \"==\"] [] = (Bytes.fromString \"f\", None)" case037,
+  Test.test "decodeChunks head.decoder [Bytes.fromString \"AA\"] [] = (Bytes.fromList [102, 0, 0], None)" case038,
+  Test.test "decodeChunks decoder [Bytes.fromString \"Zm9v\"] [] = (Bytes.fromString \"foo\", None)" case039,
+  Test.test "Encoding.feedDecoder head.decoder Bytes.empty = { consumed = 0, decoder = head.decoder, error = None, output = Bytes.empty }" case040,
+  Test.test "bad.consumed = 4 && bad.output = Bytes.fromString \"foo\" && bad.error = Some { kind = Encoding.InvalidCharacter, message = \"character is outside the encoding …" case041,
+  Test.test "Encoding.feedDecoder bad.decoder (Bytes.fromString \"AAAA\") = { consumed = 0, decoder = bad.decoder, error = bad.error, output = Bytes.empty }" case042,
+  Test.test "Encoding.feedDecoder bad.decoder Bytes.empty = { consumed = 0, decoder = bad.decoder, error = bad.error, output = Bytes.empty }" case043,
+  Test.test "(match Encoding.finishDecoder bad.decoder with | Err error -> Some error = bad.error | Ok _ -> false)" case044,
+  Test.test "urlTail.output = Bytes.empty && Encoding.finishDecoder urlTail.decoder = Ok (Bytes.fromString \"f\")" case045,
+  Test.test "decodeChunks urlTail.decoder [ Bytes.fromString \"AA\" ] [] = (Bytes.fromList [102, 0, 0], None)" case046
+]

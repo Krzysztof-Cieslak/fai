@@ -1,33 +1,131 @@
 module DecimalFloatSpec
 
 let decimal text = Result.withDefault Decimal.nan (Decimal.parse text)
-example: Result.map Decimal.toString (Decimal.fromFloatShortest 0.1) = Ok "0.1"
-example: Result.map Decimal.toString (Decimal.fromFloatExact 0.1) = Ok "0.1000000000000000055511151231257827021181583404541015625"
-example: Decimal.fromFloatExact (-0.0) = Ok Decimal.zero
-example: Decimal.fromFloatShortest (-0.0) = Ok Decimal.zero
-example: Decimal.fromFloatExact (Float.fromBits 0x7ff0000000000000) = Ok Decimal.positiveInfinity
-example: Decimal.fromFloatExact (Float.fromBits 0xfff0000000000000) = Ok Decimal.negativeInfinity
-example: Decimal.fromFloatExact (Float.fromBits 0xfff0000000000001) = Ok Decimal.nan
-example: Result.map Float.toBits (Decimal.toFloat (decimal "0.1")) = Ok 0x3fb999999999999a
-example: Result.map Float.toBits (Decimal.toFloat (decimal "0.1000000000000000055511151231257827021181583404541015625")) = Ok 0x3fb999999999999a
-example: Result.map Float.toBits (Decimal.toFloat (decimal "-1e-1000000")) = Ok (-9223372036854775808)
-example: Decimal.toFloat (decimal "1e1000000") |> Result.isErr
-example: Result.map Float.toBits (Decimal.toFloat Decimal.positiveInfinity) = Ok 0x7ff0000000000000
-example: Result.map Float.toBits (Decimal.toFloat Decimal.nan) = Ok 0x7ff8000000000000
-example: Result.map Float.toBits (Decimal.toFloat (decimal "1.00000000000000011102230246251565404236316680908203125")) = Ok 0x3ff0000000000000
-example: Result.map Float.toBits (Decimal.toFloat (decimal "1.00000000000000033306690738754696212708950042724609375")) = Ok 0x3ff0000000000002
-example: (match Decimal.fromFloatExact (Float.fromBits 1) with
-| Err _ -> false
-| Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 1)
-example: (match Decimal.fromFloatExact (Float.fromBits 0x7fefffffffffffff) with
-| Err _ -> false
-| Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 0x7fefffffffffffff)
+
+let case001 _ =
+  let testActual = Result.map Decimal.toString (Decimal.fromFloatShortest 0.1) = Ok "0.1"
+  Expect.isTrue "Result.map Decimal.toString (Decimal.fromFloatShortest 0.1) = Ok \"0.1\"" testActual
+
+let case002 _ =
+  let testActual =
+    Result.map Decimal.toString (Decimal.fromFloatExact 0.1) = Ok "0.1000000000000000055511151231257827021181583404541015625"
+  Expect.isTrue "Result.map Decimal.toString (Decimal.fromFloatExact 0.1) = Ok \"0.1000000000000000055511151231257827021181583404541015625\"" testActual
+
+let case003 _ =
+  let testActual = Decimal.fromFloatExact (-0.0) = Ok Decimal.zero
+  Expect.isTrue "Decimal.fromFloatExact (-0.0) = Ok Decimal.zero" testActual
+
+let case004 _ =
+  let testActual = Decimal.fromFloatShortest (-0.0) = Ok Decimal.zero
+  Expect.isTrue "Decimal.fromFloatShortest (-0.0) = Ok Decimal.zero" testActual
+
+let case005 _ =
+  let testActual =
+    Decimal.fromFloatExact (Float.fromBits 0x7ff0000000000000) = Ok Decimal.positiveInfinity
+  Expect.isTrue "Decimal.fromFloatExact (Float.fromBits 0x7ff0000000000000) = Ok Decimal.positiveInfinity" testActual
+
+let case006 _ =
+  let testActual =
+    Decimal.fromFloatExact (Float.fromBits 0xfff0000000000000) = Ok Decimal.negativeInfinity
+  Expect.isTrue "Decimal.fromFloatExact (Float.fromBits 0xfff0000000000000) = Ok Decimal.negativeInfinity" testActual
+
+let case007 _ =
+  let testActual = Decimal.fromFloatExact (Float.fromBits 0xfff0000000000001) = Ok Decimal.nan
+  Expect.isTrue "Decimal.fromFloatExact (Float.fromBits 0xfff0000000000001) = Ok Decimal.nan" testActual
+
+let case008 _ =
+  let testActual = Result.map Float.toBits (Decimal.toFloat (decimal "0.1")) = Ok 0x3fb999999999999a
+  Expect.isTrue "Result.map Float.toBits (Decimal.toFloat (decimal \"0.1\")) = Ok 0x3fb999999999999a" testActual
+
+let case009 _ =
+  let testActual =
+    Result.map Float.toBits (Decimal.toFloat (decimal "0.1000000000000000055511151231257827021181583404541015625")) = Ok 0x3fb999999999999a
+  Expect.isTrue "Result.map Float.toBits (Decimal.toFloat (decimal \"0.1000000000000000055511151231257827021181583404541015625\")) = Ok 0x3fb999999999999a" testActual
+
+let case010 _ =
+  let testActual =
+    Result.map Float.toBits (Decimal.toFloat (decimal "-1e-1000000")) = Ok (-9223372036854775808)
+  Expect.isTrue "Result.map Float.toBits (Decimal.toFloat (decimal \"-1e-1000000\")) = Ok (-9223372036854775808)" testActual
+
+let case011 _ =
+  let testActual = Decimal.toFloat (decimal "1e1000000") |> Result.isErr
+  Expect.isTrue "Decimal.toFloat (decimal \"1e1000000\") |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual =
+    Result.map Float.toBits (Decimal.toFloat Decimal.positiveInfinity) = Ok 0x7ff0000000000000
+  Expect.isTrue "Result.map Float.toBits (Decimal.toFloat Decimal.positiveInfinity) = Ok 0x7ff0000000000000" testActual
+
+let case013 _ =
+  let testActual = Result.map Float.toBits (Decimal.toFloat Decimal.nan) = Ok 0x7ff8000000000000
+  Expect.isTrue "Result.map Float.toBits (Decimal.toFloat Decimal.nan) = Ok 0x7ff8000000000000" testActual
+
+let case014 _ =
+  let testActual =
+    Result.map Float.toBits (Decimal.toFloat (decimal "1.00000000000000011102230246251565404236316680908203125")) = Ok 0x3ff0000000000000
+  Expect.isTrue "Result.map Float.toBits (Decimal.toFloat (decimal \"1.00000000000000011102230246251565404236316680908203125\")) = Ok 0x3ff0000000000000" testActual
+
+let case015 _ =
+  let testActual =
+    Result.map Float.toBits (Decimal.toFloat (decimal "1.00000000000000033306690738754696212708950042724609375")) = Ok 0x3ff0000000000002
+  Expect.isTrue "Result.map Float.toBits (Decimal.toFloat (decimal \"1.00000000000000033306690738754696212708950042724609375\")) = Ok 0x3ff0000000000002" testActual
+
+let case016 _ =
+  let testActual =
+    (match Decimal.fromFloatExact (Float.fromBits 1) with
+    | Err _ -> false
+    | Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 1)
+  Expect.isTrue "(match Decimal.fromFloatExact (Float.fromBits 1) with | Err _ -> false | Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 1)" testActual
+
+let case017 _ =
+  let testActual =
+    (match Decimal.fromFloatExact (Float.fromBits 0x7fefffffffffffff) with
+    | Err _ -> false
+    | Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 0x7fefffffffffffff)
+  Expect.isTrue "(match Decimal.fromFloatExact (Float.fromBits 0x7fefffffffffffff) with | Err _ -> false | Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 0x…" testActual
 
 let bitsRoundtrip bits =
   match Decimal.fromFloatExact (Float.fromBits bits) with
   | Err _ -> false
   | Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok bits
-example: bitsRoundtrip 0x0010000000000000
-example: bitsRoundtrip 0x000fffffffffffff
-example: bitsRoundtrip 0x8000000000000001
-example: bitsRoundtrip 0xffefffffffffffff
+
+let case018 _ =
+  let testActual = bitsRoundtrip 0x0010000000000000
+  Expect.isTrue "bitsRoundtrip 0x0010000000000000" testActual
+
+let case019 _ =
+  let testActual = bitsRoundtrip 0x000fffffffffffff
+  Expect.isTrue "bitsRoundtrip 0x000fffffffffffff" testActual
+
+let case020 _ =
+  let testActual = bitsRoundtrip 0x8000000000000001
+  Expect.isTrue "bitsRoundtrip 0x8000000000000001" testActual
+
+let case021 _ =
+  let testActual = bitsRoundtrip 0xffefffffffffffff
+  Expect.isTrue "bitsRoundtrip 0xffefffffffffffff" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DecimalFloatSpec" [
+  Test.test "Result.map Decimal.toString (Decimal.fromFloatShortest 0.1) = Ok \"0.1\"" case001,
+  Test.test "Result.map Decimal.toString (Decimal.fromFloatExact 0.1) = Ok \"0.1000000000000000055511151231257827021181583404541015625\"" case002,
+  Test.test "Decimal.fromFloatExact (-0.0) = Ok Decimal.zero" case003,
+  Test.test "Decimal.fromFloatShortest (-0.0) = Ok Decimal.zero" case004,
+  Test.test "Decimal.fromFloatExact (Float.fromBits 0x7ff0000000000000) = Ok Decimal.positiveInfinity" case005,
+  Test.test "Decimal.fromFloatExact (Float.fromBits 0xfff0000000000000) = Ok Decimal.negativeInfinity" case006,
+  Test.test "Decimal.fromFloatExact (Float.fromBits 0xfff0000000000001) = Ok Decimal.nan" case007,
+  Test.test "Result.map Float.toBits (Decimal.toFloat (decimal \"0.1\")) = Ok 0x3fb999999999999a" case008,
+  Test.test "Result.map Float.toBits (Decimal.toFloat (decimal \"0.1000000000000000055511151231257827021181583404541015625\")) = Ok 0x3fb999999999999a" case009,
+  Test.test "Result.map Float.toBits (Decimal.toFloat (decimal \"-1e-1000000\")) = Ok (-9223372036854775808)" case010,
+  Test.test "Decimal.toFloat (decimal \"1e1000000\") |> Result.isErr" case011,
+  Test.test "Result.map Float.toBits (Decimal.toFloat Decimal.positiveInfinity) = Ok 0x7ff0000000000000" case012,
+  Test.test "Result.map Float.toBits (Decimal.toFloat Decimal.nan) = Ok 0x7ff8000000000000" case013,
+  Test.test "Result.map Float.toBits (Decimal.toFloat (decimal \"1.00000000000000011102230246251565404236316680908203125\")) = Ok 0x3ff0000000000000" case014,
+  Test.test "Result.map Float.toBits (Decimal.toFloat (decimal \"1.00000000000000033306690738754696212708950042724609375\")) = Ok 0x3ff0000000000002" case015,
+  Test.test "(match Decimal.fromFloatExact (Float.fromBits 1) with | Err _ -> false | Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 1)" case016,
+  Test.test "(match Decimal.fromFloatExact (Float.fromBits 0x7fefffffffffffff) with | Err _ -> false | Ok value -> Result.map Float.toBits (Decimal.toFloat value) = Ok 0x…" case017,
+  Test.test "bitsRoundtrip 0x0010000000000000" case018,
+  Test.test "bitsRoundtrip 0x000fffffffffffff" case019,
+  Test.test "bitsRoundtrip 0x8000000000000001" case020,
+  Test.test "bitsRoundtrip 0xffefffffffffffff" case021
+]

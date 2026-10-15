@@ -3,49 +3,150 @@ module TomlDocumentSpec
 let accepts source = Toml.parse source |> Result.isOk
 
 let rejects source = Toml.parse source |> Result.isErr
-example: accepts "a = [1, 'two', { x = true },]\n[b.c]\nd=2\n[b]\ne=3\n"
-example: accepts "[[products]]\nname='a'\n[products.info]\nx=1\n[[products]]\nname='b'\n[products.info]\nx=2"
-example: accepts "a.b=1\na.c=2"
-example: accepts "a={\n b=1, # comment\n c=[true],\n}"
-example: accepts "time=1979-05-27 07:32Z"
-example: rejects "a=1\na=2"
-example: rejects "a.b=1\n[a]"
-example: rejects "a={b=1}\na.c=2"
-example: rejects "a=[]\n[[a]]"
-example: rejects "[a]\n[a]"
-example: rejects "a=[1 2]"
-example: rejects "a=1 b=2"
-example: rejects "a=\n1"
-example: rejects "[a.b]\nx=1\n[a]\nb.y=2"
-example: (match Toml.parse "é=1" with
-| Err error -> error.primary.startByte = 0
-| _ -> false)
-example: (match Toml.parse "a=1\na=2" with
-| Err error ->
-  error.primary.startByte = 4 && error.secondary = Some {
-    column = 1,
-    endByte = 1,
-    endColumn = 2,
-    endLine = 1,
-    line = 1,
-    startByte = 0
-  }
-| _ -> false)
-example: Toml.parseWith { Toml.options with maxNodes = 2 } "a=1" |> Result.isOk
-example: Toml.parseWith { Toml.options with maxNodes = 1 } "a=1" |> Result.isErr
-example: Toml.parseWith { Toml.options with maxDepth = 2 } "a=[[[1]]]" |> Result.isErr
-example: (match Toml.parse "a=[" with
-| Err error -> error.primary.startByte = 3 && error.primary.endByte = 3
-| _ -> false)
+
+let case001 _ =
+  let testActual = accepts "a = [1, 'two', { x = true },]\n[b.c]\nd=2\n[b]\ne=3\n"
+  Expect.isTrue "accepts \"a = [1, 'two', { x = true },]\\n[b.c]\\nd=2\\n[b]\\ne=3\\n\"" testActual
+
+let case002 _ =
+  let testActual =
+    accepts "[[products]]\nname='a'\n[products.info]\nx=1\n[[products]]\nname='b'\n[products.info]\nx=2"
+  Expect.isTrue "accepts \"[[products]]\\nname='a'\\n[products.info]\\nx=1\\n[[products]]\\nname='b'\\n[products.info]\\nx=2\"" testActual
+
+let case003 _ =
+  let testActual = accepts "a.b=1\na.c=2"
+  Expect.isTrue "accepts \"a.b=1\\na.c=2\"" testActual
+
+let case004 _ =
+  let testActual = accepts "a={\n b=1, # comment\n c=[true],\n}"
+  Expect.isTrue "accepts \"a={\\n b=1, # comment\\n c=[true],\\n}\"" testActual
+
+let case005 _ =
+  let testActual = accepts "time=1979-05-27 07:32Z"
+  Expect.isTrue "accepts \"time=1979-05-27 07:32Z\"" testActual
+
+let case006 _ =
+  let testActual = rejects "a=1\na=2"
+  Expect.isTrue "rejects \"a=1\\na=2\"" testActual
+
+let case007 _ =
+  let testActual = rejects "a.b=1\n[a]"
+  Expect.isTrue "rejects \"a.b=1\\n[a]\"" testActual
+
+let case008 _ =
+  let testActual = rejects "a={b=1}\na.c=2"
+  Expect.isTrue "rejects \"a={b=1}\\na.c=2\"" testActual
+
+let case009 _ =
+  let testActual = rejects "a=[]\n[[a]]"
+  Expect.isTrue "rejects \"a=[]\\n[[a]]\"" testActual
+
+let case010 _ =
+  let testActual = rejects "[a]\n[a]"
+  Expect.isTrue "rejects \"[a]\\n[a]\"" testActual
+
+let case011 _ =
+  let testActual = rejects "a=[1 2]"
+  Expect.isTrue "rejects \"a=[1 2]\"" testActual
+
+let case012 _ =
+  let testActual = rejects "a=1 b=2"
+  Expect.isTrue "rejects \"a=1 b=2\"" testActual
+
+let case013 _ =
+  let testActual = rejects "a=\n1"
+  Expect.isTrue "rejects \"a=\\n1\"" testActual
+
+let case014 _ =
+  let testActual = rejects "[a.b]\nx=1\n[a]\nb.y=2"
+  Expect.isTrue "rejects \"[a.b]\\nx=1\\n[a]\\nb.y=2\"" testActual
+
+let case015 _ =
+  let testActual =
+    (match Toml.parse "é=1" with
+    | Err error -> error.primary.startByte = 0
+    | _ -> false)
+  Expect.isTrue "(match Toml.parse \"é=1\" with | Err error -> error.primary.startByte = 0 | _ -> false)" testActual
+
+let case016 _ =
+  let testActual =
+    (match Toml.parse "a=1\na=2" with
+    | Err error ->
+      error.primary.startByte = 4 && error.secondary = Some {
+        column = 1,
+        endByte = 1,
+        endColumn = 2,
+        endLine = 1,
+        line = 1,
+        startByte = 0
+      }
+    | _ -> false)
+  Expect.isTrue "(match Toml.parse \"a=1\\na=2\" with | Err error -> error.primary.startByte = 4 && error.secondary = Some { column = 1, endByte = 1, endColumn = 2, endLine = 1,…" testActual
+
+let case017 _ =
+  let testActual = Toml.parseWith { Toml.options with maxNodes = 2 } "a=1" |> Result.isOk
+  Expect.isTrue "Toml.parseWith { Toml.options with maxNodes = 2 } \"a=1\" |> Result.isOk" testActual
+
+let case018 _ =
+  let testActual = Toml.parseWith { Toml.options with maxNodes = 1 } "a=1" |> Result.isErr
+  Expect.isTrue "Toml.parseWith { Toml.options with maxNodes = 1 } \"a=1\" |> Result.isErr" testActual
+
+let case019 _ =
+  let testActual = Toml.parseWith { Toml.options with maxDepth = 2 } "a=[[[1]]]" |> Result.isErr
+  Expect.isTrue "Toml.parseWith { Toml.options with maxDepth = 2 } \"a=[[[1]]]\" |> Result.isErr" testActual
+
+let case020 _ =
+  let testActual =
+    (match Toml.parse "a=[" with
+    | Err error -> error.primary.startByte = 3 && error.primary.endByte = 3
+    | _ -> false)
+  Expect.isTrue "(match Toml.parse \"a=[\" with | Err error -> error.primary.startByte = 3 && error.primary.endByte = 3 | _ -> false)" testActual
 
 let deep count =
   "value=" ++ String.joinArray "" (Array.repeat count "[") ++ "0" ++ String.joinArray "" (Array.repeat count "]")
-example: Toml.parse (deep 129) |> Result.isErr
-example: Toml.parseWith { Toml.options with maxDepth = 600 } (deep 500) |> Result.isOk
+
+let case021 _ =
+  let testActual = Toml.parse (deep 129) |> Result.isErr
+  Expect.isTrue "Toml.parse (deep 129) |> Result.isErr" testActual
+
+let case022 _ =
+  let testActual = Toml.parseWith { Toml.options with maxDepth = 600 } (deep 500) |> Result.isOk
+  Expect.isTrue "Toml.parseWith { Toml.options with maxDepth = 600 } (deep 500) |> Result.isOk" testActual
 
 let total source =
   match Toml.parse source with
   | Ok document -> Toml.toString (Toml.value document) |> Result.isOk
   | Err error ->
     error.primary.startByte >= 0 && error.primary.endByte >= error.primary.startByte && error.primary.endByte <= Bytes.length (Bytes.fromString source)
-forall source: total source
+
+let case023 testInput =
+  let source = testInput
+  let testActual = total source
+  Expect.isTrue "property: total source" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "TomlDocumentSpec" [
+  Test.test "accepts \"a = [1, 'two', { x = true },]\\n[b.c]\\nd=2\\n[b]\\ne=3\\n\"" case001,
+  Test.test "accepts \"[[products]]\\nname='a'\\n[products.info]\\nx=1\\n[[products]]\\nname='b'\\n[products.info]\\nx=2\"" case002,
+  Test.test "accepts \"a.b=1\\na.c=2\"" case003,
+  Test.test "accepts \"a={\\n b=1, # comment\\n c=[true],\\n}\"" case004,
+  Test.test "accepts \"time=1979-05-27 07:32Z\"" case005,
+  Test.test "rejects \"a=1\\na=2\"" case006,
+  Test.test "rejects \"a.b=1\\n[a]\"" case007,
+  Test.test "rejects \"a={b=1}\\na.c=2\"" case008,
+  Test.test "rejects \"a=[]\\n[[a]]\"" case009,
+  Test.test "rejects \"[a]\\n[a]\"" case010,
+  Test.test "rejects \"a=[1 2]\"" case011,
+  Test.test "rejects \"a=1 b=2\"" case012,
+  Test.test "rejects \"a=\\n1\"" case013,
+  Test.test "rejects \"[a.b]\\nx=1\\n[a]\\nb.y=2\"" case014,
+  Test.test "(match Toml.parse \"é=1\" with | Err error -> error.primary.startByte = 0 | _ -> false)" case015,
+  Test.test "(match Toml.parse \"a=1\\na=2\" with | Err error -> error.primary.startByte = 4 && error.secondary = Some { column = 1, endByte = 1, endColumn = 2, endLine = 1,…" case016,
+  Test.test "Toml.parseWith { Toml.options with maxNodes = 2 } \"a=1\" |> Result.isOk" case017,
+  Test.test "Toml.parseWith { Toml.options with maxNodes = 1 } \"a=1\" |> Result.isErr" case018,
+  Test.test "Toml.parseWith { Toml.options with maxDepth = 2 } \"a=[[[1]]]\" |> Result.isErr" case019,
+  Test.test "(match Toml.parse \"a=[\" with | Err error -> error.primary.startByte = 3 && error.primary.endByte = 3 | _ -> false)" case020,
+  Test.test "Toml.parse (deep 129) |> Result.isErr" case021,
+  Test.test "Toml.parseWith { Toml.options with maxDepth = 600 } (deep 500) |> Result.isOk" case022,
+  Test.property "property: total source" Test.string case023
+]

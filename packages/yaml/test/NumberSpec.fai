@@ -2,40 +2,173 @@ module YamlNumberSpec
 
 let integer text expected =
   Option.map YamlNumber.integerToString (YamlNumber.parseInteger text) = Some expected
-example: integer "+00123" "123"
-example: integer "-000" "0"
-example: integer "0o777" "511"
-example: integer "0xdeadBEEF" "3735928559"
-example: integer "0xffffffffffffffff" "18446744073709551615"
-example: integer "999999999999999999999999999999999999999999" "999999999999999999999999999999999999999999"
-example: YamlNumber.parseInteger "1_000" = None
-example: YamlNumber.parseInteger "0b111" = None
-example: YamlNumber.parseInteger "-0x10" = None
-example: YamlNumber.parseInteger "0o8" = None
-example: YamlNumber.parseInteger "" = None
-example: Option.map YamlNumber.integerToInt (YamlNumber.parseInteger "-9223372036854775808") = Some (Ok (-9223372036854775808))
-example: (match YamlNumber.parseInteger "9223372036854775808" with
-| Some number -> Result.isErr (YamlNumber.integerToInt number)
-| _ -> false)
-example: Option.map YamlNumber.floatToString (YamlNumber.parseFloat "+.5") = Some "0.5"
-example: Option.map YamlNumber.floatToString (YamlNumber.parseFloat "-01.") = Some "-1.0"
-example: Option.map YamlNumber.floatToString (YamlNumber.parseFloat "012e+4") = Some "12e+4"
-example: YamlNumber.parseFloat "." = None
-example: YamlNumber.parseFloat "1e" = None
-example: YamlNumber.parseFloat "1e+" = None
-example: YamlNumber.parseFloat "1_0.0" = None
-example: YamlNumber.parseFloat "1:20" = None
-example: YamlNumber.parseFloat "-.nan" = None
-example: YamlNumber.parseFloat "+.NaN" = None
-example: YamlNumber.parseFloat ".NAN" = Some YamlNumber.NaN
-example: YamlNumber.parseFloat "-.INF" = Some YamlNumber.NegativeInfinity
-example: YamlNumber.parseFloat "+.Inf" = Some YamlNumber.PositiveInfinity
-example: (match YamlNumber.parseFloat "1e99999999999" with
-| Some number -> Result.isErr (YamlNumber.floatToFloat number)
-| _ -> false)
-example: (match YamlNumber.parseFloat "-0.0" with
-| Some number ->
-  Result.map Float.toBits (YamlNumber.floatToFloat number) = Ok (-9223372036854775808)
-| _ -> false)
-example: Yaml.load "0b10" = Ok (YamlData.String "0b10")
-example: Yaml.load "1_000" = Ok (YamlData.String "1_000")
+
+let case001 _ =
+  let testActual = integer "+00123" "123"
+  Expect.isTrue "integer \"+00123\" \"123\"" testActual
+
+let case002 _ =
+  let testActual = integer "-000" "0"
+  Expect.isTrue "integer \"-000\" \"0\"" testActual
+
+let case003 _ =
+  let testActual = integer "0o777" "511"
+  Expect.isTrue "integer \"0o777\" \"511\"" testActual
+
+let case004 _ =
+  let testActual = integer "0xdeadBEEF" "3735928559"
+  Expect.isTrue "integer \"0xdeadBEEF\" \"3735928559\"" testActual
+
+let case005 _ =
+  let testActual = integer "0xffffffffffffffff" "18446744073709551615"
+  Expect.isTrue "integer \"0xffffffffffffffff\" \"18446744073709551615\"" testActual
+
+let case006 _ =
+  let testActual =
+    integer "999999999999999999999999999999999999999999" "999999999999999999999999999999999999999999"
+  Expect.isTrue "integer \"999999999999999999999999999999999999999999\" \"999999999999999999999999999999999999999999\"" testActual
+
+let case007 _ =
+  let testActual = YamlNumber.parseInteger "1_000" = None
+  Expect.isTrue "YamlNumber.parseInteger \"1_000\" = None" testActual
+
+let case008 _ =
+  let testActual = YamlNumber.parseInteger "0b111" = None
+  Expect.isTrue "YamlNumber.parseInteger \"0b111\" = None" testActual
+
+let case009 _ =
+  let testActual = YamlNumber.parseInteger "-0x10" = None
+  Expect.isTrue "YamlNumber.parseInteger \"-0x10\" = None" testActual
+
+let case010 _ =
+  let testActual = YamlNumber.parseInteger "0o8" = None
+  Expect.isTrue "YamlNumber.parseInteger \"0o8\" = None" testActual
+
+let case011 _ =
+  let testActual = YamlNumber.parseInteger "" = None
+  Expect.isTrue "YamlNumber.parseInteger \"\" = None" testActual
+
+let case012 _ =
+  let testActual =
+    Option.map YamlNumber.integerToInt (YamlNumber.parseInteger "-9223372036854775808")
+  let testExpected = Some (Ok (-9223372036854775808))
+  Expect.equal ((Test.option (Test.result Test.int Test.string))).show testExpected testActual
+
+let case013 _ =
+  let testActual =
+    (match YamlNumber.parseInteger "9223372036854775808" with
+    | Some number -> Result.isErr (YamlNumber.integerToInt number)
+    | _ -> false)
+  Expect.isTrue "(match YamlNumber.parseInteger \"9223372036854775808\" with | Some number -> Result.isErr (YamlNumber.integerToInt number) | _ -> false)" testActual
+
+let case014 _ =
+  let testActual = Option.map YamlNumber.floatToString (YamlNumber.parseFloat "+.5")
+  let testExpected = Some "0.5"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case015 _ =
+  let testActual = Option.map YamlNumber.floatToString (YamlNumber.parseFloat "-01.")
+  let testExpected = Some "-1.0"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case016 _ =
+  let testActual = Option.map YamlNumber.floatToString (YamlNumber.parseFloat "012e+4")
+  let testExpected = Some "12e+4"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case017 _ =
+  let testActual = YamlNumber.parseFloat "." = None
+  Expect.isTrue "YamlNumber.parseFloat \".\" = None" testActual
+
+let case018 _ =
+  let testActual = YamlNumber.parseFloat "1e" = None
+  Expect.isTrue "YamlNumber.parseFloat \"1e\" = None" testActual
+
+let case019 _ =
+  let testActual = YamlNumber.parseFloat "1e+" = None
+  Expect.isTrue "YamlNumber.parseFloat \"1e+\" = None" testActual
+
+let case020 _ =
+  let testActual = YamlNumber.parseFloat "1_0.0" = None
+  Expect.isTrue "YamlNumber.parseFloat \"1_0.0\" = None" testActual
+
+let case021 _ =
+  let testActual = YamlNumber.parseFloat "1:20" = None
+  Expect.isTrue "YamlNumber.parseFloat \"1:20\" = None" testActual
+
+let case022 _ =
+  let testActual = YamlNumber.parseFloat "-.nan" = None
+  Expect.isTrue "YamlNumber.parseFloat \"-.nan\" = None" testActual
+
+let case023 _ =
+  let testActual = YamlNumber.parseFloat "+.NaN" = None
+  Expect.isTrue "YamlNumber.parseFloat \"+.NaN\" = None" testActual
+
+let case024 _ =
+  let testActual = YamlNumber.parseFloat ".NAN" = Some YamlNumber.NaN
+  Expect.isTrue "YamlNumber.parseFloat \".NAN\" = Some YamlNumber.NaN" testActual
+
+let case025 _ =
+  let testActual = YamlNumber.parseFloat "-.INF" = Some YamlNumber.NegativeInfinity
+  Expect.isTrue "YamlNumber.parseFloat \"-.INF\" = Some YamlNumber.NegativeInfinity" testActual
+
+let case026 _ =
+  let testActual = YamlNumber.parseFloat "+.Inf" = Some YamlNumber.PositiveInfinity
+  Expect.isTrue "YamlNumber.parseFloat \"+.Inf\" = Some YamlNumber.PositiveInfinity" testActual
+
+let case027 _ =
+  let testActual =
+    (match YamlNumber.parseFloat "1e99999999999" with
+    | Some number -> Result.isErr (YamlNumber.floatToFloat number)
+    | _ -> false)
+  Expect.isTrue "(match YamlNumber.parseFloat \"1e99999999999\" with | Some number -> Result.isErr (YamlNumber.floatToFloat number) | _ -> false)" testActual
+
+let case028 _ =
+  let testActual =
+    (match YamlNumber.parseFloat "-0.0" with
+    | Some number ->
+      Result.map Float.toBits (YamlNumber.floatToFloat number) = Ok (-9223372036854775808)
+    | _ -> false)
+  Expect.isTrue "(match YamlNumber.parseFloat \"-0.0\" with | Some number -> Result.map Float.toBits (YamlNumber.floatToFloat number) = Ok (-9223372036854775808) | _ -> false)" testActual
+
+let case029 _ =
+  let testActual = Yaml.load "0b10" = Ok (YamlData.String "0b10")
+  Expect.isTrue "Yaml.load \"0b10\" = Ok (YamlData.String \"0b10\")" testActual
+
+let case030 _ =
+  let testActual = Yaml.load "1_000" = Ok (YamlData.String "1_000")
+  Expect.isTrue "Yaml.load \"1_000\" = Ok (YamlData.String \"1_000\")" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "YamlNumberSpec" [
+  Test.test "integer \"+00123\" \"123\"" case001,
+  Test.test "integer \"-000\" \"0\"" case002,
+  Test.test "integer \"0o777\" \"511\"" case003,
+  Test.test "integer \"0xdeadBEEF\" \"3735928559\"" case004,
+  Test.test "integer \"0xffffffffffffffff\" \"18446744073709551615\"" case005,
+  Test.test "integer \"999999999999999999999999999999999999999999\" \"999999999999999999999999999999999999999999\"" case006,
+  Test.test "YamlNumber.parseInteger \"1_000\" = None" case007,
+  Test.test "YamlNumber.parseInteger \"0b111\" = None" case008,
+  Test.test "YamlNumber.parseInteger \"-0x10\" = None" case009,
+  Test.test "YamlNumber.parseInteger \"0o8\" = None" case010,
+  Test.test "YamlNumber.parseInteger \"\" = None" case011,
+  Test.test "Option.map YamlNumber.integerToInt (YamlNumber.parseInteger \"-9223372036854775808\") = Some (Ok (-9223372036854775808))" case012,
+  Test.test "(match YamlNumber.parseInteger \"9223372036854775808\" with | Some number -> Result.isErr (YamlNumber.integerToInt number) | _ -> false)" case013,
+  Test.test "Option.map YamlNumber.floatToString (YamlNumber.parseFloat \"+.5\") = Some \"0.5\"" case014,
+  Test.test "Option.map YamlNumber.floatToString (YamlNumber.parseFloat \"-01.\") = Some \"-1.0\"" case015,
+  Test.test "Option.map YamlNumber.floatToString (YamlNumber.parseFloat \"012e+4\") = Some \"12e+4\"" case016,
+  Test.test "YamlNumber.parseFloat \".\" = None" case017,
+  Test.test "YamlNumber.parseFloat \"1e\" = None" case018,
+  Test.test "YamlNumber.parseFloat \"1e+\" = None" case019,
+  Test.test "YamlNumber.parseFloat \"1_0.0\" = None" case020,
+  Test.test "YamlNumber.parseFloat \"1:20\" = None" case021,
+  Test.test "YamlNumber.parseFloat \"-.nan\" = None" case022,
+  Test.test "YamlNumber.parseFloat \"+.NaN\" = None" case023,
+  Test.test "YamlNumber.parseFloat \".NAN\" = Some YamlNumber.NaN" case024,
+  Test.test "YamlNumber.parseFloat \"-.INF\" = Some YamlNumber.NegativeInfinity" case025,
+  Test.test "YamlNumber.parseFloat \"+.Inf\" = Some YamlNumber.PositiveInfinity" case026,
+  Test.test "(match YamlNumber.parseFloat \"1e99999999999\" with | Some number -> Result.isErr (YamlNumber.floatToFloat number) | _ -> false)" case027,
+  Test.test "(match YamlNumber.parseFloat \"-0.0\" with | Some number -> Result.map Float.toBits (YamlNumber.floatToFloat number) = Ok (-9223372036854775808) | _ -> false)" case028,
+  Test.test "Yaml.load \"0b10\" = Ok (YamlData.String \"0b10\")" case029,
+  Test.test "Yaml.load \"1_000\" = Ok (YamlData.String \"1_000\")" case030
+]

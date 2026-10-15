@@ -16,21 +16,57 @@ let call value = {
   name = "double",
   rawArguments = ""
 }
-example: (LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result ->
-  result.value)) = Ok (LlmJson.integer 14)
-example: (LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result ->
-  result.id)) = Ok "id-1"
-example: LlmTool.execute registry (call (Json.String "wrong")) |> Result.isErr
-example: LlmTool.definitions (LlmTool.combine registry registry) |> Result.isErr
-example: LlmTool.execute registry { call (LlmJson.integer 7) with name = "missing" } |> Result.isErr
+
+let case001 _ =
+  let testActual =
+    (LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result ->
+      result.value)) = Ok (LlmJson.integer 14)
+  Expect.isTrue "(LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result -> result.value)) = Ok (LlmJson.integer 14)" testActual
+
+let case002 _ =
+  let testActual =
+    (LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result ->
+      result.id)) = Ok "id-1"
+  Expect.isTrue "(LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result -> result.id)) = Ok \"id-1\"" testActual
+
+let case003 _ =
+  let testActual = LlmTool.execute registry (call (Json.String "wrong")) |> Result.isErr
+  Expect.isTrue "LlmTool.execute registry (call (Json.String \"wrong\")) |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual = LlmTool.definitions (LlmTool.combine registry registry) |> Result.isErr
+  Expect.isTrue "LlmTool.definitions (LlmTool.combine registry registry) |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    LlmTool.execute registry { call (LlmJson.integer 7) with name = "missing" } |> Result.isErr
+  Expect.isTrue "LlmTool.execute registry { call (LlmJson.integer 7) with name = \"missing\" } |> Result.isErr" testActual
 
 let trapped =
   LlmTool.singleton (LlmTool.define "double" "must not execute" schema JsonEncode.int (fun x ->
     Ok (x / 0)))
-example: LlmTool.execute trapped (call Json.Null) |> Result.isErr
+
+let case006 _ =
+  let testActual = LlmTool.execute trapped (call Json.Null) |> Result.isErr
+  Expect.isTrue "LlmTool.execute trapped (call Json.Null) |> Result.isErr" testActual
 
 let failed =
   LlmTool.singleton (LlmTool.define "double" "reports an error" schema JsonEncode.int (fun x ->
     Err "tool failed"))
-example: (LlmTool.execute failed (call (LlmJson.integer 7)) |> Result.map (fun result ->
-  result.isError)) = Ok true
+
+let case007 _ =
+  let testActual =
+    (LlmTool.execute failed (call (LlmJson.integer 7)) |> Result.map (fun result ->
+      result.isError)) = Ok true
+  Expect.isTrue "(LlmTool.execute failed (call (LlmJson.integer 7)) |> Result.map (fun result -> result.isError)) = Ok true" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LlmToolSpec" [
+  Test.test "(LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result -> result.value)) = Ok (LlmJson.integer 14)" case001,
+  Test.test "(LlmTool.execute registry (call (LlmJson.integer 7)) |> Result.map (fun result -> result.id)) = Ok \"id-1\"" case002,
+  Test.test "LlmTool.execute registry (call (Json.String \"wrong\")) |> Result.isErr" case003,
+  Test.test "LlmTool.definitions (LlmTool.combine registry registry) |> Result.isErr" case004,
+  Test.test "LlmTool.execute registry { call (LlmJson.integer 7) with name = \"missing\" } |> Result.isErr" case005,
+  Test.test "LlmTool.execute trapped (call Json.Null) |> Result.isErr" case006,
+  Test.test "(LlmTool.execute failed (call (LlmJson.integer 7)) |> Result.map (fun result -> result.isError)) = Ok true" case007
+]

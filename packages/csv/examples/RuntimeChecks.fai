@@ -123,3 +123,16 @@ let main env =
       "CSV runtime checks passed"
     else
       "CSV runtime checks FAILED")
+
+textFiles : Test.Context -> Test.Check / { Clock, Concurrency, Console, FileSystem }
+let textFiles ctx = Expect.ok identity (fun _ -> Test.pass) (scopedChecks ctx.runtime ctx.tempRoot)
+
+binaryFiles : Test.Context -> Test.Check / { Concurrency, FileSystem }
+let binaryFiles ctx =
+  Expect.ok identity (fun _ -> Test.pass) (binaryChecks ctx.runtime ctx.tempRoot)
+
+public tests : Test.Suite Test.Context { Clock, Concurrency, Console, FileSystem }
+let tests = Test.describe "CSV file lifecycle" [
+  Test.test "text files preserve rows, early stop, expired aliases and validated writes" textFiles,
+  Test.test "binary files preserve arbitrary bytes across chunk boundaries" binaryFiles
+]

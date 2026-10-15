@@ -17,44 +17,125 @@ let read decoder row =
   match row with
   | Err e -> Err e
   | Ok row -> SqlDecode.decode decoder row
-example: read decoder (row 42 "Ada") = Ok { id = 42, name = "Ada" }
-example: read (SqlDecode.index 0 SqlDecode.int) (row (-9223372036854775808) "") = Ok (-9223372036854775808)
-example: Result.isErr (read (SqlDecode.field "ID" SqlDecode.int) (row 1 "one"))
-example: read (SqlDecode.optionalField "missing" SqlDecode.string) (row 1 "one") = Ok None
-example: Result.isErr (read (SqlDecode.index (-1) SqlDecode.int) (row 1 "one"))
-example: Result.isErr (read (SqlDecode.index 2 SqlDecode.int) (row 1 "one"))
-example: Result.isErr (Sql.row columns [| Sql.Integer 1 |])
-example: Sql.row Array.empty Array.empty = Sql.row Array.empty Array.empty
+
+let case001 _ =
+  let testActual = read decoder (row 42 "Ada") = Ok { id = 42, name = "Ada" }
+  Expect.isTrue "read decoder (row 42 \"Ada\") = Ok { id = 42, name = \"Ada\" }" testActual
+
+let case002 _ =
+  let testActual =
+    read (SqlDecode.index 0 SqlDecode.int) (row (-9223372036854775808) "") = Ok (-9223372036854775808)
+  Expect.isTrue "read (SqlDecode.index 0 SqlDecode.int) (row (-9223372036854775808) \"\") = Ok (-9223372036854775808)" testActual
+
+let case003 _ =
+  let testActual = Result.isErr (read (SqlDecode.field "ID" SqlDecode.int) (row 1 "one"))
+  Expect.isTrue "Result.isErr (read (SqlDecode.field \"ID\" SqlDecode.int) (row 1 \"one\"))" testActual
+
+let case004 _ =
+  let testActual = read (SqlDecode.optionalField "missing" SqlDecode.string) (row 1 "one") = Ok None
+  Expect.isTrue "read (SqlDecode.optionalField \"missing\" SqlDecode.string) (row 1 \"one\") = Ok None" testActual
+
+let case005 _ =
+  let testActual = Result.isErr (read (SqlDecode.index (-1) SqlDecode.int) (row 1 "one"))
+  Expect.isTrue "Result.isErr (read (SqlDecode.index (-1) SqlDecode.int) (row 1 \"one\"))" testActual
+
+let case006 _ =
+  let testActual = Result.isErr (read (SqlDecode.index 2 SqlDecode.int) (row 1 "one"))
+  Expect.isTrue "Result.isErr (read (SqlDecode.index 2 SqlDecode.int) (row 1 \"one\"))" testActual
+
+let case007 _ =
+  let testActual = Result.isErr (Sql.row columns [| Sql.Integer 1 |])
+  Expect.isTrue "Result.isErr (Sql.row columns [| Sql.Integer 1 |])" testActual
+
+let case008 _ =
+  let testActual = Sql.row Array.empty Array.empty = Sql.row Array.empty Array.empty
+  Expect.isTrue "Sql.row Array.empty Array.empty = Sql.row Array.empty Array.empty" testActual
 
 let repeated = [| { declaredType = None, name = "x" }, { declaredType = None, name = "x" } |]
-example: Result.isErr (read (SqlDecode.field "x" SqlDecode.int) (Sql.row repeated [|
-  Sql.Integer 1,
-  Sql.Integer 2
-|]))
-example: read (SqlDecode.index 1 SqlDecode.int) (Sql.row repeated [|
-  Sql.Integer 1,
-  Sql.Integer 2
-|]) = Ok 2
-example: Result.isErr (read (SqlDecode.optionalField "x" SqlDecode.int) (Sql.row repeated [|
-  Sql.Integer 1,
-  Sql.Integer 2
-|]))
-example: SqlDecode.decodeValue SqlDecode.int Sql.Null = Err (Sql.error Sql.DecodeFailure "decode" "expected SQL integer")
-example: SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) Sql.Null = Ok None
-example: SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) (Sql.Integer 2) = Ok (Some 2)
-example: SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 1) = Ok true
-example: SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 0) = Ok false
-example: Result.isErr (SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 2))
-example: Result.isErr (SqlDecode.decodeValue SqlDecode.int (Sql.Real 1.0))
-example: Result.isErr (SqlDecode.decodeValue SqlDecode.float (Sql.Integer 1))
-example: SqlDecode.decodeValue SqlDecode.float (Sql.Real 1.5) = Ok 1.5
-example: SqlDecode.decodeValue SqlDecode.bytes (Sql.Blob (Bytes.fromList [
-  0,
-  255
-])) = Ok (Bytes.fromList [0, 255])
-example: SqlDecode.decodeValue SqlDecode.string (Sql.Text "a\u{0}é😀") = Ok "a\u{0}é😀"
-forall n: SqlDecode.decodeValue SqlDecode.int (Sql.Integer n) = Ok n
-forall text: SqlDecode.decodeValue SqlDecode.string (Sql.Text text) = Ok text
+
+let case009 _ =
+  let testActual =
+    Result.isErr (read (SqlDecode.field "x" SqlDecode.int) (Sql.row repeated [|
+      Sql.Integer 1,
+      Sql.Integer 2
+    |]))
+  Expect.isTrue "Result.isErr (read (SqlDecode.field \"x\" SqlDecode.int) (Sql.row repeated [| Sql.Integer 1, Sql.Integer 2 |]))" testActual
+
+let case010 _ =
+  let testActual =
+    read (SqlDecode.index 1 SqlDecode.int) (Sql.row repeated [|
+      Sql.Integer 1,
+      Sql.Integer 2
+    |]) = Ok 2
+  Expect.isTrue "read (SqlDecode.index 1 SqlDecode.int) (Sql.row repeated [| Sql.Integer 1, Sql.Integer 2 |]) = Ok 2" testActual
+
+let case011 _ =
+  let testActual =
+    Result.isErr (read (SqlDecode.optionalField "x" SqlDecode.int) (Sql.row repeated [|
+      Sql.Integer 1,
+      Sql.Integer 2
+    |]))
+  Expect.isTrue "Result.isErr (read (SqlDecode.optionalField \"x\" SqlDecode.int) (Sql.row repeated [| Sql.Integer 1, Sql.Integer 2 |]))" testActual
+
+let case012 _ =
+  let testActual =
+    SqlDecode.decodeValue SqlDecode.int Sql.Null = Err (Sql.error Sql.DecodeFailure "decode" "expected SQL integer")
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.int Sql.Null = Err (Sql.error Sql.DecodeFailure \"decode\" \"expected SQL integer\")" testActual
+
+let case013 _ =
+  let testActual = SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) Sql.Null = Ok None
+  Expect.isTrue "SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) Sql.Null = Ok None" testActual
+
+let case014 _ =
+  let testActual =
+    SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) (Sql.Integer 2) = Ok (Some 2)
+  Expect.isTrue "SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) (Sql.Integer 2) = Ok (Some 2)" testActual
+
+let case015 _ =
+  let testActual = SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 1) = Ok true
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 1) = Ok true" testActual
+
+let case016 _ =
+  let testActual = SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 0) = Ok false
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 0) = Ok false" testActual
+
+let case017 _ =
+  let testActual = Result.isErr (SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 2))
+  Expect.isTrue "Result.isErr (SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 2))" testActual
+
+let case018 _ =
+  let testActual = Result.isErr (SqlDecode.decodeValue SqlDecode.int (Sql.Real 1.0))
+  Expect.isTrue "Result.isErr (SqlDecode.decodeValue SqlDecode.int (Sql.Real 1.0))" testActual
+
+let case019 _ =
+  let testActual = Result.isErr (SqlDecode.decodeValue SqlDecode.float (Sql.Integer 1))
+  Expect.isTrue "Result.isErr (SqlDecode.decodeValue SqlDecode.float (Sql.Integer 1))" testActual
+
+let case020 _ =
+  let testActual = SqlDecode.decodeValue SqlDecode.float (Sql.Real 1.5) = Ok 1.5
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.float (Sql.Real 1.5) = Ok 1.5" testActual
+
+let case021 _ =
+  let testActual =
+    SqlDecode.decodeValue SqlDecode.bytes (Sql.Blob (Bytes.fromList [
+      0,
+      255
+    ])) = Ok (Bytes.fromList [0, 255])
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.bytes (Sql.Blob (Bytes.fromList [ 0, 255 ])) = Ok (Bytes.fromList [0, 255])" testActual
+
+let case022 _ =
+  let testActual = SqlDecode.decodeValue SqlDecode.string (Sql.Text "a\u{0}é😀") = Ok "a\u{0}é😀"
+  Expect.isTrue "SqlDecode.decodeValue SqlDecode.string (Sql.Text \"a\\u{0}é😀\") = Ok \"a\\u{0}é😀\"" testActual
+
+let case023 testInput =
+  let n = testInput
+  let testActual = SqlDecode.decodeValue SqlDecode.int (Sql.Integer n) = Ok n
+  Expect.isTrue "property: SqlDecode.decodeValue SqlDecode.int (Sql.Integer n) = Ok n" testActual
+
+let case024 testInput =
+  let text = testInput
+  let testActual = SqlDecode.decodeValue SqlDecode.string (Sql.Text text) = Ok text
+  Expect.isTrue "property: SqlDecode.decodeValue SqlDecode.string (Sql.Text text) = Ok text" testActual
 
 let fake rows = Sql.session {
   begin = fun _ -> Ok (fake rows),
@@ -73,19 +154,45 @@ let sampleQuery =
     match row 2 "two" with
     | Err e -> Err e
     | Ok second -> query [first, second]
-example: sampleQuery = Ok [| { id = 1, name = "one" }, { id = 2, name = "two" } |]
-example: query [] = Ok Array.empty
-example: Sql.execute (fake []) (Sql.text "update things") = Ok { affectedRows = 1 }
-example: Sql.transaction Sql.Default (fake []) (fun child ->
-  Sql.execute child (Sql.text "update things")) = Ok { affectedRows = 1 }
+
+let case025 _ =
+  let testActual = sampleQuery = Ok [| { id = 1, name = "one" }, { id = 2, name = "two" } |]
+  Expect.isTrue "sampleQuery = Ok [| { id = 1, name = \"one\" }, { id = 2, name = \"two\" } |]" testActual
+
+let case026 _ =
+  let testActual = query [] = Ok Array.empty
+  Expect.isTrue "query [] = Ok Array.empty" testActual
+
+let case027 _ =
+  let testActual = Sql.execute (fake []) (Sql.text "update things") = Ok { affectedRows = 1 }
+  Expect.isTrue "Sql.execute (fake []) (Sql.text \"update things\") = Ok { affectedRows = 1 }" testActual
+
+let case028 _ =
+  let testActual =
+    Sql.transaction Sql.Default (fake []) (fun child ->
+      Sql.execute child (Sql.text "update things")) = Ok { affectedRows = 1 }
+  Expect.isTrue "Sql.transaction Sql.Default (fake []) (fun child -> Sql.execute child (Sql.text \"update things\")) = Ok { affectedRows = 1 }" testActual
 
 let primary = Sql.error Sql.BackendFailure "query" "primary"
 
 let secondary = Sql.error Sql.BackendFailure "close" "secondary"
-example: Sql.cleanup (Ok 42) (Ok ()) = Ok 42
-example: Sql.cleanup (Err primary) (Ok ()) = Err primary
-example: Sql.cleanup (Ok 42) (Err secondary) = Err secondary
-example: Sql.cleanup (Err primary) (Err secondary) = Err (Sql.CleanupFailed primary secondary)
+
+let case029 _ =
+  let testActual = Sql.cleanup (Ok 42) (Ok ()) = Ok 42
+  Expect.isTrue "Sql.cleanup (Ok 42) (Ok ()) = Ok 42" testActual
+
+let case030 _ =
+  let testActual = Sql.cleanup (Err primary) (Ok ()) = Err primary
+  Expect.isTrue "Sql.cleanup (Err primary) (Ok ()) = Err primary" testActual
+
+let case031 _ =
+  let testActual = Sql.cleanup (Ok 42) (Err secondary) = Err secondary
+  Expect.isTrue "Sql.cleanup (Ok 42) (Err secondary) = Err secondary" testActual
+
+let case032 _ =
+  let testActual =
+    Sql.cleanup (Err primary) (Err secondary) = Err (Sql.CleanupFailed primary secondary)
+  Expect.isTrue "Sql.cleanup (Err primary) (Err secondary) = Err (Sql.CleanupFailed primary secondary)" testActual
 
 let failingClose = Sql.session {
   begin = fun _ -> Err primary,
@@ -94,9 +201,16 @@ let failingClose = Sql.session {
   query = fun _ -> Ok (Sql.rows columns (fun _ -> Ok None) (fun _ -> Err secondary)),
   rollback = fun _ -> Ok ()
 }
-example: Sql.withRows failingClose (Sql.text "select") (fun _ ->
-  Err primary) = Err (Sql.CleanupFailed primary secondary)
-example: Sql.transaction Sql.Default failingClose (fun _ -> Ok (1 / 0)) = Err primary
+
+let case033 _ =
+  let testActual =
+    Sql.withRows failingClose (Sql.text "select") (fun _ ->
+      Err primary) = Err (Sql.CleanupFailed primary secondary)
+  Expect.isTrue "Sql.withRows failingClose (Sql.text \"select\") (fun _ -> Err primary) = Err (Sql.CleanupFailed primary secondary)" testActual
+
+let case034 _ =
+  let testActual = Sql.transaction Sql.Default failingClose (fun _ -> Ok (1 / 0)) = Err primary
+  Expect.isTrue "Sql.transaction Sql.Default failingClose (fun _ -> Ok (1 / 0)) = Err primary" testActual
 
 let commitFails = Sql.session {
   begin = fun _ -> Ok commitFails,
@@ -105,10 +219,18 @@ let commitFails = Sql.session {
   query = fun _ -> Ok (Sql.fromList columns []),
   rollback = fun _ -> Err secondary
 }
-example: Sql.transaction Sql.Default commitFails (fun _ ->
-  Ok 42) = Err (Sql.CleanupFailed primary secondary)
-example: Sql.transaction Sql.Default commitFails (fun _ ->
-  Err primary) = Err (Sql.CleanupFailed primary secondary)
+
+let case035 _ =
+  let testActual =
+    Sql.transaction Sql.Default commitFails (fun _ ->
+      Ok 42) = Err (Sql.CleanupFailed primary secondary)
+  Expect.isTrue "Sql.transaction Sql.Default commitFails (fun _ -> Ok 42) = Err (Sql.CleanupFailed primary secondary)" testActual
+
+let case036 _ =
+  let testActual =
+    Sql.transaction Sql.Default commitFails (fun _ ->
+      Err primary) = Err (Sql.CleanupFailed primary secondary)
+  Expect.isTrue "Sql.transaction Sql.Default commitFails (fun _ -> Err primary) = Err (Sql.CleanupFailed primary secondary)" testActual
 
 let located =
   match Sql.row columns [| Sql.Text "wrong", Sql.Text "one" |] with
@@ -118,8 +240,61 @@ let located =
     | Err (Sql.Failure info) ->
       info.row = Some 0 && info.column = Some 0 && info.kind = Sql.DecodeFailure
     | _ -> false
-example: located
+
+let case037 _ =
+  let testActual = located
+  Expect.isTrue "located" testActual
 
 let nullableRow = Sql.row [| { declaredType = None, name = "x" } |] [| Sql.Null |]
-example: read (SqlDecode.optionalField "x" (SqlDecode.nullable SqlDecode.int)) nullableRow = Ok (Some None)
-example: Result.isErr (read (SqlDecode.optionalField "x" SqlDecode.int) nullableRow)
+
+let case038 _ =
+  let testActual =
+    read (SqlDecode.optionalField "x" (SqlDecode.nullable SqlDecode.int)) nullableRow = Ok (Some None)
+  Expect.isTrue "read (SqlDecode.optionalField \"x\" (SqlDecode.nullable SqlDecode.int)) nullableRow = Ok (Some None)" testActual
+
+let case039 _ =
+  let testActual = Result.isErr (read (SqlDecode.optionalField "x" SqlDecode.int) nullableRow)
+  Expect.isTrue "Result.isErr (read (SqlDecode.optionalField \"x\" SqlDecode.int) nullableRow)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SqlSpec" [
+  Test.test "read decoder (row 42 \"Ada\") = Ok { id = 42, name = \"Ada\" }" case001,
+  Test.test "read (SqlDecode.index 0 SqlDecode.int) (row (-9223372036854775808) \"\") = Ok (-9223372036854775808)" case002,
+  Test.test "Result.isErr (read (SqlDecode.field \"ID\" SqlDecode.int) (row 1 \"one\"))" case003,
+  Test.test "read (SqlDecode.optionalField \"missing\" SqlDecode.string) (row 1 \"one\") = Ok None" case004,
+  Test.test "Result.isErr (read (SqlDecode.index (-1) SqlDecode.int) (row 1 \"one\"))" case005,
+  Test.test "Result.isErr (read (SqlDecode.index 2 SqlDecode.int) (row 1 \"one\"))" case006,
+  Test.test "Result.isErr (Sql.row columns [| Sql.Integer 1 |])" case007,
+  Test.test "Sql.row Array.empty Array.empty = Sql.row Array.empty Array.empty" case008,
+  Test.test "Result.isErr (read (SqlDecode.field \"x\" SqlDecode.int) (Sql.row repeated [| Sql.Integer 1, Sql.Integer 2 |]))" case009,
+  Test.test "read (SqlDecode.index 1 SqlDecode.int) (Sql.row repeated [| Sql.Integer 1, Sql.Integer 2 |]) = Ok 2" case010,
+  Test.test "Result.isErr (read (SqlDecode.optionalField \"x\" SqlDecode.int) (Sql.row repeated [| Sql.Integer 1, Sql.Integer 2 |]))" case011,
+  Test.test "SqlDecode.decodeValue SqlDecode.int Sql.Null = Err (Sql.error Sql.DecodeFailure \"decode\" \"expected SQL integer\")" case012,
+  Test.test "SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) Sql.Null = Ok None" case013,
+  Test.test "SqlDecode.decodeValue (SqlDecode.nullable SqlDecode.int) (Sql.Integer 2) = Ok (Some 2)" case014,
+  Test.test "SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 1) = Ok true" case015,
+  Test.test "SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 0) = Ok false" case016,
+  Test.test "Result.isErr (SqlDecode.decodeValue SqlDecode.bool (Sql.Integer 2))" case017,
+  Test.test "Result.isErr (SqlDecode.decodeValue SqlDecode.int (Sql.Real 1.0))" case018,
+  Test.test "Result.isErr (SqlDecode.decodeValue SqlDecode.float (Sql.Integer 1))" case019,
+  Test.test "SqlDecode.decodeValue SqlDecode.float (Sql.Real 1.5) = Ok 1.5" case020,
+  Test.test "SqlDecode.decodeValue SqlDecode.bytes (Sql.Blob (Bytes.fromList [ 0, 255 ])) = Ok (Bytes.fromList [0, 255])" case021,
+  Test.test "SqlDecode.decodeValue SqlDecode.string (Sql.Text \"a\\u{0}é😀\") = Ok \"a\\u{0}é😀\"" case022,
+  Test.property "property: SqlDecode.decodeValue SqlDecode.int (Sql.Integer n) = Ok n" Test.int case023,
+  Test.property "property: SqlDecode.decodeValue SqlDecode.string (Sql.Text text) = Ok text" Test.string case024,
+  Test.test "sampleQuery = Ok [| { id = 1, name = \"one\" }, { id = 2, name = \"two\" } |]" case025,
+  Test.test "query [] = Ok Array.empty" case026,
+  Test.test "Sql.execute (fake []) (Sql.text \"update things\") = Ok { affectedRows = 1 }" case027,
+  Test.test "Sql.transaction Sql.Default (fake []) (fun child -> Sql.execute child (Sql.text \"update things\")) = Ok { affectedRows = 1 }" case028,
+  Test.test "Sql.cleanup (Ok 42) (Ok ()) = Ok 42" case029,
+  Test.test "Sql.cleanup (Err primary) (Ok ()) = Err primary" case030,
+  Test.test "Sql.cleanup (Ok 42) (Err secondary) = Err secondary" case031,
+  Test.test "Sql.cleanup (Err primary) (Err secondary) = Err (Sql.CleanupFailed primary secondary)" case032,
+  Test.test "Sql.withRows failingClose (Sql.text \"select\") (fun _ -> Err primary) = Err (Sql.CleanupFailed primary secondary)" case033,
+  Test.test "Sql.transaction Sql.Default failingClose (fun _ -> Ok (1 / 0)) = Err primary" case034,
+  Test.test "Sql.transaction Sql.Default commitFails (fun _ -> Ok 42) = Err (Sql.CleanupFailed primary secondary)" case035,
+  Test.test "Sql.transaction Sql.Default commitFails (fun _ -> Err primary) = Err (Sql.CleanupFailed primary secondary)" case036,
+  Test.test "located" case037,
+  Test.test "read (SqlDecode.optionalField \"x\" (SqlDecode.nullable SqlDecode.int)) nullableRow = Ok (Some None)" case038,
+  Test.test "Result.isErr (read (SqlDecode.optionalField \"x\" SqlDecode.int) nullableRow)" case039
+]

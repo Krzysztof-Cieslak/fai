@@ -4,40 +4,150 @@ let integer text =
   match JsonNumber.fromString text with
   | Err e -> Err e.message
   | Ok number -> JsonNumber.toInt number
-example: integer "-9223372036854775808" = Ok (-9223372036854775808)
-example: integer "9223372036854775807" = Ok 9223372036854775807
-example: integer "9223372036854775808" = Err "number is outside Int range"
-example: integer "-9223372036854775809" = Err "number is outside Int range"
-example: integer "123000.000e-3" = Ok 123
-example: integer "1.00000000000000001" = Err "number is not an integer"
-example: integer "-0e999999999999999999999" = Ok 0
-example: integer "1e999999999999999999999" = Err "number is outside Int range"
-example: integer "1e-999999999999999999999" = Err "number is not an integer"
-example: Result.isErr (JsonNumber.fromString " 1")
-example: Result.isErr (JsonNumber.fromString "1 ")
-example: Result.isErr (JsonNumber.fromString "-01")
+
+let case001 _ =
+  let testActual = integer "-9223372036854775808"
+  let testExpected = Ok (-9223372036854775808)
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual = integer "9223372036854775807"
+  let testExpected = Ok 9223372036854775807
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case003 _ =
+  let testActual = integer "9223372036854775808"
+  let testExpected = Err "number is outside Int range"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case004 _ =
+  let testActual = integer "-9223372036854775809"
+  let testExpected = Err "number is outside Int range"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case005 _ =
+  let testActual = integer "123000.000e-3"
+  let testExpected = Ok 123
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case006 _ =
+  let testActual = integer "1.00000000000000001"
+  let testExpected = Err "number is not an integer"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case007 _ =
+  let testActual = integer "-0e999999999999999999999"
+  let testExpected = Ok 0
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case008 _ =
+  let testActual = integer "1e999999999999999999999"
+  let testExpected = Err "number is outside Int range"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case009 _ =
+  let testActual = integer "1e-999999999999999999999"
+  let testExpected = Err "number is not an integer"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case010 _ =
+  let testActual = Result.isErr (JsonNumber.fromString " 1")
+  Expect.isTrue "Result.isErr (JsonNumber.fromString \" 1\")" testActual
+
+let case011 _ =
+  let testActual = Result.isErr (JsonNumber.fromString "1 ")
+  Expect.isTrue "Result.isErr (JsonNumber.fromString \"1 \")" testActual
+
+let case012 _ =
+  let testActual = Result.isErr (JsonNumber.fromString "-01")
+  Expect.isTrue "Result.isErr (JsonNumber.fromString \"-01\")" testActual
 
 let floatBits text =
   match JsonNumber.fromString text with
   | Err e -> Err e.message
   | Ok number -> Result.map Float.toBits (JsonNumber.toFloat number)
-example: floatBits "0.1" = Ok 0x3fb999999999999a
-example: floatBits "1.00000000000000011102230246251565404236316680908203125" = Ok 0x3ff0000000000000
-example: floatBits "1.00000000000000011102230246251565404236316680908203125000000001" = Ok 0x3ff0000000000001
-example: floatBits "1.00000000000000033306690738754696212708950042724609375" = Ok 0x3ff0000000000002
-example: floatBits "4.9406564584124654e-324" = Ok 1
-example: floatBits "2.4703282292062327e-324" = Ok 0
-example: floatBits "2.4703282292062328e-324" = Ok 1
-example: floatBits "2.2250738585072014e-308" = Ok 0x0010000000000000
-example: floatBits "1.7976931348623157e308" = Ok 0x7fefffffffffffff
-example: floatBits "1.7976931348623158e308" = Ok 0x7fefffffffffffff
-example: floatBits "1.7976931348623159e308" = Err "number is outside finite Float range"
-example: floatBits "-1e-999999" = Ok 0x8000000000000000
-example: floatBits "-0" = Ok 0x8000000000000000
-example: floatBits "1e999999" = Err "number is outside finite Float range"
-example: Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff8000000000000))
-example: Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff0000000000000))
-example: Result.isErr (JsonNumber.fromFloat (Float.fromBits 0xfff0000000000000))
+
+let case013 _ =
+  let testActual = floatBits "0.1"
+  let testExpected = Ok 0x3fb999999999999a
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case014 _ =
+  let testActual = floatBits "1.00000000000000011102230246251565404236316680908203125"
+  let testExpected = Ok 0x3ff0000000000000
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case015 _ =
+  let testActual = floatBits "1.00000000000000011102230246251565404236316680908203125000000001"
+  let testExpected = Ok 0x3ff0000000000001
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case016 _ =
+  let testActual = floatBits "1.00000000000000033306690738754696212708950042724609375"
+  let testExpected = Ok 0x3ff0000000000002
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case017 _ =
+  let testActual = floatBits "4.9406564584124654e-324"
+  let testExpected = Ok 1
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case018 _ =
+  let testActual = floatBits "2.4703282292062327e-324"
+  let testExpected = Ok 0
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case019 _ =
+  let testActual = floatBits "2.4703282292062328e-324"
+  let testExpected = Ok 1
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case020 _ =
+  let testActual = floatBits "2.2250738585072014e-308"
+  let testExpected = Ok 0x0010000000000000
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case021 _ =
+  let testActual = floatBits "1.7976931348623157e308"
+  let testExpected = Ok 0x7fefffffffffffff
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case022 _ =
+  let testActual = floatBits "1.7976931348623158e308"
+  let testExpected = Ok 0x7fefffffffffffff
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case023 _ =
+  let testActual = floatBits "1.7976931348623159e308"
+  let testExpected = Err "number is outside finite Float range"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case024 _ =
+  let testActual = floatBits "-1e-999999"
+  let testExpected = Ok 0x8000000000000000
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case025 _ =
+  let testActual = floatBits "-0"
+  let testExpected = Ok 0x8000000000000000
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case026 _ =
+  let testActual = floatBits "1e999999"
+  let testExpected = Err "number is outside finite Float range"
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case027 _ =
+  let testActual = Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff8000000000000))
+  Expect.isTrue "Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff8000000000000))" testActual
+
+let case028 _ =
+  let testActual = Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff0000000000000))
+  Expect.isTrue "Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff0000000000000))" testActual
+
+let case029 _ =
+  let testActual = Result.isErr (JsonNumber.fromFloat (Float.fromBits 0xfff0000000000000))
+  Expect.isTrue "Result.isErr (JsonNumber.fromFloat (Float.fromBits 0xfff0000000000000))" testActual
 
 // Mix the size-bounded generator's integers across the whole 64-bit domain.
 let mix bits =
@@ -50,4 +160,42 @@ let floatRoundTrip bits =
   match JsonNumber.fromFloat (Float.fromBits bits) with
   | Err _ -> Int.and bits 0x7ff0000000000000 = 0x7ff0000000000000
   | Ok number -> Result.map Float.toBits (JsonNumber.toFloat number) = Ok bits
-forall bits: floatRoundTrip bits
+
+let case030 testInput =
+  let bits = testInput
+  let testActual = floatRoundTrip bits
+  Expect.isTrue "property: floatRoundTrip bits" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "NumberSpec" [
+  Test.test "integer \"-9223372036854775808\" = Ok (-9223372036854775808)" case001,
+  Test.test "integer \"9223372036854775807\" = Ok 9223372036854775807" case002,
+  Test.test "integer \"9223372036854775808\" = Err \"number is outside Int range\"" case003,
+  Test.test "integer \"-9223372036854775809\" = Err \"number is outside Int range\"" case004,
+  Test.test "integer \"123000.000e-3\" = Ok 123" case005,
+  Test.test "integer \"1.00000000000000001\" = Err \"number is not an integer\"" case006,
+  Test.test "integer \"-0e999999999999999999999\" = Ok 0" case007,
+  Test.test "integer \"1e999999999999999999999\" = Err \"number is outside Int range\"" case008,
+  Test.test "integer \"1e-999999999999999999999\" = Err \"number is not an integer\"" case009,
+  Test.test "Result.isErr (JsonNumber.fromString \" 1\")" case010,
+  Test.test "Result.isErr (JsonNumber.fromString \"1 \")" case011,
+  Test.test "Result.isErr (JsonNumber.fromString \"-01\")" case012,
+  Test.test "floatBits \"0.1\" = Ok 0x3fb999999999999a" case013,
+  Test.test "floatBits \"1.00000000000000011102230246251565404236316680908203125\" = Ok 0x3ff0000000000000" case014,
+  Test.test "floatBits \"1.00000000000000011102230246251565404236316680908203125000000001\" = Ok 0x3ff0000000000001" case015,
+  Test.test "floatBits \"1.00000000000000033306690738754696212708950042724609375\" = Ok 0x3ff0000000000002" case016,
+  Test.test "floatBits \"4.9406564584124654e-324\" = Ok 1" case017,
+  Test.test "floatBits \"2.4703282292062327e-324\" = Ok 0" case018,
+  Test.test "floatBits \"2.4703282292062328e-324\" = Ok 1" case019,
+  Test.test "floatBits \"2.2250738585072014e-308\" = Ok 0x0010000000000000" case020,
+  Test.test "floatBits \"1.7976931348623157e308\" = Ok 0x7fefffffffffffff" case021,
+  Test.test "floatBits \"1.7976931348623158e308\" = Ok 0x7fefffffffffffff" case022,
+  Test.test "floatBits \"1.7976931348623159e308\" = Err \"number is outside finite Float range\"" case023,
+  Test.test "floatBits \"-1e-999999\" = Ok 0x8000000000000000" case024,
+  Test.test "floatBits \"-0\" = Ok 0x8000000000000000" case025,
+  Test.test "floatBits \"1e999999\" = Err \"number is outside finite Float range\"" case026,
+  Test.test "Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff8000000000000))" case027,
+  Test.test "Result.isErr (JsonNumber.fromFloat (Float.fromBits 0x7ff0000000000000))" case028,
+  Test.test "Result.isErr (JsonNumber.fromFloat (Float.fromBits 0xfff0000000000000))" case029,
+  Test.property "property: floatRoundTrip bits" Test.int case030
+]

@@ -4,61 +4,142 @@ let find pattern text =
   match Regex.compile pattern with
   | Err error -> Err error
   | Ok regex -> Result.map (Option.map Regex.detach) (Regex.find regex text)
-example: find "🙂" "Aé🙂B" = Ok (Some {
-  span = { endByte = 7, endChar = 3, startByte = 3, startChar = 2 },
-  text = "🙂"
-})
-example: find "[0-9]+" "letters" = Ok None
-example: find "sam|samwise" "samwise" = Ok (Some {
-  span = { endByte = 3, endChar = 3, startByte = 0, startChar = 0 },
-  text = "sam"
-})
-example: (match Regex.compileWhole "a|ab" with
-| Err _ -> false
-| Ok regex -> Regex.isMatch regex "ab" = Ok true && Regex.isMatch regex "cab" = Ok false)
-example: (match Regex.compile "é" with
-| Err _ -> false
-| Ok regex -> Regex.findFromByte 1 regex "é" |> Result.isErr)
-example: (match Regex.compile "^a" with
-| Err _ -> false
-| Ok regex -> Regex.findFromChar 1 regex "ba" = Ok None)
-example: (match RegexBytes.compile "\\xFF" with
-| Err _ -> false
-| Ok regex ->
-  (RegexBytes.find regex (Bytes.fromList [
-    1,
-    255,
-    2
-  ]) |> Result.map (Option.map RegexBytes.bytes)) = Ok (Some (Bytes.fromList [255])))
-example: (match Regex.compile "[" with
-| Err error ->
-  error.kind = RegexTypes.Syntax && error.location = Some {
-    byteEnd = 1,
-    byteStart = 0,
-    column = 1,
-    endColumn = 2,
-    endLine = 1,
-    line = 1
-  }
-| Ok _ -> false)
-example: (match Regex.compile "(?=a)" with
-| Err error -> error.kind = RegexTypes.Unsupported
-| Ok _ -> false)
-example: Regex.compileWith { Regex.options with maxPatternBytes = 0 } "a" |> Result.isErr
-example: Regex.compileWith { Regex.options with nestingLimit = -1 } "a" |> Result.isErr
-example: Regex.compileWith { Regex.options with maxCaptureGroups = 0 } "(a)" |> Result.isErr
-example: (match Regex.compile "a" with
-| Err _ -> false
-| Ok regex ->
-  Regex.findWithLimits { Regex.limits with maxInputBytes = 0 } regex "a" |> Result.isErr)
-example: (match Regex.compile "(a)?(b*)" with
-| Err _ -> false
-| Ok regex ->
-  (match Regex.captures regex "" with
-  | Ok (Some captures) ->
-    Regex.group 1 captures = Ok None && (Regex.group 2 captures |> Result.map (Option.map Regex.text)) = Ok (Some "") && (Regex.group 5 captures |> Result.isErr)
-  | _ -> false))
-example: Regex.compile "a" = Regex.compile "a"
-forall text: match Regex.compile (Regex.escape text) with
-| Err _ -> false
-| Ok regex -> Regex.isMatch regex text = Ok true
+
+let case001 _ =
+  let testActual =
+    find "🙂" "Aé🙂B" = Ok (Some {
+      span = { endByte = 7, endChar = 3, startByte = 3, startChar = 2 },
+      text = "🙂"
+    })
+  Expect.isTrue "find \"🙂\" \"Aé🙂B\" = Ok (Some { span = { endByte = 7, endChar = 3, startByte = 3, startChar = 2 }, text = \"🙂\" })" testActual
+
+let case002 _ =
+  let testActual = find "[0-9]+" "letters" = Ok None
+  Expect.isTrue "find \"[0-9]+\" \"letters\" = Ok None" testActual
+
+let case003 _ =
+  let testActual =
+    find "sam|samwise" "samwise" = Ok (Some {
+      span = { endByte = 3, endChar = 3, startByte = 0, startChar = 0 },
+      text = "sam"
+    })
+  Expect.isTrue "find \"sam|samwise\" \"samwise\" = Ok (Some { span = { endByte = 3, endChar = 3, startByte = 0, startChar = 0 }, text = \"sam\" })" testActual
+
+let case004 _ =
+  let testActual =
+    (match Regex.compileWhole "a|ab" with
+    | Err _ -> false
+    | Ok regex -> Regex.isMatch regex "ab" = Ok true && Regex.isMatch regex "cab" = Ok false)
+  Expect.isTrue "(match Regex.compileWhole \"a|ab\" with | Err _ -> false | Ok regex -> Regex.isMatch regex \"ab\" = Ok true && Regex.isMatch regex \"cab\" = Ok false)" testActual
+
+let case005 _ =
+  let testActual =
+    (match Regex.compile "é" with
+    | Err _ -> false
+    | Ok regex -> Regex.findFromByte 1 regex "é" |> Result.isErr)
+  Expect.isTrue "(match Regex.compile \"é\" with | Err _ -> false | Ok regex -> Regex.findFromByte 1 regex \"é\" |> Result.isErr)" testActual
+
+let case006 _ =
+  let testActual =
+    (match Regex.compile "^a" with
+    | Err _ -> false
+    | Ok regex -> Regex.findFromChar 1 regex "ba" = Ok None)
+  Expect.isTrue "(match Regex.compile \"^a\" with | Err _ -> false | Ok regex -> Regex.findFromChar 1 regex \"ba\" = Ok None)" testActual
+
+let case007 _ =
+  let testActual =
+    (match RegexBytes.compile "\\xFF" with
+    | Err _ -> false
+    | Ok regex ->
+      (RegexBytes.find regex (Bytes.fromList [
+        1,
+        255,
+        2
+      ]) |> Result.map (Option.map RegexBytes.bytes)) = Ok (Some (Bytes.fromList [255])))
+  Expect.isTrue "(match RegexBytes.compile \"\\\\xFF\" with | Err _ -> false | Ok regex -> (RegexBytes.find regex (Bytes.fromList [ 1, 255, 2 ]) |> Result.map (Option.map RegexBy…" testActual
+
+let case008 _ =
+  let testActual =
+    (match Regex.compile "[" with
+    | Err error ->
+      error.kind = RegexTypes.Syntax && error.location = Some {
+        byteEnd = 1,
+        byteStart = 0,
+        column = 1,
+        endColumn = 2,
+        endLine = 1,
+        line = 1
+      }
+    | Ok _ -> false)
+  Expect.isTrue "(match Regex.compile \"[\" with | Err error -> error.kind = RegexTypes.Syntax && error.location = Some { byteEnd = 1, byteStart = 0, column = 1, endColumn = 2,…" testActual
+
+let case009 _ =
+  let testActual =
+    (match Regex.compile "(?=a)" with
+    | Err error -> error.kind = RegexTypes.Unsupported
+    | Ok _ -> false)
+  Expect.isTrue "(match Regex.compile \"(?=a)\" with | Err error -> error.kind = RegexTypes.Unsupported | Ok _ -> false)" testActual
+
+let case010 _ =
+  let testActual = Regex.compileWith { Regex.options with maxPatternBytes = 0 } "a" |> Result.isErr
+  Expect.isTrue "Regex.compileWith { Regex.options with maxPatternBytes = 0 } \"a\" |> Result.isErr" testActual
+
+let case011 _ =
+  let testActual = Regex.compileWith { Regex.options with nestingLimit = -1 } "a" |> Result.isErr
+  Expect.isTrue "Regex.compileWith { Regex.options with nestingLimit = -1 } \"a\" |> Result.isErr" testActual
+
+let case012 _ =
+  let testActual =
+    Regex.compileWith { Regex.options with maxCaptureGroups = 0 } "(a)" |> Result.isErr
+  Expect.isTrue "Regex.compileWith { Regex.options with maxCaptureGroups = 0 } \"(a)\" |> Result.isErr" testActual
+
+let case013 _ =
+  let testActual =
+    (match Regex.compile "a" with
+    | Err _ -> false
+    | Ok regex ->
+      Regex.findWithLimits { Regex.limits with maxInputBytes = 0 } regex "a" |> Result.isErr)
+  Expect.isTrue "(match Regex.compile \"a\" with | Err _ -> false | Ok regex -> Regex.findWithLimits { Regex.limits with maxInputBytes = 0 } regex \"a\" |> Result.isErr)" testActual
+
+let case014 _ =
+  let testActual =
+    (match Regex.compile "(a)?(b*)" with
+    | Err _ -> false
+    | Ok regex ->
+      (match Regex.captures regex "" with
+      | Ok (Some captures) ->
+        Regex.group 1 captures = Ok None && (Regex.group 2 captures |> Result.map (Option.map Regex.text)) = Ok (Some "") && (Regex.group 5 captures |> Result.isErr)
+      | _ -> false))
+  Expect.isTrue "(match Regex.compile \"(a)?(b*)\" with | Err _ -> false | Ok regex -> (match Regex.captures regex \"\" with | Ok (Some captures) -> Regex.group 1 captures = Ok N…" testActual
+
+let case015 _ =
+  let testActual = Regex.compile "a" = Regex.compile "a"
+  Expect.isTrue "Regex.compile \"a\" = Regex.compile \"a\"" testActual
+
+let case016 testInput =
+  let text = testInput
+  let testActual =
+    match Regex.compile (Regex.escape text) with
+    | Err _ -> false
+    | Ok regex -> Regex.isMatch regex text = Ok true
+  Expect.isTrue "property: match Regex.compile (Regex.escape text) with | Err _ -> false | Ok regex -> Regex.isMatch regex text = Ok true" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "RegexSearchSpec" [
+  Test.test "find \"🙂\" \"Aé🙂B\" = Ok (Some { span = { endByte = 7, endChar = 3, startByte = 3, startChar = 2 }, text = \"🙂\" })" case001,
+  Test.test "find \"[0-9]+\" \"letters\" = Ok None" case002,
+  Test.test "find \"sam|samwise\" \"samwise\" = Ok (Some { span = { endByte = 3, endChar = 3, startByte = 0, startChar = 0 }, text = \"sam\" })" case003,
+  Test.test "(match Regex.compileWhole \"a|ab\" with | Err _ -> false | Ok regex -> Regex.isMatch regex \"ab\" = Ok true && Regex.isMatch regex \"cab\" = Ok false)" case004,
+  Test.test "(match Regex.compile \"é\" with | Err _ -> false | Ok regex -> Regex.findFromByte 1 regex \"é\" |> Result.isErr)" case005,
+  Test.test "(match Regex.compile \"^a\" with | Err _ -> false | Ok regex -> Regex.findFromChar 1 regex \"ba\" = Ok None)" case006,
+  Test.test "(match RegexBytes.compile \"\\\\xFF\" with | Err _ -> false | Ok regex -> (RegexBytes.find regex (Bytes.fromList [ 1, 255, 2 ]) |> Result.map (Option.map RegexBy…" case007,
+  Test.test "(match Regex.compile \"[\" with | Err error -> error.kind = RegexTypes.Syntax && error.location = Some { byteEnd = 1, byteStart = 0, column = 1, endColumn = 2,…" case008,
+  Test.test "(match Regex.compile \"(?=a)\" with | Err error -> error.kind = RegexTypes.Unsupported | Ok _ -> false)" case009,
+  Test.test "Regex.compileWith { Regex.options with maxPatternBytes = 0 } \"a\" |> Result.isErr" case010,
+  Test.test "Regex.compileWith { Regex.options with nestingLimit = -1 } \"a\" |> Result.isErr" case011,
+  Test.test "Regex.compileWith { Regex.options with maxCaptureGroups = 0 } \"(a)\" |> Result.isErr" case012,
+  Test.test "(match Regex.compile \"a\" with | Err _ -> false | Ok regex -> Regex.findWithLimits { Regex.limits with maxInputBytes = 0 } regex \"a\" |> Result.isErr)" case013,
+  Test.test "(match Regex.compile \"(a)?(b*)\" with | Err _ -> false | Ok regex -> (match Regex.captures regex \"\" with | Ok (Some captures) -> Regex.group 1 captures = Ok N…" case014,
+  Test.test "Regex.compile \"a\" = Regex.compile \"a\"" case015,
+  Test.property "property: match Regex.compile (Regex.escape text) with | Err _ -> false | Ok regex -> Regex.isMatch regex text = Ok true" Test.string case016
+]

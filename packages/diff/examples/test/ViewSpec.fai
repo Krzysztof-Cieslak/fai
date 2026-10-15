@@ -3,18 +3,39 @@ module DiffViewSpec
 import cli.Args
 import diff.DiffText
 
-example: Args.parse DiffDemo.arguments ["old.txt", "new.txt"] |> Result.isOk
-example: Args.parse DiffDemo.arguments [
-  "--patience",
-  "--ignore-case",
-  "old.txt",
-  "new.txt"
-] |> Result.isOk
-example: Args.parse DiffDemo.arguments [] |> Result.isErr
+let case001 _ =
+  let testActual = Args.parse DiffDemo.arguments ["old.txt", "new.txt"] |> Result.isOk
+  Expect.isTrue "Args.parse DiffDemo.arguments [\"old.txt\", \"new.txt\"] |> Result.isOk" testActual
+
+let case002 _ =
+  let testActual =
+    Args.parse DiffDemo.arguments [
+      "--patience",
+      "--ignore-case",
+      "old.txt",
+      "new.txt"
+    ] |> Result.isOk
+  Expect.isTrue "Args.parse DiffDemo.arguments [ \"--patience\", \"--ignore-case\", \"old.txt\", \"new.txt\" ] |> Result.isOk" testActual
+
+let case003 _ =
+  let testActual = Args.parse DiffDemo.arguments [] |> Result.isErr
+  Expect.isTrue "Args.parse DiffDemo.arguments [] |> Result.isErr" testActual
 
 let count pair =
   let (_, count) = pair
   count
-example: (match DiffText.compare "a\nold\n" "a\nnew\n" with
-| Err _ -> false
-| Ok result -> Result.map count (DiffView.rows DiffText.options true 0 result) = Ok 1)
+
+let case004 _ =
+  let testActual =
+    (match DiffText.compare "a\nold\n" "a\nnew\n" with
+    | Err _ -> false
+    | Ok result -> Result.map count (DiffView.rows DiffText.options true 0 result) = Ok 1)
+  Expect.isTrue "(match DiffText.compare \"a\\nold\\n\" \"a\\nnew\\n\" with | Err _ -> false | Ok result -> Result.map count (DiffView.rows DiffText.options true 0 result) = Ok 1)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "DiffViewSpec" [
+  Test.test "Args.parse DiffDemo.arguments [\"old.txt\", \"new.txt\"] |> Result.isOk" case001,
+  Test.test "Args.parse DiffDemo.arguments [ \"--patience\", \"--ignore-case\", \"old.txt\", \"new.txt\" ] |> Result.isOk" case002,
+  Test.test "Args.parse DiffDemo.arguments [] |> Result.isErr" case003,
+  Test.test "(match DiffText.compare \"a\\nold\\n\" \"a\\nnew\\n\" with | Err _ -> false | Ok result -> Result.map count (DiffView.rows DiffText.options true 0 result) = Ok 1)" case004
+]

@@ -5,77 +5,201 @@ let updates text = Sse.parse Sse.defaults (Bytes.fromString text)
 let events text = Stream.toList (Sse.events Sse.defaults (Stream.singleton (Bytes.fromString text)))
 
 let message data = { data = data, eventType = "message", lastEventId = "" }
-example: events "" = Ok []
-example: events "data: hello\n\n" = Ok [message "hello"]
-example: events "data: hello\r\n\r\n" = Ok [message "hello"]
-example: events "data: hello\r\r" = Ok [message "hello"]
-example: events "data\n\n" = Ok [message ""]
-example: events "data\ndata\n\n" = Ok [message "\n"]
-example: events "data: first\ndata: second\n\n" = Ok [message "first\nsecond"]
-example: events "data:  leading\ndata:\t tab\n\n" = Ok [message " leading\n\t tab"]
-example: events "data: a:b:c\n\n" = Ok [message "a:b:c"]
-example: events "Data: ignored\n\n" = Ok []
-example: events ": comment\nunknown: ignored\ndata: yes\n\n" = Ok [message "yes"]
-example: events "event: first\nevent: last\ndata: x\n\ndata: y\n\n" = Ok [
-  { data = "x", eventType = "last", lastEventId = "" },
-  message "y"
-]
-example: events "event: custom\nevent:\ndata:x\n\n" = Ok [message "x"]
-example: events "data: incomplete" = Ok []
-example: events "data: incomplete\n" = Ok []
-example: events "data: done\n\ndata: incomplete\n" = Ok [message "done"]
-example: events "\u{FEFF}data: é😀\n\n" = Ok [message "é😀"]
-example: events "data: \u{FEFF}kept\n\n" = Ok [message "\u{FEFF}kept"]
-example: events "id: one\ndata: a\n\ndata: b\n\nid\ndata: c\n\n" = Ok [
-  { data = "a", eventType = "message", lastEventId = "one" },
-  { data = "b", eventType = "message", lastEventId = "one" },
-  message "c"
-]
-example: events "id: one\nid: bad\u{0}id\ndata: a\n\n" = Ok [
-  { data = "a", eventType = "message", lastEventId = "one" }
-]
-example: updates "id: one\n\nid\n\n" = Ok [Sse.Checkpoint "one", Sse.Checkpoint ""]
-example: updates "retry: 20\n" = Ok [Sse.Retry 20]
-example: updates "retry: 0\n" = Ok [Sse.Retry 0]
-example: updates "retry: 0012\n" = Ok [Sse.Retry 12]
-example: updates "retry: -1\nretry: +2\nretry: 1.5\nretry: ２\nretry:\n" = Ok []
-example: updates "retry: 999999999999999999999999\n" = Ok [Sse.Retry 9223372036854775807]
-example: updates "retry: 2\nid: a\n\ndata:x\n\n" = Ok [
-  Sse.Retry 2,
-  Sse.Checkpoint "a",
-  Sse.Dispatch { data = "x", eventType = "message", lastEventId = "a" }
-]
+
+let case001 _ =
+  let testActual = events "" = Ok []
+  Expect.isTrue "events \"\" = Ok []" testActual
+
+let case002 _ =
+  let testActual = events "data: hello\n\n" = Ok [message "hello"]
+  Expect.isTrue "events \"data: hello\\n\\n\" = Ok [message \"hello\"]" testActual
+
+let case003 _ =
+  let testActual = events "data: hello\r\n\r\n" = Ok [message "hello"]
+  Expect.isTrue "events \"data: hello\\r\\n\\r\\n\" = Ok [message \"hello\"]" testActual
+
+let case004 _ =
+  let testActual = events "data: hello\r\r" = Ok [message "hello"]
+  Expect.isTrue "events \"data: hello\\r\\r\" = Ok [message \"hello\"]" testActual
+
+let case005 _ =
+  let testActual = events "data\n\n" = Ok [message ""]
+  Expect.isTrue "events \"data\\n\\n\" = Ok [message \"\"]" testActual
+
+let case006 _ =
+  let testActual = events "data\ndata\n\n" = Ok [message "\n"]
+  Expect.isTrue "events \"data\\ndata\\n\\n\" = Ok [message \"\\n\"]" testActual
+
+let case007 _ =
+  let testActual = events "data: first\ndata: second\n\n" = Ok [message "first\nsecond"]
+  Expect.isTrue "events \"data: first\\ndata: second\\n\\n\" = Ok [message \"first\\nsecond\"]" testActual
+
+let case008 _ =
+  let testActual = events "data:  leading\ndata:\t tab\n\n" = Ok [message " leading\n\t tab"]
+  Expect.isTrue "events \"data: leading\\ndata:\\t tab\\n\\n\" = Ok [message \" leading\\n\\t tab\"]" testActual
+
+let case009 _ =
+  let testActual = events "data: a:b:c\n\n" = Ok [message "a:b:c"]
+  Expect.isTrue "events \"data: a:b:c\\n\\n\" = Ok [message \"a:b:c\"]" testActual
+
+let case010 _ =
+  let testActual = events "Data: ignored\n\n" = Ok []
+  Expect.isTrue "events \"Data: ignored\\n\\n\" = Ok []" testActual
+
+let case011 _ =
+  let testActual = events ": comment\nunknown: ignored\ndata: yes\n\n" = Ok [message "yes"]
+  Expect.isTrue "events \": comment\\nunknown: ignored\\ndata: yes\\n\\n\" = Ok [message \"yes\"]" testActual
+
+let case012 _ =
+  let testActual =
+    events "event: first\nevent: last\ndata: x\n\ndata: y\n\n" = Ok [
+      { data = "x", eventType = "last", lastEventId = "" },
+      message "y"
+    ]
+  Expect.isTrue "events \"event: first\\nevent: last\\ndata: x\\n\\ndata: y\\n\\n\" = Ok [ { data = \"x\", eventType = \"last\", lastEventId = \"\" }, message \"y\" ]" testActual
+
+let case013 _ =
+  let testActual = events "event: custom\nevent:\ndata:x\n\n" = Ok [message "x"]
+  Expect.isTrue "events \"event: custom\\nevent:\\ndata:x\\n\\n\" = Ok [message \"x\"]" testActual
+
+let case014 _ =
+  let testActual = events "data: incomplete" = Ok []
+  Expect.isTrue "events \"data: incomplete\" = Ok []" testActual
+
+let case015 _ =
+  let testActual = events "data: incomplete\n" = Ok []
+  Expect.isTrue "events \"data: incomplete\\n\" = Ok []" testActual
+
+let case016 _ =
+  let testActual = events "data: done\n\ndata: incomplete\n" = Ok [message "done"]
+  Expect.isTrue "events \"data: done\\n\\ndata: incomplete\\n\" = Ok [message \"done\"]" testActual
+
+let case017 _ =
+  let testActual = events "\u{FEFF}data: é😀\n\n" = Ok [message "é😀"]
+  Expect.isTrue "events \"\\u{FEFF}data: é😀\\n\\n\" = Ok [message \"é😀\"]" testActual
+
+let case018 _ =
+  let testActual = events "data: \u{FEFF}kept\n\n" = Ok [message "\u{FEFF}kept"]
+  Expect.isTrue "events \"data: \\u{FEFF}kept\\n\\n\" = Ok [message \"\\u{FEFF}kept\"]" testActual
+
+let case019 _ =
+  let testActual =
+    events "id: one\ndata: a\n\ndata: b\n\nid\ndata: c\n\n" = Ok [
+      { data = "a", eventType = "message", lastEventId = "one" },
+      { data = "b", eventType = "message", lastEventId = "one" },
+      message "c"
+    ]
+  Expect.isTrue "events \"id: one\\ndata: a\\n\\ndata: b\\n\\nid\\ndata: c\\n\\n\" = Ok [ { data = \"a\", eventType = \"message\", lastEventId = \"one\" }, { data = \"b\", eventType = \"message…" testActual
+
+let case020 _ =
+  let testActual =
+    events "id: one\nid: bad\u{0}id\ndata: a\n\n" = Ok [
+      { data = "a", eventType = "message", lastEventId = "one" }
+    ]
+  Expect.isTrue "events \"id: one\\nid: bad\\u{0}id\\ndata: a\\n\\n\" = Ok [ { data = \"a\", eventType = \"message\", lastEventId = \"one\" } ]" testActual
+
+let case021 _ =
+  let testActual = updates "id: one\n\nid\n\n" = Ok [Sse.Checkpoint "one", Sse.Checkpoint ""]
+  Expect.isTrue "updates \"id: one\\n\\nid\\n\\n\" = Ok [Sse.Checkpoint \"one\", Sse.Checkpoint \"\"]" testActual
+
+let case022 _ =
+  let testActual = updates "retry: 20\n" = Ok [Sse.Retry 20]
+  Expect.isTrue "updates \"retry: 20\\n\" = Ok [Sse.Retry 20]" testActual
+
+let case023 _ =
+  let testActual = updates "retry: 0\n" = Ok [Sse.Retry 0]
+  Expect.isTrue "updates \"retry: 0\\n\" = Ok [Sse.Retry 0]" testActual
+
+let case024 _ =
+  let testActual = updates "retry: 0012\n" = Ok [Sse.Retry 12]
+  Expect.isTrue "updates \"retry: 0012\\n\" = Ok [Sse.Retry 12]" testActual
+
+let case025 _ =
+  let testActual = updates "retry: -1\nretry: +2\nretry: 1.5\nretry: ２\nretry:\n" = Ok []
+  Expect.isTrue "updates \"retry: -1\\nretry: +2\\nretry: 1.5\\nretry: ２\\nretry:\\n\" = Ok []" testActual
+
+let case026 _ =
+  let testActual = updates "retry: 999999999999999999999999\n" = Ok [Sse.Retry 9223372036854775807]
+  Expect.isTrue "updates \"retry: 999999999999999999999999\\n\" = Ok [Sse.Retry 9223372036854775807]" testActual
+
+let case027 _ =
+  let testActual =
+    updates "retry: 2\nid: a\n\ndata:x\n\n" = Ok [
+      Sse.Retry 2,
+      Sse.Checkpoint "a",
+      Sse.Dispatch { data = "x", eventType = "message", lastEventId = "a" }
+    ]
+  Expect.isTrue "updates \"retry: 2\\nid: a\\n\\ndata:x\\n\\n\" = Ok [ Sse.Retry 2, Sse.Checkpoint \"a\", Sse.Dispatch { data = \"x\", eventType = \"message\", lastEventId = \"a\" } ]" testActual
 
 let byteEvents bytes =
   Stream.toList (Sse.events Sse.defaults (Stream.singleton (Bytes.concat (Bytes.fromString "data: ") (Bytes.concat (Bytes.fromList bytes) (Bytes.fromString "\n\n")))))
-example: byteEvents [255] = Ok [message "\u{FFFD}"]
-example: byteEvents [226, 130] = Ok [message "\u{FFFD}"]
-example: byteEvents [226, 40, 161] = Ok [message "\u{FFFD}(\u{FFFD}"]
-example: byteEvents [224, 128, 128] = Ok [message "\u{FFFD}\u{FFFD}\u{FFFD}"]
-example: byteEvents [237, 160, 128] = Ok [message "\u{FFFD}\u{FFFD}\u{FFFD}"]
-example: byteEvents [244, 144, 128, 128] = Ok [message "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"]
-example: byteEvents [240, 159, 152, 128] = Ok [message "😀"]
+
+let case028 _ =
+  let testActual = byteEvents [255] = Ok [message "\u{FFFD}"]
+  Expect.isTrue "byteEvents [255] = Ok [message \"\\u{FFFD}\"]" testActual
+
+let case029 _ =
+  let testActual = byteEvents [226, 130] = Ok [message "\u{FFFD}"]
+  Expect.isTrue "byteEvents [226, 130] = Ok [message \"\\u{FFFD}\"]" testActual
+
+let case030 _ =
+  let testActual = byteEvents [226, 40, 161] = Ok [message "\u{FFFD}(\u{FFFD}"]
+  Expect.isTrue "byteEvents [226, 40, 161] = Ok [message \"\\u{FFFD}(\\u{FFFD}\"]" testActual
+
+let case031 _ =
+  let testActual = byteEvents [224, 128, 128] = Ok [message "\u{FFFD}\u{FFFD}\u{FFFD}"]
+  Expect.isTrue "byteEvents [224, 128, 128] = Ok [message \"\\u{FFFD}\\u{FFFD}\\u{FFFD}\"]" testActual
+
+let case032 _ =
+  let testActual = byteEvents [237, 160, 128] = Ok [message "\u{FFFD}\u{FFFD}\u{FFFD}"]
+  Expect.isTrue "byteEvents [237, 160, 128] = Ok [message \"\\u{FFFD}\\u{FFFD}\\u{FFFD}\"]" testActual
+
+let case033 _ =
+  let testActual = byteEvents [244, 144, 128, 128] = Ok [message "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"]
+  Expect.isTrue "byteEvents [244, 144, 128, 128] = Ok [message \"\\u{FFFD}\\u{FFFD}\\u{FFFD}\\u{FFFD}\"]" testActual
+
+let case034 _ =
+  let testActual = byteEvents [240, 159, 152, 128] = Ok [message "😀"]
+  Expect.isTrue "byteEvents [240, 159, 152, 128] = Ok [message \"😀\"]" testActual
 
 let limits = { maxEventBytes = 2, maxLineBytes = 3 }
-example: Sse.parse limits (Bytes.fromString "data") = Err {
-  kind = Sse.LineTooLong,
-  line = Some 1,
-  message = "SSE line exceeds its byte limit",
-  offset = Some 3
-}
-example: Sse.parse { limits with
-  maxLineBytes = 100
-} (Bytes.fromString "data: abc\n\n") = Err {
-  kind = Sse.EventTooLarge,
-  line = Some 1,
-  message = "SSE event data exceeds its byte limit",
-  offset = Some 9
-}
-example: Sse.parse { limits with
-  maxLineBytes = 100
-} (Bytes.fromString "data: ab\n\n") = Ok [Sse.Dispatch (message "ab")]
-example: Result.isErr (Sse.decoder { limits with maxLineBytes = (-1) })
-example: Result.isErr (Sse.decoder { limits with maxEventBytes = (-1) })
+
+let case035 _ =
+  let testActual =
+    Sse.parse limits (Bytes.fromString "data") = Err {
+      kind = Sse.LineTooLong,
+      line = Some 1,
+      message = "SSE line exceeds its byte limit",
+      offset = Some 3
+    }
+  Expect.isTrue "Sse.parse limits (Bytes.fromString \"data\") = Err { kind = Sse.LineTooLong, line = Some 1, message = \"SSE line exceeds its byte limit\", offset = Some 3 }" testActual
+
+let case036 _ =
+  let testActual =
+    Sse.parse { limits with
+      maxLineBytes = 100
+    } (Bytes.fromString "data: abc\n\n") = Err {
+      kind = Sse.EventTooLarge,
+      line = Some 1,
+      message = "SSE event data exceeds its byte limit",
+      offset = Some 9
+    }
+  Expect.isTrue "Sse.parse { limits with maxLineBytes = 100 } (Bytes.fromString \"data: abc\\n\\n\") = Err { kind = Sse.EventTooLarge, line = Some 1, message = \"SSE event data ex…" testActual
+
+let case037 _ =
+  let testActual =
+    Sse.parse { limits with
+      maxLineBytes = 100
+    } (Bytes.fromString "data: ab\n\n") = Ok [Sse.Dispatch (message "ab")]
+  Expect.isTrue "Sse.parse { limits with maxLineBytes = 100 } (Bytes.fromString \"data: ab\\n\\n\") = Ok [Sse.Dispatch (message \"ab\")]" testActual
+
+let case038 _ =
+  let testActual = Result.isErr (Sse.decoder { limits with maxLineBytes = (-1) })
+  Expect.isTrue "Result.isErr (Sse.decoder { limits with maxLineBytes = (-1) })" testActual
+
+let case039 _ =
+  let testActual = Result.isErr (Sse.decoder { limits with maxEventBytes = (-1) })
+  Expect.isTrue "Result.isErr (Sse.decoder { limits with maxEventBytes = (-1) })" testActual
 
 let stopBeforeLaterError =
   match Sse.decoder { maxEventBytes = 2, maxLineBytes = 6 } with
@@ -84,7 +208,10 @@ let stopBeforeLaterError =
     match Sse.next decoder (Bytes.fromString "data:a\n\nxxxxxxxx") 0 with
     | Err _ -> false
     | Ok step -> step.update = Some (Sse.Dispatch (message "a")) && step.nextIndex = 8
-example: stopBeforeLaterError
+
+let case040 _ =
+  let testActual = stopBeforeLaterError
+  Expect.isTrue "stopBeforeLaterError" testActual
 
 let inheritedId =
   match Sse.decoderFrom Sse.defaults "previous" with
@@ -101,30 +228,144 @@ let inheritedId =
           eventType = "message",
           lastEventId = "previous"
         })
-example: inheritedId
+
+let case041 _ =
+  let testActual = inheritedId
+  Expect.isTrue "inheritedId" testActual
 
 let splitUpdates bytes split =
   Stream.toList (Sse.updates Sse.defaults (Stream.fromList [
     Bytes.slice 0 split bytes,
     Bytes.slice split (Bytes.length bytes) bytes
   ]))
-forall index: splitUpdates (Bytes.fromString "\u{FEFF}id: a\r\nretry: 3000\r\ndata: é😀\r\n\r\n") (Int.and index 63) = Result.mapError Sse.errorToString (updates "\u{FEFF}id: a\r\nretry: 3000\r\ndata: é😀\r\n\r\n")
-forall values: splitUpdates (Bytes.fromList (List.map (fun value ->
-  Int.and value 255) values)) 7 = Result.mapError Sse.errorToString (Sse.parse Sse.defaults (Bytes.fromList (List.map (fun value ->
-  Int.and value 255) values)))
+
+let case042 testInput =
+  let index = testInput
+  let testActual =
+    splitUpdates (Bytes.fromString "\u{FEFF}id: a\r\nretry: 3000\r\ndata: é😀\r\n\r\n") (Int.and index 63) = Result.mapError Sse.errorToString (updates "\u{FEFF}id: a\r\nretry: 3000\r\ndata: é😀\r\n\r\n")
+  Expect.isTrue "property: splitUpdates (Bytes.fromString \"\\u{FEFF}id: a\\r\\nretry: 3000\\r\\ndata: é😀\\r\\n\\r\\n\") (Int.and index 63) = Result.mapError Sse.errorToString (updates …" testActual
+
+let case043 testInput =
+  let values = testInput
+  let testActual =
+    splitUpdates (Bytes.fromList (List.map (fun value ->
+      Int.and value 255) values)) 7 = Result.mapError Sse.errorToString (Sse.parse Sse.defaults (Bytes.fromList (List.map (fun value ->
+      Int.and value 255) values)))
+  Expect.isTrue "property: splitUpdates (Bytes.fromList (List.map (fun value -> Int.and value 255) values)) 7 = Result.mapError Sse.errorToString (Sse.parse Sse.defaults (Byt…" testActual
 
 let encoded text = Sse.encode (Sse.event text)
-example: Bytes.toString (encoded "") = Some "data: \n\n"
-example: Bytes.toString (encoded "a\r\nb\rc\n") = Some "data: a\ndata: b\ndata: c\ndata: \n\n"
-example: Bytes.toString (Sse.encode (Sse.comment "one\ntwo")) = Some ": one\n: two\n\n"
-example: Result.isErr (Sse.withType "bad\ndata: injected" (Sse.event "x"))
-example: Result.isErr (Sse.withId "bad\u{0}id" (Sse.event "x"))
-example: Result.isErr (Sse.withId "bad\rid" (Sse.event "x"))
-example: Result.isErr (Sse.withType "type" (Sse.comment "comment"))
-example: Result.isErr (Sse.retry (-1))
-example: Result.map Sse.encode (Sse.retry 42) = Ok (Bytes.fromString "retry: 42\n\n")
-example: Result.map Sse.encode (Sse.checkpoint "") = Ok (Bytes.fromString "id: \n\n")
-example: Result.map Sse.encode (Sse.withId "one" (Sse.event "hello")) = Ok (Bytes.fromString "id: one\ndata: hello\n\n")
-forall text: Stream.toList (Sse.events Sse.defaults (Sse.encodeStream (Stream.singleton (Sse.event (String.join "" (String.split "\r" text)))))) = Ok [
-  message (String.join "" (String.split "\r" text))
+
+let case044 _ =
+  let testActual = Bytes.toString (encoded "")
+  let testExpected = Some "data: \n\n"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case045 _ =
+  let testActual = Bytes.toString (encoded "a\r\nb\rc\n")
+  let testExpected = Some "data: a\ndata: b\ndata: c\ndata: \n\n"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case046 _ =
+  let testActual = Bytes.toString (Sse.encode (Sse.comment "one\ntwo"))
+  let testExpected = Some ": one\n: two\n\n"
+  Expect.equal ((Test.option Test.string)).show testExpected testActual
+
+let case047 _ =
+  let testActual = Result.isErr (Sse.withType "bad\ndata: injected" (Sse.event "x"))
+  Expect.isTrue "Result.isErr (Sse.withType \"bad\\ndata: injected\" (Sse.event \"x\"))" testActual
+
+let case048 _ =
+  let testActual = Result.isErr (Sse.withId "bad\u{0}id" (Sse.event "x"))
+  Expect.isTrue "Result.isErr (Sse.withId \"bad\\u{0}id\" (Sse.event \"x\"))" testActual
+
+let case049 _ =
+  let testActual = Result.isErr (Sse.withId "bad\rid" (Sse.event "x"))
+  Expect.isTrue "Result.isErr (Sse.withId \"bad\\rid\" (Sse.event \"x\"))" testActual
+
+let case050 _ =
+  let testActual = Result.isErr (Sse.withType "type" (Sse.comment "comment"))
+  Expect.isTrue "Result.isErr (Sse.withType \"type\" (Sse.comment \"comment\"))" testActual
+
+let case051 _ =
+  let testActual = Result.isErr (Sse.retry (-1))
+  Expect.isTrue "Result.isErr (Sse.retry (-1))" testActual
+
+let case052 _ =
+  let testActual = Result.map Sse.encode (Sse.retry 42) = Ok (Bytes.fromString "retry: 42\n\n")
+  Expect.isTrue "Result.map Sse.encode (Sse.retry 42) = Ok (Bytes.fromString \"retry: 42\\n\\n\")" testActual
+
+let case053 _ =
+  let testActual = Result.map Sse.encode (Sse.checkpoint "") = Ok (Bytes.fromString "id: \n\n")
+  Expect.isTrue "Result.map Sse.encode (Sse.checkpoint \"\") = Ok (Bytes.fromString \"id: \\n\\n\")" testActual
+
+let case054 _ =
+  let testActual =
+    Result.map Sse.encode (Sse.withId "one" (Sse.event "hello")) = Ok (Bytes.fromString "id: one\ndata: hello\n\n")
+  Expect.isTrue "Result.map Sse.encode (Sse.withId \"one\" (Sse.event \"hello\")) = Ok (Bytes.fromString \"id: one\\ndata: hello\\n\\n\")" testActual
+
+let case055 testInput =
+  let text = testInput
+  let testActual =
+    Stream.toList (Sse.events Sse.defaults (Sse.encodeStream (Stream.singleton (Sse.event (String.join "" (String.split "\r" text)))))) = Ok [
+      message (String.join "" (String.split "\r" text))
+    ]
+  Expect.isTrue "property: Stream.toList (Sse.events Sse.defaults (Sse.encodeStream (Stream.singleton (Sse.event (String.join \"\" (String.split \"\\r\" text)))))) = Ok [ message …" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SseSpec" [
+  Test.test "events \"\" = Ok []" case001,
+  Test.test "events \"data: hello\\n\\n\" = Ok [message \"hello\"]" case002,
+  Test.test "events \"data: hello\\r\\n\\r\\n\" = Ok [message \"hello\"]" case003,
+  Test.test "events \"data: hello\\r\\r\" = Ok [message \"hello\"]" case004,
+  Test.test "events \"data\\n\\n\" = Ok [message \"\"]" case005,
+  Test.test "events \"data\\ndata\\n\\n\" = Ok [message \"\\n\"]" case006,
+  Test.test "events \"data: first\\ndata: second\\n\\n\" = Ok [message \"first\\nsecond\"]" case007,
+  Test.test "events \"data: leading\\ndata:\\t tab\\n\\n\" = Ok [message \" leading\\n\\t tab\"]" case008,
+  Test.test "events \"data: a:b:c\\n\\n\" = Ok [message \"a:b:c\"]" case009,
+  Test.test "events \"Data: ignored\\n\\n\" = Ok []" case010,
+  Test.test "events \": comment\\nunknown: ignored\\ndata: yes\\n\\n\" = Ok [message \"yes\"]" case011,
+  Test.test "events \"event: first\\nevent: last\\ndata: x\\n\\ndata: y\\n\\n\" = Ok [ { data = \"x\", eventType = \"last\", lastEventId = \"\" }, message \"y\" ]" case012,
+  Test.test "events \"event: custom\\nevent:\\ndata:x\\n\\n\" = Ok [message \"x\"]" case013,
+  Test.test "events \"data: incomplete\" = Ok []" case014,
+  Test.test "events \"data: incomplete\\n\" = Ok []" case015,
+  Test.test "events \"data: done\\n\\ndata: incomplete\\n\" = Ok [message \"done\"]" case016,
+  Test.test "events \"\\u{FEFF}data: é😀\\n\\n\" = Ok [message \"é😀\"]" case017,
+  Test.test "events \"data: \\u{FEFF}kept\\n\\n\" = Ok [message \"\\u{FEFF}kept\"]" case018,
+  Test.test "events \"id: one\\ndata: a\\n\\ndata: b\\n\\nid\\ndata: c\\n\\n\" = Ok [ { data = \"a\", eventType = \"message\", lastEventId = \"one\" }, { data = \"b\", eventType = \"message…" case019,
+  Test.test "events \"id: one\\nid: bad\\u{0}id\\ndata: a\\n\\n\" = Ok [ { data = \"a\", eventType = \"message\", lastEventId = \"one\" } ]" case020,
+  Test.test "updates \"id: one\\n\\nid\\n\\n\" = Ok [Sse.Checkpoint \"one\", Sse.Checkpoint \"\"]" case021,
+  Test.test "updates \"retry: 20\\n\" = Ok [Sse.Retry 20]" case022,
+  Test.test "updates \"retry: 0\\n\" = Ok [Sse.Retry 0]" case023,
+  Test.test "updates \"retry: 0012\\n\" = Ok [Sse.Retry 12]" case024,
+  Test.test "updates \"retry: -1\\nretry: +2\\nretry: 1.5\\nretry: ２\\nretry:\\n\" = Ok []" case025,
+  Test.test "updates \"retry: 999999999999999999999999\\n\" = Ok [Sse.Retry 9223372036854775807]" case026,
+  Test.test "updates \"retry: 2\\nid: a\\n\\ndata:x\\n\\n\" = Ok [ Sse.Retry 2, Sse.Checkpoint \"a\", Sse.Dispatch { data = \"x\", eventType = \"message\", lastEventId = \"a\" } ]" case027,
+  Test.test "byteEvents [255] = Ok [message \"\\u{FFFD}\"]" case028,
+  Test.test "byteEvents [226, 130] = Ok [message \"\\u{FFFD}\"]" case029,
+  Test.test "byteEvents [226, 40, 161] = Ok [message \"\\u{FFFD}(\\u{FFFD}\"]" case030,
+  Test.test "byteEvents [224, 128, 128] = Ok [message \"\\u{FFFD}\\u{FFFD}\\u{FFFD}\"]" case031,
+  Test.test "byteEvents [237, 160, 128] = Ok [message \"\\u{FFFD}\\u{FFFD}\\u{FFFD}\"]" case032,
+  Test.test "byteEvents [244, 144, 128, 128] = Ok [message \"\\u{FFFD}\\u{FFFD}\\u{FFFD}\\u{FFFD}\"]" case033,
+  Test.test "byteEvents [240, 159, 152, 128] = Ok [message \"😀\"]" case034,
+  Test.test "Sse.parse limits (Bytes.fromString \"data\") = Err { kind = Sse.LineTooLong, line = Some 1, message = \"SSE line exceeds its byte limit\", offset = Some 3 }" case035,
+  Test.test "Sse.parse { limits with maxLineBytes = 100 } (Bytes.fromString \"data: abc\\n\\n\") = Err { kind = Sse.EventTooLarge, line = Some 1, message = \"SSE event data ex…" case036,
+  Test.test "Sse.parse { limits with maxLineBytes = 100 } (Bytes.fromString \"data: ab\\n\\n\") = Ok [Sse.Dispatch (message \"ab\")]" case037,
+  Test.test "Result.isErr (Sse.decoder { limits with maxLineBytes = (-1) })" case038,
+  Test.test "Result.isErr (Sse.decoder { limits with maxEventBytes = (-1) })" case039,
+  Test.test "stopBeforeLaterError" case040,
+  Test.test "inheritedId" case041,
+  Test.property "property: splitUpdates (Bytes.fromString \"\\u{FEFF}id: a\\r\\nretry: 3000\\r\\ndata: é😀\\r\\n\\r\\n\") (Int.and index 63) = Result.mapError Sse.errorToString (updates …" Test.int case042,
+  Test.property "property: splitUpdates (Bytes.fromList (List.map (fun value -> Int.and value 255) values)) 7 = Result.mapError Sse.errorToString (Sse.parse Sse.defaults (Byt…" (Test.list Test.int) case043,
+  Test.test "Bytes.toString (encoded \"\") = Some \"data: \\n\\n\"" case044,
+  Test.test "Bytes.toString (encoded \"a\\r\\nb\\rc\\n\") = Some \"data: a\\ndata: b\\ndata: c\\ndata: \\n\\n\"" case045,
+  Test.test "Bytes.toString (Sse.encode (Sse.comment \"one\\ntwo\")) = Some \": one\\n: two\\n\\n\"" case046,
+  Test.test "Result.isErr (Sse.withType \"bad\\ndata: injected\" (Sse.event \"x\"))" case047,
+  Test.test "Result.isErr (Sse.withId \"bad\\u{0}id\" (Sse.event \"x\"))" case048,
+  Test.test "Result.isErr (Sse.withId \"bad\\rid\" (Sse.event \"x\"))" case049,
+  Test.test "Result.isErr (Sse.withType \"type\" (Sse.comment \"comment\"))" case050,
+  Test.test "Result.isErr (Sse.retry (-1))" case051,
+  Test.test "Result.map Sse.encode (Sse.retry 42) = Ok (Bytes.fromString \"retry: 42\\n\\n\")" case052,
+  Test.test "Result.map Sse.encode (Sse.checkpoint \"\") = Ok (Bytes.fromString \"id: \\n\\n\")" case053,
+  Test.test "Result.map Sse.encode (Sse.withId \"one\" (Sse.event \"hello\")) = Ok (Bytes.fromString \"id: one\\ndata: hello\\n\\n\")" case054,
+  Test.property "property: Stream.toList (Sse.events Sse.defaults (Sse.encodeStream (Stream.singleton (Sse.event (String.join \"\" (String.split \"\\r\" text)))))) = Ok [ message …" Test.string case055
 ]

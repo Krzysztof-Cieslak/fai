@@ -17,13 +17,62 @@ let base32 =
 
 let base32Hex =
   "000G40O40K30E209185GO38E1S8124GJ2GAHC5OO34D1M70T3OFI08924CI2A9H750KIKAPC5KN2UC1H68PJ8D9M6SS3IEHR7GUJSFQ085146H258P3KGIAA9D64QJIFA18L4KQKALB5EM2PB9DLONAUBTG62OJ3CHIMCPR8D5L6MR3DDPNN0SBIEDQ7ATJNF1SNKURSFLV7V041GA1O91C6GU48J2KBHI6OT3SGI699754LIQBPH6CQJEE9R7KVK2GQ58T4KMJAFA59LALQPBDELUOB3CLJMIQRDDTON6TBNF5TNQVS1GE2OF2CBHM7P34SLIUCPN7CVK6HQB9T9LEMQVCDJMMRRJETTNV0S7HE7P75SRJUHQFATFMERRNFU3OV5SVKUNRFFU7PVBTVPVFUVS======"
-example: Hex.encode input = hex
-example: Hex.decode hex = Ok input
-example: Base64.encode input = base64
-example: Base64.decode base64 = Ok input
-example: Base64Url.encode input = base64Url
-example: Base64Url.decode base64Url = Ok input
-example: Base32.encode input = base32
-example: Base32.decode base32 = Ok input
-example: Base32Hex.encode input = base32Hex
-example: Base32Hex.decode base32Hex = Ok input
+
+let case001 _ =
+  let testActual = Hex.encode input
+  let testExpected = hex
+  Expect.equal (Test.string).show testExpected testActual
+
+let case002 _ =
+  let testActual = Hex.decode hex = Ok input
+  Expect.isTrue "Hex.decode hex = Ok input" testActual
+
+let case003 _ =
+  let testActual = Base64.encode input
+  let testExpected = base64
+  Expect.equal (Test.string).show testExpected testActual
+
+let case004 _ =
+  let testActual = Base64.decode base64 = Ok input
+  Expect.isTrue "Base64.decode base64 = Ok input" testActual
+
+let case005 _ =
+  let testActual = Base64Url.encode input
+  let testExpected = base64Url
+  Expect.equal (Test.string).show testExpected testActual
+
+let case006 _ =
+  let testActual = Base64Url.decode base64Url = Ok input
+  Expect.isTrue "Base64Url.decode base64Url = Ok input" testActual
+
+let case007 _ =
+  let testActual = Base32.encode input
+  let testExpected = base32
+  Expect.equal (Test.string).show testExpected testActual
+
+let case008 _ =
+  let testActual = Base32.decode base32 = Ok input
+  Expect.isTrue "Base32.decode base32 = Ok input" testActual
+
+let case009 _ =
+  let testActual = Base32Hex.encode input
+  let testExpected = base32Hex
+  Expect.equal (Test.string).show testExpected testActual
+
+let case010 _ =
+  let testActual = Base32Hex.decode base32Hex = Ok input
+  Expect.isTrue "Base32Hex.decode base32Hex = Ok input" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "EncodingReferenceSpec" [
+  Test.test "Hex.encode input = hex" case001,
+  Test.test "Hex.decode hex = Ok input" case002,
+  Test.test "Base64.encode input = base64" case003,
+  Test.test "Base64.decode base64 = Ok input" case004,
+  Test.test "Base64Url.encode input = base64Url" case005,
+  Test.test "Base64Url.decode base64Url = Ok input" case006,
+  Test.test "Base32.encode input = base32" case007,
+  Test.test "Base32.decode base32 = Ok input" case008,
+  Test.test "Base32Hex.encode input = base32Hex" case009,
+  Test.test "Base32Hex.decode base32Hex = Ok input" case010
+]

@@ -2,90 +2,347 @@ module EdgeSpec
 
 import sql.Sql
 
-example: PgWire.parameters (PgWire.join [
-  PgWire.int16 2,
-  PgWire.int32 20,
-  PgWire.int32 25
-]) = Ok [| 20, 25 |]
-example: Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 2, PgWire.int32 20]))
-example: Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 0, PgWire.int32 20]))
-example: Result.isErr (PgWire.columns (PgWire.int16 1))
-example: Result.isErr (PgWire.row (PgWire.join [PgWire.int16 1, PgWire.int32 (-2)]))
-example: Result.isErr (PgWire.row (PgWire.join [PgWire.int16 0, Bytes.fromList [1]]))
-example: Result.isErr (PgWire.string (Bytes.fromList [255, 0]) 0)
-example: Result.isErr (PgWire.unsigned Bytes.empty (-1) 8)
-example: Result.isErr (PgWire.fields (Bytes.fromString "missing terminator"))
-example: PgWire.fields (PgWire.join [
-  Bytes.fromList [67],
-  PgWire.zero "23505",
-  Bytes.fromList [0]
-]) = Ok [(67, "23505")]
-example: PgWire.keywords " /* x /* y */ z */ -- ignored\n; rollback" = ["ROLLBACK"]
-example: PgWire.keywords "select 'COMMIT'" = ["SELECT"]
-example: Result.isErr (PgWire.decimalInt "-9223372036854775809")
-example: Result.isErr (PgWire.decimalInt "+")
-example: Result.isErr (PgWire.decimalInt "123 ")
-forall n: PgWire.decimalInt (Int.toString n) = Ok n
-forall bytes: PgWire.row (PgWire.join [
-  PgWire.int16 1,
-  PgWire.int32 (List.length bytes),
-  Bytes.fromList bytes
-]) = Ok [| Some (Bytes.fromList bytes) |]
-example: Result.isErr (PgTypes.decode 16 1 (Bytes.fromList [2]))
-example: Result.isErr (PgTypes.decode 99999 1 Bytes.empty)
-example: Result.isErr (PgTypes.decode 25 1 (Bytes.fromList [255]))
-example: Result.isErr (PgTypes.decode 20 0 (Bytes.fromString "42"))
-example: PgTypes.decode 700 1 (PgWire.int32 1) = Ok (Sql.Real (Float.fromBits 3936146074321813504))
-example: PgTypes.decode 701 1 (PgWire.int64 (-9223372036854775808)) = Ok (Sql.Real (-0.0))
-example: PgTypes.decode 1082 1 (PgWire.int32 (-2147483648)) = Ok (Sql.Date Sql.NegativeInfinity)
-example: PgTypes.decode 1184 1 (PgWire.int64 (-1)) = Ok (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 10956 86399999999000)))
-example: Result.isErr (PgTypes.decode 1083 1 (PgWire.int64 86400000001))
-example: Result.isErr (PgTypes.parameter 23 (Sql.Integer 2147483648))
-example: Result.isErr (PgTypes.parameter 25 (Sql.Text "a\u{0}b"))
-example: Result.isErr (PgTypes.parameter 700 (Sql.Real 0.1))
-example: Result.isOk (PgTypes.parameter 700 (Sql.Real 1.25))
-example: Result.isOk (PgTypes.parameter 700 (Sql.Real (Float.fromBits 3936146074321813504)))
-example: Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440589)))))
-example: Result.isOk (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440588)))))
-example: Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay 2145042906))))
-example: Result.isErr (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762940 0))))
-example: Result.isOk (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762939 86399999999000))))
-example: Result.isErr (PgTypes.parameter 114 (Sql.Json "{"))
-example: PgTypes.parameter 20 Sql.Null = Ok None
-example: Result.isErr (PgAuth.base64Decode "AQ=")
-example: Result.isErr (PgAuth.base64Decode "AQ==AAAA")
-example: Result.isErr (PgAuth.base64Decode "AAB=")
-example: Result.isErr (PgAuth.base64Decode "A A=")
+let case001 _ =
+  let testActual =
+    PgWire.parameters (PgWire.join [PgWire.int16 2, PgWire.int32 20, PgWire.int32 25])
+  let testExpected = Ok [| 20, 25 |]
+  Expect.equal ((Test.result (Test.array Test.int) Test.string)).show testExpected testActual
+
+let case002 _ =
+  let testActual = Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 2, PgWire.int32 20]))
+  Expect.isTrue "Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 2, PgWire.int32 20]))" testActual
+
+let case003 _ =
+  let testActual = Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 0, PgWire.int32 20]))
+  Expect.isTrue "Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 0, PgWire.int32 20]))" testActual
+
+let case004 _ =
+  let testActual = Result.isErr (PgWire.columns (PgWire.int16 1))
+  Expect.isTrue "Result.isErr (PgWire.columns (PgWire.int16 1))" testActual
+
+let case005 _ =
+  let testActual = Result.isErr (PgWire.row (PgWire.join [PgWire.int16 1, PgWire.int32 (-2)]))
+  Expect.isTrue "Result.isErr (PgWire.row (PgWire.join [PgWire.int16 1, PgWire.int32 (-2)]))" testActual
+
+let case006 _ =
+  let testActual = Result.isErr (PgWire.row (PgWire.join [PgWire.int16 0, Bytes.fromList [1]]))
+  Expect.isTrue "Result.isErr (PgWire.row (PgWire.join [PgWire.int16 0, Bytes.fromList [1]]))" testActual
+
+let case007 _ =
+  let testActual = Result.isErr (PgWire.string (Bytes.fromList [255, 0]) 0)
+  Expect.isTrue "Result.isErr (PgWire.string (Bytes.fromList [255, 0]) 0)" testActual
+
+let case008 _ =
+  let testActual = Result.isErr (PgWire.unsigned Bytes.empty (-1) 8)
+  Expect.isTrue "Result.isErr (PgWire.unsigned Bytes.empty (-1) 8)" testActual
+
+let case009 _ =
+  let testActual = Result.isErr (PgWire.fields (Bytes.fromString "missing terminator"))
+  Expect.isTrue "Result.isErr (PgWire.fields (Bytes.fromString \"missing terminator\"))" testActual
+
+let case010 _ =
+  let testActual =
+    PgWire.fields (PgWire.join [Bytes.fromList [67], PgWire.zero "23505", Bytes.fromList [0]])
+  let testExpected = Ok [(67, "23505")]
+  Expect.equal ((Test.result (Test.list (Test.tuple2 Test.int Test.string)) Test.string)).show testExpected testActual
+
+let case011 _ =
+  let testActual = PgWire.keywords " /* x /* y */ z */ -- ignored\n; rollback"
+  let testExpected = ["ROLLBACK"]
+  Expect.equal ((Test.list Test.string)).show testExpected testActual
+
+let case012 _ =
+  let testActual = PgWire.keywords "select 'COMMIT'"
+  let testExpected = ["SELECT"]
+  Expect.equal ((Test.list Test.string)).show testExpected testActual
+
+let case013 _ =
+  let testActual = Result.isErr (PgWire.decimalInt "-9223372036854775809")
+  Expect.isTrue "Result.isErr (PgWire.decimalInt \"-9223372036854775809\")" testActual
+
+let case014 _ =
+  let testActual = Result.isErr (PgWire.decimalInt "+")
+  Expect.isTrue "Result.isErr (PgWire.decimalInt \"+\")" testActual
+
+let case015 _ =
+  let testActual = Result.isErr (PgWire.decimalInt "123 ")
+  Expect.isTrue "Result.isErr (PgWire.decimalInt \"123 \")" testActual
+
+let case016 testInput =
+  let n = testInput
+  let testActual = PgWire.decimalInt (Int.toString n)
+  let testExpected = Ok n
+  Expect.equal ((Test.result Test.int Test.string)).show testExpected testActual
+
+let case017 testInput =
+  let bytes = testInput
+  let testActual =
+    PgWire.row (PgWire.join [
+      PgWire.int16 1,
+      PgWire.int32 (List.length bytes),
+      Bytes.fromList bytes
+    ]) = Ok [| Some (Bytes.fromList bytes) |]
+  Expect.isTrue "property: PgWire.row (PgWire.join [ PgWire.int16 1, PgWire.int32 (List.length bytes), Bytes.fromList bytes ]) = Ok [| Some (Bytes.fromList bytes) |]" testActual
+
+let case018 _ =
+  let testActual = Result.isErr (PgTypes.decode 16 1 (Bytes.fromList [2]))
+  Expect.isTrue "Result.isErr (PgTypes.decode 16 1 (Bytes.fromList [2]))" testActual
+
+let case019 _ =
+  let testActual = Result.isErr (PgTypes.decode 99999 1 Bytes.empty)
+  Expect.isTrue "Result.isErr (PgTypes.decode 99999 1 Bytes.empty)" testActual
+
+let case020 _ =
+  let testActual = Result.isErr (PgTypes.decode 25 1 (Bytes.fromList [255]))
+  Expect.isTrue "Result.isErr (PgTypes.decode 25 1 (Bytes.fromList [255]))" testActual
+
+let case021 _ =
+  let testActual = Result.isErr (PgTypes.decode 20 0 (Bytes.fromString "42"))
+  Expect.isTrue "Result.isErr (PgTypes.decode 20 0 (Bytes.fromString \"42\"))" testActual
+
+let case022 _ =
+  let testActual =
+    PgTypes.decode 700 1 (PgWire.int32 1) = Ok (Sql.Real (Float.fromBits 3936146074321813504))
+  Expect.isTrue "PgTypes.decode 700 1 (PgWire.int32 1) = Ok (Sql.Real (Float.fromBits 3936146074321813504))" testActual
+
+let case023 _ =
+  let testActual = PgTypes.decode 701 1 (PgWire.int64 (-9223372036854775808)) = Ok (Sql.Real (-0.0))
+  Expect.isTrue "PgTypes.decode 701 1 (PgWire.int64 (-9223372036854775808)) = Ok (Sql.Real (-0.0))" testActual
+
+let case024 _ =
+  let testActual =
+    PgTypes.decode 1082 1 (PgWire.int32 (-2147483648)) = Ok (Sql.Date Sql.NegativeInfinity)
+  Expect.isTrue "PgTypes.decode 1082 1 (PgWire.int32 (-2147483648)) = Ok (Sql.Date Sql.NegativeInfinity)" testActual
+
+let case025 _ =
+  let testActual =
+    PgTypes.decode 1184 1 (PgWire.int64 (-1)) = Ok (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 10956 86399999999000)))
+  Expect.isTrue "PgTypes.decode 1184 1 (PgWire.int64 (-1)) = Ok (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 10956 86399999999000)))" testActual
+
+let case026 _ =
+  let testActual = Result.isErr (PgTypes.decode 1083 1 (PgWire.int64 86400000001))
+  Expect.isTrue "Result.isErr (PgTypes.decode 1083 1 (PgWire.int64 86400000001))" testActual
+
+let case027 _ =
+  let testActual = Result.isErr (PgTypes.parameter 23 (Sql.Integer 2147483648))
+  Expect.isTrue "Result.isErr (PgTypes.parameter 23 (Sql.Integer 2147483648))" testActual
+
+let case028 _ =
+  let testActual = Result.isErr (PgTypes.parameter 25 (Sql.Text "a\u{0}b"))
+  Expect.isTrue "Result.isErr (PgTypes.parameter 25 (Sql.Text \"a\\u{0}b\"))" testActual
+
+let case029 _ =
+  let testActual = Result.isErr (PgTypes.parameter 700 (Sql.Real 0.1))
+  Expect.isTrue "Result.isErr (PgTypes.parameter 700 (Sql.Real 0.1))" testActual
+
+let case030 _ =
+  let testActual = Result.isOk (PgTypes.parameter 700 (Sql.Real 1.25))
+  Expect.isTrue "Result.isOk (PgTypes.parameter 700 (Sql.Real 1.25))" testActual
+
+let case031 _ =
+  let testActual =
+    Result.isOk (PgTypes.parameter 700 (Sql.Real (Float.fromBits 3936146074321813504)))
+  Expect.isTrue "Result.isOk (PgTypes.parameter 700 (Sql.Real (Float.fromBits 3936146074321813504)))" testActual
+
+let case032 _ =
+  let testActual =
+    Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440589)))))
+  Expect.isTrue "Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440589)))))" testActual
+
+let case033 _ =
+  let testActual =
+    Result.isOk (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440588)))))
+  Expect.isTrue "Result.isOk (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440588)))))" testActual
+
+let case034 _ =
+  let testActual =
+    Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay 2145042906))))
+  Expect.isTrue "Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay 2145042906))))" testActual
+
+let case035 _ =
+  let testActual =
+    Result.isErr (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762940 0))))
+  Expect.isTrue "Result.isErr (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762940 0))))" testActual
+
+let case036 _ =
+  let testActual =
+    Result.isOk (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762939 86399999999000))))
+  Expect.isTrue "Result.isOk (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762939 86399999999000))))" testActual
+
+let case037 _ =
+  let testActual = Result.isErr (PgTypes.parameter 114 (Sql.Json "{"))
+  Expect.isTrue "Result.isErr (PgTypes.parameter 114 (Sql.Json \"{\"))" testActual
+
+let case038 _ =
+  let testActual = PgTypes.parameter 20 Sql.Null = Ok None
+  Expect.isTrue "PgTypes.parameter 20 Sql.Null = Ok None" testActual
+
+let case039 _ =
+  let testActual = Result.isErr (PgAuth.base64Decode "AQ=")
+  Expect.isTrue "Result.isErr (PgAuth.base64Decode \"AQ=\")" testActual
+
+let case040 _ =
+  let testActual = Result.isErr (PgAuth.base64Decode "AQ==AAAA")
+  Expect.isTrue "Result.isErr (PgAuth.base64Decode \"AQ==AAAA\")" testActual
+
+let case041 _ =
+  let testActual = Result.isErr (PgAuth.base64Decode "AAB=")
+  Expect.isTrue "Result.isErr (PgAuth.base64Decode \"AAB=\")" testActual
+
+let case042 _ =
+  let testActual = Result.isErr (PgAuth.base64Decode "A A=")
+  Expect.isTrue "Result.isErr (PgAuth.base64Decode \"A A=\")" testActual
 
 let first = PgAuth.first "a,b=c" "nonce" "n,," Bytes.empty
-example: first.message = "n,,n=a=2Cb=3Dc,r=nonce"
-example: Result.isErr (PgAuth.respond 100 "password" first "r=nonceX,s=YQ==,i=1,i=2")
-example: Result.isErr (PgAuth.respond 100 "password" first "m=unsupported,r=nonceX,s=YQ==,i=1")
-example: Result.isErr (PgAuth.respond 100 "password" first "r=nonceX,s=YQ==,i=0")
-example: Result.isErr (PgAuth.respond 100 "password" first "r=nonceX,s=YQ==,i=101")
-example: Result.isErr (PgAuth.respond 100 "password" first "r=nonce X,s=YQ==,i=1")
-example: Result.isErr (PgAuth.verify {
-  message = "",
-  serverProof = Bytes.fromList (List.map (fun _ -> 0) (List.range 0 32))
-} "v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=,e=failed")
-example: Result.isErr (PgConfig.validate { PgConfig.defaults with port = 0 })
-example: Result.isErr (PgConfig.validate { PgConfig.defaults with cleanupTimeoutMs = 0 })
-example: Result.isErr (PgConfig.validate { PgConfig.defaults with
-  channelBinding = PgConfig.RequireBinding,
-  tls = PgConfig.Disabled
-})
-example: Result.isOk (PgConfig.validate { PgConfig.defaults with
-  connectTimeoutMs = None,
-  operationTimeoutMs = None
-})
-example: Result.map (fun config ->
-  (config.user, config.password, config.database)) (PgConfig.fromUri "postgres://a%40b:p%3Aq@localhost/db%20name") = Ok ("a@b", "p:q", "db name")
-example: Result.isErr (PgConfig.fromUri "https://localhost/db")
-example: Result.isErr (PgConfig.fromUri "postgres://localhost/db?sslmode=prefer")
-example: Result.isErr (PgPool.validate { PgPool.defaults with maxConnections = 0 })
-example: Result.isErr (PgPool.validate { PgPool.defaults with minConnections = 11 })
-example: Result.isOk (PgPool.validate { PgPool.defaults with
-  acquireTimeoutMs = None,
-  idleTimeoutMs = None,
-  maxLifetimeMs = None
-})
+
+let case043 _ =
+  let testActual = first.message
+  let testExpected = "n,,n=a=2Cb=3Dc,r=nonce"
+  Expect.equal (Test.string).show testExpected testActual
+
+let case044 _ =
+  let testActual = Result.isErr (PgAuth.respond 100 "password" first "r=nonceX,s=YQ==,i=1,i=2")
+  Expect.isTrue "Result.isErr (PgAuth.respond 100 \"password\" first \"r=nonceX,s=YQ==,i=1,i=2\")" testActual
+
+let case045 _ =
+  let testActual =
+    Result.isErr (PgAuth.respond 100 "password" first "m=unsupported,r=nonceX,s=YQ==,i=1")
+  Expect.isTrue "Result.isErr (PgAuth.respond 100 \"password\" first \"m=unsupported,r=nonceX,s=YQ==,i=1\")" testActual
+
+let case046 _ =
+  let testActual = Result.isErr (PgAuth.respond 100 "password" first "r=nonceX,s=YQ==,i=0")
+  Expect.isTrue "Result.isErr (PgAuth.respond 100 \"password\" first \"r=nonceX,s=YQ==,i=0\")" testActual
+
+let case047 _ =
+  let testActual = Result.isErr (PgAuth.respond 100 "password" first "r=nonceX,s=YQ==,i=101")
+  Expect.isTrue "Result.isErr (PgAuth.respond 100 \"password\" first \"r=nonceX,s=YQ==,i=101\")" testActual
+
+let case048 _ =
+  let testActual = Result.isErr (PgAuth.respond 100 "password" first "r=nonce X,s=YQ==,i=1")
+  Expect.isTrue "Result.isErr (PgAuth.respond 100 \"password\" first \"r=nonce X,s=YQ==,i=1\")" testActual
+
+let case049 _ =
+  let testActual =
+    Result.isErr (PgAuth.verify {
+      message = "",
+      serverProof = Bytes.fromList (List.map (fun _ -> 0) (List.range 0 32))
+    } "v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=,e=failed")
+  Expect.isTrue "Result.isErr (PgAuth.verify { message = \"\", serverProof = Bytes.fromList (List.map (fun _ -> 0) (List.range 0 32)) } \"v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA…" testActual
+
+let case050 _ =
+  let testActual = Result.isErr (PgConfig.validate { PgConfig.defaults with port = 0 })
+  Expect.isTrue "Result.isErr (PgConfig.validate { PgConfig.defaults with port = 0 })" testActual
+
+let case051 _ =
+  let testActual = Result.isErr (PgConfig.validate { PgConfig.defaults with cleanupTimeoutMs = 0 })
+  Expect.isTrue "Result.isErr (PgConfig.validate { PgConfig.defaults with cleanupTimeoutMs = 0 })" testActual
+
+let case052 _ =
+  let testActual =
+    Result.isErr (PgConfig.validate { PgConfig.defaults with
+      channelBinding = PgConfig.RequireBinding,
+      tls = PgConfig.Disabled
+    })
+  Expect.isTrue "Result.isErr (PgConfig.validate { PgConfig.defaults with channelBinding = PgConfig.RequireBinding, tls = PgConfig.Disabled })" testActual
+
+let case053 _ =
+  let testActual =
+    Result.isOk (PgConfig.validate { PgConfig.defaults with
+      connectTimeoutMs = None,
+      operationTimeoutMs = None
+    })
+  Expect.isTrue "Result.isOk (PgConfig.validate { PgConfig.defaults with connectTimeoutMs = None, operationTimeoutMs = None })" testActual
+
+let case054 _ =
+  let testActual =
+    Result.map (fun config ->
+      (config.user, config.password, config.database)) (PgConfig.fromUri "postgres://a%40b:p%3Aq@localhost/db%20name") = Ok ("a@b", "p:q", "db name")
+  Expect.isTrue "Result.map (fun config -> (config.user, config.password, config.database)) (PgConfig.fromUri \"postgres://a%40b:p%3Aq@localhost/db%20name\") = Ok (\"a@b\", \"p:q\"…" testActual
+
+let case055 _ =
+  let testActual = Result.isErr (PgConfig.fromUri "https://localhost/db")
+  Expect.isTrue "Result.isErr (PgConfig.fromUri \"https://localhost/db\")" testActual
+
+let case056 _ =
+  let testActual = Result.isErr (PgConfig.fromUri "postgres://localhost/db?sslmode=prefer")
+  Expect.isTrue "Result.isErr (PgConfig.fromUri \"postgres://localhost/db?sslmode=prefer\")" testActual
+
+let case057 _ =
+  let testActual = Result.isErr (PgPool.validate { PgPool.defaults with maxConnections = 0 })
+  Expect.isTrue "Result.isErr (PgPool.validate { PgPool.defaults with maxConnections = 0 })" testActual
+
+let case058 _ =
+  let testActual = Result.isErr (PgPool.validate { PgPool.defaults with minConnections = 11 })
+  Expect.isTrue "Result.isErr (PgPool.validate { PgPool.defaults with minConnections = 11 })" testActual
+
+let case059 _ =
+  let testActual =
+    Result.isOk (PgPool.validate { PgPool.defaults with
+      acquireTimeoutMs = None,
+      idleTimeoutMs = None,
+      maxLifetimeMs = None
+    })
+  Expect.isTrue "Result.isOk (PgPool.validate { PgPool.defaults with acquireTimeoutMs = None, idleTimeoutMs = None, maxLifetimeMs = None })" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "EdgeSpec" [
+  Test.test "PgWire.parameters (PgWire.join [ PgWire.int16 2, PgWire.int32 20, PgWire.int32 25 ]) = Ok [| 20, 25 |]" case001,
+  Test.test "Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 2, PgWire.int32 20]))" case002,
+  Test.test "Result.isErr (PgWire.parameters (PgWire.join [PgWire.int16 0, PgWire.int32 20]))" case003,
+  Test.test "Result.isErr (PgWire.columns (PgWire.int16 1))" case004,
+  Test.test "Result.isErr (PgWire.row (PgWire.join [PgWire.int16 1, PgWire.int32 (-2)]))" case005,
+  Test.test "Result.isErr (PgWire.row (PgWire.join [PgWire.int16 0, Bytes.fromList [1]]))" case006,
+  Test.test "Result.isErr (PgWire.string (Bytes.fromList [255, 0]) 0)" case007,
+  Test.test "Result.isErr (PgWire.unsigned Bytes.empty (-1) 8)" case008,
+  Test.test "Result.isErr (PgWire.fields (Bytes.fromString \"missing terminator\"))" case009,
+  Test.test "PgWire.fields (PgWire.join [ Bytes.fromList [67], PgWire.zero \"23505\", Bytes.fromList [0] ]) = Ok [(67, \"23505\")]" case010,
+  Test.test "PgWire.keywords \" /* x /* y */ z */ -- ignored\\n; rollback\" = [\"ROLLBACK\"]" case011,
+  Test.test "PgWire.keywords \"select 'COMMIT'\" = [\"SELECT\"]" case012,
+  Test.test "Result.isErr (PgWire.decimalInt \"-9223372036854775809\")" case013,
+  Test.test "Result.isErr (PgWire.decimalInt \"+\")" case014,
+  Test.test "Result.isErr (PgWire.decimalInt \"123 \")" case015,
+  Test.property "property: PgWire.decimalInt (Int.toString n) = Ok n" Test.int case016,
+  Test.property "property: PgWire.row (PgWire.join [ PgWire.int16 1, PgWire.int32 (List.length bytes), Bytes.fromList bytes ]) = Ok [| Some (Bytes.fromList bytes) |]" (Test.list Test.int) case017,
+  Test.test "Result.isErr (PgTypes.decode 16 1 (Bytes.fromList [2]))" case018,
+  Test.test "Result.isErr (PgTypes.decode 99999 1 Bytes.empty)" case019,
+  Test.test "Result.isErr (PgTypes.decode 25 1 (Bytes.fromList [255]))" case020,
+  Test.test "Result.isErr (PgTypes.decode 20 0 (Bytes.fromString \"42\"))" case021,
+  Test.test "PgTypes.decode 700 1 (PgWire.int32 1) = Ok (Sql.Real (Float.fromBits 3936146074321813504))" case022,
+  Test.test "PgTypes.decode 701 1 (PgWire.int64 (-9223372036854775808)) = Ok (Sql.Real (-0.0))" case023,
+  Test.test "PgTypes.decode 1082 1 (PgWire.int32 (-2147483648)) = Ok (Sql.Date Sql.NegativeInfinity)" case024,
+  Test.test "PgTypes.decode 1184 1 (PgWire.int64 (-1)) = Ok (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 10956 86399999999000)))" case025,
+  Test.test "Result.isErr (PgTypes.decode 1083 1 (PgWire.int64 86400000001))" case026,
+  Test.test "Result.isErr (PgTypes.parameter 23 (Sql.Integer 2147483648))" case027,
+  Test.test "Result.isErr (PgTypes.parameter 25 (Sql.Text \"a\\u{0}b\"))" case028,
+  Test.test "Result.isErr (PgTypes.parameter 700 (Sql.Real 0.1))" case029,
+  Test.test "Result.isOk (PgTypes.parameter 700 (Sql.Real 1.25))" case030,
+  Test.test "Result.isOk (PgTypes.parameter 700 (Sql.Real (Float.fromBits 3936146074321813504)))" case031,
+  Test.test "Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440589)))))" case032,
+  Test.test "Result.isOk (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay (-2440588)))))" case033,
+  Test.test "Result.isErr (PgTypes.parameter 1082 (Sql.Date (Sql.Finite (LocalDate.fromEpochDay 2145042906))))" case034,
+  Test.test "Result.isErr (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762940 0))))" case035,
+  Test.test "Result.isOk (PgTypes.parameter 1184 (Sql.TimestampTz (Sql.Finite (Instant.fromEpochDayAndNanoOfDay 106762939 86399999999000))))" case036,
+  Test.test "Result.isErr (PgTypes.parameter 114 (Sql.Json \"{\"))" case037,
+  Test.test "PgTypes.parameter 20 Sql.Null = Ok None" case038,
+  Test.test "Result.isErr (PgAuth.base64Decode \"AQ=\")" case039,
+  Test.test "Result.isErr (PgAuth.base64Decode \"AQ==AAAA\")" case040,
+  Test.test "Result.isErr (PgAuth.base64Decode \"AAB=\")" case041,
+  Test.test "Result.isErr (PgAuth.base64Decode \"A A=\")" case042,
+  Test.test "first.message = \"n,,n=a=2Cb=3Dc,r=nonce\"" case043,
+  Test.test "Result.isErr (PgAuth.respond 100 \"password\" first \"r=nonceX,s=YQ==,i=1,i=2\")" case044,
+  Test.test "Result.isErr (PgAuth.respond 100 \"password\" first \"m=unsupported,r=nonceX,s=YQ==,i=1\")" case045,
+  Test.test "Result.isErr (PgAuth.respond 100 \"password\" first \"r=nonceX,s=YQ==,i=0\")" case046,
+  Test.test "Result.isErr (PgAuth.respond 100 \"password\" first \"r=nonceX,s=YQ==,i=101\")" case047,
+  Test.test "Result.isErr (PgAuth.respond 100 \"password\" first \"r=nonce X,s=YQ==,i=1\")" case048,
+  Test.test "Result.isErr (PgAuth.verify { message = \"\", serverProof = Bytes.fromList (List.map (fun _ -> 0) (List.range 0 32)) } \"v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA…" case049,
+  Test.test "Result.isErr (PgConfig.validate { PgConfig.defaults with port = 0 })" case050,
+  Test.test "Result.isErr (PgConfig.validate { PgConfig.defaults with cleanupTimeoutMs = 0 })" case051,
+  Test.test "Result.isErr (PgConfig.validate { PgConfig.defaults with channelBinding = PgConfig.RequireBinding, tls = PgConfig.Disabled })" case052,
+  Test.test "Result.isOk (PgConfig.validate { PgConfig.defaults with connectTimeoutMs = None, operationTimeoutMs = None })" case053,
+  Test.test "Result.map (fun config -> (config.user, config.password, config.database)) (PgConfig.fromUri \"postgres://a%40b:p%3Aq@localhost/db%20name\") = Ok (\"a@b\", \"p:q\"…" case054,
+  Test.test "Result.isErr (PgConfig.fromUri \"https://localhost/db\")" case055,
+  Test.test "Result.isErr (PgConfig.fromUri \"postgres://localhost/db?sslmode=prefer\")" case056,
+  Test.test "Result.isErr (PgPool.validate { PgPool.defaults with maxConnections = 0 })" case057,
+  Test.test "Result.isErr (PgPool.validate { PgPool.defaults with minConnections = 11 })" case058,
+  Test.test "Result.isOk (PgPool.validate { PgPool.defaults with acquireTimeoutMs = None, idleTimeoutMs = None, maxLifetimeMs = None })" case059
+]

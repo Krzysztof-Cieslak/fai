@@ -38,17 +38,41 @@ let allSplits text options bytes = splits text options bytes 0 (parse text optio
 let oneByteChunks bytes = List.map (fun byte -> Bytes.fromList [byte]) (Bytes.toList bytes)
 
 let bytes = Bytes.fromString "\u{feff}name,note\r\né,\"🙂\r\na\"\"b\"\r\n"
-example: allSplits true CsvTypes.options bytes
-example: parse true CsvTypes.options (oneByteChunks bytes) = parse true CsvTypes.options [bytes]
-example: allSplits true CsvTypes.options (Bytes.fromString "a\r\nb,c\r\n")
-example: allSplits true CsvTypes.options (Bytes.fromString "\"a\"\"b\"")
-example: allSplits true CsvTypes.options (Bytes.fromList [239, 187])
-example: allSplits false { CsvTypes.byteOptions with
-  bom = CsvTypes.StripUtf8Bom
-} (Bytes.fromList [239, 10])
-example: allSplits true { CsvTypes.options with
-  dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly }
-} bytes
+
+let case001 _ =
+  let testActual = allSplits true CsvTypes.options bytes
+  Expect.isTrue "allSplits true CsvTypes.options bytes" testActual
+
+let case002 _ =
+  let testActual =
+    parse true CsvTypes.options (oneByteChunks bytes) = parse true CsvTypes.options [bytes]
+  Expect.isTrue "parse true CsvTypes.options (oneByteChunks bytes) = parse true CsvTypes.options [bytes]" testActual
+
+let case003 _ =
+  let testActual = allSplits true CsvTypes.options (Bytes.fromString "a\r\nb,c\r\n")
+  Expect.isTrue "allSplits true CsvTypes.options (Bytes.fromString \"a\\r\\nb,c\\r\\n\")" testActual
+
+let case004 _ =
+  let testActual = allSplits true CsvTypes.options (Bytes.fromString "\"a\"\"b\"")
+  Expect.isTrue "allSplits true CsvTypes.options (Bytes.fromString \"\\\"a\\\"\\\"b\\\"\")" testActual
+
+let case005 _ =
+  let testActual = allSplits true CsvTypes.options (Bytes.fromList [239, 187])
+  Expect.isTrue "allSplits true CsvTypes.options (Bytes.fromList [239, 187])" testActual
+
+let case006 _ =
+  let testActual =
+    allSplits false { CsvTypes.byteOptions with
+      bom = CsvTypes.StripUtf8Bom
+    } (Bytes.fromList [239, 10])
+  Expect.isTrue "allSplits false { CsvTypes.byteOptions with bom = CsvTypes.StripUtf8Bom } (Bytes.fromList [239, 10])" testActual
+
+let case007 _ =
+  let testActual =
+    allSplits true { CsvTypes.options with
+      dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly }
+    } bytes
+  Expect.isTrue "allSplits true { CsvTypes.options with dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly } } bytes" testActual
 
 let early =
   match CsvCore.parser true CsvTypes.options with
@@ -58,13 +82,19 @@ let early =
     fed.next = 2 && (match fed.status with
     | CsvCore.RecordReady _ -> true
     | _ -> false)
-example: early
+
+let case008 _ =
+  let testActual = early
+  Expect.isTrue "early" testActual
 
 let alias =
   match CsvCore.parser true CsvTypes.options with
   | Err _ -> false
   | Ok parser -> CsvCore.feed parser bytes 0 = CsvCore.feed parser bytes 0
-example: alias
+
+let case009 _ =
+  let testActual = alias
+  Expect.isTrue "alias" testActual
 
 let position =
   match parse true CsvTypes.options [Bytes.fromString "a\r\n\"é\n🙂\"\n"] with
@@ -78,7 +108,10 @@ let position =
       }
     } && (Array.unsafeGet 0 record.fields).quoted
   | _ -> false
-example: position
+
+let case010 _ =
+  let testActual = position
+  Expect.isTrue "position" testActual
 
 let invalid bytes position =
   match parse true CsvTypes.options [Bytes.fromList bytes] with
@@ -86,12 +119,32 @@ let invalid bytes position =
     error.kind = CsvTypes.InvalidUtf8 && Option.map (fun position ->
       position.byteOffset) error.position = Some position
   | _ -> false
-example: invalid [97, 44, 255] 2
-example: invalid [97, 44, 240, 128, 128, 128] 2
-example: invalid [97, 44, 237, 160, 128] 2
-example: invalid [97, 44, 240, 159, 153] 2
-forall source: allSplits true CsvTypes.options (Bytes.fromString source)
-forall values: allSplits false CsvTypes.byteOptions (Bytes.fromList values)
+
+let case011 _ =
+  let testActual = invalid [97, 44, 255] 2
+  Expect.isTrue "invalid [97, 44, 255] 2" testActual
+
+let case012 _ =
+  let testActual = invalid [97, 44, 240, 128, 128, 128] 2
+  Expect.isTrue "invalid [97, 44, 240, 128, 128, 128] 2" testActual
+
+let case013 _ =
+  let testActual = invalid [97, 44, 237, 160, 128] 2
+  Expect.isTrue "invalid [97, 44, 237, 160, 128] 2" testActual
+
+let case014 _ =
+  let testActual = invalid [97, 44, 240, 159, 153] 2
+  Expect.isTrue "invalid [97, 44, 240, 159, 153] 2" testActual
+
+let case015 testInput =
+  let source = testInput
+  let testActual = allSplits true CsvTypes.options (Bytes.fromString source)
+  Expect.isTrue "property: allSplits true CsvTypes.options (Bytes.fromString source)" testActual
+
+let case016 testInput =
+  let values = testInput
+  let testActual = allSplits false CsvTypes.byteOptions (Bytes.fromList values)
+  Expect.isTrue "property: allSplits false CsvTypes.byteOptions (Bytes.fromList values)" testActual
 
 let partition bytes sizes offset pieces =
   match sizes with
@@ -105,4 +158,29 @@ let partitioned values sizes =
   parse false CsvTypes.byteOptions (partition bytes sizes 0 []) = parse false CsvTypes.byteOptions [
     bytes
   ]
-forall values sizes: partitioned values sizes
+
+let case017 testInput =
+  let (values, sizes) = testInput
+  let testActual = partitioned values sizes
+  Expect.isTrue "property: partitioned values sizes" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "CsvChunkSpec" [
+  Test.test "allSplits true CsvTypes.options bytes" case001,
+  Test.test "parse true CsvTypes.options (oneByteChunks bytes) = parse true CsvTypes.options [bytes]" case002,
+  Test.test "allSplits true CsvTypes.options (Bytes.fromString \"a\\r\\nb,c\\r\\n\")" case003,
+  Test.test "allSplits true CsvTypes.options (Bytes.fromString \"\\\"a\\\"\\\"b\\\"\")" case004,
+  Test.test "allSplits true CsvTypes.options (Bytes.fromList [239, 187])" case005,
+  Test.test "allSplits false { CsvTypes.byteOptions with bom = CsvTypes.StripUtf8Bom } (Bytes.fromList [239, 10])" case006,
+  Test.test "allSplits true { CsvTypes.options with dialect = { CsvTypes.dialect with endings = CsvTypes.CrLfOnly } } bytes" case007,
+  Test.test "early" case008,
+  Test.test "alias" case009,
+  Test.test "position" case010,
+  Test.test "invalid [97, 44, 255] 2" case011,
+  Test.test "invalid [97, 44, 240, 128, 128, 128] 2" case012,
+  Test.test "invalid [97, 44, 237, 160, 128] 2" case013,
+  Test.test "invalid [97, 44, 240, 159, 153] 2" case014,
+  Test.property "property: allSplits true CsvTypes.options (Bytes.fromString source)" Test.string case015,
+  Test.property "property: allSplits false CsvTypes.byteOptions (Bytes.fromList values)" (Test.list Test.int) case016,
+  Test.property "property: partitioned values sizes" (Test.tuple2 (Test.list Test.int) (Test.list Test.int)) case017
+]

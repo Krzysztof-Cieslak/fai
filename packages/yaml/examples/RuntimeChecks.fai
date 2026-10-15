@@ -79,3 +79,24 @@ let main env =
     "YAML runtime checks passed"
   else
     "YAML runtime checks FAILED")
+
+parallelParsing : Test.Context -> Test.Check / { Concurrency }
+let parallelParsing ctx =
+  Expect.isTrue "concurrent parsers retain independent state" (Async.parallel ctx.runtime.concurrency [
+    fun _ -> repeated 0,
+    fun _ -> repeated 0
+  ] = [true, true])
+
+tests : Test.Suite Test.Context { Concurrency }
+let tests = Test.describe "YAML runtime" [
+  Test.test "deep block rendering" (fun _ -> Expect.isTrue "nested containers round trip" deep),
+  Test.test "large Unicode scalar" (fun _ ->
+    Expect.isTrue "large scalar text round trips" largeScalar),
+  Test.test "repeated parse and render" (fun _ ->
+    Expect.isTrue "repeated documents round trip" (repeated 0)),
+  Test.test "bounded alias expansion" (fun _ ->
+    Expect.isTrue "alias expansion respects its node budget" aliasLimit),
+  Test.test "cyclic document graphs" (fun _ ->
+    Expect.isTrue "graphs render but reject cyclic value expansion" cycle),
+  Test.test "parallel pure parsing" parallelParsing
+]

@@ -4,27 +4,113 @@ let less a b =
   match (Semver.parse a, Semver.parse b) with
   | (Ok a, Ok b) -> Semver.compare a b < 0 && Semver.compare b a > 0
   | _ -> false
-example: less "1.0.0-alpha" "1.0.0-alpha.1"
-example: less "1.0.0-alpha.1" "1.0.0-alpha.beta"
-example: less "1.0.0-alpha.beta" "1.0.0-beta"
-example: less "1.0.0-beta" "1.0.0-beta.2"
-example: less "1.0.0-beta.2" "1.0.0-beta.11"
-example: less "1.0.0-beta.11" "1.0.0-rc.1"
-example: less "1.0.0-rc.1" "1.0.0"
-example: less "1.0.0" "2.0.0"
-example: less "2.0.0" "2.1.0"
-example: less "2.1.0" "2.1.1"
-example: less "9.99.99" "10.0.0"
-example: less "1.9.99" "1.10.0"
-example: less "1.1.9" "1.1.10"
-example: less "1.0.0-9999999999999999999999999999" "1.0.0-10000000000000000000000000000"
-example: less "1.0.0-9999999999999999999999999999" "1.0.0--"
-example: less "1.0.0-Alpha" "1.0.0-alpha"
-example: less "1.0.0-a" "1.0.0-a.0"
-example: less "9999999999999999999999999999.0.0" "10000000000000000000000000000.0.0"
-example: (match (Semver.parse "1.2.3+linux", Semver.parse "1.2.3+windows") with
-| (Ok a, Ok b) -> a <> b && Semver.compare a b = 0 && Semver.samePrecedence a b
-| _ -> false)
-example: (match (Semver.parse "1.2.3-alpha+001", Semver.parse "1.2.3-alpha+002") with
-| (Ok a, Ok b) -> a <> b && Semver.samePrecedence a b
-| _ -> false)
+
+let case001 _ =
+  let testActual = less "1.0.0-alpha" "1.0.0-alpha.1"
+  Expect.isTrue "less \"1.0.0-alpha\" \"1.0.0-alpha.1\"" testActual
+
+let case002 _ =
+  let testActual = less "1.0.0-alpha.1" "1.0.0-alpha.beta"
+  Expect.isTrue "less \"1.0.0-alpha.1\" \"1.0.0-alpha.beta\"" testActual
+
+let case003 _ =
+  let testActual = less "1.0.0-alpha.beta" "1.0.0-beta"
+  Expect.isTrue "less \"1.0.0-alpha.beta\" \"1.0.0-beta\"" testActual
+
+let case004 _ =
+  let testActual = less "1.0.0-beta" "1.0.0-beta.2"
+  Expect.isTrue "less \"1.0.0-beta\" \"1.0.0-beta.2\"" testActual
+
+let case005 _ =
+  let testActual = less "1.0.0-beta.2" "1.0.0-beta.11"
+  Expect.isTrue "less \"1.0.0-beta.2\" \"1.0.0-beta.11\"" testActual
+
+let case006 _ =
+  let testActual = less "1.0.0-beta.11" "1.0.0-rc.1"
+  Expect.isTrue "less \"1.0.0-beta.11\" \"1.0.0-rc.1\"" testActual
+
+let case007 _ =
+  let testActual = less "1.0.0-rc.1" "1.0.0"
+  Expect.isTrue "less \"1.0.0-rc.1\" \"1.0.0\"" testActual
+
+let case008 _ =
+  let testActual = less "1.0.0" "2.0.0"
+  Expect.isTrue "less \"1.0.0\" \"2.0.0\"" testActual
+
+let case009 _ =
+  let testActual = less "2.0.0" "2.1.0"
+  Expect.isTrue "less \"2.0.0\" \"2.1.0\"" testActual
+
+let case010 _ =
+  let testActual = less "2.1.0" "2.1.1"
+  Expect.isTrue "less \"2.1.0\" \"2.1.1\"" testActual
+
+let case011 _ =
+  let testActual = less "9.99.99" "10.0.0"
+  Expect.isTrue "less \"9.99.99\" \"10.0.0\"" testActual
+
+let case012 _ =
+  let testActual = less "1.9.99" "1.10.0"
+  Expect.isTrue "less \"1.9.99\" \"1.10.0\"" testActual
+
+let case013 _ =
+  let testActual = less "1.1.9" "1.1.10"
+  Expect.isTrue "less \"1.1.9\" \"1.1.10\"" testActual
+
+let case014 _ =
+  let testActual = less "1.0.0-9999999999999999999999999999" "1.0.0-10000000000000000000000000000"
+  Expect.isTrue "less \"1.0.0-9999999999999999999999999999\" \"1.0.0-10000000000000000000000000000\"" testActual
+
+let case015 _ =
+  let testActual = less "1.0.0-9999999999999999999999999999" "1.0.0--"
+  Expect.isTrue "less \"1.0.0-9999999999999999999999999999\" \"1.0.0--\"" testActual
+
+let case016 _ =
+  let testActual = less "1.0.0-Alpha" "1.0.0-alpha"
+  Expect.isTrue "less \"1.0.0-Alpha\" \"1.0.0-alpha\"" testActual
+
+let case017 _ =
+  let testActual = less "1.0.0-a" "1.0.0-a.0"
+  Expect.isTrue "less \"1.0.0-a\" \"1.0.0-a.0\"" testActual
+
+let case018 _ =
+  let testActual = less "9999999999999999999999999999.0.0" "10000000000000000000000000000.0.0"
+  Expect.isTrue "less \"9999999999999999999999999999.0.0\" \"10000000000000000000000000000.0.0\"" testActual
+
+let case019 _ =
+  let testActual =
+    (match (Semver.parse "1.2.3+linux", Semver.parse "1.2.3+windows") with
+    | (Ok a, Ok b) -> a <> b && Semver.compare a b = 0 && Semver.samePrecedence a b
+    | _ -> false)
+  Expect.isTrue "(match (Semver.parse \"1.2.3+linux\", Semver.parse \"1.2.3+windows\") with | (Ok a, Ok b) -> a <> b && Semver.compare a b = 0 && Semver.samePrecedence a b | _ ->…" testActual
+
+let case020 _ =
+  let testActual =
+    (match (Semver.parse "1.2.3-alpha+001", Semver.parse "1.2.3-alpha+002") with
+    | (Ok a, Ok b) -> a <> b && Semver.samePrecedence a b
+    | _ -> false)
+  Expect.isTrue "(match (Semver.parse \"1.2.3-alpha+001\", Semver.parse \"1.2.3-alpha+002\") with | (Ok a, Ok b) -> a <> b && Semver.samePrecedence a b | _ -> false)" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "SemverComparisonSpec" [
+  Test.test "less \"1.0.0-alpha\" \"1.0.0-alpha.1\"" case001,
+  Test.test "less \"1.0.0-alpha.1\" \"1.0.0-alpha.beta\"" case002,
+  Test.test "less \"1.0.0-alpha.beta\" \"1.0.0-beta\"" case003,
+  Test.test "less \"1.0.0-beta\" \"1.0.0-beta.2\"" case004,
+  Test.test "less \"1.0.0-beta.2\" \"1.0.0-beta.11\"" case005,
+  Test.test "less \"1.0.0-beta.11\" \"1.0.0-rc.1\"" case006,
+  Test.test "less \"1.0.0-rc.1\" \"1.0.0\"" case007,
+  Test.test "less \"1.0.0\" \"2.0.0\"" case008,
+  Test.test "less \"2.0.0\" \"2.1.0\"" case009,
+  Test.test "less \"2.1.0\" \"2.1.1\"" case010,
+  Test.test "less \"9.99.99\" \"10.0.0\"" case011,
+  Test.test "less \"1.9.99\" \"1.10.0\"" case012,
+  Test.test "less \"1.1.9\" \"1.1.10\"" case013,
+  Test.test "less \"1.0.0-9999999999999999999999999999\" \"1.0.0-10000000000000000000000000000\"" case014,
+  Test.test "less \"1.0.0-9999999999999999999999999999\" \"1.0.0--\"" case015,
+  Test.test "less \"1.0.0-Alpha\" \"1.0.0-alpha\"" case016,
+  Test.test "less \"1.0.0-a\" \"1.0.0-a.0\"" case017,
+  Test.test "less \"9999999999999999999999999999.0.0\" \"10000000000000000000000000000.0.0\"" case018,
+  Test.test "(match (Semver.parse \"1.2.3+linux\", Semver.parse \"1.2.3+windows\") with | (Ok a, Ok b) -> a <> b && Semver.compare a b = 0 && Semver.samePrecedence a b | _ ->…" case019,
+  Test.test "(match (Semver.parse \"1.2.3-alpha+001\", Semver.parse \"1.2.3-alpha+002\") with | (Ok a, Ok b) -> a <> b && Semver.samePrecedence a b | _ -> false)" case020
+]

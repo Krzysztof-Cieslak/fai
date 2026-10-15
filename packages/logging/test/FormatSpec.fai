@@ -14,32 +14,82 @@ let record = {
 }
 
 let render record = LogFormat.render Log.limits LogFormat.JsonLines record
-example: (render record |> Result.map (fun text ->
-  JsonDecode.fromString (JsonDecode.field "schemaVersion" JsonDecode.int) text)) = Ok (Ok 1)
-example: (render { record with
-  fields = Json.Object [| ("n", Json.Number (JsonNumber.fromInt 9223372036854775807)) |]
-} |> Result.map (fun text ->
-  JsonDecode.fromString (JsonDecode.field "fields" (JsonDecode.field "n" JsonDecode.int)) text)) = Ok (Ok 9223372036854775807)
-example: render { record with fields = Json.Array [||] } |> Result.isErr
-example: LogFormat.render { Log.limits with
-  maxFields = 0
-} LogFormat.JsonLines { record with fields = Json.Object [| ("x", Json.Null) |] } |> Result.isErr
-example: (LogFormat.render Log.limits (LogFormat.Human false) { record with
-  message = "\u{7f}\u{85}\u{2028}\u{1b}"
-} |> Result.map (fun text ->
-  not (String.contains text "\u{7f}") && not (String.contains text "\u{85}") && not (String.contains text "\u{2028}") && not (String.contains text "\u{1b}"))) = Ok true
-example: Log.create { Log.defaults with
-  limits = { Log.limits with maxDestinations = 1 }
-} (LogSink.combine (LogSink.discard "one") (LogSink.discard "two")) |> Result.isErr
-example: LogFilter.validate { Log.defaults with
-  limits = { Log.limits with maxTargetOverrides = 0 },
-  overrides = [{ minimum = None, target = "test" }]
-} |> Result.isErr
+
+let case001 _ =
+  let testActual =
+    (render record |> Result.map (fun text ->
+      JsonDecode.fromString (JsonDecode.field "schemaVersion" JsonDecode.int) text)) = Ok (Ok 1)
+  Expect.isTrue "(render record |> Result.map (fun text -> JsonDecode.fromString (JsonDecode.field \"schemaVersion\" JsonDecode.int) text)) = Ok (Ok 1)" testActual
+
+let case002 _ =
+  let testActual =
+    (render { record with
+      fields = Json.Object [| ("n", Json.Number (JsonNumber.fromInt 9223372036854775807)) |]
+    } |> Result.map (fun text ->
+      JsonDecode.fromString (JsonDecode.field "fields" (JsonDecode.field "n" JsonDecode.int)) text)) = Ok (Ok 9223372036854775807)
+  Expect.isTrue "(render { record with fields = Json.Object [| (\"n\", Json.Number (JsonNumber.fromInt 9223372036854775807)) |] } |> Result.map (fun text -> JsonDecode.fromStri…" testActual
+
+let case003 _ =
+  let testActual = render { record with fields = Json.Array [||] } |> Result.isErr
+  Expect.isTrue "render { record with fields = Json.Array [||] } |> Result.isErr" testActual
+
+let case004 _ =
+  let testActual =
+    LogFormat.render { Log.limits with
+      maxFields = 0
+    } LogFormat.JsonLines { record with
+      fields = Json.Object [| ("x", Json.Null) |]
+    } |> Result.isErr
+  Expect.isTrue "LogFormat.render { Log.limits with maxFields = 0 } LogFormat.JsonLines { record with fields = Json.Object [| (\"x\", Json.Null) |] } |> Result.isErr" testActual
+
+let case005 _ =
+  let testActual =
+    (LogFormat.render Log.limits (LogFormat.Human false) { record with
+      message = "\u{7f}\u{85}\u{2028}\u{1b}"
+    } |> Result.map (fun text ->
+      not (String.contains text "\u{7f}") && not (String.contains text "\u{85}") && not (String.contains text "\u{2028}") && not (String.contains text "\u{1b}"))) = Ok true
+  Expect.isTrue "(LogFormat.render Log.limits (LogFormat.Human false) { record with message = \"\\u{7f}\\u{85}\\u{2028}\\u{1b}\" } |> Result.map (fun text -> not (String.contains t…" testActual
+
+let case006 _ =
+  let testActual =
+    Log.create { Log.defaults with
+      limits = { Log.limits with maxDestinations = 1 }
+    } (LogSink.combine (LogSink.discard "one") (LogSink.discard "two")) |> Result.isErr
+  Expect.isTrue "Log.create { Log.defaults with limits = { Log.limits with maxDestinations = 1 } } (LogSink.combine (LogSink.discard \"one\") (LogSink.discard \"two\")) |> Result…" testActual
+
+let case007 _ =
+  let testActual =
+    LogFilter.validate { Log.defaults with
+      limits = { Log.limits with maxTargetOverrides = 0 },
+      overrides = [{ minimum = None, target = "test" }]
+    } |> Result.isErr
+  Expect.isTrue "LogFilter.validate { Log.defaults with limits = { Log.limits with maxTargetOverrides = 0 }, overrides = [{ minimum = None, target = \"test\" }] } |> Result.isErr" testActual
 
 let plainSize = Bytes.length (Bytes.fromString (Json.toString (LogFormat.toJson record)))
-example: LogFormat.render { Log.limits with
-  maxRecordBytes = plainSize + 1
-} LogFormat.JsonLines record |> Result.isOk
-example: LogFormat.render { Log.limits with
-  maxRecordBytes = plainSize
-} LogFormat.JsonLines record |> Result.isErr
+
+let case008 _ =
+  let testActual =
+    LogFormat.render { Log.limits with
+      maxRecordBytes = plainSize + 1
+    } LogFormat.JsonLines record |> Result.isOk
+  Expect.isTrue "LogFormat.render { Log.limits with maxRecordBytes = plainSize + 1 } LogFormat.JsonLines record |> Result.isOk" testActual
+
+let case009 _ =
+  let testActual =
+    LogFormat.render { Log.limits with
+      maxRecordBytes = plainSize
+    } LogFormat.JsonLines record |> Result.isErr
+  Expect.isTrue "LogFormat.render { Log.limits with maxRecordBytes = plainSize } LogFormat.JsonLines record |> Result.isErr" testActual
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "LogFormatSpec" [
+  Test.test "(render record |> Result.map (fun text -> JsonDecode.fromString (JsonDecode.field \"schemaVersion\" JsonDecode.int) text)) = Ok (Ok 1)" case001,
+  Test.test "(render { record with fields = Json.Object [| (\"n\", Json.Number (JsonNumber.fromInt 9223372036854775807)) |] } |> Result.map (fun text -> JsonDecode.fromStri…" case002,
+  Test.test "render { record with fields = Json.Array [||] } |> Result.isErr" case003,
+  Test.test "LogFormat.render { Log.limits with maxFields = 0 } LogFormat.JsonLines { record with fields = Json.Object [| (\"x\", Json.Null) |] } |> Result.isErr" case004,
+  Test.test "(LogFormat.render Log.limits (LogFormat.Human false) { record with message = \"\\u{7f}\\u{85}\\u{2028}\\u{1b}\" } |> Result.map (fun text -> not (String.contains t…" case005,
+  Test.test "Log.create { Log.defaults with limits = { Log.limits with maxDestinations = 1 } } (LogSink.combine (LogSink.discard \"one\") (LogSink.discard \"two\")) |> Result…" case006,
+  Test.test "LogFilter.validate { Log.defaults with limits = { Log.limits with maxTargetOverrides = 0 }, overrides = [{ minimum = None, target = \"test\" }] } |> Result.isErr" case007,
+  Test.test "LogFormat.render { Log.limits with maxRecordBytes = plainSize + 1 } LogFormat.JsonLines record |> Result.isOk" case008,
+  Test.test "LogFormat.render { Log.limits with maxRecordBytes = plainSize } LogFormat.JsonLines record |> Result.isErr" case009
+]

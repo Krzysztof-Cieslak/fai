@@ -13,7 +13,3 @@ path = "examples/Generate.fai"
 [[bin]]
 name = "examples-inspect"
 path = "examples/Inspect.fai"
-
-[[bin]]
-name = "examples-runtime-checks"
-path = "examples/RuntimeChecks.fai"
