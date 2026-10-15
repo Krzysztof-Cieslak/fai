@@ -11,6 +11,7 @@
   DEFLATE snapshots, backing the optional `compression` source package.
 
 ### Changed
+- Declare MIT licensing consistently across the compiler workspace and VS Code extension.
 - Migrate dedicated source-package tests to named cases and properties, keeping
   inline examples and laws beside library implementations. Runtime scenarios now
   run through package test discovery, and provisioned PostgreSQL suites publish

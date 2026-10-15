@@ -32,7 +32,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.96"
 publish = false
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 # Centralized dependency versions. Concrete versions are pinned by the committed
 # Cargo.lock; these caret ranges allow compatible updates. (See docs/MEMORY.md.)

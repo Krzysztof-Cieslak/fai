@@ -4,7 +4,7 @@
   "description": "Fai language support for Visual Studio Code: syntax highlighting and a Language Server client.",
   "version": "0.1.0",
   "publisher": "fai-lang",
-  "license": "MIT OR Apache-2.0",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/extension.cjs",
   "repository": {
