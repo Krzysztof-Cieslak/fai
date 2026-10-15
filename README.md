@@ -163,23 +163,17 @@ further reducing allocations—all without manual frees or a tracing collector.
 
 ## Performance
 
-Fai combines immutable values and automatic memory management with competitive
-native performance. In the published shared-algorithm comparison, its
-geometric-mean execution time is approximately on par with Rust and **41% lower
-than OCaml**.
+Performance is a core design goal: fast edit→check and edit→test loops, efficient
+native execution, and economical memory use. We measure these across arithmetic,
+collections, strings, records, and higher-order functions.
 
-| Shared-algorithm comparison | Fai / Rust | Fai / OCaml |
-| --- | ---: | ---: |
-| Warm AOT execution time | **0.99×** | **0.59×** |
-| Peak process memory (RSS) | **1.14×** | **0.66×** |
+Our [benchmark suite](docs/BENCHMARK.md) compares native, ahead-of-time Fai programs
+with Rust and OCaml. Warm execution, whole-process time, and memory footprint are
+measured separately, with explicit workload definitions and correctness checks.
 
-These are geometric means over each report's eligible cases from the
-[October 11, 2026 checkpoint](https://gist.github.com/Krzysztof-Cieslak/3ca0105a8e3c215fda734b41bc522a3b/9909a71ec24b04ab28d737ed155ecad1cb0b35bf).
-Lower ratios are better; warm execution excludes process startup. The
-[runtime comparison](https://github.com/Krzysztof-Cieslak/fai/issues/747) and
-[memory comparison](https://github.com/Krzysztof-Cieslak/fai/issues/746) include
-per-workload results, hardware, and compiler configurations. See the
-[benchmark methodology](docs/BENCHMARK.md) for how comparisons are measured.
+The [performance reports](docs/PERFORMANCE_REPORTS.md) retain per-workload results,
+source revisions, compiler configurations, hardware, and raw evidence so the
+measurements can be examined in context.
 
 ## Libraries and examples
 
