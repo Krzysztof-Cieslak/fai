@@ -143,7 +143,7 @@ struct Request {
     issues: WireDefId,
     selected: Option<String>,
     expected: Vec<Metadata>,
-    seed: i64,
+    config: TestConfig,
     directory: String,
 }
 
@@ -467,7 +467,7 @@ fn invoke(
         issues: suite.issues.clone(),
         selected: selected.map(str::to_owned),
         expected: expected.to_vec(),
-        seed: config.seed,
+        config,
         directory: resources.to_string_lossy().into_owned(),
     };
     let data = serde_json::to_vec(&request).map_err(|e| Completion::Errored(e.to_string()))?;
@@ -719,7 +719,9 @@ pub fn worker(input: &std::path::Path, output: &std::path::Path) -> i32 {
                         make_str(&id),
                         make_str(&identity),
                         runtime,
-                        make_int(request.seed),
+                        make_int(request.config.seed),
+                        make_int(request.config.trials),
+                        make_int(request.config.max_size),
                         make_str(&request.directory),
                     ],
                 )

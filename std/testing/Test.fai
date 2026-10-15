@@ -415,7 +415,14 @@ public opaque type Check =
   | Checked (List Issue)
 
 /// The standard environment supplied separately to every selected named test.
-public type Context = { id : String, runtime : Runtime, seed : Int, tempRoot : Path }
+public type Context = {
+  id : String,
+  maxSize : Int,
+  runtime : Runtime,
+  seed : Int,
+  tempRoot : Path,
+  trials : Int
+}
 
 /// A pure description of named tests. Effects belong to the deferred bodies,
 /// never to suite construction or discovery.
@@ -472,6 +479,44 @@ example: List.length (manifest (test "one" (fun _ -> pass))) = 1
 
 internal testAt : String -> String -> ('ctx -> Check / 'e) -> Suite 'ctx 'e
 let testAt source name body = Case name source body
+
+/// Name a pure property with an explicit generator, shrinker and renderer.
+/// The runner supplies the seed, trial count and maximum generation size.
+/// Every trial returns a Check; a failure is shrunk while retaining its details.
+public property : String -> Arbitrary 'a -> ('a -> Check) -> Suite Context { }
+let property name arbitrary body = propertyAt "" name arbitrary body
+
+internal propertyAt : String -> String -> Arbitrary 'a -> ('a -> Check) -> Suite Context { }
+let propertyAt source name arbitrary body =
+  Case name source (fun ctx -> runProperty arbitrary body ctx 0 ctx.seed)
+
+let firstFailedCheck body candidates =
+  match candidates with
+  | [] -> None
+  | value :: rest ->
+    let checked = body value
+    if successful checked then firstFailedCheck body rest else Some (value, checked)
+
+let shrinkCheck arbitrary body value checked budget =
+  if budget <= 0 then
+    (value, checked)
+  else
+    match firstFailedCheck body (arbitrary.shrink value) with
+    | None -> (value, checked)
+    | Some (smaller, failed) -> shrinkCheck arbitrary body smaller failed (budget - 1)
+
+runProperty : Arbitrary 'a -> ('a -> Check) -> Context -> Int -> Seed -> Check
+let runProperty arbitrary body ctx trial seed =
+  if trial >= ctx.trials then
+    pass
+  else
+    let (value, next) = arbitrary.gen (sizeFor trial ctx.trials ctx.maxSize) seed
+    let checked = body value
+    if successful checked then
+      runProperty arbitrary body ctx (trial + 1) next
+    else
+      let (smallest, failed) = shrinkCheck arbitrary body value checked 2000
+      addContext ("counterexample: " ++ arbitrary.show smallest) (addContext ("seed: " ++ Int.toString ctx.seed ++ "; trials: " ++ Int.toString ctx.trials ++ "; max size: " ++ Int.toString ctx.maxSize) failed)
 
 /// Group tests without executing their bodies.
 public describe : String -> List (Suite 'ctx 'e) -> Suite 'ctx 'e
@@ -586,12 +631,19 @@ let executeChildren path wanted ctx children =
     | Some result -> Some result
     | None -> executeChildren path wanted ctx rest
 
-internal execute : Suite Context 'e -> String -> String -> Runtime -> Int -> String -> Check / 'e
-let execute suite wanted identity runtime seed directory =
+internal execute : Suite Context 'e -> String -> String -> Runtime -> Int -> Int -> Int -> String -> Check / 'e
+let execute suite wanted identity runtime seed trials maxSize directory =
   match Path.fromString directory with
   | Err _ -> error "runner supplied an invalid temporary path"
   | Ok path ->
-    let ctx = { id = identity, runtime = runtime, seed = seed, tempRoot = path }
+    let ctx = {
+      id = identity,
+      maxSize = maxSize,
+      runtime = runtime,
+      seed = seed,
+      tempRoot = path,
+      trials = trials
+    }
     match executeIn [] wanted ctx suite with
     | Some checked -> checked
     | None -> error "selected test is absent or skipped"

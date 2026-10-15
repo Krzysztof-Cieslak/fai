@@ -14,6 +14,7 @@ let roundTrip ctx =
 tests : Test.Suite Test.Context { FileSystem }
 let tests = Test.describe "named tests" [
   Test.test "pure arithmetic" (fun _ -> Expect.equal Int.toString 4 (2 + 2)),
+  Test.property "integer identity" Test.int (fun n -> Expect.equal Int.toString n (identity n)),
   Test.test "temporary file round trip" roundTrip,
   Test.skip "demonstrates an intentional skip" (Test.test "future scenario" (fun _ ->
     Expect.fail "not executed"))

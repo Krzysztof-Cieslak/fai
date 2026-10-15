@@ -1454,6 +1454,12 @@ Contracts (examples & properties):
   process termination cannot execute user cleanup for arbitrary external state.
   Test JSON schema 2 adds named identities, errors, skips and listing outcomes;
   contracts retain their existing identities and generator behavior.
+  Dedicated package test sources use named cases and properties; inline
+  `example`/`forall` declarations remain executable documentation beside library
+  implementations. `Test.property` takes an explicit `Arbitrary` and a pure
+  Check-returning predicate, runs with the runner's seed/count/size settings,
+  and shrinks failures while retaining their assertion details. Generation is
+  deferred, and each property uses one worker for all its trials.
 - **D85 Bitwise `Int` intrinsics + float bit-reinterpretation.** splitmix64 needs
   bitwise ops, which Fai lacked. They are **functions** in the `Int` module
   (`and`/`or`/`xor`/`complement`/`shiftLeft`/`shiftRight`/`shiftRightLogical`),

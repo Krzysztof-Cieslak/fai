@@ -604,7 +604,7 @@ body or runtime initialization executes. Duplicate sibling names, empty names,
 and empty skip reasons are discovery errors. Discovery can evaluate ordinary
 pure helper code, but traps and loops fail discovery rather than the daemon.
 
-`Test.Context` contains `runtime`, the run's `seed`, a stable case `id`, and an
+`Test.Context` contains `runtime`, the run's `seed`, `trials`, `maxSize`, a stable case `id`, and an
 absolute, per-case `tempRoot`. Complex bodies use named functions with explicit
 signatures, for example `body : Test.Context -> Test.Check / { FileSystem }`.
 This supplies nominal capability types and permits ordinary multiline `let`
@@ -618,6 +618,17 @@ explicit failures, and `Result` values. `Expect.all` combines already-evaluated
 checks, while `Expect.andThen` defers later work until success. `Test.error`
 reports operation errors separately from assertions. Obvious discarded checks
 are warnings (`FAI6011`), not thrown exceptions or linear-use enforcement.
+
+`Test.property name arbitrary predicate` constructs a named pure property. Supply
+a `Test.Arbitrary` (for example `Test.int`, `Test.list Test.string`, or
+`Test.tuple2 Test.int Test.string`); the predicate returns a `Test.Check`.
+The runner's `--seed`, `--count` and `--max-size` control generation exactly as
+for `forall`. A failing check is shrunk and retains its assertion location and
+expected/actual values, with the counterexample and reproduction settings in its
+context. Discovery and skipped properties do not run generators or predicates.
+A property is one named case, not a separate worker for each generated input.
+Use inline `example`/`forall` declarations for documentation beside library
+implementations, and named cases/properties for dedicated test sources.
 
 `Test.withFixture` adapts each leaf's context through a scoped callback.
 `Test.bracket acquire release suite` supplies a fresh resource per selected

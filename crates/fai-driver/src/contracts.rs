@@ -67,12 +67,12 @@ const DEFAULT_TEST_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_CHECK_TIMEOUT_MS: u64 = 10_000;
 
 /// Generator configuration for a `fai test` run (fixed defaults are deterministic).
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestConfig {
     /// The initial PRNG seed.
     pub seed: i64,
-    /// The configured random-trial limit per `forall` (failures stop early).
+    /// The configured random-trial limit per property (failures stop early).
     pub trials: i64,
     /// The maximum generation size.
     pub max_size: i64,

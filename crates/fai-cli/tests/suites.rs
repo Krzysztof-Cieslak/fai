@@ -90,6 +90,55 @@ fn named_tests_return_structured_failures_and_source_locations() {
 }
 
 #[test]
+fn named_properties_shrink_and_report_the_original_assertion() {
+    let workspace = Workspace::new(
+        "module Suite\nlet arbitrary = { Test.int with gen = fun _ seed -> (40, seed) }\ntests : Test.Suite Test.Context {}\nlet tests = Test.property \"positive input\" arbitrary (fun value -> Expect.isTrue \"must be negative\" (value < 0))\n",
+    );
+    let report = workspace.json(&["--no-daemon", "--seed=-7", "--count=13", "--max-size=23"]);
+    assert_eq!(report["summary"]["failed"], 1, "{report}");
+    let event = &report["events"][0];
+    assert_eq!(event["path"], serde_json::json!(["positive input"]));
+    assert_eq!(event["location"]["line"], 4);
+    let failure = &event["failures"][0];
+    assert_eq!(failure["message"], "must be negative");
+    assert_eq!(failure["location"]["line"], 4);
+    assert_eq!(failure["context"][0], "counterexample: 0");
+    assert_eq!(failure["context"][1], "seed: -7; trials: 13; max size: 23");
+}
+
+#[test]
+fn named_properties_use_the_runner_trial_count_and_size() {
+    let workspace = Workspace::new(
+        "module Suite\nlet sizes = { Test.int with gen = fun size seed -> (size, seed) }\ntests : Test.Suite Test.Context {}\nlet tests = Test.property \"generation sizes\" sizes (fun size -> Expect.isTrue \"size bound\" (size = 37))\n",
+    );
+    let one = workspace.json(&["--no-daemon", "--count=1", "--max-size=37"]);
+    assert_eq!(one["ok"], true, "{one}");
+    let two = workspace.json(&["--no-daemon", "--count=2", "--max-size=37"]);
+    assert_eq!(two["summary"]["failed"], 1, "{two}");
+}
+
+#[test]
+fn listing_and_skipping_properties_never_generates_inputs() {
+    let workspace = Workspace::new(
+        "module Suite\nlet bad = { Test.int with gen = fun size seed -> (1 / size, seed) }\ntests : Test.Suite Test.Context {}\nlet tests = Test.skip \"not run\" (Test.property \"deferred generator\" bad (fun _ -> Expect.fail \"not called\"))\n",
+    );
+    let listed = workspace.json(&["--no-daemon", "--list"]);
+    assert_eq!(listed["ok"], true, "{listed}");
+    let skipped = workspace.json(&["--no-daemon"]);
+    assert_eq!(skipped["summary"]["skipped"], 1, "{skipped}");
+}
+
+#[test]
+fn a_crashed_property_does_not_prevent_the_next_named_case() {
+    let workspace = Workspace::new(
+        "module Suite\nlet zero = { Test.int with gen = fun _ seed -> (0, seed) }\ntests : Test.Suite Test.Context {}\nlet tests = Test.describe \"properties\" [Test.property \"crash\" zero (fun n -> Expect.equal Int.toString 1 (1 / n)), Test.test \"next\" (fun _ -> Test.pass)]\n",
+    );
+    let report = workspace.json(&["--no-daemon"]);
+    assert_eq!(report["summary"]["crashed"], 1, "{report}");
+    assert_eq!(report["passed"], 1, "{report}");
+}
+
+#[test]
 fn focus_filters_contracts_and_skip_prevents_execution() {
     let workspace = Workspace::new(
         "module Suite\nexample: false\ntests : Test.Suite Test.Context {}\nlet tests = Test.describe \"group\" [Test.test \"ordinary\" (fun _ -> Expect.fail \"not selected\"), Test.focus (Test.test \"focused\" (fun _ -> Test.pass)), Test.focus (Test.skip \"later\" (Test.test \"skipped\" (fun _ -> Expect.fail \"not executed\")))]\n",
@@ -212,7 +261,7 @@ fn filesystem_sample_runs_in_per_test_temporary_storage() {
     let workspace = Workspace::new(include_str!("../../../samples/NamedTests.fai"));
     let report = workspace.json(&["--no-daemon"]);
     assert_eq!(report["ok"], true, "{report}");
-    assert_eq!(report["passed"], 2);
+    assert_eq!(report["passed"], 3);
     assert_eq!(report["summary"]["skipped"], 1);
 }
 
