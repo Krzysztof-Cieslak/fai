@@ -384,7 +384,24 @@ let withFiles check ctx =
     fs = ctx.runtime.fs,
     process = ProcessHost.native
   }
-  Expect.ok identity (fun _ -> check env ctx.tempRoot) (seedFixture env ctx.tempRoot)
+  Expect.ok scopeError identity (Temp.withDirectory env ctx.tempRoot (inFixture check env))
+
+inFixture : (Runtime -> Path -> Test.Check / { Clock, Concurrency, FileSystem, ProcessHost.Process }) -> Runtime -> Temp.Directory -> Result Test.Check String / { Clock, Concurrency, FileSystem, ProcessHost.Process }
+let inFixture check env temporary =
+  match seedFixture env temporary.path with
+  | Err error -> Err error
+  | Ok _ -> Ok (check env temporary.path)
+
+scopeError : FileSystem.ScopeError String -> String
+let scopeError error =
+  match error with
+  | FileSystem.OpenError error -> FileSystem.errorToString error
+  | FileSystem.OpenAndCloseError first last ->
+    FileSystem.errorToString first ++ "; cleanup: " ++ FileSystem.errorToString last
+  | FileSystem.BodyError message -> message
+  | FileSystem.CloseError error -> FileSystem.errorToString error
+  | FileSystem.BodyAndCloseError message error ->
+    message ++ "; cleanup: " ++ FileSystem.errorToString error
 
 basicCase : String -> Runtime -> Path -> Test.Check / { Concurrency, FileSystem }
 let basicCase name env root = Expect.isTrue name (basicPassed name env root)
