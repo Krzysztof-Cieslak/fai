@@ -1,0 +1,32 @@
+module UnicodeWord
+
+/// Immutable default-word-boundary cursor, including punctuation and whitespace.
+public opaque type Cursor = UnicodeBreak.Cursor
+
+/// Prepare Unicode default word segmentation, without locale/dictionary tailoring.
+public cursorWith : Unicode.Limits -> String -> Result Cursor Unicode.Error
+let cursorWith limits text = UnicodeBreak.create true limits text
+
+/// Prepare a forward word cursor with default budgets.
+public cursor : String -> Result Cursor Unicode.Error
+let cursor text = cursorWith Unicode.limits text
+
+/// Read one nonempty segment and the successor cursor; None is exhaustion.
+public next : Cursor -> Result (Option (Unicode.Span * Cursor)) Unicode.Error
+let next cursor = UnicodeBreak.next cursor
+
+/// Collect word-boundary spans, retaining every whitespace and punctuation segment.
+public spansWith : Unicode.Limits -> String -> Result (Array Unicode.Span) Unicode.Error
+let spansWith limits text = UnicodeBreak.spans true limits text
+
+/// Collect default word-boundary spans with default budgets.
+public spans : String -> Result (Array Unicode.Span) Unicode.Error
+let spans text = spansWith Unicode.limits text
+
+/// Collect all segments, not just letter-like words; joining them restores the input.
+public segmentsWith : Unicode.Limits -> String -> Result (Array String) Unicode.Error
+let segmentsWith limits text = UnicodeBreak.segments true limits text
+
+/// Collect default word segments with default budgets.
+public segments : String -> Result (Array String) Unicode.Error
+let segments text = segmentsWith Unicode.limits text

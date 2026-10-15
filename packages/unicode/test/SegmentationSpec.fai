@@ -1,0 +1,36 @@
+module UnicodeSegmentationSpec
+
+example: UnicodeGrapheme.segments "" = Ok [||]
+example: UnicodeGrapheme.segments "abc" = Ok [| "a", "b", "c" |]
+example: UnicodeGrapheme.segments "a\u{301}界" = Ok [| "a\u{301}", "界" |]
+example: UnicodeGrapheme.segments "👩‍💻🇵🇱" = Ok [| "👩‍💻", "🇵🇱" |]
+example: UnicodeGrapheme.segments "\r\n\r" = Ok [| "\r\n", "\r" |]
+example: UnicodeGrapheme.segments "\u{094d}\u{0915}" = Ok [| "\u{094d}\u{0915}" |]
+example: UnicodeWord.segments "can't stop!" = Ok [| "can't", " ", "stop", "!" |]
+example: UnicodeWord.segments "a\u{0308}.b" = Ok [| "a\u{0308}.b" |]
+example: UnicodeGrapheme.spans "é🙂" = Ok [| { end = 2, start = 0 }, { end = 6, start = 2 } |]
+example: UnicodeWord.spans "" = Ok [||]
+example: Unicode.slice { end = 6, start = 2 } "é🙂" = Ok "🙂"
+example: Unicode.slice { end = 2, start = 1 } "é🙂" |> Result.isErr
+example: Unicode.slice { end = 1, start = 2 } "é🙂" |> Result.isErr
+
+let graphemesRestore text =
+  match UnicodeGrapheme.segments text with
+  | Ok parts -> String.joinArray "" parts = text
+  | Err _ -> false
+
+let wordsRestore text =
+  match UnicodeWord.segments text with
+  | Ok parts -> String.joinArray "" parts = text
+  | Err _ -> false
+forall text: graphemesRestore text
+forall text: wordsRestore text
+example: (match UnicodeGrapheme.cursor "a👩‍💻b" with
+| Err _ -> false
+| Ok cursor -> UnicodeGrapheme.next cursor = UnicodeGrapheme.next cursor)
+
+let exhausted =
+  match UnicodeGrapheme.cursor "" with
+  | Err _ -> false
+  | Ok cursor -> UnicodeGrapheme.next cursor = Ok None
+example: exhausted

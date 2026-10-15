@@ -1,0 +1,65 @@
+module UnicodeRuntimeChecks
+
+let repeat count text = String.joinArray "" (Array.repeat count text)
+
+let reordered =
+  let text = "a" ++ repeat 10000 "\u{0315}" ++ repeat 10000 "\u{0300}"
+  let expected = "a" ++ repeat 10000 "\u{0300}" ++ repeat 10000 "\u{0315}"
+  UnicodeNormalize.normalize UnicodeNormalize.NFD text = Ok expected
+
+let cursors =
+  match UnicodeWord.cursor "hello 👩‍💻 world" with
+  | Err _ -> false
+  | Ok cursor ->
+    let first = UnicodeWord.next cursor
+    let other = UnicodeWord.next cursor
+    first = other && (match first with
+    | Ok (Some (span, next)) -> span = { end = 5, start = 0 } && UnicodeWord.next next <> first
+    | _ -> false)
+
+let normalizeMany index =
+  if index = 500 then
+    true
+  else
+    let input = "Straße A\u{030a}\u{0327} ﬃ 👩‍💻"
+    match UnicodeNormalize.normalize UnicodeNormalize.NFKC input with
+    | Err _ -> false
+    | Ok text -> UnicodeCase.fold text = Ok "strasse å\u{0327} ffi 👩‍💻" && normalizeMany (index + 1)
+
+let mapping =
+  match UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC "a\u{0327}\u{0301}" with
+  | Err _ -> false
+  | Ok mapped ->
+    mapped.text = "á\u{0327}" && Array.length mapped.mappings = 2 && (Array.unsafeGet 0 mapped.mappings).sources = [|
+      { end = 1, start = 0 },
+      { end = 5, start = 3 }
+    |]
+
+let failed pair =
+  let (_, good) = pair
+  not good
+
+public main : Runtime -> Unit / { Concurrency, Console }
+let main env =
+  let parallel = Async.parallel env.concurrency [fun _ -> normalizeMany 0, fun _ -> normalizeMany 0]
+  let checks = [
+    ("long canonical ordering", reordered),
+    ("cursor snapshots", cursors),
+    ("repeated transforms", normalizeMany 0),
+    ("noncontiguous provenance", mapping),
+    ("parallel transforms", parallel = [true, true])
+  ]
+  let failures = List.filter failed checks
+  let shown = report env.console failures
+  env.console.writeLine (if List.isEmpty failures then
+    "Unicode runtime checks passed"
+  else
+    "Unicode runtime checks FAILED")
+
+report : Console -> List (String * Bool) -> Unit / { Console }
+let report console failed =
+  match failed with
+  | [] -> ()
+  | (name, _) :: rest ->
+    let shown = console.writeLine ("FAIL " ++ name)
+    report console rest

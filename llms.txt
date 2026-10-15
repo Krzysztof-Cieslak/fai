@@ -2086,6 +2086,19 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/unicode` supplies version-pinned Unicode 18.0 text operations with no
+package dependencies. Import `unicode.UnicodeGrapheme`, `unicode.UnicodeWord`,
+`unicode.UnicodeCase` and `unicode.UnicodeNormalize`. Segmentation modules provide
+`segments`, byte-addressed `spans`, and immutable `cursor`/`next` APIs; word
+segments include whitespace and punctuation so joining them restores the input.
+`UnicodeCase.fold` performs full default case folding, not locale casing.
+`UnicodeNormalize.normalize` takes NFC/NFD/NFKC/NFKD explicitly and
+`isNormalized` tests that form. `With` variants take `Unicode.Limits` first;
+`foldMapped` and `normalizeMapped` return text plus per-output-scalar original
+byte provenance. `Unicode.version` declares the data version; `isWhitespace`
+uses its White_Space property. These operations never change the standard
+library's own Unicode behavior. Full Unicode conformance runs through JIT/AOT.
+
 `packages/compression` provides pure `Gzip.compress`/`decompress`, `Zlib` and raw
 `Deflate` equivalents, plus explicit options and immutable incremental codecs.
 Default limits are 64 MiB total input/output, 64 KiB chunks and gzip headers, and

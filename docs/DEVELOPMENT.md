@@ -15,6 +15,13 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Unicode's checked-in tables and complete conformance inputs come from
+`packages/unicode/tools/generate.py`, using the SHA-256 pins in its `data.json`.
+Run that tool with `--download` to populate its ignored cache and with `--check`
+to verify reproducibility. `fai test -C packages --package unicode` checks native
+contracts; the package integration runner exercises every pinned Unicode row in
+both JIT and AOT without requiring a compiler rebuild.
+
 Compression bridge changes require rebuilding the compiler/runtime. Then run
 `fai test -C packages compression` and the package-local JIT/AOT integration with
 `python3 scripts/package_integrations.py compression --no-dependents --fai /path/to/fai`.

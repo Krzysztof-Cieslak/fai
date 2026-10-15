@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "integrations": [
+    {
+      "name": "conformance",
+      "entry": "examples/Conformance.fai",
+      "args": ["${package}/data"],
+      "timeoutSeconds": 600,
+      "stdoutLines": ["Unicode conformance passed"]
+    },
+    {
+      "name": "runtime",
+      "entry": "examples/RuntimeChecks.fai",
+      "stdoutLines": ["Unicode runtime checks passed"]
+    }
+  ]
+}

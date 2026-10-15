@@ -1186,6 +1186,15 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/unicode` library supplies pure Unicode 18.0 extended
+grapheme and default word segmentation, full default case folding, and all four
+normalization forms. Its own checksum-pinned data makes behavior independent of
+the compiler's Unicode version. Byte-addressed cursors retain immutable inputs;
+mapped transforms retain exact contributing source ranges through expansion,
+canonical reordering and composition. Explicit limits bound work, intermediate
+scalars, combining runs, output and provenance. Complete official conformance
+fixtures run in JIT and AOT alongside package contracts.
+
 The optional `packages/compression` library supplies pure gzip, zlib and raw
 DEFLATE codecs over the embedded `CompressionEngine` bridge. Immutable native
 snapshots have content-based equality/hashing and copy-on-share transitions.

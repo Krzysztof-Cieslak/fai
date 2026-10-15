@@ -1,0 +1,64 @@
+module UnicodeTransformSpec
+
+example: UnicodeCase.fold "Straße" = Ok "strasse"
+example: UnicodeCase.fold "Σςσ" = Ok "σσσ"
+example: UnicodeCase.fold "İIı" = Ok "i\u{0307}iı"
+example: UnicodeCase.fold "ﬃ" = Ok "ffi"
+example: UnicodeCase.fold "a\u{0301}" = Ok "a\u{0301}"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFC "a\u{0301}" = Ok "á"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFD "á" = Ok "a\u{0301}"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFC "\u{1100}\u{1161}\u{11a8}" = Ok "각"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFD "각" = Ok "\u{1100}\u{1161}\u{11a8}"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFKC "ﬃ①Ａ" = Ok "ffi1A"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFC "ﬃ①Ａ" = Ok "ﬃ①Ａ"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFD "a\u{0315}\u{0300}" = Ok "a\u{0300}\u{0315}"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFC "a\u{0305}\u{0301}" = Ok "a\u{0305}\u{0301}"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFC "a\u{0327}\u{0301}" = Ok "á\u{0327}"
+example: UnicodeNormalize.isNormalized UnicodeNormalize.NFC "á" = Ok true
+example: UnicodeNormalize.isNormalized UnicodeNormalize.NFD "á" = Ok false
+example: UnicodeNormalize.normalize UnicodeNormalize.NFKD "\u{1d400}" = Ok "A"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFD "\u{0344}" = Ok "\u{0308}\u{0301}"
+example: UnicodeNormalize.normalize UnicodeNormalize.NFC "\u{0308}\u{0301}" = Ok "\u{0308}\u{0301}"
+example: Unicode.isWhitespace '\u{00a0}'
+example: not (Unicode.isWhitespace '\u{200b}')
+example: Unicode.isWhitespace '\t'
+example: not (Unicode.isWhitespace '\u{feff}')
+example: UnicodeCase.foldMapped "ß" = Ok {
+  mappings = [|
+    { output = { end = 1, start = 0 }, sources = [| { end = 2, start = 0 } |] },
+    { output = { end = 2, start = 1 }, sources = [| { end = 2, start = 0 } |] }
+  |],
+  text = "ss"
+}
+example: UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC "a\u{0301}" = Ok {
+  mappings = [| { output = { end = 2, start = 0 }, sources = [| { end = 3, start = 0 } |] } |],
+  text = "á"
+}
+example: (match UnicodeNormalize.normalizeMapped UnicodeNormalize.NFD "a\u{0315}\u{0300}" with
+| Err _ -> false
+| Ok result ->
+  result.text = "a\u{0300}\u{0315}" && Array.map (fun mapping ->
+    mapping.sources) result.mappings = [|
+    [| { end = 1, start = 0 } |],
+    [| { end = 5, start = 3 } |],
+    [| { end = 3, start = 1 } |]
+  |])
+
+let idempotent form text =
+  match UnicodeNormalize.normalize form text with
+  | Err _ -> false
+  | Ok normalized -> UnicodeNormalize.normalize form normalized = Ok normalized
+forall text: idempotent UnicodeNormalize.NFC text
+forall text: idempotent UnicodeNormalize.NFD text
+forall text: idempotent UnicodeNormalize.NFKC text
+forall text: idempotent UnicodeNormalize.NFKD text
+forall text: (match UnicodeCase.fold text with
+| Err _ -> false
+| Ok folded -> UnicodeCase.fold folded = Ok folded)
+
+let sameText mapped plain =
+  match mapped with
+  | Err _ -> false
+  | Ok result -> plain = Ok result.text
+forall text: sameText (UnicodeCase.foldMapped text) (UnicodeCase.fold text)
+forall text: sameText (UnicodeNormalize.normalizeMapped UnicodeNormalize.NFC text) (UnicodeNormalize.normalize UnicodeNormalize.NFC text)

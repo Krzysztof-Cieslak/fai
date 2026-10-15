@@ -1,0 +1,216 @@
+module UnicodeBreak
+
+internal type Cursor = {
+  before : Int,
+  bytes : Bytes,
+  conjuncts : Bytes,
+  emitted : Int,
+  emoji : Int,
+  limits : Unicode.Limits,
+  linker : Bool,
+  pictographs : Bytes,
+  position : Int,
+  previous : Int,
+  regional : Int,
+  remaining : Int,
+  scalars : Int,
+  significant : Int,
+  table : Bytes,
+  word : Bool
+}
+
+internal create : Bool -> Unicode.Limits -> String -> Result Cursor Unicode.Error
+let create word limits text =
+  match UnicodeInternal.input limits text with
+  | Err error -> Err error
+  | Ok bytes -> Ok {
+    before = -1,
+    bytes = bytes,
+    conjuncts = if word then Bytes.empty else UnicodeTables.conjuncts (),
+    emitted = 0,
+    emoji = 0,
+    limits = limits,
+    linker = false,
+    pictographs = UnicodeTables.pictographs (),
+    position = 0,
+    previous = -1,
+    regional = 0,
+    remaining = limits.maxWork,
+    scalars = 0,
+    significant = -1,
+    table = if word then UnicodeTables.words () else UnicodeTables.graphemes (),
+    word = word
+  }
+
+let graphemeControl value = value = 1 || value = 2 || value = 3
+
+let wordControl value = value = 1 || value = 2 || value = 3
+
+let ignored value = value = 4 || value = 5 || value = 6
+
+let letter value = value = 9 || value = 10
+
+let midLetter value = value = 14 || value = 16 || value = 17
+
+let midNumber value = value = 15 || value = 16 || value = 17
+
+let extendable value = letter value || value = 11 || value = 12 || value = 13
+
+graphemeBoundary : Cursor -> Int -> Bool -> Int -> Bool
+let graphemeBoundary cursor current pictograph conjunct =
+  let previous = cursor.previous
+  if previous = 1 && current = 2 then
+    false
+  else if graphemeControl previous || graphemeControl current then
+    true
+  else if previous = 9 && (current = 9 || current = 10 || current = 12 || current = 13) then
+    false
+  else if (previous = 12 || previous = 10) && (current = 10 || current = 11) then
+    false
+  else if (previous = 13 || previous = 11) && current = 11 then
+    false
+  else if current = 4 || current = 5 || current = 8 || previous = 7 then
+    false
+  else if cursor.linker && conjunct = 1 then
+    false
+  else if cursor.emoji = 2 && pictograph then
+    false
+  else if previous = 6 && current = 6 && cursor.regional % 2 = 1 then false else true
+
+lookahead : Cursor -> Int -> Int -> Result (Int * Int) Unicode.Error
+let lookahead cursor position remaining =
+  if position = Bytes.length cursor.bytes then
+    Ok (-1, remaining)
+  else
+    match UnicodeInternal.charge remaining 32 with
+    | Err error -> Err error
+    | Ok remaining ->
+      let (code, finish) = UnicodeInternal.read cursor.bytes position
+      let kind = UnicodeInternal.property cursor.table code
+      if ignored kind then lookahead cursor finish remaining else Ok (kind, remaining)
+
+wordBoundary : Cursor -> Int -> Bool -> Int -> Bool
+let wordBoundary cursor current pictograph after =
+  let previous = cursor.previous
+  let left = cursor.significant
+  let before = cursor.before
+  if previous = 1 && current = 2 then
+    false
+  else if wordControl previous || wordControl current then
+    true
+  else if previous = 5 && pictograph then
+    false
+  else if previous = 8 && current = 8 then
+    false
+  else if ignored current then
+    false
+  else if letter left && letter current then
+    false
+  else if letter left && midLetter current && letter after then
+    false
+  else if letter before && midLetter left && letter current then
+    false
+  else if left = 10 && current = 17 then
+    false
+  else if left = 10 && current = 18 && after = 10 then
+    false
+  else if before = 10 && left = 18 && current = 10 then
+    false
+  else if left = 11 && current = 11 then
+    false
+  else if (letter left && current = 11) || (left = 11 && letter current) then
+    false
+  else if before = 11 && midNumber left && current = 11 then
+    false
+  else if left = 11 && midNumber current && after = 11 then
+    false
+  else if left = 12 && current = 12 then
+    false
+  else if (extendable left && current = 13) || (left = 13 && (letter current || current = 11 || current = 12)) then
+    false
+  else if left = 7 && current = 7 && cursor.regional % 2 = 1 then false else true
+
+advance : Cursor -> Int -> Bool -> Int -> Int -> Int -> Cursor
+let advance cursor kind pictograph conjunct finish remaining =
+  let skip = cursor.word && ignored kind
+  let ri = if cursor.word then 7 else 6
+  { cursor with
+    before = if skip then cursor.before else cursor.significant,
+    emoji = if pictograph then
+      1
+    else if kind = 4 && cursor.emoji = 1 then 1 else if kind = 5 && cursor.emoji = 1 then 2 else 0,
+    linker = conjunct = 3 || (conjunct = 2 && cursor.linker),
+    position = finish,
+    previous = kind,
+    regional = if skip then cursor.regional else if kind = ri then cursor.regional + 1 else 0,
+    remaining = remaining,
+    scalars = cursor.scalars + 1,
+    significant = if skip then cursor.significant else kind
+  }
+
+scan : Cursor -> Int -> Bool -> Result (Unicode.Span * Cursor) Unicode.Error
+let scan cursor start first =
+  if cursor.position = Bytes.length cursor.bytes then
+    Ok ({ end = cursor.position, start = start }, { cursor with emitted = cursor.emitted + 1 })
+  else
+    match UnicodeInternal.charge cursor.remaining (if cursor.word then 64 else 96) with
+    | Err error -> Err error
+    | Ok remaining ->
+      let (code, finish) = UnicodeInternal.read cursor.bytes cursor.position
+      let kind = UnicodeInternal.property cursor.table code
+      let pictograph = UnicodeInternal.property cursor.pictographs code <> 0
+      let conjunct = if cursor.word then 0 else UnicodeInternal.property cursor.conjuncts code
+      let next =
+        if cursor.word && not first && (midLetter kind || midNumber kind || kind = 18) then
+          lookahead cursor finish remaining
+        else
+          Ok (-1, remaining)
+      match next with
+      | Err error -> Err error
+      | Ok (after, remaining) ->
+        let boundary =
+          not first && (if cursor.word then
+            wordBoundary cursor kind pictograph after
+          else
+            graphemeBoundary cursor kind pictograph conjunct)
+        if boundary then
+          Ok ({
+            end = cursor.position,
+            start = start
+          }, { cursor with emitted = cursor.emitted + 1, remaining = remaining })
+        else if cursor.scalars >= cursor.limits.maxScalars then
+          Err (Unicode.error Unicode.ScalarLimit "segmentation scalar limit exceeded" (Some cursor.position))
+        else
+          scan (advance cursor kind pictograph conjunct finish remaining) start false
+
+internal next : Cursor -> Result (Option (Unicode.Span * Cursor)) Unicode.Error
+let next cursor =
+  if cursor.position = Bytes.length cursor.bytes then
+    Ok None
+  else if cursor.emitted >= cursor.limits.maxSegments then
+    Err (Unicode.error Unicode.SegmentLimit "Unicode segment limit exceeded" (Some cursor.position))
+  else
+    Result.map Some (scan cursor cursor.position true)
+
+let gather cursor output =
+  match next cursor with
+  | Err error -> Err error
+  | Ok None -> Ok output
+  | Ok (Some (span, cursor)) -> gather cursor (Array.push span output)
+
+internal spans : Bool -> Unicode.Limits -> String -> Result (Array Unicode.Span) Unicode.Error
+let spans word limits text =
+  match create word limits text with
+  | Err error -> Err error
+  | Ok cursor -> gather cursor Array.empty
+
+internal segments : Bool -> Unicode.Limits -> String -> Result (Array String) Unicode.Error
+let segments word limits text =
+  let bytes = Bytes.fromString text
+  if Bytes.length bytes > limits.maxOutputBytes then
+    match Unicode.validate limits with
+    | Err error -> Err error
+    | Ok _ -> Err (Unicode.error Unicode.OutputLimit "segmentation output byte limit exceeded" None)
+  else
+    Result.map (Array.map (fun span ->
+      Option.withDefault "" (Bytes.toString (Bytes.slice span.start span.end bytes)))) (spans word limits text)

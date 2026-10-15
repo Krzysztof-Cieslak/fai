@@ -1,0 +1,192 @@
+module UnicodeNormalize
+
+/// Unicode canonical or compatibility decomposition, optionally recomposed.
+public type Form =
+  | NFC
+  | NFD
+  | NFKC
+  | NFKD
+
+let canonical form = form = NFC || form = NFD
+
+let composed form = form = NFC || form = NFKC
+
+children : Bytes -> Int -> Int -> List Unicode.Span -> Int -> List UnicodeInternal.Atom -> List UnicodeInternal.Atom
+let children values start count sources index output =
+  if index < 0 then
+    output
+  else
+    children values start count sources (index - 1) ({
+      code = UnicodeInternal.field values ((start + index) * 4),
+      sources = sources
+    } :: output)
+
+hangul : UnicodeInternal.Atom -> List UnicodeInternal.Atom
+let hangul atom =
+  let index = atom.code - 44032
+  let leading = { atom with code = 4352 + index / 588 }
+  let vowel = { atom with code = 4449 + index % 588 / 28 }
+  if index % 28 = 0 then
+    [leading, vowel]
+  else
+    [leading, vowel, { atom with code = 4519 + index % 28 }]
+
+decompose : Unicode.Limits -> Form -> Bytes -> Bytes -> Array UnicodeInternal.Atom -> Int -> List UnicodeInternal.Atom -> Array UnicodeInternal.Atom -> Int -> Result (Array UnicodeInternal.Atom * Int) Unicode.Error
+let decompose limits form keys values input position pending output remaining =
+  match pending with
+  | [] ->
+    if position = Array.length input then
+      Ok (output, remaining)
+    else
+      decompose limits form keys values input (position + 1) [
+        Array.unsafeGet position input
+      ] output remaining
+  | atom :: rest ->
+    match UnicodeInternal.charge remaining 32 with
+    | Err error -> Err error
+    | Ok remaining ->
+      if atom.code >= 44032 && atom.code < 55204 then
+        decompose limits form keys values input position (List.append (hangul atom) rest) output remaining
+      else
+        let found = UnicodeInternal.lookup keys 16 atom.code
+        if found >= 0 && (not (canonical form) || UnicodeInternal.field keys (found + 4) = 0) then
+          let next =
+            children values (UnicodeInternal.field keys (found + 8)) (UnicodeInternal.field keys (found + 12)) atom.sources (UnicodeInternal.field keys (found + 12) - 1) rest
+          decompose limits form keys values input position next output remaining
+        else if Array.length output >= limits.maxScalars then
+          Err (Unicode.error Unicode.ScalarLimit "normalization exceeds intermediate scalar limit" None)
+        else
+          decompose limits form keys values input position rest (Array.push atom output) remaining
+
+let logSize size levels = if size <= 1 then levels else logSize ((size + 1) / 2) (levels + 1)
+
+type Ranked = { atom : UnicodeInternal.Atom, index : Int, rank : Int }
+
+appendSorted : Array Ranked -> Array UnicodeInternal.Atom -> Array UnicodeInternal.Atom
+let appendSorted run output =
+  let sorted = Array.sortBy (fun a b -> compare (a.rank, a.index) (b.rank, b.index)) run
+  Array.foldl (fun output item -> Array.push item.atom output) output sorted
+
+reorder : Unicode.Limits -> Bytes -> Array UnicodeInternal.Atom -> Int -> Array Ranked -> Int -> Array UnicodeInternal.Atom -> Int -> Result (Array UnicodeInternal.Atom * Int) Unicode.Error
+let reorder limits classes atoms index run combining output remaining =
+  if index = Array.length atoms then
+    match UnicodeInternal.charge remaining (Array.length run * (logSize (Array.length run) 1) * 4) with
+    | Err error -> Err error
+    | Ok remaining -> Ok (appendSorted run output, remaining)
+  else
+    match UnicodeInternal.charge remaining 32 with
+    | Err error -> Err error
+    | Ok remaining ->
+      let atom = Array.unsafeGet index atoms
+      let rank = UnicodeInternal.property classes atom.code
+      if rank = 0 then
+        match UnicodeInternal.charge remaining (Array.length run * (logSize (Array.length run) 1) * 4) with
+        | Err error -> Err error
+        | Ok remaining ->
+          reorder limits classes atoms (index + 1) [|
+            { atom = atom, index = index, rank = rank }
+          |] 0 (appendSorted run output) remaining
+      else if combining >= limits.maxCombining then
+        Err (Unicode.error Unicode.CombiningLimit "normalization combining sequence exceeds limit" None)
+      else
+        reorder limits classes atoms (index + 1) (Array.push {
+          atom = atom,
+          index = index,
+          rank = rank
+        } run) (combining + 1) output remaining
+
+let pairSearch table first second low high =
+  if low >= high then
+    -1
+  else
+    let middle = low + (high - low) / 2
+    let left = UnicodeInternal.field table (middle * 12)
+    let right = UnicodeInternal.field table (middle * 12 + 4)
+    if (first, second) < (left, right) then
+      pairSearch table first second low middle
+    else if (first, second) > (left, right) then
+      pairSearch table first second (middle + 1) high
+    else
+      UnicodeInternal.field table (middle * 12 + 8)
+
+let composite table first second =
+  if first >= 4352 && first < 4371 && second >= 4449 && second < 4470 then
+    44032 + (first - 4352) * 588 + (second - 4449) * 28
+  else if first >= 44032 && first < 55204 && (first - 44032) % 28 = 0 && second > 4519 && second < 4547 then
+    first + second - 4519
+  else
+    pairSearch table first second 0 (Bytes.length table / 12)
+
+compose : Bytes -> Bytes -> Array UnicodeInternal.Atom -> Int -> Int -> Int -> Array UnicodeInternal.Atom -> Int -> Result (Array UnicodeInternal.Atom * Int) Unicode.Error
+let compose classes pairs atoms index starter previous output remaining =
+  if index = Array.length atoms then
+    Ok (output, remaining)
+  else
+    let atom = Array.unsafeGet index atoms
+    match UnicodeInternal.charge remaining 64 with
+    | Err error -> Err error
+    | Ok remaining ->
+      let rank = UnicodeInternal.property classes atom.code
+      let combined =
+        if starter < 0 || (previous <> 0 && previous >= rank) then
+          -1
+        else
+          composite pairs (Array.unsafeGet starter output).code atom.code
+      if combined < 0 then
+        compose classes pairs atoms (index + 1) (if rank = 0 then
+          Array.length output
+        else
+          starter) rank (Array.push atom output) remaining
+      else
+        let old = Array.unsafeGet starter output
+        match UnicodeInternal.charge remaining (List.length old.sources + List.length atom.sources) with
+        | Err error -> Err error
+        | Ok remaining ->
+          let updated = { code = combined, sources = List.append old.sources atom.sources }
+          compose classes pairs atoms (index + 1) starter previous (Array.unsafeSet starter updated output) remaining
+
+let transform limits form mapped text =
+  match UnicodeInternal.decode limits mapped text with
+  | Err error -> Err error
+  | Ok (input, remaining) ->
+    match decompose limits form (UnicodeTables.decompositions ()) (UnicodeTables.decomposed ()) input 0 [] Array.empty remaining with
+    | Err error -> Err error
+    | Ok (atoms, remaining) ->
+      let classes = UnicodeTables.combining ()
+      match reorder limits classes atoms 0 Array.empty 0 Array.empty remaining with
+      | Err error -> Err error
+      | Ok (atoms, remaining) ->
+        let result =
+          if composed form then
+            compose classes (UnicodeTables.compositions ()) atoms 0 (-1) 0 Array.empty remaining
+          else
+            Ok (atoms, remaining)
+        match result with
+        | Err error -> Err error
+        | Ok (atoms, remaining) -> UnicodeInternal.render limits mapped atoms remaining
+
+/// Normalize according to Unicode 18.0, with explicit expansion and work limits.
+public normalizeWith : Unicode.Limits -> Form -> String -> Result String Unicode.Error
+let normalizeWith limits form text =
+  Result.map (fun result -> result.text) (transform limits form false text)
+
+/// Normalize with default resource budgets.
+public normalize : Form -> String -> Result String Unicode.Error
+let normalize form text = normalizeWith Unicode.limits form text
+
+/// Normalize with exact contributing original ranges for every output scalar.
+public normalizeMappedWith : Unicode.Limits -> Form -> String -> Result Unicode.Mapped Unicode.Error
+let normalizeMappedWith limits form text = transform limits form true text
+
+/// Mapped normalization with default budgets; provenance may overlap or reorder.
+public normalizeMapped : Form -> String -> Result Unicode.Mapped Unicode.Error
+let normalizeMapped form text = normalizeMappedWith Unicode.limits form text
+
+/// Test exact equality with the normalized form, using the same resource limits.
+public isNormalizedWith : Unicode.Limits -> Form -> String -> Result Bool Unicode.Error
+let isNormalizedWith limits form text =
+  Result.map (fun normalized -> normalized = text) (normalizeWith limits form text)
+
+/// Whether text is already in the requested normalization form.
+public isNormalized : Form -> String -> Result Bool Unicode.Error
+let isNormalized form text = isNormalizedWith Unicode.limits form text

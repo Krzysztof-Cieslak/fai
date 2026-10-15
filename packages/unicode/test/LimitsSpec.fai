@@ -1,0 +1,65 @@
+module UnicodeLimitsSpec
+
+example: kind Unicode.InvalidOptions (UnicodeNormalize.normalizeWith { Unicode.limits with
+  maxMappings = -1
+} UnicodeNormalize.NFC "")
+example: kind Unicode.InputLimit (UnicodeGrapheme.cursorWith { Unicode.limits with
+  maxInputBytes = 0
+} "a")
+example: kind Unicode.WorkLimit (UnicodeWord.spansWith { Unicode.limits with maxWork = 0 } "a")
+example: kind Unicode.OutputLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
+  maxOutputBytes = 1
+} UnicodeNormalize.NFD "á")
+example: UnicodeNormalize.normalizeWith { Unicode.limits with
+  maxCombining = 0
+} UnicodeNormalize.NFC "abc" = Ok "abc"
+example: kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
+  maxCombining = 0
+} UnicodeNormalize.NFD "\u{0301}")
+
+let kind expected result =
+  match result with
+  | Err error -> error.kind = expected
+  | Ok _ -> false
+example: kind Unicode.InvalidOptions (UnicodeGrapheme.spansWith { Unicode.limits with
+  maxWork = -1
+} "")
+example: kind Unicode.InputLimit (UnicodeCase.foldWith { Unicode.limits with
+  maxInputBytes = 1
+} "ß")
+example: kind Unicode.OutputLimit (UnicodeCase.foldWith { Unicode.limits with
+  maxOutputBytes = 1
+} "ß")
+example: kind Unicode.ScalarLimit (UnicodeCase.foldWith { Unicode.limits with maxScalars = 1 } "ß")
+example: kind Unicode.WorkLimit (UnicodeCase.foldWith { Unicode.limits with maxWork = 0 } "a")
+example: kind Unicode.MappingLimit (UnicodeCase.foldMappedWith { Unicode.limits with
+  maxMappings = 3
+} "ß")
+example: UnicodeCase.foldMappedWith { Unicode.limits with maxMappings = 4 } "ß" |> Result.isOk
+example: kind Unicode.CombiningLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
+  maxCombining = 1
+} UnicodeNormalize.NFD "a\u{301}\u{305}")
+example: kind Unicode.ScalarLimit (UnicodeNormalize.normalizeWith { Unicode.limits with
+  maxScalars = 1
+} UnicodeNormalize.NFD "á")
+example: UnicodeGrapheme.spansWith { Unicode.limits with maxSegments = 0 } "" = Ok [||]
+example: kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with
+  maxSegments = 0
+} "a")
+example: kind Unicode.SegmentLimit (UnicodeGrapheme.spansWith { Unicode.limits with
+  maxSegments = 1
+} "ab")
+example: UnicodeGrapheme.spansWith { Unicode.limits with
+  maxSegments = 1
+} "a\u{301}" = Ok [| { end = 3, start = 0 } |]
+example: kind Unicode.ScalarLimit (UnicodeWord.spansWith { Unicode.limits with
+  maxScalars = 1
+} "ab")
+example: kind Unicode.OutputLimit (UnicodeWord.segmentsWith { Unicode.limits with
+  maxOutputBytes = 1
+} "ab")
+example: UnicodeCase.foldWith { Unicode.limits with
+  maxOutputBytes = 0,
+  maxScalars = 0,
+  maxWork = 0
+} "" = Ok ""
