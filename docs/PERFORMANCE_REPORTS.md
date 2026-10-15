@@ -13,6 +13,12 @@ The issue bodies contain one current snapshot. Previous snapshots live in
 versioned evidence archives linked from refresh comments. Concrete bugs and
 implementation proposals remain ordinary issues linked from the trackers.
 
+Here, **current** means the latest published measurement checkpoint, not the
+latest compiler release or `main` revision. Read each report's **Measured** date
+and **Source** commit before citing its results. Later releases do not inherit
+those measurements; release-specific performance claims need a checkpoint of the
+corresponding source and build configuration.
+
 ## Run a fresh main checkpoint
 
 ```sh

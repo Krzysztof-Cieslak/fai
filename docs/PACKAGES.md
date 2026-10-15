@@ -1,49 +1,78 @@
-# Fai project, package, and dependency system — v1 specification
+# Fai projects and packages
 
-**Status:** Design specification; detailed completion choices remain open for review.
+Fai projects use `fai.toml` manifests and `fai.lock` dependency locks. Libraries
+are source packages fetched from Git or local paths; no hosted package registry
+is required. Workspaces, explicit imports, shared/personal overrides, offline
+restoration, vendoring, and package publication are implemented through the same
+project loader used by the CLI, daemon, and language server.
 
-**Date:** 2026-10-12.
+This guide starts with a runnable local example, then describes the version 1
+manifest, lock, and package behavior in detail. Except for the quick start,
+repository URLs, version numbers, and hashes in examples are illustrative, not
+available releases to copy verbatim. Current limitations are listed in §22.
+For compiler installation and exact project pins, see
+[INSTALLATION.md](INSTALLATION.md); for individual command flags, see
+[CLI.md](CLI.md).
 
-**Repository:** Fai compiler workspace.
+## Quick start
 
-**Scope:** Manifests, source scopes, imports, workspaces, dependency resolution,
-locks, overrides, toolchains, platforms, fetching, vendoring, publishing, and tooling.
+With `fai` installed, create and run an application:
 
-> **Implementation status:** `fai-package` provides the pure metadata foundation:
-> canonical source identities, version requirements, located manifest validation,
-> comment-preserving version edits, platform activation, and target source plans.
-> The compiler also carries package environments and target-local source ownership,
-> with scoped module lookup, internal visibility, and package-qualified native symbols.
-> Explicit module imports and identity-preserving public re-exports are implemented
-> in syntax, resolution, formatting, and IDE lookup for package-aware compiler inputs.
-> The shared project loader now prepares local path dependencies, root path
-> overrides, host source scopes, and native requirements for CLI, daemon, and LSP.
-> Workspace/member and executable selection use those manifests. `init`, `add`,
-> `remove`, `resolve`, `fetch`, `update`, and read-only `deps` are integrated with
-> Git restoration, graph-local locks, and shared/personal baseline reconciliation.
-> A provider-independent graph resolver implements conservative and eager policies,
-> source-selector unification, and compiler/target filtering against supplied catalogs.
-> Locked/offline/frozen commands verify exact sources and preserve valid selections.
-> Vendoring supplies verified, cache-independent source snapshots with explicit
-> bypass and refresh behavior. Publication validates isolated candidate graphs and
-> journals version/commit/tag state before atomic pushes, with advisory API reports
-> and exact resume. Installed compiler pins dispatch through an explicit local
-> inventory, and standalone files retain isolated source scope. Editor restoration
-> runs in the background with coalesced generations and authoritative source overlays.
-> In-tree libraries and shared example packages declare their real dependencies
-> and source scopes in `fai.toml`; CI impact selection reads the same manifests.
-> Native-only and unversioned directory sessions retain compatibility discovery.
+```sh
+fai init hello
+fai run -C hello
+fai check -C hello
+fai test -C hello
+```
 
-This document consolidates the agreed product decisions and proposes the concrete
-syntax and operational details needed to implement them. Section 23 explicitly
-identifies completion choices that were not individually decided in discussion.
-`MUST`, `MUST NOT`, `SHOULD`, and `MAY` describe the proposed v1 contract.
-Examples use illustrative repositories, versions, and hashes. Implementation paths
-are relative to the Fai repository above.
+`init` creates `hello/fai.toml`, `hello/src/Main.fai`, and ignore entries for
+generated and personal state. The program prints `Hello, Fai!`; the initial
+package has no tests. `check` and `test` prepare the package's dependency graph
+and retain its selections in `fai.lock`. Commit the manifest and lock.
+
+To try a dependency without a network service, create a sibling library and add
+it from the same working directory:
+
+```sh
+fai init helpers --lib
+fai add -C hello --path ../helpers --as helpers
+```
+
+Give the library a greeting function by replacing `helpers/src/Library.fai` with:
+
+```fai
+module Library
+
+public greet : String -> String
+let greet name = "Hello, " ++ name ++ "!"
+```
+
+Then replace `hello/src/Main.fai` with:
+
+```fai
+module Main
+
+import helpers.Library
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Library.greet "packages")
+```
+
+```sh
+fai run -C hello
+fai deps -C hello
+fai check --locked -C hello
+```
+
+The program now prints `Hello, packages!`. The import starts with the dependency
+alias `helpers`, followed by its module `Library`. Same-package and standard
+modules remain available automatically; external modules require imports.
+Local path dependencies suit development. Published dependencies use portable
+Git declarations, and Git-backed restoration requires installed Git.
 
 ## Contents
 
-1. Goals and agreed product model
+1. Package model
 2. Terminology and invariants
 3. Project discovery and layout
 4. Manifest schema
@@ -63,18 +92,17 @@ are relative to the Fai repository above.
 18. Diagnostics and machine-readable output
 19. End-to-end workflows
 20. Compiler integration and migration
-21. Implementation sequence
-22. Acceptance scenarios
-23. Completion choices requiring review
+21. Verification scenarios
+22. Current scope and limitations
 
-## 1. Goals and agreed product model
+## 1. Package model
 
 The system makes ordinary edit/check/test loops convenient while keeping source
 bindings, selected dependency content, and compatibility claims explicit. It
 requires no custom hosted registry or artifact service. Standard Git hosting,
 including GitHub and private Git servers, supplies source storage and refs.
 
-| Area | Agreed decision |
+| Area | Behavior |
 |---|---|
 | Distribution | Git source packages, fetched through installed Git |
 | Identity | Repository coordinates plus package subdirectory; dependency names are local aliases |
@@ -398,9 +426,9 @@ disjoint cases.
 
 ### 4.8 Native fields
 
-Preserve `library-dirs`, `libraries`, and `objects` as ordered arrays. A proposed
-`frameworks` array supports Apple frameworks. Relative files resolve against the
-owning package; system library names remain environment requirements.
+`library-dirs`, `libraries`, `objects`, and Apple `frameworks` are ordered arrays.
+Framework requirements are accepted only for Apple targets. Relative files resolve
+against the owning package; system library names remain environment requirements.
 
 Common arrays precede active platform additions in declaration order. Propagate
 native requirements through the selected production/test projection. Emit package
@@ -470,7 +498,8 @@ and public-surface leak rules apply through aliases/re-exports.
 ### 5.4 Checking and contracts
 
 `check` covers all targets of selected packages and retains closed-example
-execution and `--no-examples` semantics. `test` runs their examples/properties.
+execution and `--no-examples` semantics. `test` runs their inline contracts and
+named test suites, including properties.
 Shared library contracts execute once per resolution, not once per binary.
 Executable/test contracts run in their own source contexts. Existing worker
 isolation, effect restrictions, and resource controls apply.
@@ -626,8 +655,8 @@ original logical key in one graph.
 ### 8.1 Concrete version grammar
 
 Use the SemVer major/minor/patch core and optional prerelease identifiers. This
-draft excludes `+build` metadata from package versions/requirements; Git commits
-and compiler build IDs carry build identity. This is a completion choice in §23.
+format excludes `+build` metadata from package versions/requirements; Git commits
+and compiler build IDs carry build identity.
 
 All three numeric components are required. Partial forms (`1`, `1.2`, `1.x`) are
 rejected with a full-range suggestion. SemVer leading-zero and prerelease ordering
@@ -1010,8 +1039,8 @@ An observed concurrent change causes retry or a diagnostic, never a blind overwr
 ### 12.1 Selection and flags
 
 At a workspace root, build/check/test select all members by default. In a member
-directory they select that member. `--package <name-or-relative-path>` replaces
-that default and is repeatable where multiple roots make sense.
+directory they select that member. `--package <name-or-relative-path>` selects one
+member instead; invoke it separately for additional members.
 
 `run` requires one selected package; it uses the target rules in §4.5. A virtual
 workspace with several members requires an explicit package selection. Existing
@@ -1036,8 +1065,8 @@ with a clear usage/state diagnostic.
 
 ### 12.2 Command matrix
 
-The concrete command set below completes the user-facing workflow. New command
-spellings and defaults are listed for review in §23.
+The command set below shares project discovery, dependency preparation, and source
+ownership rules across the CLI and editor.
 
 | Command | Roots/platforms by default | Resolution behavior | Persistent effect |
 |---|---|---|---|
@@ -1050,7 +1079,7 @@ spellings and defaults are listed for review in §23.
 | `build` | Selected roots, host | Reuse/repair conservatively | Active lock, build/cache outputs |
 | `run` | One root/entry, host | Reuse/repair conservatively | Active lock/cache; run worker |
 | `check` | All targets of selected roots, host | Reuse/repair conservatively | Active lock/cache, diagnostics |
-| `test` | Selected roots' contracts, host | Reuse/repair conservatively | Active lock/cache, test results |
+| `test` | Selected roots' contracts and named suites, host | Reuse/repair conservatively | Active lock/cache, test results |
 | `vendor` | Selected roots, lock matrix | Conservative repair, materialize | Active lock, vendor index/tree/config |
 | `deps` / `deps why <selector>` | Selected roots, host | Inspect available graph; report stale state | No implicit updates |
 | `publish` | Explicit selected packages | Isolated candidate validation | Version changes, release commit/tags/push/receipt |
@@ -1063,9 +1092,10 @@ an all-platform transaction. Explicit `resolve`/`update` prepares the matrix.
 
 ### 12.3 Add/remove
 
-Proposed options include `--as`, `--version`, `--branch`, `--rev`, `--subdir`,
-`--path`, `--dev`, and `--package`. Exactly one source selector is effective.
-A GitHub shorthand is expanded to the canonical manifest locator.
+`add` accepts `--as`, `--version`, `--branch`, `--rev`, `--subdir`, `--path`,
+`--dev`, and the global `--package` selector. Exactly one source selector is
+effective. A GitHub shorthand is expanded to the canonical manifest locator.
+`remove` takes a dependency alias and optional `--dev` in the selected package.
 
 Determine the candidate edit and solve before committing CLI-authored changes.
 Resolution failure leaves the original manifest/lock intact. This does not undo
@@ -1149,7 +1179,7 @@ an immutable cache entry.
 Submodules and Git LFS expansion are not implicit v1 package dependencies. A
 package requiring unmaterialized external content receives an explicit unsupported
 source-layout diagnostic. Model such source as an ordinary declared dependency or
-commit the required package content. This is a completion choice in §23.
+commit the required package content.
 
 ### 13.3 Canonical source checksum
 
@@ -1312,8 +1342,8 @@ do not silently fall through to the network. `--no-vendor` explicitly bypasses
 vendor materialization. Ordinary resolution may still need online metadata when
 changing versions; vendoring is not a global package-version index.
 
-Path/workspace packages remain mutable project inputs. For the proposed
-self-contained snapshot command, a selected external path outside the active
+Path/workspace packages remain mutable project inputs. For a self-contained
+vendor snapshot, a selected external path outside the active
 project is an error with guidance to use shared context, include that source in
 the project, or select an immutable Git source. Paths already inside the project
 are not duplicated. Ordinary builds with personal path overrides can still use
@@ -1321,14 +1351,13 @@ vendor entries for their remaining Git dependencies.
 
 Prepare a new index/tree set before committing the vendor snapshot. Preserve user
 files outside tool-owned vendor paths. An interrupted refresh must be detectable
-and recoverable. The index format and external-path policy are completion choices
-for review.
+and recoverable.
 
 ## 16. Publishing and release transactions
 
 ### 16.1 CLI and version intent
 
-Proposed spelling:
+For a workspace batch, supply explicit version intent per package:
 
 ```sh
 fai publish json=minor web=patch
@@ -1382,8 +1411,8 @@ remote tags exist. It supplies only actually planned versions; it must not act a
 a version-bypassing source override.
 
 Each selected package must support the current host for local check/test validation.
-A batch with no common validation host needs cross-host orchestration; its receipt
-protocol is a review item, not an implicit promise of host-only v1 validation.
+A batch with no common validation host cannot be validated by one local publish
+operation. Cross-host publication orchestration is not provided.
 
 ### 16.4 Authored requirements
 
@@ -1436,7 +1465,7 @@ options. Do not guess among unrelated remotes.
 versions, edits, graphs, API report, tags, and destinations. It does not mutate
 working-tree files, branches, or tags. Download/build cache population is allowed.
 
-A failed push retains the prepared release identity. Proposed `publish --resume`
+A failed push retains the prepared release identity. `publish --resume`
 uses that receipt, commit, and tag set without another bump. Verify remote refs
 after uncertain transport outcomes: already-published matching refs count as
 success; conflicting refs stop the operation. A changed source candidate requires
@@ -1448,11 +1477,10 @@ Candidate validation graphs are temporary. They cannot serialize the future rele
 commit ID into a lockfile that is itself part of that commit. Final Git IDs become
 consumer lock data after publication.
 
-For this draft, publishing commits version edits and retains existing development
+Publishing commits version edits and retains existing development
 locks as development records; it reports affected stale graphs for subsequent
 normal/shared preparation. It does not rewrite them with fictitious future Git
-IDs. A more elaborate automatic post-release lock commit is not assumed. This
-completion choice is explicitly listed for review.
+IDs. It does not create an automatic post-release lock commit.
 
 ## 17. Daemon and language-server integration
 
@@ -1509,11 +1537,11 @@ Reuse Fai diagnostics, byte spans, secondary labels, help text, and machine-appl
 suggestions. Manifest text participates in the source/span registry. Preserve
 existing diagnostic meanings and numeric codes.
 
-The following currently unused tooling range is proposed for new package errors;
-allocation must be rechecked and entered in the generated error catalog during
-implementation.
+The package diagnostics below are allocated in the
+[generated error catalog](ERROR_CODES.md). Consult that catalog for their exact
+titles, severities, and explanations; this table summarizes when they apply.
 
-| Proposed code | Meaning |
+| Code | Meaning |
 |---|---|
 | `FAI0800` | Invalid package/workspace manifest |
 | `FAI0801` | Unsupported manifest format |
@@ -1532,7 +1560,6 @@ implementation.
 | `FAI0814` | Source integrity mismatch |
 | `FAI0815` | Previously accepted release mapping changed |
 | `FAI0816` | Overlapping root overrides |
-| `FAI0817` | Replacement violates compatibility requirements |
 | `FAI0818` | Duplicate active dependency alias |
 | `FAI0819` | Invalid target/source scope |
 | `FAI0820` | Missing/stale vendor materialization |
@@ -1541,7 +1568,6 @@ implementation.
 | `FAI0823` | Remote publication conflict/failure or unsupported atomic push |
 | `FAI0824` | Pending publication needs resume/replan |
 | `FAI0825` | Inputs changed during a mutating operation |
-| `FAI0826` | Ambiguous package/executable selection |
 | `FAI0827` | Unsupported package source layout |
 
 Import syntax and source-language name/visibility errors use the appropriate
@@ -1603,8 +1629,8 @@ compatibility is covered by CLI tests and updated reference documentation.
 
 ## 19. End-to-end workflows
 
-These workflows are executable acceptance narratives, not merely syntax examples.
-Command spellings are the proposed interface in §12.
+These workflows illustrate the command behavior in §12. Repository locations and
+release versions remain placeholders; use your own published sources.
 
 ### 19.1 Create, add, import, run
 
@@ -1618,9 +1644,9 @@ records a conservative compiler compatibility range beginning at the creating
 compiler release; authors can deliberately widen it after validation.
 
 ```sh
-fai add github:example/libs --subdir packages/json --as json --version '^1.4.0'
-fai check
-fai run
+fai add -C hello github:example/libs --subdir packages/json --as json --version '^1.4.0'
+fai check -C hello
+fai run -C hello
 ```
 
 The dependency declaration uses the expanded Git locator. Code imports explicitly:
@@ -1875,97 +1901,31 @@ type or function definition.
 | `fai-server` / `fai-lsp` / `fai-ide` | Snapshot publication, async restore, context-aware navigation/completion/diagnostics |
 | CI/package scripts | Read manifests for dependency-aware selection; keep CI-only settings separate |
 
-A new package-tooling crate is a reasonable organizational boundary. Its I/O must
-not become callable from semantic queries. If shared ID models would create a
-crate cycle, extract only the pure model rather than giving the DB a transport
-or process dependency.
+`fai-package` contains the pure models and resolver. `fai-package-store` and the
+driver perform Git and filesystem I/O outside semantic queries, before publishing
+prepared inputs to the compiler database.
 
 ### 20.5 Migration
 
-1. Introduce v1 manifests for in-tree packages, matching current dependencies.
-2. Establish a workspace and explicit local overrides for portable Git declarations.
-3. Add imports for cross-package module uses; same-package/std access stays automatic.
-4. Audit currently public helpers that should become `internal` at package scope.
-5. Adapt samples/tests relying on directory-wide implicit source discovery.
-6. Route all CLI, daemon, JIT, AOT, contract, and IDE paths through the same loader.
-7. Make CI dependency selection consume package manifests, avoiding drift with
-   `ci.json`; retain only genuinely CI-specific settings elsewhere.
-8. Update `AGENTS.md`, `docs/MEMORY.md`, `docs/CLI.md`, `llms.txt`, samples, and the
-   generated diagnostic catalog with the implementation.
+When moving a directory-based project to package manifests:
 
-For transition, a manifest containing only the legacy `[native]` section can be
-recognized as a native-only legacy project with its current explicit-entry and
-directory-source behavior. New manifests are explicitly v1. A directory with no
-manifest follows the newly agreed single-file semantic mode. The duration and
-exact shape of the native-only compatibility path require review.
+1. Add a v1 `fai.toml` with explicit package and dependency metadata.
+2. Add imports for cross-package modules and keep shared code under library roots.
+3. Use `internal` for helpers shared only within one package.
+4. Add a workspace and explicit local overrides where several packages are developed together.
+5. Run `fai resolve`, review the lock, then check and test each selected package.
 
-## 21. Implementation sequence
+A legacy manifest containing only `[native]`, and explicit `-C` directory
+sessions without versioned manifests, retain directory discovery for compatibility.
+A standalone file selected outside a manifest project loads only itself and std.
+New projects should use v1 manifests rather than relying on compatibility discovery.
 
-Each step should be independently reviewable and verified through focused tests.
-The order establishes language/package identity before remote-source complexity.
-
-### A. Pure models and manifest parsing
-
-Implement canonical package/root/target IDs, schema validation with spans,
-requirements, platform activation, source classification, and deterministic
-serialization. Add fixtures for the actual in-tree package shapes. Keep network
-providers out of these models.
-
-### B. Local package ownership and imports
-
-Implement package-aware DB inputs, source scopes, import/re-export syntax, alias
-lookup, internal visibility, and context-aware IDE operations using local fixtures.
-Exercise multiple same-named modules and entry points before adding remote Git.
-
-### C. Resolver and graph semantics
-
-Implement a provider-independent solver against an in-memory immutable version
-catalog. Verify policy against a small exhaustive oracle. Add root normal/dev
-union, graph projections, source-selector conflicts, compiler/platform filtering,
-overrides, and per-root/platform independence.
-
-### D. Locks, transactions, and selection
-
-Implement graph-local validity, selected-graph operations, conservative/eager
-policies, local baseline reconciliation, deterministic diffs, and recoverable
-manifest/lock writes. Integrate both CLI and daemon execution paths.
-
-### E. Git, materialization, and offline operation
-
-Add system-Git providers, ref snapshots, exact-commit fetching, checksum validation,
-immutable caches, network/offline policy, and failure diagnostics. Test against
-local bare repositories and controlled transport failures rather than live GitHub.
-
-### F. Platform/native and toolchain integration
-
-Add installed-compiler dispatch, target matrix preparation, active platform source
-sets, and native dependency projection. Verify host behavior on supported OSes.
-
-### G. Editor restoration and vendoring
-
-Publish complete graph snapshots asynchronously, guard against stale writers,
-finish source-aware navigation, and add vendor transactions/index verification.
-Measure warm-cache and unrelated-root edit behavior.
-
-### H. Publishing
-
-Implement candidate release plans, isolated consumer validation, API reports,
-version-only preparation, publication receipts, atomic push, and idempotent retry.
-Exercise server rejection and unknown-outcome recovery.
-
-### I. Ecosystem migration and documentation
-
-Migrate source packages, sample workflows, CI selection, and user/agent docs.
-Release the manifest/lock/protocol changes together with clear compatibility notes.
-Run only affected local compiler/integration suites; full platform/CI coverage
-remains the CI gate, consistent with the repository contributor guide.
-
-## 22. Acceptance scenarios
+## 21. Verification scenarios
 
 These are behavioral requirements, not tests mirroring implementation functions.
 Use one focused named test per concrete case and generative tests for invariants.
 
-### 22.1 Manifests and source scopes
+### 21.1 Manifests and source scopes
 
 | ID | Scenario and expected result |
 |---|---|
@@ -1984,7 +1944,7 @@ Use one focused named test per concrete case and generative tests for invariants
 | M13 | Nested packages retain separate ownership and source collection |
 | M14 | Formatter changes preserve TOML comments and import parse/format equivalence |
 
-### 22.2 Imports and identities
+### 21.2 Imports and identities
 
 | ID | Scenario and expected result |
 |---|---|
@@ -2000,7 +1960,7 @@ Use one focused named test per concrete case and generative tests for invariants
 | I10 | Same source revision with different dependency bindings has context-correct types and native symbols |
 | I11 | Import identities remain position-independent through comments/formatting edits |
 
-### 22.3 Resolution
+### 21.3 Resolution
 
 | ID | Scenario and expected result |
 |---|---|
@@ -2027,7 +1987,7 @@ Property tests should generate small finite version catalogs and compare solver
 validity/preferences with an exhaustive oracle, check requirement normalization,
 and vary input order without changing a deterministic result.
 
-### 22.4 Locks, contexts, and concurrency
+### 21.4 Locks, contexts, and concurrency
 
 | ID | Scenario and expected result |
 |---|---|
@@ -2047,7 +2007,7 @@ and vary input order without changing a deterministic result.
 | L14 | Body/comment edits do not cause lock writes |
 | L15 | CLI, daemon, and no-daemon agree on graph selection and diagnostics |
 
-### 22.5 Git, offline, and vendoring
+### 21.5 Git, offline, and vendoring
 
 | ID | Scenario and expected result |
 |---|---|
@@ -2068,7 +2028,7 @@ and vary input order without changing a deterministic result.
 | G15 | Missing/altered required vendor entries fail rather than fetching silently |
 | G16 | Vendor refresh changes only tool-owned materializations and recovers from interruption |
 
-### 22.6 Publication
+### 21.6 Publication
 
 | ID | Scenario and expected result |
 |---|---|
@@ -2089,7 +2049,7 @@ and vary input order without changing a deterministic result.
 | P13 | Candidate validation cannot introduce a self-referential commit hash into its own tree |
 | P14 | Publication reports host validation scope separately from other-target metadata resolution |
 
-### 22.7 Performance and compiler correctness
+### 21.7 Performance and compiler correctness
 
 - Extend incremental-versus-clean checks to import edits, graph changes, and
   source-scope changes.
@@ -2101,44 +2061,22 @@ and vary input order without changing a deterministic result.
   network fetching. No wall-clock network thresholds belong in deterministic CI.
 - Add golden checksum/fingerprint vectors and round-trip format tests.
 
-## 23. Completion choices requiring review
+## 22. Current scope and limitations
 
-The product decisions in §1 are agreed. The following are explicit specification
-completions, not silently attributed to the user. They can be adjusted before the
-specification is accepted without changing the core architecture.
-
-| ID | Proposed completion | Why review it |
-|---|---|---|
-| C01 | Exact TOML field names, required package name/version, local default compiler range, source/test roots, `auto-main`, and metadata table | Concrete schema spelling/defaults were not exhaustively selected in conversation |
-| C02 | Full three-component requirements; comma intersections; `||` unions; no partial versions or `+build` metadata | Closes the requirement grammar and equal-precedence release ambiguity |
-| C03 | `supported-platforms`, bulk unsupported-root filtering, platform test-source/dev tables, Apple `frameworks` field | Completes platform eligibility and test/native integration |
-| C04 | Root/package discovery details, ambiguous-name path selectors, ad-hoc entry invocation, and native-only legacy mode | Needed to migrate actual current CLI behavior |
-| C05 | Source-path containment, reserved subtree scanning, entry-only binary scopes, and top-level import placement | Makes file ownership and module lookup unambiguous |
-| C06 | CLI `resolve`/`fetch`/`deps` commands; host-only add/remove repair; matrix defaults for explicit preparation | Completes command scope and offline-preparation ergonomics |
-| C07 | Per-graph three-way local baseline reconciliation and lock record/ID encoding | Makes the accepted baseline-tracking rule precise without unrelated churn |
-| C08 | Strict release-candidate metadata versus retrieval/integrity failure treatment | Prevents network errors from masquerading as version incompatibility |
-| C09 | Vendor index/config, `--no-vendor`, Git-only snapshots, and rejection of selected outside-project mutable paths | Completes vendoring without pretending mutable local inputs are locked Git content |
-| C10 | Submodule/LFS external content excluded from implicit materialization | Bounds v1 Git source semantics; these could later become explicit source features |
-| C11 | Stable-version bump rules, exact prerelease intent, publication destination/resume options | Completes publishing CLI and recovery mechanics |
-| C12 | Publishing leaves development locks for separate preparation and reports staleness | Avoids self-referential hashes; automatic post-publication lock commits would be a separate policy |
-| C13 | Host-only release validation and handling batches with no common validation host | Cross-host validation receipt/orchestration is not yet a defined v1 guarantee |
-| C14 | Installed-toolchain inventory/registration interface | Selection behavior is agreed; concrete installation layout/commands need finalization |
-| C15 | Proposed FAI0800–FAI0827 allocation and additive JSON metadata | Recheck availability and compatibility when implementation starts |
-| C16 | Library build warms backend artifacts without promising a portable binary-library distribution format | Completes source-package build output semantics |
-
-### Specification acceptance checklist
-
-Before implementation is treated as conforming:
-
-1. Review completion choices C01–C16, especially publication locks and cross-host
-   validation, and record any accepted amendments.
-2. Freeze manifest/lock/vendor versions and canonical hashing vectors.
-3. Map diagnostics into the repository catalog and finalize new command schemas.
-4. Turn the acceptance scenarios into targeted tests alongside each implementation
-   step rather than postponing validation until the whole manager exists.
-5. Keep the user-facing and agent-facing documentation synchronized with the same
-   source of truth as the implementation.
-
-The specification is deliberately a draft until that review. It now contains the
-agreed architecture, concrete proposed formats, lifecycle rules, implementation
-seams, and behavioral acceptance criteria needed for that review and implementation.
+- Compilation and package publication validation run on the current host.
+  Other-target metadata resolution does not certify that target's native build
+  or tests. Cross-host publication receipts are not implemented.
+- Native declarations link or load existing libraries, objects, and Apple
+  frameworks. There is no package-managed native source-build or binary-download
+  subsystem.
+- Packages distribute source, not a stable native binary-library ABI. The exact
+  compiler build and target remain part of compiled-artifact identity.
+- Compiler downloads are explicit. Package compatibility ranges do not authorize
+  installing or silently substituting a compiler for an exact project pin.
+- Git submodules and LFS expansion are not implicit dependencies. Vendor snapshots
+  require self-contained selected sources; external mutable path dependencies
+  must be addressed before creating such a snapshot.
+- Package versions use full three-component numbers, optional prereleases, and no
+  build metadata. Arbitrary partial-version requirement syntax is not accepted.
+- Publication preserves authored dependency ranges and does not generate a
+  follow-up commit to rewrite development locks with the new release's own hash.

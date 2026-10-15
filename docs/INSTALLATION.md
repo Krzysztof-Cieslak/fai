@@ -29,14 +29,18 @@ Unix installation updates marked blocks in `.profile`, `.bashrc`, `.zshrc`, and
 Fish's `conf.d/fai.fish`. Start a new shell or add `$FAI_HOME/bin` to the current
 PATH. PowerShell installation updates the user environment and current PATH.
 
-Download the script to supply options explicitly:
+To inspect the script or supply options explicitly, download an exact published
+release. These examples use `0.0.1`; choose another version from the
+[release list](https://github.com/Krzysztof-Cieslak/fai/releases) when needed:
 
 ```sh
-sh install.sh --version 0.2.0 --home "$HOME/tools/fai" --no-modify-path
+curl -fsSLO https://github.com/Krzysztof-Cieslak/fai/releases/download/v0.0.1/install.sh
+sh install.sh --version 0.0.1 --home "$HOME/tools/fai" --no-modify-path
 ```
 
 ```powershell
-./install.ps1 -Version 0.2.0 -HomeDirectory "$HOME/tools/fai" -NoModifyPath
+Invoke-WebRequest https://github.com/Krzysztof-Cieslak/fai/releases/download/v0.0.1/install.ps1 -OutFile install.ps1
+./install.ps1 -Version 0.0.1 -HomeDirectory "$HOME/tools/fai" -NoModifyPath
 ```
 
 An exact prerelease is installed in the same way. Fresh installations select the
@@ -54,15 +58,23 @@ fai upgrade                    # stable compiler and global default
 fai installer upgrade          # native launcher/version manager
 fai installer --version
 
-fai toolchain install 0.2.0
-fai toolchain default 0.2.0
+fai toolchain install 0.0.1
+fai toolchain default 0.0.1
 fai toolchain list
 fai toolchain list --available
 fai toolchain which
-fai +0.2.0 check
-fai toolchain pin 0.2.0
-fai toolchain uninstall 0.1.0
 ```
+
+From a project directory, select or pin that installed compiler:
+
+```sh
+fai +0.0.1 check
+fai toolchain pin 0.0.1
+```
+
+To remove a different installed version that is neither selected as the default
+nor in use, run `fai toolchain uninstall VERSION`, replacing `VERSION` with its
+exact release number.
 
 `install` preserves the current default. `default` selects an installed exact
 version. `upgrade` installs and selects the stable release without editing any
