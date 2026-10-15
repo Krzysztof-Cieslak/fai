@@ -1186,6 +1186,15 @@ read-idle time excludes callback execution.
 
 ## 6. Compiler pipeline
 
+The optional `packages/diff` library provides deterministic Myers/patience
+sequence alignment, snapshot-backed line diffs, Unicode-aware review options,
+source-mapped inline detail and exact unified patches. Work-limited coarse
+fallback is explicit and marked; review equivalence never erases exported
+changes. Strict patch application supports opt-in bounded exact relocation and
+pure all-or-error batches, with paths mapped explicitly by callers. It depends
+only on `unicode`; CLI/TUI examples and Git interoperability fixtures live in
+the separate `packages/diff/examples` package.
+
 The optional `packages/unicode` library supplies pure Unicode 18.0 extended
 grapheme and default word segmentation, full default case folding, and all four
 normalization forms. Its own checksum-pinned data makes behavior independent of

@@ -1,0 +1,457 @@
+module Diff
+
+/// Myers minimizes insertions/deletions; Patience anchors unique matching keys.
+public type Algorithm =
+  | Myers
+  | Patience
+
+/// Work exhaustion either fails or replaces unresolved regions explicitly.
+public type Fallback =
+  | Fail
+  | ReplaceRemainder
+
+/// Successful search quality. Coarse never implies a shortest edit script.
+public type Quality =
+  | Optimal
+  | Anchored
+  | Coarse
+
+/// A Match aligns keys; it does not assert identity of original values in diffBy.
+public type Kind =
+  | Match
+  | Delete
+  | Insert
+
+/// Zero-based, half-open indexes into an input sequence.
+public type Range = { end : Int, start : Int }
+
+/// Coalesced alignment over both input sequences; empty ranges denote gaps.
+public type Edit = { kind : Kind, new : Range, old : Range }
+
+/// An input-independent edit script and its algorithmic guarantee.
+public type Script = { edits : Array Edit, quality : Quality }
+
+/// Stable option, work, storage and result-size failures.
+public type ErrorKind =
+  | InvalidOptions
+  | InputLimit
+  | WorkLimit
+  | ScratchLimit
+  | EditLimit
+
+/// A pure diff failure; no partial successful script is exposed.
+public type Error = { kind : ErrorKind, message : String }
+
+/// Limits count input items per side, scratch slots, edit runs and algorithm steps.
+public type Limits = { maxEdits : Int, maxInputItems : Int, maxScratchItems : Int, maxWork : Int }
+
+/// Algorithm selection is independent of resource budgets.
+public type Options = { algorithm : Algorithm, fallback : Fallback }
+
+/// Minimal-edit default; exhaustion returns a typed error.
+public options : Options
+let options = { algorithm = Myers, fallback = Fail }
+
+/// Default bounded search budgets.
+public limits : Limits
+let limits = {
+  maxEdits = 1000000,
+  maxInputItems = 2000000,
+  maxScratchItems = 8000000,
+  maxWork = 5000000
+}
+
+/// Render a sequence failure without discarding its typed category.
+public errorToString : Error -> String
+let errorToString error = error.message
+
+internal error : ErrorKind -> String -> Error
+let error kind message = { kind = kind, message = message }
+
+internal type Region = { a : Int, ae : Int, b : Int, be : Int }
+
+type Task =
+  | Compare Region
+  | Emit Edit
+
+type State = { coarse : Bool, output : Array Edit, remaining : Int }
+
+let edit kind a ae b be = {
+  kind = kind,
+  new = { end = be, start = b },
+  old = { end = ae, start = a }
+}
+
+emptyEdit : Edit -> Bool
+let emptyEdit item = item.old.start = item.old.end && item.new.start = item.new.end
+
+append : Limits -> Edit -> State -> Result State Error
+let append limits item state =
+  if emptyEdit item then
+    Ok state
+  else
+    let count = Array.length state.output
+    let previous = Array.get (count - 1) state.output
+    match previous with
+    | Some old ->
+      if old.kind = item.kind && old.old.end = item.old.start && old.new.end = item.new.start then
+        Ok { state with
+          output = Array.unsafeSet (count - 1) { old with
+            new = { old.new with end = item.new.end },
+            old = { old.old with end = item.old.end }
+          } state.output
+        }
+      else if count >= limits.maxEdits then
+        Err (error EditLimit "diff edit-run limit exceeded")
+      else
+        Ok { state with output = Array.push item state.output }
+    | None ->
+      if limits.maxEdits = 0 then
+        Err (error EditLimit "diff edit-run limit exceeded")
+      else
+        Ok { state with output = [| item |] }
+
+let charge remaining =
+  if remaining = 0 then Err (error WorkLimit "diff work limit exceeded") else Ok (remaining - 1)
+
+prefix : Array 'a -> Array 'a -> Region -> Int -> Result (Region * Int) Error
+let prefix a b region remaining =
+  if region.a = region.ae || region.b = region.be then
+    Ok (region, remaining)
+  else
+    match charge remaining with
+    | Err error -> Err error
+    | Ok remaining ->
+      if Array.unsafeGet region.a a = Array.unsafeGet region.b b then
+        prefix a b { region with a = region.a + 1, b = region.b + 1 } remaining
+      else
+        Ok (region, remaining)
+
+suffix : Array 'a -> Array 'a -> Region -> Int -> Result (Region * Int) Error
+let suffix a b region remaining =
+  if region.a = region.ae || region.b = region.be then
+    Ok (region, remaining)
+  else
+    match charge remaining with
+    | Err error -> Err error
+    | Ok remaining ->
+      if Array.unsafeGet (region.ae - 1) a = Array.unsafeGet (region.be - 1) b then
+        suffix a b { region with ae = region.ae - 1, be = region.be - 1 } remaining
+      else
+        Ok (region, remaining)
+
+snake : Bool -> Array 'a -> Array 'a -> Region -> Int -> Int -> Int -> Result (Int * Int * Int) Error
+let snake reverse a b region x y remaining =
+  if x < 0 || y < 0 || x >= region.ae - region.a || y >= region.be - region.b then
+    Ok (x, y, remaining)
+  else
+    match charge remaining with
+    | Err error -> Err error
+    | Ok remaining ->
+      let ai = if reverse then region.ae - x - 1 else region.a + x
+      let bi = if reverse then region.be - y - 1 else region.b + y
+      if Array.unsafeGet ai a = Array.unsafeGet bi b then
+        snake reverse a b region (x + 1) (y + 1) remaining
+      else
+        Ok (x, y, remaining)
+
+type Wave = { backward : Array Int, forward : Array Int, remaining : Int }
+
+type Split =
+  | Found Int Int Int
+  | Continue Wave
+
+diagonals : Bool -> Array 'a -> Array 'a -> Region -> Int -> Int -> Int -> Int -> Wave -> Result Split Error
+let diagonals reverse a b region offset delta depth k wave =
+  if k > depth then
+    Ok (Continue wave)
+  else
+    match charge wave.remaining with
+    | Err error -> Err error
+    | Ok remaining ->
+      let own = if reverse then wave.backward else wave.forward
+      let other = if reverse then wave.forward else wave.backward
+      let index = offset + k
+      let x =
+        if k = (0 - depth) || (k <> depth && Array.unsafeGet (index - 1) own < Array.unsafeGet (index + 1) own) then
+          Array.unsafeGet (index + 1) own
+        else
+          Array.unsafeGet (index - 1) own + 1
+      let y = x - k
+      match snake reverse a b region x y remaining with
+      | Err error -> Err error
+      | Ok (x, y, remaining) ->
+        let own = Array.unsafeSet index x own
+        let counterpart = offset + delta - k
+        let overlap =
+          (if reverse then
+            delta % 2 = 0
+          else
+            delta % 2 <> 0) && counterpart >= 0 && counterpart < Array.length other && Array.unsafeGet counterpart other >= 0
+        if overlap && x >= 0 && y >= 0 && x <= region.ae - region.a && y <= region.be - region.b && x + Array.unsafeGet counterpart other >= region.ae - region.a then
+          if reverse then
+            let fx = Array.unsafeGet counterpart other
+            Ok (Found (region.a + fx) (region.b + fx - delta + k) remaining)
+          else
+            Ok (Found (region.a + x) (region.b + y) remaining)
+        else
+          let wave =
+            if reverse then
+              { wave with backward = own, remaining = remaining }
+            else
+              { wave with forward = own, remaining = remaining }
+          diagonals reverse a b region offset delta depth (k + 2) wave
+
+waves : Array 'a -> Array 'a -> Region -> Int -> Int -> Int -> Wave -> Result (Int * Int * Int) Error
+let waves a b region offset delta depth wave =
+  if depth >= offset then
+    Ok (region.ae, region.b, wave.remaining)
+  else
+    match diagonals false a b region offset delta depth (0 - depth) wave with
+    | Err error -> Err error
+    | Ok (Found x y remaining) -> Ok (x, y, remaining)
+    | Ok (Continue wave) ->
+      match diagonals true a b region offset delta depth (0 - depth) wave with
+      | Err error -> Err error
+      | Ok (Found x y remaining) -> Ok (x, y, remaining)
+      | Ok (Continue wave) -> waves a b region offset delta (depth + 1) wave
+
+bisect : Limits -> Array 'a -> Array 'a -> Region -> Int -> Result (Int * Int * Int) Error
+let bisect limits a b region remaining =
+  let n = region.ae - region.a
+  let m = region.be - region.b
+  let offset = (n + m + 1) / 2 + 1
+  let count = 2 * offset + 3
+  if 2 * count > limits.maxScratchItems then
+    Err (error ScratchLimit "Myers frontier exceeds scratch limit")
+  else
+    let initial = Array.unsafeSet (offset + 1) 0 (Array.repeat count (-1))
+    waves a b region offset (n - m) 0 {
+      backward = initial,
+      forward = initial,
+      remaining = remaining
+    }
+
+coarse : Limits -> Region -> State -> Result State Error
+let coarse limits region state =
+  match append limits (edit Delete region.a region.ae region.b region.b) { state with
+    coarse = true,
+    remaining = 0
+  } with
+  | Err error -> Err error
+  | Ok state -> append limits (edit Insert region.ae region.ae region.b region.be) state
+
+frequencies : Array 'a -> Int -> Int -> HashDict 'a (Int * Int) -> Int -> Result (HashDict 'a (Int * Int) * Int) Error
+let frequencies input index finish counts remaining =
+  if index = finish then
+    Ok (counts, remaining)
+  else
+    match charge remaining with
+    | Err error -> Err error
+    | Ok remaining ->
+      let key = Array.unsafeGet index input
+      let (count, first) = HashDict.getOr (0, index) key counts
+      frequencies input (index + 1) finish (HashDict.insert key (count + 1, first) counts) remaining
+
+collectUnique : Array 'a -> Int -> Int -> HashDict 'a (Int * Int) -> HashDict 'a (Int * Int) -> Array (Int * Int) -> Int -> Result (Array (Int * Int) * Int) Error
+let collectUnique input index finish oldCounts newCounts output remaining =
+  if index = finish then
+    Ok (output, remaining)
+  else
+    match charge remaining with
+    | Err error -> Err error
+    | Ok remaining ->
+      let key = Array.unsafeGet index input
+      let (oldCount, _) = HashDict.getOr (0, 0) key oldCounts
+      let (newCount, position) = HashDict.getOr (0, 0) key newCounts
+      let output =
+        if oldCount = 1 && newCount = 1 then Array.push (index, position) output else output
+      collectUnique input (index + 1) finish oldCounts newCounts output remaining
+
+let second pair =
+  let (_, value) = pair
+  value
+
+tailPosition : Array (Int * Int) -> Array Int -> Int -> Int -> Int -> Int -> Result (Int * Int) Error
+let tailPosition pairs tails value low high remaining =
+  if low = high then
+    Ok (low, remaining)
+  else
+    match charge remaining with
+    | Err error -> Err error
+    | Ok remaining ->
+      let middle = low + (high - low) / 2
+      if second (Array.unsafeGet (Array.unsafeGet middle tails) pairs) < value then
+        tailPosition pairs tails value (middle + 1) high remaining
+      else
+        tailPosition pairs tails value low middle remaining
+
+let traceAnchors pairs previous index output =
+  if index < 0 then
+    output
+  else
+    traceAnchors pairs previous (Array.unsafeGet index previous) (Array.unsafeGet index pairs :: output)
+
+increasing : Array (Int * Int) -> Int -> Array Int -> Array Int -> Int -> Result (List (Int * Int) * Int) Error
+let increasing pairs index tails previous remaining =
+  if index = Array.length pairs then
+    let last = Option.withDefault (-1) (Array.get (Array.length tails - 1) tails)
+    Ok (traceAnchors pairs previous last [], remaining)
+  else
+    match tailPosition pairs tails (second (Array.unsafeGet index pairs)) 0 (Array.length tails) remaining with
+    | Err error -> Err error
+    | Ok (position, remaining) ->
+      let parent = Option.withDefault (-1) (Array.get (position - 1) tails)
+      let tails =
+        if position = Array.length tails then
+          Array.push index tails
+        else
+          Array.unsafeSet position index tails
+      increasing pairs (index + 1) tails (Array.push parent previous) remaining
+
+anchors : Limits -> Array 'a -> Array 'a -> Region -> Int -> Result (List (Int * Int) * Int) Error
+let anchors limits a b region remaining =
+  if 8 * (region.ae - region.a + region.be - region.b) > limits.maxScratchItems then
+    Err (error ScratchLimit "patience anchors exceed scratch limit")
+  else
+    match frequencies a region.a region.ae HashDict.empty remaining with
+    | Err error -> Err error
+    | Ok (oldCounts, remaining) ->
+      match frequencies b region.b region.be HashDict.empty remaining with
+      | Err error -> Err error
+      | Ok (newCounts, remaining) ->
+        match collectUnique a region.a region.ae oldCounts newCounts Array.empty remaining with
+        | Err error -> Err error
+        | Ok (pairs, remaining) -> increasing pairs 0 Array.empty Array.empty remaining
+
+anchorTasksFrom : Region -> List (Int * Int) -> List Task -> List Task
+let anchorTasksFrom region points output =
+  match points with
+  | [] -> List.reverse (Compare region :: output)
+  | (x, y) :: rest ->
+    anchorTasksFrom { region with
+      a = x + 1,
+      b = y + 1
+    } rest (Emit (edit Match x (x + 1) y (y + 1)) :: Compare { region with
+      ae = x,
+      be = y
+    } :: output)
+
+partition : Limits -> Options -> Array 'a -> Array 'a -> Region -> Int -> Result (List Task * Int) Error
+let partition limits options a b region remaining =
+  let points =
+    if options.algorithm = Patience then anchors limits a b region remaining else Ok ([], remaining)
+  match points with
+  | Err error -> Err error
+  | Ok ([], remaining) ->
+    match bisect limits a b region remaining with
+    | Err error -> Err error
+    | Ok (x, y, remaining) ->
+      if (x = region.a && y = region.b) || (x = region.ae && y = region.be) then
+        Ok ([
+          Emit (edit Delete region.a region.ae region.b region.b),
+          Emit (edit Insert region.ae region.ae region.b region.be)
+        ], remaining)
+      else
+        Ok ([
+          Compare { region with ae = x, be = y },
+          Compare { region with a = x, b = y }
+        ], remaining)
+  | Ok (points, remaining) -> Ok (anchorTasksFrom region points [], remaining)
+
+search : Limits -> Options -> Array 'a -> Array 'a -> List Task -> State -> Result State Error
+let search limits options a b tasks state =
+  match tasks with
+  | [] -> Ok state
+  | Emit item :: rest ->
+    match append limits item state with
+    | Err error -> Err error
+    | Ok state -> search limits options a b rest state
+  | Compare original :: rest ->
+    let trimmed =
+      match prefix a b original state.remaining with
+      | Err error -> Err error
+      | Ok (region, remaining) ->
+        match suffix a b region remaining with
+        | Err error -> Err error
+        | Ok (middle, remaining) -> Ok (region, middle, remaining)
+    match trimmed with
+    | Err failure ->
+      if failure.kind = WorkLimit && options.fallback = ReplaceRemainder then
+        match coarse limits original state with
+        | Err error -> Err error
+        | Ok state -> search limits options a b rest state
+      else
+        Err failure
+    | Ok (prefixed, region, remaining) ->
+      let leading = edit Match original.a prefixed.a original.b prefixed.b
+      let trailing = edit Match region.ae prefixed.ae region.be prefixed.be
+      match append limits leading { state with remaining = remaining } with
+      | Err error -> Err error
+      | Ok state ->
+        if region.a = region.ae then
+          search limits options a b (Emit (edit Insert region.a region.a region.b region.be) :: Emit trailing :: rest) state
+        else if region.b = region.be then
+          search limits options a b (Emit (edit Delete region.a region.ae region.b region.b) :: Emit trailing :: rest) state
+        else
+          match partition limits options a b region remaining with
+          | Err failure ->
+            if failure.kind = WorkLimit && options.fallback = ReplaceRemainder then
+              match coarse limits region state with
+              | Err error -> Err error
+              | Ok state -> search limits options a b (Emit trailing :: rest) state
+            else
+              Err failure
+          | Ok (next, remaining) -> search limits options a b (List.append next (Emit trailing :: rest)) { state with
+            remaining = remaining
+          }
+
+/// Compare arrays by structural equality. Results retain only input coordinates.
+public diffWith : Limits -> Options -> Array 'a -> Array 'a -> Result Script Error
+let diffWith limits options a b =
+  match validate limits (Array.length a) (Array.length b) with
+  | Err error -> Err error
+  | Ok _ ->
+    let region = { a = 0, ae = Array.length a, b = 0, be = Array.length b }
+    Result.map (fun state -> {
+      edits = state.output,
+      quality = if state.coarse then
+        Coarse
+      else if options.algorithm = Patience then Anchored else Optimal
+    }) (search limits options a b [
+      Compare region
+    ] { coarse = false, output = Array.empty, remaining = limits.maxWork })
+
+validate : Limits -> Int -> Int -> Result Unit Error
+let validate limits old new =
+  if limits.maxInputItems < 0 || limits.maxScratchItems < 0 || limits.maxEdits < 0 || limits.maxWork < 0 then
+    Err (error InvalidOptions "diff limits must be nonnegative")
+  else if old > limits.maxInputItems || new > limits.maxInputItems then
+    Err (error InputLimit "diff input-item limit exceeded")
+  else
+    Ok ()
+
+/// Minimal structural sequence diff under default budgets.
+public diff : Array 'a -> Array 'a -> Result Script Error
+let diff a b = diffWith limits options a b
+
+/// Evaluate a pure key exactly once per element, then align by key equality.
+public diffByWith : Limits -> Options -> ('a -> 'key) -> Array 'a -> Array 'a -> Result Script Error
+let diffByWith limits options key a b =
+  match validate limits (Array.length a) (Array.length b) with
+  | Err error -> Err error
+  | Ok _ ->
+    let count = Array.length a + Array.length b
+    if count > limits.maxScratchItems then
+      Err (error ScratchLimit "key arrays exceed scratch limit")
+    else if count > limits.maxWork then
+      Err (error WorkLimit "key preparation exceeds work limit")
+    else
+      diffWith { limits with
+        maxScratchItems = limits.maxScratchItems - count,
+        maxWork = limits.maxWork - count
+      } options (Array.map key a) (Array.map key b)
+
+/// Key-based alignment under default budgets; original arrays are not retained.
+public diffBy : ('a -> 'key) -> Array 'a -> Array 'a -> Result Script Error
+let diffBy key a b = diffByWith limits options key a b

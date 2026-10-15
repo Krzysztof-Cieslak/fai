@@ -1,0 +1,186 @@
+module DiffViewer
+
+import cli.Args
+import diff.Diff
+import diff.DiffText
+import tui.Tui
+import tui.TuiCmd
+import tui.TuiLayout
+import tui.Ui
+
+public type Services = {
+  clock : Clock,
+  concurrency : Concurrency,
+  console : Console,
+  env : Env,
+  fs : FileSystem,
+  terminal : TerminalHost.Terminal
+}
+
+let runtime = {
+  clock = stdClock,
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  env = stdEnv,
+  fs = stdFs,
+  terminal = TerminalHost.native
+}
+
+type Msg =
+  | Next
+  | Previous
+  | ToggleCase
+  | ToggleSpace
+  | ToggleIgnored
+  | Quit
+
+type Model = {
+  coarse : Bool,
+  count : Int,
+  error : String,
+  index : Int,
+  new : String,
+  old : String,
+  options : DiffText.Options,
+  rows : Array (List Ui.Span),
+  showIgnored : Bool
+}
+
+refresh : Model -> Model
+let refresh model =
+  match DiffText.compareWith DiffText.limits model.options model.old model.new with
+  | Err error -> { model with error = DiffText.errorToString error }
+  | Ok comparison ->
+    match DiffView.rows model.options model.showIgnored model.index comparison with
+    | Err error -> { model with error = error }
+    | Ok (rows, count) -> { model with
+      coarse = DiffText.quality comparison = Diff.Coarse,
+      count = count,
+      error = "",
+      rows = rows
+    }
+
+init : DiffText.Options -> String -> String -> TuiLayout.Context -> (Model * TuiCmd.Cmd Msg 'e)
+let init options old new context =
+  (refresh {
+    coarse = false,
+    count = 0,
+    error = "",
+    index = 0,
+    new = new,
+    old = old,
+    options = options,
+    rows = Array.empty,
+    showIgnored = true
+  }, TuiCmd.none)
+
+update : Msg -> Model -> (Model * TuiCmd.Cmd Msg 'e)
+let update message model =
+  match message with
+  | Quit -> (model, TuiCmd.quit)
+  | Next ->
+    (refresh { model with
+      index = if model.index + 1 < model.count then model.index + 1 else model.index
+    }, TuiCmd.none)
+  | Previous ->
+    (refresh { model with index = if model.index > 0 then model.index - 1 else 0 }, TuiCmd.none)
+  | ToggleCase ->
+    (refresh { model with
+      index = 0,
+      options = { model.options with
+        case = if model.options.case = DiffText.Sensitive then
+          DiffText.UnicodeInsensitive
+        else
+          DiffText.Sensitive
+      }
+    }, TuiCmd.none)
+  | ToggleSpace ->
+    (refresh { model with
+      index = 0,
+      options = { model.options with
+        whitespace = if model.options.whitespace = DiffText.ExactWhitespace then
+          DiffText.IgnoreAll
+        else
+          DiffText.ExactWhitespace
+      }
+    }, TuiCmd.none)
+  | ToggleIgnored ->
+    (refresh { model with index = 0, showIgnored = not model.showIgnored }, TuiCmd.none)
+
+view : TuiLayout.Context -> Model -> Ui.Element Msg
+let view context model = Ui.column [
+  Ui.padding 1,
+  Ui.gap 1,
+  Ui.width Ui.fill,
+  Ui.height Ui.fill
+] [
+  Ui.text [
+    Ui.style context.theme.accent
+  ] ("Diff · hunk " ++ Int.toString (if model.count = 0 then
+    0
+  else
+    model.index + 1) ++ "/" ++ Int.toString model.count ++ if model.coarse then
+    " · COARSE"
+  else
+    ""),
+  Ui.transcript (Ui.id "diff") [
+    Ui.width Ui.fill,
+    Ui.height Ui.fill,
+    Ui.border
+  ] {
+    follow = false,
+    source = { count = Array.length model.rows, get = fun index -> Array.get index model.rows }
+  },
+  Ui.text [Ui.style context.theme.error] model.error,
+  Ui.text [
+    Ui.style context.theme.muted
+  ] "n/p: hunks · c: case · w: whitespace · i: ignored changes · q/Esc: quit"
+]
+
+let event event =
+  match event with
+  | TerminalHost.Key key ->
+    if key.code = "n" then
+      Some Next
+    else if key.code = "p" then
+      Some Previous
+    else if key.code = "c" then
+      Some ToggleCase
+    else if key.code = "w" then
+      Some ToggleSpace
+    else if key.code = "i" then
+      Some ToggleIgnored
+    else if key.code = "q" || key.code = "Escape" then Some Quit else None
+  | _ -> None
+
+public main : Services -> Unit / { Clock, Concurrency, Console, Env, FileSystem, TerminalHost.Terminal }
+let main env =
+  let args = env.env.args ()
+  let snapshot = List.head args = Some "--snapshot"
+  let args = if snapshot then List.drop 1 args else args
+  match Args.parse DiffDemo.arguments args with
+  | Err error -> env.console.writeError (Args.errorToString error ++ "\n")
+  | Ok (Args.Help text) -> env.console.write text
+  | Ok (Args.Version text) -> env.console.writeLine text
+  | Ok (Args.Parsed config) ->
+    match (DiffDemo.read env.fs config.oldPath, DiffDemo.read env.fs config.newPath) with
+    | (Err error, _) -> env.console.writeError (error ++ "\n")
+    | (_, Err error) -> env.console.writeError (error ++ "\n")
+    | (Ok old, Ok new) ->
+      if snapshot then
+        let (model, _) = init (DiffDemo.options config) old new (TuiLayout.context 100 30)
+        let shown =
+          Array.foldl (fun _ row ->
+            env.console.writeLine (String.join "" (List.map (fun span ->
+              span.text) row))) () model.rows
+        env.console.writeLine (if model.error = "" && model.count > 0 then
+          "Diff viewer snapshot passed"
+        else
+          "Diff viewer snapshot FAILED")
+      else
+        let app = { Tui.program (init (DiffDemo.options config) old new) update view with
+          onEvent = event
+        }
+        match Tui.run env Tui.defaults app with
+        | Ok _ -> ()
+        | Err error -> env.console.writeError (error.message ++ "\n")

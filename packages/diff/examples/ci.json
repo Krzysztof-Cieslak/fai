@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "integrations": [
+    { "name": "runtime", "entry": "RuntimeChecks.fai", "stdoutLines": ["Diff runtime checks passed"] },
+    { "name": "git", "entry": "GitChecks.fai", "args": ["${temp}"], "stdoutLines": ["Git interoperability passed"] },
+    { "name": "cli", "entry": "Cli.fai", "args": ["${package}/data/old.txt", "${package}/data/new.txt"], "stdoutLines": ["-old", "+new"] },
+    { "name": "viewer", "entry": "Viewer.fai", "args": ["--snapshot", "${package}/data/old.txt", "${package}/data/new.txt"], "stdoutLines": ["Diff viewer snapshot passed"] }
+  ]
+}

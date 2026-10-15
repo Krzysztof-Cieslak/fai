@@ -51,6 +51,14 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Diff alignment separates original equality from key/review equivalence.
+  Myers reports minimal edit scripts, patience reports anchored scripts, and
+  explicit work fallback reports coarse scripts. Unified export retains every
+  original change regardless of review suppression. Patch application is pure
+  and exact, with bounded opt-in relocation, ambiguity failures and explicit
+  caller-owned path mapping; it never promises filesystem transactions. CLI/TUI
+  example dependencies remain in their own nested package.
+
 - The optional Unicode source package owns its Unicode version and generated
   tables rather than changing compiler string, regex or terminal behavior.
   Default grapheme/word segmentation, full case folding and normalization remain

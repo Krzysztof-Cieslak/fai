@@ -2086,6 +2086,20 @@ tuple3 : Arbitrary 'a -> Arbitrary 'b -> Arbitrary 'c -> Arbitrary ('a * 'b * 'c
 
 ### Optional source packages
 
+`packages/diff` depends only on `unicode`. `Diff.diff`/`diffBy` return coalesced
+array-coordinate edits; `diffWith` selects Myers (minimal, default) or patience
+(anchored), with explicit limits and opt-in coarse fallback. `DiffText.compare`
+retains text snapshots; `compareWith` selects exact or whitespace/case/Unicode
+normalization review rules. `Equal` and `Equivalent` are distinct. `hunks` selects
+context and `detach` copies selected text. `DiffInline.compareWith` refines words,
+graphemes or scalars with original-byte provenance and quality metadata.
+`UnifiedDiff.parse`/`toString` handle the supported unified/Git text subset;
+`fromComparison` exports exact changes even when review rules suppress them.
+`Patch.applyFile` is strict; `applyFileWith` supports bounded exact relocation,
+rejecting ambiguous context. `applyBatchWith` maps paths explicitly and returns
+updates only on whole-batch success. These APIs never write files. CLI/TUI and
+Git-native examples are the separate `packages/diff/examples` package.
+
 `packages/unicode` supplies version-pinned Unicode 18.0 text operations with no
 package dependencies. Import `unicode.UnicodeGrapheme`, `unicode.UnicodeWord`,
 `unicode.UnicodeCase` and `unicode.UnicodeNormalize`. Segmentation modules provide

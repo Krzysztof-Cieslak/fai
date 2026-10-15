@@ -1,0 +1,20 @@
+module DiffViewSpec
+
+import cli.Args
+import diff.DiffText
+
+example: Args.parse DiffDemo.arguments ["old.txt", "new.txt"] |> Result.isOk
+example: Args.parse DiffDemo.arguments [
+  "--patience",
+  "--ignore-case",
+  "old.txt",
+  "new.txt"
+] |> Result.isOk
+example: Args.parse DiffDemo.arguments [] |> Result.isErr
+
+let count pair =
+  let (_, count) = pair
+  count
+example: (match DiffText.compare "a\nold\n" "a\nnew\n" with
+| Err _ -> false
+| Ok result -> Result.map count (DiffView.rows DiffText.options true 0 result) = Ok 1)

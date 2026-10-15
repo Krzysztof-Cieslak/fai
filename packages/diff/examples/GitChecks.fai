@@ -1,0 +1,110 @@
+module DiffGitChecks
+
+import diff.DiffText
+import diff.Patch
+import diff.UnifiedDiff
+import process.Process
+
+public type Services = {
+  concurrency : Concurrency,
+  console : Console,
+  env : Env,
+  fs : FileSystem,
+  process : ProcessHost.Process
+}
+
+let runtime = {
+  concurrency = stdConcurrency,
+  console = stdConsole,
+  env = stdEnv,
+  fs = stdFs,
+  process = ProcessHost.native
+}
+
+let path text = Result.withDefault Path.empty (Path.fromString text)
+
+git : Services -> Path -> List String -> Result Process.Output String / { Concurrency, ProcessHost.Process }
+let git env directory args =
+  match Path.toString directory with
+  | Err error -> Err (Path.errorToString error)
+  | Ok directory ->
+    let command =
+      Process.command "git" (List.append [
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.quotePath=true"
+      ] args) |> Process.workingDirectory directory |> Process.setEnvironment "GIT_CONFIG_NOSYSTEM" "1" |> Process.setEnvironment "GIT_CONFIG_GLOBAL" "empty-config" |> Process.unsetEnvironment "GIT_DIR" |> Process.unsetEnvironment "GIT_WORK_TREE" |> Process.unsetEnvironment "GIT_INDEX_FILE"
+    Result.mapError Process.errorToString (Process.run env { Process.defaults with
+      timeoutMs = Some 30000
+    } command)
+
+check : Services -> Path -> String -> String -> Result Bool String / { Concurrency, FileSystem, ProcessHost.Process }
+let check env root old new =
+  match (env.fs.writeFile (Path.join root (path "before.txt")) old, env.fs.writeFile (Path.join root (path "after.txt")) new, env.fs.writeFile (Path.join root (path "file.txt")) old) with
+  | (Ok _, Ok _, Ok _) ->
+    match git env root [
+      "diff",
+      "--no-index",
+      "--no-ext-diff",
+      "--no-color",
+      "--",
+      "before.txt",
+      "after.txt"
+    ] with
+    | Err error -> Err error
+    | Ok output ->
+      let parsed =
+        match Bytes.toString output.stdout with
+        | None -> Err "non-text Git output"
+        | Some text -> Result.mapError (fun error -> error.message) (UnifiedDiff.parse text)
+      match parsed with
+      | Err error -> Err error
+      | Ok patches ->
+        if Array.length patches <> 1 then
+          Err "Git did not produce one file patch"
+        else
+          match Patch.applyFile (Array.unsafeGet 0 patches) (Some old) with
+          | Err error -> Err error.message
+          | Ok applied ->
+            if applied.text <> Some new then
+              Err "Git patch did not reconstruct target"
+            else
+              match DiffText.compare old new with
+              | Err error -> Err (DiffText.errorToString error)
+              | Ok comparison ->
+                match UnifiedDiff.fromComparison (Some "file.txt") (Some "file.txt") comparison with
+                | Err error -> Err error.message
+                | Ok patch ->
+                  match UnifiedDiff.toString patch with
+                  | Err error -> Err error.message
+                  | Ok text ->
+                    match env.fs.writeFile (Path.join root (path "changes.diff")) text with
+                    | Err error -> Err (FileSystem.errorToString error)
+                    | Ok _ ->
+                      match git env root ["apply", "--no-index", "-p0", "changes.diff"] with
+                      | Err error -> Err error
+                      | Ok output ->
+                        match File.readText env.fs 100000 (Path.join root (path "file.txt")) with
+                        | Err error -> Err (FileSystem.errorToString error)
+                        | Ok actual ->
+                          Ok (output.exits = [Some (ProcessHost.Exited 0)] && actual = new)
+  | _ -> Err "could not write Git fixture inputs"
+
+public main : Services -> Unit / { Concurrency, Console, Env, FileSystem, ProcessHost.Process }
+let main env =
+  let parent = path (Option.withDefault "." (List.head (env.env.args ())))
+  let result = Temp.withDirectory env parent (inDirectory env)
+  env.console.writeLine (if result = Ok true then
+    "Git interoperability passed"
+  else
+    "Git interoperability FAILED")
+
+inDirectory : Services -> Temp.Directory -> Result Bool String / { Concurrency, FileSystem, ProcessHost.Process }
+let inDirectory env directory =
+  match check env directory.path "a\r\nβ\r\nold" "a\r\nγ\r\nnew\n" with
+  | Err error -> Err error
+  | Ok first ->
+    match check env directory.path "one\ntwo\nthree\n" "zero\none\nthree\nfour\n" with
+    | Err error -> Err error
+    | Ok second -> Ok (first && second)

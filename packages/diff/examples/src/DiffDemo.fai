@@ -1,0 +1,65 @@
+module DiffDemo
+
+import cli.Args
+import diff.Diff
+import diff.DiffText
+import diff.UnifiedDiff
+import unicode.UnicodeNormalize
+
+/// Shared command-line configuration for the diff and viewer examples.
+public type Config = {
+  coarse : Bool,
+  ignoreCase : Bool,
+  ignoreSpace : Bool,
+  newPath : String,
+  normalize : Bool,
+  oldPath : String,
+  patience : Bool
+}
+
+let parser =
+  Args.succeed (fun patience ignoreCase ignoreSpace normalize coarse oldPath newPath -> {
+    coarse = coarse,
+    ignoreCase = ignoreCase,
+    ignoreSpace = ignoreSpace,
+    newPath = newPath,
+    normalize = normalize,
+    oldPath = oldPath,
+    patience = patience
+  }) |> Args.andMap (Args.flag (Args.named "patience" "Use unique-line anchors")) |> Args.andMap (Args.flag (Args.named "ignore-case" "Align with full Unicode case folding")) |> Args.andMap (Args.flag (Args.named "ignore-space" "Align without intra-line whitespace")) |> Args.andMap (Args.flag (Args.named "normalize" "Align with Unicode NFC")) |> Args.andMap (Args.flag (Args.named "coarse" "Allow explicit coarse fallback")) |> Args.andMap (Args.argument Args.string (Args.positional "OLD" "Old UTF-8 file")) |> Args.andMap (Args.argument Args.string (Args.positional "NEW" "New UTF-8 file"))
+
+/// The same typed argument parser is used by both executables.
+public arguments : Args.Program Config
+let arguments =
+  Args.program (Args.described "diff-text" "Compare UTF-8 files; unified output always preserves exact changes") parser
+
+/// Convert user switches into explicit review/search policy.
+public options : Config -> DiffText.Options
+let options config = { DiffText.options with
+  case = if config.ignoreCase then DiffText.UnicodeInsensitive else DiffText.Sensitive,
+  normalization = if config.normalize then Some UnicodeNormalize.NFC else None,
+  sequence = {
+    algorithm = if config.patience then Diff.Patience else Diff.Myers,
+    fallback = if config.coarse then Diff.ReplaceRemainder else Diff.Fail
+  },
+  whitespace = if config.ignoreSpace then DiffText.IgnoreAll else DiffText.ExactWhitespace
+}
+
+/// Read one bounded UTF-8 file without modifying it.
+public read : FileSystem -> String -> Result String String / { FileSystem }
+let read fs name =
+  match Path.fromString name with
+  | Err error -> Err (Path.errorToString error)
+  | Ok path -> Result.mapError FileSystem.errorToString (File.readText fs 16777216 path)
+
+/// Pure comparison after the caller has loaded both snapshots.
+public compare : Config -> String -> String -> Result DiffText.Comparison String
+let compare config old new =
+  Result.mapError DiffText.errorToString (DiffText.compareWith DiffText.limits (options config) old new)
+
+/// Exact unified output; ignored review changes are not lost.
+public unified : String -> String -> DiffText.Comparison -> Result String String
+let unified oldPath newPath comparison =
+  match UnifiedDiff.fromComparison (Some oldPath) (Some newPath) comparison with
+  | Err error -> Err error.message
+  | Ok patch -> Result.mapError (fun error -> error.message) (UnifiedDiff.toString patch)

@@ -1,0 +1,483 @@
+module DiffText
+
+import unicode.Unicode
+import unicode.UnicodeCase
+import unicode.UnicodeNormalize
+import unicode.UnicodeGrapheme
+import unicode.UnicodeWord
+
+/// Case comparison affects review alignment, never the retained source text.
+public type Case =
+  | Sensitive
+  | AsciiInsensitive
+  | UnicodeInsensitive
+
+/// Whitespace rules apply within lines; original endings remain significant.
+public type Whitespace =
+  | ExactWhitespace
+  | IgnoreTrailing
+  | CollapseRuns
+  | IgnoreAll
+
+/// Original-byte identity is distinguished from review-only equivalence.
+public type Kind =
+  | Equal
+  | Equivalent
+  | Deleted
+  | Inserted
+
+/// Line-coordinate change; ranges are zero-based and half-open.
+public type Change = { kind : Kind, new : Diff.Range, old : Diff.Range }
+
+/// Each line retains both its content and complete LF/CRLF/no-ending range.
+public type Line = { content : Unicode.Span, span : Unicode.Span }
+
+/// Explicit review rules. No normalization or whitespace/case ignoring by default.
+public type Options = {
+  case : Case,
+  normalization : Option UnicodeNormalize.Form,
+  sequence : Diff.Options,
+  unicodeWhitespace : Bool,
+  whitespace : Whitespace
+}
+
+/// Unicode preprocessing and sequence search have independently bounded work.
+public type Limits = { maxOutputBytes : Int, sequence : Diff.Limits, unicode : Unicode.Limits }
+
+/// Typed text-preprocessing or sequence-search failure.
+public type Error =
+  | UnicodeFailure Unicode.Error
+  | SequenceFailure Diff.Error
+  | InvalidOptions String
+  | OutputLimit
+
+/// Original snapshots and their line indexes; detach hunks to release them.
+public opaque type Comparison = {
+  changes : Array Change,
+  newBytes : Bytes,
+  newLines : Array Line,
+  newText : String,
+  oldBytes : Bytes,
+  oldLines : Array Line,
+  oldText : String,
+  quality : Diff.Quality
+}
+
+/// Context-expanded line ranges and clipped changes, retaining no snapshots.
+public type Hunk = { changes : Array Change, new : Diff.Range, old : Diff.Range }
+
+/// Standalone hunk content, copied from both snapshots.
+public type Detached = { hunk : Hunk, newText : String, oldText : String }
+
+/// Exact comparison and minimal Myers search by default.
+public options : Options
+let options = {
+  case = Sensitive,
+  normalization = None,
+  sequence = Diff.options,
+  unicodeWhitespace = false,
+  whitespace = ExactWhitespace
+}
+
+/// Default Unicode/search budgets and a 16 MiB detached-output limit.
+public limits : Limits
+let limits = { maxOutputBytes = 16777216, sequence = Diff.limits, unicode = Unicode.limits }
+
+/// Human-readable text error without losing the underlying typed failure.
+public errorToString : Error -> String
+let errorToString error =
+  match error with
+  | UnicodeFailure error -> Unicode.errorToString error
+  | SequenceFailure error -> error.message
+  | InvalidOptions message -> message
+  | OutputLimit -> "diff text output byte limit exceeded"
+
+slice : Bytes -> Unicode.Span -> String
+let slice bytes span =
+  Option.withDefault "" (Bytes.toString (Bytes.slice span.start span.end bytes))
+
+let width byte = if byte < 128 then 1 else if byte < 224 then 2 else if byte < 240 then 3 else 4
+
+lineScan : Int -> Bytes -> Int -> Int -> Array Line -> Result (Array Line) Error
+let lineScan limit bytes start index output =
+  if index = Bytes.length bytes then
+    if start = index then
+      Ok output
+    else if Array.length output >= limit then
+      Err (SequenceFailure {
+        kind = Diff.InputLimit,
+        message = "line count exceeds input-item limit"
+      })
+    else
+      Ok (Array.push {
+        content = { end = index, start = start },
+        span = { end = index, start = start }
+      } output)
+  else if Bytes.unsafeGet index bytes = 10 then
+    let finish =
+      if index > start && Bytes.unsafeGet (index - 1) bytes = 13 then index - 1 else index
+    if Array.length output >= limit then
+      Err (SequenceFailure {
+        kind = Diff.InputLimit,
+        message = "line count exceeds input-item limit"
+      })
+    else
+      lineScan limit bytes (index + 1) (index + 1) (Array.push {
+        content = { end = finish, start = start },
+        span = { end = index + 1, start = start }
+      } output)
+  else
+    lineScan limit bytes start (index + 1) output
+
+/// Split LF-delimited text, preserving CRLF and a missing final newline exactly.
+public linesWith : Limits -> String -> Result (Array Line) Error
+let linesWith limits text =
+  let u = limits.unicode
+  let s = limits.sequence
+  if limits.maxOutputBytes < 0 || u.maxInputBytes < 0 || u.maxOutputBytes < 0 || u.maxScalars < 0 || u.maxSegments < 0 || u.maxCombining < 0 || u.maxMappings < 0 || u.maxWork < 0 || s.maxInputItems < 0 || s.maxScratchItems < 0 || s.maxEdits < 0 || s.maxWork < 0 then
+    Err (InvalidOptions "diff limits must be nonnegative")
+  else
+    let bytes = Bytes.fromString text
+    if Bytes.length bytes > limits.unicode.maxInputBytes then
+      Err (UnicodeFailure {
+        kind = Unicode.InputLimit,
+        message = "text input byte limit exceeded",
+        offset = None
+      })
+    else
+      if Bytes.length bytes > u.maxWork then
+        Err (UnicodeFailure {
+          kind = Unicode.WorkLimit,
+          message = "line scanning exceeds work limit",
+          offset = None
+        })
+      else
+        lineScan limits.sequence.maxInputItems bytes 0 0 Array.empty
+
+/// Split text using default input limits.
+public lines : String -> Result (Array Line) Error
+let lines text = linesWith limits text
+
+let asciiFrom bytes index output =
+  if index = Bytes.length bytes then
+    Option.withDefault "" (Bytes.toString (Bytes.fromList (List.reverse output)))
+  else
+    let byte = Bytes.unsafeGet index bytes
+    asciiFrom bytes (index + 1) ((if byte >= 65 && byte <= 90 then byte + 32 else byte) :: output)
+
+prepare : Limits -> Options -> String -> Result String Error
+let prepare limits options text =
+  let normalized =
+    match options.normalization with
+    | None -> Ok text
+    | Some form ->
+      Result.mapError UnicodeFailure (UnicodeNormalize.normalizeWith limits.unicode form text)
+  match normalized with
+  | Err error -> Err error
+  | Ok text ->
+    let folded =
+      match options.case with
+      | Sensitive -> Ok text
+      | AsciiInsensitive -> Ok (asciiFrom (Bytes.fromString text) 0 [])
+      | UnicodeInsensitive ->
+        Result.mapError UnicodeFailure (UnicodeCase.foldWith limits.unicode text)
+    match folded with
+    | Err error -> Err error
+    | Ok text ->
+      match options.normalization with
+      | None -> Ok text
+      | Some form ->
+        Result.mapError UnicodeFailure (UnicodeNormalize.normalizeWith limits.unicode form text)
+
+let whitespace options text =
+  if options.whitespace = ExactWhitespace then
+    text
+  else
+    cleanWhitespace options (Bytes.fromString text) 0 [] [] false
+
+cleanWhitespace : Options -> Bytes -> Int -> List String -> List String -> Bool -> String
+let cleanWhitespace options bytes index pending output inRun =
+  if index = Bytes.length bytes then
+    let output =
+      if options.whitespace = IgnoreTrailing || options.whitespace = IgnoreAll then
+        output
+      else
+        List.append pending output
+    String.join "" (List.reverse output)
+  else
+    let next = index + width (Bytes.unsafeGet index bytes)
+    let text = Option.withDefault "" (Bytes.toString (Bytes.slice index next bytes))
+    let space =
+      if options.unicodeWhitespace then
+        match Char.fromCode (codeAt bytes index) with
+        | None -> false
+        | Some char -> Unicode.isWhitespace char
+      else
+        text = " " || text = "\t"
+    if space then
+      if options.whitespace = IgnoreAll then
+        cleanWhitespace options bytes next [] output true
+      else if options.whitespace = CollapseRuns then
+        cleanWhitespace options bytes next [] (if inRun then output else " " :: output) true
+      else
+        cleanWhitespace options bytes next (text :: pending) output true
+    else
+      cleanWhitespace options bytes next [] (text :: List.append pending output) false
+
+let codeAt bytes index =
+  let byte = Bytes.unsafeGet index bytes
+  if byte < 128 then
+    byte
+  else if byte < 224 then
+    (byte - 192) * 64 + Bytes.unsafeGet (index + 1) bytes - 128
+  else if byte < 240 then
+    (byte - 224) * 4096 + (Bytes.unsafeGet (index + 1) bytes - 128) * 64 + Bytes.unsafeGet (index + 2) bytes - 128
+  else
+    (byte - 240) * 262144 + (Bytes.unsafeGet (index + 1) bytes - 128) * 4096 + (Bytes.unsafeGet (index + 2) bytes - 128) * 64 + Bytes.unsafeGet (index + 3) bytes - 128
+
+keys : Limits -> Options -> String -> Result (Array String) Error
+let keys limits options text =
+  match prepare limits options text with
+  | Err error -> Err error
+  | Ok text ->
+    match linesWith limits text with
+    | Err error -> Err error
+    | Ok lines ->
+      let bytes = Bytes.fromString text
+      Ok (Array.map (fun line ->
+        whitespace options (slice bytes line.content) ++ slice bytes {
+          end = line.span.end,
+          start = line.content.end
+        }) lines)
+
+pushChange : Change -> Array Change -> Array Change
+let pushChange change output =
+  match Array.get (Array.length output - 1) output with
+  | Some old ->
+    if old.kind = change.kind && old.old.end = change.old.start && old.new.end = change.new.start then
+      Array.unsafeSet (Array.length output - 1) { old with
+        new = { old.new with end = change.new.end },
+        old = { old.old with end = change.old.end }
+      } output
+    else
+      Array.push change output
+  | None -> Array.push change output
+
+matched : Bytes -> Bytes -> Array Line -> Array Line -> Diff.Edit -> Int -> Array Change -> Array Change
+let matched a b al bl item index output =
+  if index = item.old.end - item.old.start then
+    output
+  else
+    let old = item.old.start + index
+    let new = item.new.start + index
+    let exact = slice a (Array.unsafeGet old al).span = slice b (Array.unsafeGet new bl).span
+    matched a b al bl item (index + 1) (pushChange {
+      kind = if exact then Equal else Equivalent,
+      new = { end = new + 1, start = new },
+      old = { end = old + 1, start = old }
+    } output)
+
+/// Compare original line snapshots using explicit review rules and independent budgets.
+public compareWith : Limits -> Options -> String -> String -> Result Comparison Error
+let compareWith limits options oldText newText =
+  match (linesWith limits oldText, linesWith limits newText) with
+  | (Err error, _) -> Err error
+  | (_, Err error) -> Err error
+  | (Ok oldLines, Ok newLines) ->
+    match (keys limits options oldText, keys limits options newText) with
+    | (Err error, _) -> Err error
+    | (_, Err error) -> Err error
+    | (Ok oldKeys, Ok newKeys) ->
+      match Diff.diffWith limits.sequence options.sequence oldKeys newKeys with
+      | Err error -> Err (SequenceFailure error)
+      | Ok script ->
+        let a = Bytes.fromString oldText
+        let b = Bytes.fromString newText
+        let changes =
+          Array.foldl (fun output item ->
+            match item.kind with
+            | Diff.Match -> matched a b oldLines newLines item 0 output
+            | Diff.Delete -> pushChange { kind = Deleted, new = item.new, old = item.old } output
+            | Diff.Insert ->
+              pushChange {
+                kind = Inserted,
+                new = item.new,
+                old = item.old
+              } output) Array.empty script.edits
+        Ok {
+          changes = changes,
+          newBytes = b,
+          newLines = newLines,
+          newText = newText,
+          oldBytes = a,
+          oldLines = oldLines,
+          oldText = oldText,
+          quality = script.quality
+        }
+
+/// Exact line comparison with the minimal-edit default.
+public compare : String -> String -> Result Comparison Error
+let compare oldText newText = compareWith limits options oldText newText
+
+/// Read classified line changes without copying snapshots.
+public changes : Comparison -> Array Change
+let changes comparison = comparison.changes
+
+/// Search quality, including explicit coarse fallback.
+public quality : Comparison -> Diff.Quality
+let quality comparison = comparison.quality
+
+/// Original old-side snapshot.
+public oldText : Comparison -> String
+let oldText comparison = comparison.oldText
+
+/// Original new-side snapshot.
+public newText : Comparison -> String
+let newText comparison = comparison.newText
+
+/// Original line indexes for the old snapshot.
+public oldLines : Comparison -> Array Line
+let oldLines comparison = comparison.oldLines
+
+/// Original line indexes for the new snapshot.
+public newLines : Comparison -> Array Line
+let newLines comparison = comparison.newLines
+
+let clamp value maximum = if value < 0 then 0 else if value > maximum then maximum else value
+
+expand : Int -> Int -> Diff.Range -> Diff.Range
+let expand context count range = {
+  end = if context > count - range.end then count else range.end + context,
+  start = clamp (range.start - context) count
+}
+
+gatherHunks : Int -> Bool -> Comparison -> Int -> Array Hunk -> Array Hunk
+let gatherHunks context ignored comparison index output =
+  if index = Array.length comparison.changes then
+    output
+  else
+    let change = Array.unsafeGet index comparison.changes
+    if change.kind = Equal || (change.kind = Equivalent && not ignored) then
+      gatherHunks context ignored comparison (index + 1) output
+    else
+      let old = expand context (Array.length comparison.oldLines) change.old
+      let new = expand context (Array.length comparison.newLines) change.new
+      let hunk = { changes = Array.empty, new = new, old = old }
+      let output =
+        match Array.get (Array.length output - 1) output with
+        | Some last ->
+          if old.start <= last.old.end || new.start <= last.new.end then
+            Array.unsafeSet (Array.length output - 1) { last with
+              new = { last.new with end = new.end },
+              old = { last.old with end = old.end }
+            } output
+          else
+            Array.push hunk output
+        | None -> Array.push hunk output
+      gatherHunks context ignored comparison (index + 1) output
+
+clip : Hunk -> Change -> Option Change
+let clip hunk change =
+  if change.kind = Equal || change.kind = Equivalent then
+    let low = if change.old.start < hunk.old.start then hunk.old.start else change.old.start
+    let high = if change.old.end > hunk.old.end then hunk.old.end else change.old.end
+    if low >= high then
+      None
+    else
+      Some { change with
+        new = {
+          end = change.new.start + high - change.old.start,
+          start = change.new.start + low - change.old.start
+        },
+        old = { end = high, start = low }
+      }
+  else if change.kind = Deleted then
+    if change.old.end <= hunk.old.start || change.old.start >= hunk.old.end then
+      None
+    else
+      Some change
+  else if change.new.end <= hunk.new.start || change.new.start >= hunk.new.end then
+    None
+  else
+    Some change
+
+/// Context hunks; includeEquivalent selects review-suppressed changes explicitly.
+public hunks : Int -> Bool -> Comparison -> Result (Array Hunk) Error
+let hunks context includeEquivalent comparison =
+  if context < 0 then
+    Err (InvalidOptions "hunk context must be nonnegative")
+  else
+    let groups = gatherHunks context includeEquivalent comparison 0 Array.empty
+    Ok (Array.map (fillHunk comparison.changes) groups)
+
+firstChange : Array Change -> Hunk -> Int -> Int -> Int
+let firstChange changes hunk low high =
+  if low = high then
+    low
+  else
+    let middle = low + (high - low) / 2
+    let item = Array.unsafeGet middle changes
+    if item.old.end <= hunk.old.start && item.new.end <= hunk.new.start then
+      firstChange changes hunk (middle + 1) high
+    else
+      firstChange changes hunk low middle
+
+takeChanges : Array Change -> Hunk -> Int -> Array Change -> Array Change
+let takeChanges changes hunk index output =
+  if index = Array.length changes then
+    output
+  else
+    let change = Array.unsafeGet index changes
+    if change.old.start >= hunk.old.end && change.new.start >= hunk.new.end then
+      output
+    else
+      let output =
+        match clip hunk change with
+        | None -> output
+        | Some clipped -> Array.push clipped output
+      takeChanges changes hunk (index + 1) output
+
+fillHunk : Array Change -> Hunk -> Hunk
+let fillHunk changes hunk = { hunk with
+  changes = takeChanges changes hunk (firstChange changes hunk 0 (Array.length changes)) Array.empty
+}
+
+rangeText : Bytes -> Array Line -> Diff.Range -> String
+let rangeText bytes lines range =
+  if range.start = range.end then
+    ""
+  else
+    slice bytes {
+      end = (Array.unsafeGet (range.end - 1) lines).span.end,
+      start = (Array.unsafeGet range.start lines).span.start
+    }
+
+/// Copy one hunk after checking its ranges and total output-byte budget.
+public detachWith : Limits -> Comparison -> Hunk -> Result Detached Error
+let detachWith limits comparison hunk =
+  if hunk.old.start < 0 || hunk.old.end < hunk.old.start || hunk.old.end > Array.length comparison.oldLines || hunk.new.start < 0 || hunk.new.end < hunk.new.start || hunk.new.end > Array.length comparison.newLines then
+    Err (InvalidOptions "hunk ranges are outside the snapshots")
+  else if limits.maxOutputBytes < 0 then
+    Err (InvalidOptions "output-byte limit must be nonnegative")
+  else
+    let oldSize = rangeSize comparison.oldLines hunk.old
+    let newSize = rangeSize comparison.newLines hunk.new
+    if oldSize > limits.maxOutputBytes || newSize > limits.maxOutputBytes - oldSize then
+      Err OutputLimit
+    else
+      Ok {
+        hunk = hunk,
+        newText = rangeText comparison.newBytes comparison.newLines hunk.new,
+        oldText = rangeText comparison.oldBytes comparison.oldLines hunk.old
+      }
+
+rangeSize : Array Line -> Diff.Range -> Int
+let rangeSize lines range =
+  if range.start = range.end then
+    0
+  else
+    (Array.unsafeGet (range.end - 1) lines).span.end - (Array.unsafeGet range.start lines).span.start
+
+/// Copy a hunk using default output limits, releasing any dependency on snapshots.
+public detach : Comparison -> Hunk -> Result Detached Error
+let detach comparison hunk = detachWith limits comparison hunk

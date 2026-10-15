@@ -1,0 +1,30 @@
+manifest-version = 1
+
+[package]
+name = "diff-examples"
+version = "0.1.0"
+fai-version = "0.0.1 || ^0.1.0"
+test-dir = "test"
+
+[dependencies]
+diff = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/diff", version = "^0.1.0" }
+unicode = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/unicode", version = "^0.1.0" }
+cli = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/cli", version = "^0.1.0" }
+tui = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/tui", version = "^0.1.0" }
+process = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/process", version = "^0.1.0" }
+
+[[bin]]
+name = "diff-text"
+path = "Cli.fai"
+
+[[bin]]
+name = "diff-viewer"
+path = "Viewer.fai"
+
+[[bin]]
+name = "runtime-checks"
+path = "RuntimeChecks.fai"
+
+[[bin]]
+name = "git-checks"
+path = "GitChecks.fai"

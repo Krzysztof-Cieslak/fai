@@ -1,0 +1,75 @@
+module DiffSequenceSpec
+
+reconstruct : Array 'a -> Array 'a -> Array Diff.Edit -> Array 'a
+let reconstruct old new edits =
+  Array.foldl (fun output item ->
+    Array.append output (match item.kind with
+    | Diff.Match -> Array.take (item.old.end - item.old.start) (Array.drop item.old.start old)
+    | Diff.Delete -> Array.empty
+    | Diff.Insert ->
+      Array.take (item.new.end - item.new.start) (Array.drop item.new.start new))) Array.empty edits
+
+let distance a b i j =
+  if i = Array.length a then
+    Array.length b - j
+  else if j = Array.length b then
+    Array.length a - i
+  else if Array.unsafeGet i a = Array.unsafeGet j b then
+    distance a b (i + 1) (j + 1)
+  else
+    let deletion = distance a b (i + 1) j
+    let insertion = distance a b i (j + 1)
+    1 + if deletion < insertion then deletion else insertion
+
+cost : Array Diff.Edit -> Int
+let cost edits =
+  Array.foldl (fun total item ->
+    total + (match item.kind with
+    | Diff.Match -> 0
+    | Diff.Delete -> item.old.end - item.old.start
+    | Diff.Insert -> item.new.end - item.new.start)) 0 edits
+
+let agrees a b =
+  let a = Array.take 6 (Array.fromList a)
+  let b = Array.take 6 (Array.fromList b)
+  match Diff.diff a b with
+  | Err _ -> false
+  | Ok result -> reconstruct a b result.edits = b && cost result.edits = distance a b 0 0
+forall a b: agrees a b
+forall a b: agrees (List.map (fun x -> x % 3) a) (List.map (fun x -> x % 3) b)
+example: agrees [1, 2, 3] [3, 2, 1]
+example: agrees [] [1, 2]
+example: agrees [1, 2] []
+example: agrees [1, 2, 1, 2] [2, 1, 2, 1]
+example: agrees [1, 1, 1] [1, 2, 1]
+example: agrees [1, 2, 3, 4, 5] [6, 1, 2, 3, 4]
+example: agrees [1, 2, 3, 4, 5] [2, 3, 4, 5, 6]
+example: agrees [1, 1, 1, 1] [2, 2, 2, 2]
+
+let patience a b =
+  let a = Array.fromList a
+  let b = Array.fromList b
+  match Diff.diffWith Diff.limits { Diff.options with algorithm = Diff.Patience } a b with
+  | Err _ -> false
+  | Ok result -> reconstruct a b result.edits = b && result.quality = Diff.Anchored
+forall a b: patience a b
+example: patience [1, 2, 3, 4] [4, 3, 2, 1]
+example: patience [1, 1, 1, 1] [2, 2, 2, 2]
+example: patience [] [1, 2]
+example: (match Diff.diffBy (fun value ->
+  value.id) [| { id = 1, name = "a" } |] [| { id = 1, name = "b" } |] with
+| Err _ -> false
+| Ok result -> Array.map (fun item -> item.kind) result.edits = [| Diff.Match |])
+example: (match Diff.diffWith { Diff.limits with
+  maxWork = 0
+} { Diff.options with fallback = Diff.ReplaceRemainder } [| 1 |] [| 2 |] with
+| Err _ -> false
+| Ok result -> result.quality = Diff.Coarse && reconstruct [| 1 |] [| 2 |] result.edits = [| 2 |])
+example: Diff.diffWith { Diff.limits with maxWork = 0 } Diff.options [| 1 |] [| 2 |] |> Result.isErr
+example: Diff.diffWith { Diff.limits with
+  maxScratchItems = 0
+} Diff.options [| 1 |] [| 2 |] |> Result.isErr
+example: Diff.diffWith { Diff.limits with maxEdits = 0 } Diff.options [||] [| 1 |] |> Result.isErr
+example: Diff.diffWith { Diff.limits with
+  maxInputItems = 0
+} Diff.options [| 1 |] [||] |> Result.isErr

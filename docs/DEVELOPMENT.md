@@ -15,6 +15,12 @@ selection includes `postgres`; pure contracts still run through `fai test`.
 
 ## Daily package development
 
+Diff's native contracts run with `fai test -C packages --package diff`; its
+nested `diff-examples` package owns CLI/TUI dependencies and JIT/AOT integration
+fixtures. Run `scripts/package_integrations.py diff-examples --no-dependents`
+with an explicit cached compiler to check exhaustive small inputs, large sparse
+edits, Git interoperability, CLI output and a non-interactive viewer snapshot.
+
 Unicode's checked-in tables and complete conformance inputs come from
 `packages/unicode/tools/generate.py`, using the SHA-256 pins in its `data.json`.
 Run that tool with `--download` to populate its ignored cache and with `--check`

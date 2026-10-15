@@ -1,0 +1,91 @@
+module DiffRuntimeChecks
+
+import diff.Diff
+import diff.DiffText
+import diff.DiffInline
+import diff.Patch
+import diff.UnifiedDiff
+
+let sequences depth =
+  if depth = 0 then
+    [[]]
+  else
+    let smaller = sequences (depth - 1)
+    [] :: List.concatMap (fun tail -> [0 :: tail, 1 :: tail]) smaller
+
+let distance a b =
+  match (a, b) with
+  | ([], _) -> List.length b
+  | (_, []) -> List.length a
+  | (x :: xs, y :: ys) ->
+    if x = y then
+      distance xs ys
+    else
+      let remove = distance xs b
+      let insert = distance a ys
+      1 + if remove < insert then remove else insert
+
+cost : Diff.Edit -> Int
+let cost item =
+  match item.kind with
+  | Diff.Match -> 0
+  | Diff.Delete -> item.old.end - item.old.start
+  | Diff.Insert -> item.new.end - item.new.start
+
+let one a b =
+  match Diff.diff (Array.fromList a) (Array.fromList b) with
+  | Err _ -> false
+  | Ok result -> Array.sum (Array.map cost result.edits) = distance a b
+
+let exhaustive =
+  let inputs = sequences 4
+  List.all (fun a -> List.all (one a) inputs) inputs
+
+let big =
+  let old = Array.range 0 20000
+  let new = Array.unsafeSet 10000 (-1) old
+  match Diff.diff old new with
+  | Err _ -> false
+  | Ok result -> Array.sum (Array.map cost result.edits) = 2 && Array.length result.edits <= 5
+
+let roundtrip old new =
+  match DiffText.compare old new with
+  | Err _ -> false
+  | Ok comparison ->
+    match UnifiedDiff.fromComparison (Some "file") (Some "file") comparison with
+    | Err _ -> false
+    | Ok patch ->
+      match UnifiedDiff.toString patch with
+      | Err _ -> false
+      | Ok text ->
+        match UnifiedDiff.parse text with
+        | Err _ -> false
+        | Ok patch ->
+          Result.map (fun value ->
+            value.text) (Patch.applyFile (Array.unsafeGet 0 patch) (Some old)) = Ok (Some new)
+
+let shared _ = roundtrip "a\r\nβ\r\nend" "a\r\nγ\r\nend\n"
+
+let repeated index = if index = 200 then true else shared () && repeated (index + 1)
+
+let boundedFallback =
+  match Diff.diffWith { Diff.limits with
+    maxWork = 1000
+  } { Diff.options with
+    fallback = Diff.ReplaceRemainder
+  } (Array.range 0 5000) (Array.range 10000 15000) with
+  | Err _ -> false
+  | Ok result -> result.quality = Diff.Coarse
+
+public main : Runtime -> Unit / { Concurrency, Console }
+let main env =
+  let parallel = Async.parallel env.concurrency [shared, shared]
+  let checks =
+    exhaustive && big && repeated 0 && boundedFallback && parallel = [
+      true,
+      true
+    ] && Result.isOk (DiffInline.compare "a👩‍💻b" "a👨‍💻b")
+  env.console.writeLine (if checks then
+    "Diff runtime checks passed"
+  else
+    "Diff runtime checks FAILED")
