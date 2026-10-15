@@ -3,9 +3,16 @@
 A small, strict, pure, statically typed functional language in the ML / F# / Elm
 family, with a native compiler written in Rust.
 
-Fai is built around one idea: **code should be easy to reason about and verify**
-— for humans and for AI agents alike. Every design choice serves that goal, from
-effects you can see in a type to specifications the compiler checks for you.
+Fai is designed for **fast, reliable development by humans and AI agents**. Its
+type system, explicit effects, and built-in contracts make code easier to reason
+about and help catch mistakes in generated code. An incremental compiler and
+structured, integrated tooling give agents fast, precise feedback for tight
+edit→check→test loops.
+
+Efficient execution is part of that design, too. Native compilation and
+predictable, automatic memory management with reuse help generated programs
+perform well without hand-managed lifetimes. The aim is a language that is
+straightforward to generate, quick to iterate on, and practical to run.
 
 > [!IMPORTANT]
 > **Early release:** language and library APIs may change. Use a
