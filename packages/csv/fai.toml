@@ -3,7 +3,7 @@ manifest-version = 1
 [package]
 name = "csv"
 version = "0.1.0"
-fai-version = "0.0.1 || ^0.1.0"
+fai-version = "^0.1.0"
 test-dir = "."
 
 [dependencies]

@@ -1,5 +1,11 @@
 # Decimal arithmetic
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/decimal --as decimal --version '^0.1.0'
+```
+
 Pure Fai arbitrary-precision decimal arithmetic with explicit rounding and
 resource limits. The core package has no dependencies. Declare it in `fai.toml`
 and import `decimal.Decimal`:

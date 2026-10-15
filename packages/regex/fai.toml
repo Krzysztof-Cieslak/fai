@@ -3,5 +3,5 @@ manifest-version = 1
 [package]
 name = "regex"
 version = "0.1.0"
-fai-version = "0.0.1 || ^0.1.0"
+fai-version = "^0.1.0"
 test-dir = "."

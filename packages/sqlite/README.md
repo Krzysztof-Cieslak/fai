@@ -1,7 +1,13 @@
 # SQLite for Fai
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/sqlite --as sqlite --version '^0.1.0'
+```
+
 `Sqlite` implements the shared `Sql.Session` API using an embedded SQLite engine.
-Include `packages/uuid/src`, `packages/sql/src` and `packages/sqlite/src` in your workspace.
+Its manifest resolves the `sql` and `uuid` dependencies.
 The standard `SqliteHost` module supplies the native capability; application code
 passes it explicitly, usually in a custom runtime record:
 

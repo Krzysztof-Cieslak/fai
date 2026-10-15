@@ -1,5 +1,11 @@
 # Full-screen terminal applications
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/tui --as tui --version '^0.1.0'
+```
+
 `tui` is an optional Fai source package for forms, data browsers and agent-style
 terminal applications. Declare `tui` in your application's `fai.toml` and import
 its modules, such as `tui.Tui` and `tui.Ui`. Its manifest includes the `encoding`

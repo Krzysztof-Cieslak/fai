@@ -1,5 +1,11 @@
 # Managed native processes
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/process --as process --version '^0.1.0'
+```
+
 `process` supplies pure command builders and scoped native execution. Add
 `ProcessHost.native` explicitly to your runtime as `process`, together with
 `stdConcurrency` as `concurrency`.

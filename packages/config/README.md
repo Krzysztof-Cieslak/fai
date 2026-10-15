@@ -1,5 +1,11 @@
 # Configuration
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/config --as config --version '^0.1.0'
+```
+
 Pure sourced configuration trees, explicit loading, and typed application settings.
 The package uses the `toml` and `dotenv` source libraries; examples use `cli`.
 

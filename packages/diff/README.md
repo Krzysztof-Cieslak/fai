@@ -1,5 +1,11 @@
 # Diff and text patches
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/diff --as diff --version '^0.1.0'
+```
+
 Pure Fai sequence/text diffing, review views, and exact unified patches. The only
 dependency is `unicode`; CLI, TUI and process dependencies belong to the separate
 `diff-examples` package in `examples/`.

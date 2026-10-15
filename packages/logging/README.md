@@ -1,8 +1,14 @@
 # Structured logging
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/logging --as logging --version '^0.1.0'
+```
+
 `logging` is a source package depending on `json`. Its record model, field merging,
-filtering and human/JSON Lines formatting are pure Fai. Copy/include package sources
-under the same workspace root as the application.
+filtering and human/JSON Lines formatting are pure Fai. Its manifest resolves
+the JSON dependency; application code imports modules through `logging`.
 
 ```fai
 let sink = LogSink.formatted "stderr" Log.limits LogFormat.JsonLines (LogSink.stderr env.console)

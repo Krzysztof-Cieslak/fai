@@ -1,5 +1,11 @@
 # Regular expressions
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/regex --as regex --version '^0.1.0'
+```
+
 `regex` provides pure, reusable compiled patterns over Unicode text (`Regex`) and
 arbitrary binary buffers (`RegexBytes`). The package uses the standard library's
 typed `RegexEngine` bridge to the Rust regex family.

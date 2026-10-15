@@ -1,7 +1,13 @@
 # Server-sent events for Fai
 
+Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+
+```sh
+fai add github:Krzysztof-Cieslak/fai --subdir packages/sse --as sse --version '^0.1.0'
+```
+
 `Sse` is a shared protocol codec used by HTTP clients and servers. It depends
-only on the standard library. Include `packages/sse/src` in your workspace.
+only on the standard library. Import its modules through the `sse` dependency.
 
 ```fai
 let frames = Stream.fromList [Sse.comment "connected", Sse.event "hello"]

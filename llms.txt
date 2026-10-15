@@ -23,6 +23,12 @@ Use `fai toolchain install VERSION` and `fai toolchain pin VERSION` for an exact
 project compiler, and `fai toolchain which` to explain selection. Missing compilers
 are installed explicitly; ordinary compilation never downloads a toolchain.
 
+The maintained source packages' initial 0.1.0 series requires Fai 0.1.x. Once
+published, add one with, for example, `fai add github:Krzysztof-Cieslak/fai
+--subdir packages/json --as json --version '^0.1.0'`; import `json.Json` rather
+than copying its sources. Each package README and changelog describes its own
+version. Compiler and source-package releases are independent.
+
 1. What Fai is
 2. Rules you must internalize first
 3. Your first programs and the inner loop
