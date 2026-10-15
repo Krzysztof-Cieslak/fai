@@ -7,6 +7,11 @@ Fai is built around one idea: **code should be easy to reason about and verify**
 — for humans and for AI agents alike. Every design choice serves that goal, from
 effects you can see in a type to specifications the compiler checks for you.
 
+**Early release:** language and library APIs may change. Use a
+[project toolchain pin](docs/INSTALLATION.md#updates-and-side-by-side-compilers)
+to keep a chosen compiler version, and consult the [release notes](changelog.md)
+when upgrading.
+
 ## Install
 
 Linux and macOS:
@@ -21,13 +26,19 @@ Windows PowerShell:
 irm https://github.com/Krzysztof-Cieslak/fai/releases/latest/download/install.ps1 | iex
 ```
 
+Prebuilt releases support Linux/glibc, macOS, and Windows on x86-64 and ARM64.
+Installation is per-user and does not require Rust. On Linux and macOS, open a
+new shell after installation so `fai` is on your PATH. See the
+[installation guide](docs/INSTALLATION.md) for OS baselines and prerequisites;
+building standalone native executables also requires the platform's linker and
+development tools.
+
 Use `fai upgrade` for the compiler, `fai installer upgrade` for the launcher,
-and `fai update` for project dependencies. `fai toolchain` installs and selects
-side-by-side compiler versions; projects pin one in `fai.toml`.
-See [installation and platform prerequisites](docs/INSTALLATION.md),
-[release notes](changelog.md), and the [release runbook](docs/RELEASING.md).
+and `fai update` for project dependencies.
 
 ## Hello, Fai
+
+Save this as `Hello.fai`:
 
 ```fai
 module Hello
@@ -36,7 +47,17 @@ public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine "Hello, Fai!"
 ```
 
-Intent lives next to the code and is checked, not just written down:
+Run it:
+
+```sh
+fai run Hello.fai
+```
+
+The program prints `Hello, Fai!`. No project manifest is needed for a standalone
+file. To start a package instead, use `fai init hello`.
+
+Intent can live next to the code as executable examples and properties. Save
+this as `Collections.fai`:
 
 ```fai
 module Collections
@@ -51,180 +72,150 @@ example: map (fun x -> x + 1) [1, 2, 3] = [2, 3, 4]
 forall xs: map (fun x -> x) xs = xs
 ```
 
-The `samples/` directory is the full tour of the language, each file a
-self-contained module verified by the test suite.
+```sh
+fai check Collections.fai
+fai test Collections.fai
+```
+
+`check` type-checks the file and evaluates closed examples. `test` also checks
+properties against generated inputs, shrinking failing cases to counterexamples.
+Passing a property test is evidence, not a proof for every possible input.
+
+Explore the [language examples](samples/) for unions, records, interfaces,
+concurrency, and more.
 
 ## Design ideas
 
-### Familiar ML syntax, inspired by F#
+### Familiar syntax, explicit boundaries
 
 Fai draws its surface from the ML tradition and takes much of its shape from F#:
 significant indentation, `let` bindings, `match` expressions, F#-style type
 variables (`'a`), pipelines (`|>`), and operator precedence derived from an
-operator's symbols. The grammar is small and regular, so there is essentially one
-correct way to write a given program — and little to learn before reading it.
+operator's symbols. `fai fmt` gives code a single canonical layout.
 
-### A strong type system that models your data
+Type inference keeps local code concise. Discriminated unions and structural
+records model data, and exhaustive `match` checking catches missing cases before
+execution. Every exported value requires an explicit type signature, so callers
+can work from a module's interface without reading its implementation.
 
-Fai has a strong, ML-style type system with full inference, so most types go
-unwritten yet every value is checked. You describe a domain with algebraic data
-types — discriminated unions and records — and the compiler holds you to it:
-`match` is checked for exhaustiveness, so a case you forgot is a compile error,
-not a crash at runtime. Illegal states become unrepresentable, and the type
-checker turns whole classes of bugs into feedback you see before you run.
+### Capabilities and effects you can see
 
-### Built from the ground up for tight feedback loops
+The clock, randomness, environment, file system, console, and network are explicit
+capabilities, passed from `main` through ordinary values. A function can request
+only the fields it needs using an open record type.
 
-Responsiveness is not a tuning pass bolted on at the end — it is the architecture.
-Fast feedback matters more than peak throughput, especially for an agent
-iterating in a loop, so the whole compiler is demand-driven and incremental at
-the granularity of a single definition: edit one function and only what genuinely
-depends on it is rechecked, while a reformat or a comment change costs nothing
-downstream. Independent definitions and modules are compiled in parallel, and
-results are cached on disk and reused across runs. The result is edit→error and
-edit→test loops that stay near-instant — and stay that way as a project grows,
-because a localized change does a localized amount of work no matter how large
-the codebase is. Under the hood the compiler is a demand-driven query engine
-built on [Salsa](https://github.com/salsa-rs/salsa).
-
-### Effects are visible, not ambient
-
-Fai is pure: nothing happens behind your back. The clock, randomness, the
-environment, the file system, and the console are not global facilities — they
-are ordinary values passed in from `main` as a `Runtime`, and a function asks for
-only the capabilities it needs, so it is handed no more authority than that.
-
-Every function's type then spells out not just the capabilities it receives but
-the effects it performs. Each arrow carries an **effect row** — the host
-capabilities its calls reach — written after a `/`; a bare arrow is pure. Effects
-are inferred everywhere and **required on every public signature**, and the
-declared row must match what the body actually does, so a signature can never
-understate or overstate its reach.
+Each function arrow also carries an **effect row**, written after `/`, describing
+the effects a call may perform. Effects are inferred and must be accounted for in
+public signatures; a bare arrow is pure. Effect bounds can be conservative through
+abstractions. Holding a capability is pure; invoking its methods incurs effects.
 
 ```fai
 module Capabilities
 
-public save : { console : Console, fs : FileSystem | _ } -> String -> String -> Unit / { Console, FileSystem }
+public save : { console : Console, fs : FileSystem | _ } -> Path -> String -> Unit / { Console, FileSystem }
 let save env path note =
   match env.fs.writeFile path note with
-  | Err message -> env.console.writeLine message
+  | Err error -> env.console.writeLine (FileSystem.errorToString error)
   | Ok unit -> env.console.writeLine ("saved: " ++ note)
 
 public main : Runtime -> Unit / { Console, FileSystem }
-let main runtime = save runtime "/tmp/fai-note.txt" "hello"
+let main runtime =
+  match Path.fromString "fai-note.txt" with
+  | Err error -> runtime.console.writeLine (Path.errorToString error)
+  | Ok path -> save runtime path "hello"
 ```
 
-`save` requests a console and a file system and nothing else, and its type also
-states that calling it writes to both — it accepts any larger runtime, but can
-never touch the clock or the network. Effects are about use, not possession:
-holding or forwarding a capability is pure, and an effect is incurred only where a
-capability's method is called, so a captured capability rides its closure's arrow
-and nothing is laundered away. They propagate through ordinary combinators —
-mapping a console-using function over a list reflects `Console`, and composing
-differently-effecting functions unions their effects — and interfaces themselves
-can be effect-parameterized, forwarding their methods' effects, so even
-abstractions stay honest. Side effects are auditable and programs are
-deterministic by default.
+`save` accepts a larger runtime but uses only the console and file system. Effects
+also travel with captured capabilities and through higher-order functions:
+mapping a console-using function incurs `Console` too.
+The row-based effect system is inspired by [Koka](https://koka-lang.github.io/).
 
-Under the hood this is a row-based effect system inspired by
-[Koka](https://koka-lang.github.io/).
+### Executable contracts and structured feedback
 
-### Intent that the compiler checks
+`example` and `forall` are real, type-checked declarations, not specially formatted
+comments. They keep executable cases and laws beside the functions they describe;
+`///` doc comments remain human prose. Dedicated tests can use named `Test.Suite`
+cases and properties, with scoped fixtures and reproducible generator settings.
 
-Comments describe intent to humans and quietly drift out of date. Fai lets you
-state facts and laws as first-class declarations — `example` for concrete cases
-and `forall` for properties — that live beside the code, are type-checked, and
-are run as property tests with shrinking by `fai test`. The intent is proved or
-refuted, not merely documented. `///` doc comments remain human prose;
-everything inside an `example` or `forall` is real, checked code.
+Diagnostics carry stable error codes and source locations, with versioned JSON
+output for tools. The command line and language server share the same
+code-intelligence engine for types, definitions, references, and other queries.
 
-### Boundaries you can trust
+### Incremental native compilation and automatic memory management
 
-Types are inferred inside a module, but every `public` value carries an explicit
-signature on its own line. You can understand and depend on a module from its
-exported signatures alone, without reading a single body. The same boundary keeps
-work local: changing a private implementation cannot ripple out to the modules
-that use it.
+The compiler uses a demand-driven [Salsa](https://github.com/salsa-rs/salsa) query
+engine, with definition-level incremental work, parallel compilation, and an
+on-disk object cache. A per-workspace daemon retains the warm database across
+commands. Stable exported signatures help keep implementation edits local, and
+comment-only edits can reuse semantic results.
 
-### Memory managed for you, predictably
+Native code comes from [Cranelift](https://cranelift.dev/): ahead-of-time for
+standalone executables, and just-in-time for `run` and `test` without a link step.
+Automatic memory management uses
+[Perceus-style reference counting and reuse analysis](https://www.microsoft.com/en-us/research/wp-content/uploads/2020/11/perceus-tr-v1.pdf).
+Uniquely owned data can be updated in place, reducing allocations while preserving
+immutable values. There is no tracing garbage collector; releasing a value still
+costs work, so this is not a hard real-time or pause-free guarantee. See the
+[benchmark methodology](docs/BENCHMARK.md) and
+[current performance reports](docs/PERFORMANCE_REPORTS.md) for measurements.
 
-No manual frees, and no garbage-collector pauses. Because the language is pure
-and strict, the compiler knows exactly when each value is used for the last time
-and releases it there. When a value isn't shared, the compiler reuses its memory
-in place — so transforming data you already own (mapping a list, updating a
-record) can run without allocating at all. You get automatic memory management
-with predictable, pause-free performance. Under the hood we're using [Perceus-style
-reference counting with reuse analysis](https://www.microsoft.com/en-us/research/wp-content/uploads/2020/11/perceus-tr-v1.pdf).
+## Libraries and examples
 
-### Output meant to be read by tools
+The standard library is written in Fai over native runtime primitives. The
+auto-imported `Prelude` provides `Option` and `Result` with their constructors,
+common functions, and operator and capability interfaces. It also re-exports
+opaque collection types such as `Dict`, `Set`, `HashDict`, and `HashSet`; their
+constructors remain hidden. Operations are qualified: `List.map`, `Array.map`,
+`Dict.insert`, `String.split`, and `Int.toString`.
 
-Every diagnostic has a stable error code and a precise source location, and the
-whole output can be emitted as JSON. Parsing recovers from mistakes, so one error
-never hides the rest. The same engine answers code-intelligence questions for
-both the command line and the editor, so a human or an agent always gets precise,
-parseable, consistent feedback.
+Beyond collections, the standard library includes streams, structured concurrency,
+file I/O, networking, HTTP/TLS, and date/time types. Optional
+[source packages](packages/) add application libraries:
 
-### One way to write it
+- [JSON codecs](packages/json/) and [web servers](packages/web/).
+- [HTTP clients](packages/http-client/) and [server-sent events](packages/sse/).
+- [SQLite](packages/sqlite/) and [PostgreSQL](packages/postgres/).
+- [Command-line parsing](packages/cli/) and [terminal interfaces](packages/tui/).
+- [LLM clients and a coding-assistant example](packages/llm/README.md#coding-assistant).
 
-A single canonical format, enforced by `fai fmt` and idempotent, removes
-stylistic choices entirely. Generated code and hand-written code converge on the
-same shape — easier to review, to diff, and to produce correctly the first time.
-
-## Standard library
-
-The standard library is written in Fai itself. One module, `Prelude`, is
-auto-imported and owns the core types (`Option`, `Result`, `Dict`, `Set` and
-their constructors), common free functions (`identity`, `const`, `not`,
-`compare`), and the shared interfaces for operators and capabilities. Everything
-else is reached through qualified per-type modules — `List`, `Option`, `Result`,
-`Dict`, `Set`, `String`, `Int`, `Float` — e.g. `List.map`, `Int.toString`.
-
-The arithmetic, equality, and ordering operators are methods of shared
-interfaces, and programs may declare their own symbolic operators with
-F#-style precedence.
+Packages are declared in `fai.toml` and imported explicitly; they are not embedded
+in the compiler. See the [package guide](docs/PACKAGES.md) to add dependencies.
 
 ## Tooling
 
-The `fai` binary is a thin client backed by a warm per-workspace daemon that
-keeps the incremental database hot, so repeated commands are near-instant.
-Native code is generated with [Cranelift](https://cranelift.dev/) — ahead-of-time
-(AOT) for `fai build`, and just-in-time (JIT) for the fast `fai run` and
-`fai test` loops.
+| Command | Purpose |
+| --- | --- |
+| `fai init <name>` | Create a package. |
+| `fai run [path]` | Compile and run via JIT. |
+| `fai build [path]` | Compile to a standalone native executable. |
+| `fai check [path]` | Type-check and evaluate closed examples; `--no-examples` for type-checking only. |
+| `fai test [path]` | Run inline contracts and named test suites, including properties. |
+| `fai fmt [path]` | Apply the canonical format; `--check` to verify without editing. |
+| `fai lsp` | Start the language server. |
+| `fai query <q>` | Read-only code intelligence: definitions, references, types, APIs, and more. |
+| `fai daemon <cmd>` | Manage the per-workspace daemon. |
 
-| Command            | Purpose                                                                                                           |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `fai build <path>` | Compile to a native executable.                                                                                   |
-| `fai run <path>`   | Compile and run with the lowest edit→run latency.                                                                 |
-| `fai check [path]` | Type-check only — the fast inner-loop command.                                                                    |
-| `fai fmt [path]`   | Apply the one canonical format (idempotent; `--check` to verify).                                                 |
-| `fai test [path]`  | Run the `example` / `forall` contracts.                                                                           |
-| `fai lsp`          | Start the language server for editors.                                                                            |
-| `fai query <q>`    | Read-only code intelligence (definitions, references, types, module APIs, capability footprints, type search, …). |
-| `fai daemon <cmd>` | Manage the per-workspace daemon.                                                                                  |
-
-Add `--message-format=json` to any command for structured, versioned output.
-The full reference, JSON schemas, and daemon protocol are in
-[`docs/CLI.md`](docs/CLI.md).
+Use `--message-format=json` for structured diagnostics and command results;
+program output remains program output. See the [CLI reference](docs/CLI.md) for
+flags, schemas, and the daemon protocol.
 
 A Visual Studio Code extension lives in [`editors/vscode/`](editors/vscode/): a
 thin client for the `fai lsp` language server plus syntax highlighting.
 
 ## Documentation
 
-For source-package development, activate a cached compiler as described in
-[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md), then use native commands:
-
-```sh
-fai check -C packages json
-fai test -C packages json
-fai test -C packages web
-```
-
-Repeated calls reuse the warm daemon; package edits do not rebuild Rust.
-
 - [`llms.txt`](llms.txt) — a single, self-contained guide to **writing Fai programs**, aimed at AI agents (and humans new to the language). Point your agent here.
-- [`samples/`](samples/) — the language by example, the source of truth for the syntax.
+- [`samples/`](samples/) — the language by example.
+- [`docs/INSTALLATION.md`](docs/INSTALLATION.md) — installation, upgrades, and compiler selection.
+- [`docs/PACKAGES.md`](docs/PACKAGES.md) — projects, dependencies, and publishing packages.
 - [`docs/CLI.md`](docs/CLI.md) — the command-line and daemon reference.
 - [`docs/ERROR_CODES.md`](docs/ERROR_CODES.md) — the catalog of `FAInnnn` diagnostics.
-- [`docs/MEMORY.md`](docs/MEMORY.md) — the design memory: locked decisions and standing risks.
-- [`AGENTS.md`](AGENTS.md) — orientation for contributors, including building from source.
+
+## Contributing
+
+Bug reports and small reproductions are welcome in the
+[issue tracker](https://github.com/Krzysztof-Cieslak/fai/issues).
+For building from source and contributing, start with [AGENTS.md](AGENTS.md) and
+the [development guide](docs/DEVELOPMENT.md). Design decisions live in
+[docs/MEMORY.md](docs/MEMORY.md). Please follow the
+[code of conduct](CODE_OF_CONDUCT.md); licensing is in [LICENSE](LICENSE).
