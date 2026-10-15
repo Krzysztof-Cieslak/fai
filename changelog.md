@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-15
+
 ### Added
 - Add a manual source-package release workflow with exact published-compiler
   qualification on Linux, macOS, and Windows, atomic package tags, and immutable
