@@ -224,6 +224,9 @@ pub fn publish(
             .package
             .as_ref()
             .ok_or_else(|| fail("selected member is not a package"))?;
+        if !metadata.publish {
+            return Err(fail(format!("{name} is private (package.publish = false)")));
+        }
         if !metadata.explicit_fai_version {
             return Err(fail(format!(
                 "{name} must declare package.fai-version before publication"

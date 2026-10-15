@@ -1,6 +1,8 @@
 module LlmPersistenceSpec
 
-import llm_examples.LlmAssistantStore
+import llm.Llm
+import llm.LlmAnthropic
+import llm.LlmOpenAI
 
 let config = LlmOpenAI.config "private-api-key"
 

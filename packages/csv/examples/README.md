@@ -1,9 +1,9 @@
 # CSV examples
 
-Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+Private example/test project · Requires **Fai 0.1.x**
 
 The `csv-examples` package contains executable examples and native fixtures for
-the [CSV library](../README.md). Its release tag is `packages/csv/examples/v0.1.0`.
+the [CSV library](../README.md). It is not independently published (`publish = false`).
 
 From the repository root:
 

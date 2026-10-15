@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       packages:
-        description: 'Prepared package versions as JSON, e.g. {"json":"0.1.0"}, or all'
+        description: 'Public package versions as JSON, e.g. {"json":"0.1.0"}, or all publishable libraries'
         required: true
         default: all
         type: string

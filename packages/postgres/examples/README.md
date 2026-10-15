@@ -1,10 +1,10 @@
 # PostgreSQL examples
 
-Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+Private example/test project · Requires **Fai 0.1.x**
 
 The `postgres-examples` package holds runnable database examples and shared test
-helpers for the [PostgreSQL library](../README.md). Its release tag is
-`packages/postgres/examples/v0.1.0`.
+helpers for the [PostgreSQL library](../README.md). It is not independently
+published (`publish = false`).
 
 Use a disposable PostgreSQL database and set `FAI_PG_URL`; optionally set
 `FAI_PG_ROOT` to a trusted PEM root for TLS:

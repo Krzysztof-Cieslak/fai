@@ -121,6 +121,19 @@ fn uncommitted_source_is_rejected_before_release_preparation() {
 }
 
 #[test]
+fn private_package_cannot_be_published_or_planned() {
+    let fixture = Fixture::new();
+    fixture.write("fai.toml", &format!("manifest-version = 1\n[package]\nname = 'library'\nversion = '1.0.0'\npublish = false\nfai-version = '^{COMPILER_VERSION}'\n"));
+    fixture.commit();
+    let head = git(&fixture.root, &["rev-parse", "HEAD"]);
+    let result = fixture.run(&["publish", "patch", "--plan", "--message-format=json"]);
+    assert!(!result.status.success(), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stdout).contains("is private"));
+    assert_eq!(git(&fixture.root, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&fixture.remote, &["tag"]), "v1.0.0");
+}
+
+#[test]
 fn failed_atomic_push_can_resume_without_another_version_bump() {
     let fixture = Fixture::new();
     let base = git(&fixture.root, &["rev-parse", "HEAD"]);

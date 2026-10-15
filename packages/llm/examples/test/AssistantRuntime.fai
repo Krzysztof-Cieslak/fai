@@ -1,6 +1,4 @@
 module LlmAssistantRuntime
 
-import llm_examples.LlmAssistantChecks
-
 tests : Test.Suite Test.Context { Clock, Concurrency, FileSystem, Net, ProcessHost.Process, SqliteHost.Sqlite, Tls }
 let tests = Test.describe "LLM runtime" [LlmAssistantChecks.tests]

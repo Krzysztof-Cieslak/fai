@@ -355,6 +355,7 @@ inject normal dependencies or native requirements into members.
 |---|---|---|
 | `name` | required | Display/local CLI name, not global identity |
 | `version` | required | Canonical package version |
+| `publish` | `true` | Set `false` for a private workspace/example project that must not be published |
 | `fai-version` | local default `*`; explicit for publishing | Supported compiler releases |
 | `source-dir` | `src` | Common library root |
 | `test-dir` | `tests` | Additional test root |
@@ -1364,6 +1365,12 @@ also supports other package repositories and local maintainer workflows.
 ### 16.1 CLI and version intent
 
 For a workspace batch, supply explicit version intent per package:
+
+Projects declaring `[package] publish = false` still participate in ordinary
+workspace checks and runs, but both publication and `publish --plan` reject them.
+This policy is separate from source-level `public`/`internal` visibility. Keep
+example-specific tests in the private project rather than making a published
+library depend on it.
 
 ```sh
 fai publish json=minor web=patch

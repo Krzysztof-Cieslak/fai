@@ -271,6 +271,7 @@ fai publish --resume
 ```
 
 Version intent is required: `patch`, `minor`, `major`, or an exact full version.
+Both planning and publication reject a project with `[package] publish = false`.
 Prerelease transitions use exact versions. A batch names selected packages and
 publishes their canonical path-scoped tags in one atomic push. `--remote` and
 `--branch` resolve an otherwise ambiguous destination.

@@ -16,6 +16,8 @@ pub struct Package {
     pub name: PackageName,
     /// Declared source version.
     pub version: PackageVersion,
+    /// Whether this package may be published; private workspace projects opt out.
+    pub publish: bool,
     /// Compatible compiler releases; absent manifests use the wildcard requirement.
     pub fai_version: VersionRequirement,
     /// Whether compiler compatibility was explicitly declared for publication.

@@ -31,9 +31,13 @@ def write_json(path, value):
 
 def prepared_packages(selection, root=ROOT):
     catalog = packages.discover(root)
+    metadata = {name: tomllib.loads((package.directory / "fai.toml").read_text(encoding="utf-8"))["package"]
+                for name, package in catalog.items()}
+    for name, item in metadata.items():
+        if type(item.get("publish", True)) is not bool:
+            raise release.ReleaseError(f"{name}: package.publish must be a boolean")
     if selection == "all":
-        selected = {name: tomllib.loads((package.directory / "fai.toml").read_text())["package"]["version"]
-                    for name, package in catalog.items()}
+        selected = {name: item["version"] for name, item in metadata.items() if item.get("publish", True)}
     else:
         selected = json.loads(selection, object_pairs_hook=packages.unique_object)
     if not isinstance(selected, dict) or not selected:
@@ -43,14 +47,20 @@ def prepared_packages(selection, root=ROOT):
         raise release.ReleaseError(f"unknown packages: {', '.join(sorted(unknown))}")
     result = []
     for name, version in sorted(selected.items()):
+        if not metadata[name].get("publish", True):
+            raise release.ReleaseError(f"{name}: private example/test projects cannot be released")
+        private_dependencies = [dependency for dependency in catalog[name].all_dependencies
+                                if not metadata[dependency].get("publish", True)]
+        if private_dependencies:
+            raise release.ReleaseError(f"{name}: publication depends on private projects: {', '.join(private_dependencies)}")
         if not isinstance(version, str):
             raise release.ReleaseError(f"{name}: version must be an exact version string")
         release.version_key(version)
         directory = catalog[name].directory
-        metadata = tomllib.loads((directory / "fai.toml").read_text(encoding="utf-8"))["package"]
-        if metadata["version"] != version:
+        item = metadata[name]
+        if item["version"] != version:
             raise release.ReleaseError(f"{name}: prepare version {version} in a pull request before releasing")
-        if not metadata.get("fai-version") or metadata["fai-version"] == "*":
+        if not item.get("fai-version") or item["fai-version"] == "*":
             raise release.ReleaseError(f"{name}: an explicit compiler requirement is required")
         readme = directory / "README.md"
         changelog = directory / "changelog.md"
@@ -64,7 +74,7 @@ def prepared_packages(selection, root=ROOT):
             raise release.ReleaseError(f"{name}: move Unreleased entries into the prepared release section")
         path = directory.relative_to(root).as_posix()
         result.append({"name": name, "path": path, "version": version,
-                       "tag": f"{path}/v{version}", "compilerRequirement": metadata["fai-version"],
+                       "tag": f"{path}/v{version}", "compilerRequirement": item["fai-version"],
                        "notes": notes})
     return result
 

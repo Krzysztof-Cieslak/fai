@@ -11,10 +11,6 @@ replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "pack
 with = { path = "diff" }
 
 [[overrides]]
-replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/diff/examples" }
-with = { path = "diff/examples" }
-
-[[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/unicode" }
 with = { path = "unicode" }
 
@@ -39,20 +35,12 @@ replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "pack
 with = { path = "glob" }
 
 [[overrides]]
-replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/glob/examples" }
-with = { path = "glob/examples" }
-
-[[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/encoding" }
 with = { path = "encoding" }
 
 [[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/csv" }
 with = { path = "csv" }
-
-[[overrides]]
-replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/csv/examples" }
-with = { path = "csv/examples" }
 
 [[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/uuid" }
@@ -65,10 +53,6 @@ with = { path = "cli" }
 [[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/config" }
 with = { path = "config" }
-
-[[overrides]]
-replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/config/examples" }
-with = { path = "config/examples" }
 
 [[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/dotenv" }
@@ -87,20 +71,12 @@ replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "pack
 with = { path = "llm" }
 
 [[overrides]]
-replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/llm/examples" }
-with = { path = "llm/examples" }
-
-[[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/logging" }
 with = { path = "logging" }
 
 [[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/postgres" }
 with = { path = "postgres" }
-
-[[overrides]]
-replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/postgres/examples" }
-with = { path = "postgres/examples" }
 
 [[overrides]]
 replace = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/process" }

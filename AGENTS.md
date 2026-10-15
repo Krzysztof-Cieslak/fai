@@ -1485,7 +1485,10 @@ merged. Native Linux/macOS/Windows qualification uses the same exact published
 compiler and the existing external-consumer publisher validation. Publication
 pushes only immutable package tags, never a new main commit; package releases
 never replace the compiler's Latest channel. The initial package series is
-0.1.0 and requires Fai 0.1.x, including separately owned example packages.
+0.1.0 and requires Fai 0.1.x. Only the 27 libraries are published. The six example
+projects set `[package] publish = false` and retain their tests in the workspace;
+published libraries do not depend on them. The CLI rejects publication and
+planning for private projects independently of source-level visibility.
 
 **Every compiler, runtime, tooling, or embedded standard-library change must add
 or update an entry under `[Unreleased]` in `changelog.md`.** This includes internal

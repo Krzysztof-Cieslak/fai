@@ -1,10 +1,10 @@
 # Configuration examples
 
-Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+Private example/test project · Requires **Fai 0.1.x**
 
 The `config-examples` package keeps CLI and application helpers separate from
-the [configuration library](../README.md). Its release tag is
-`packages/config/examples/v0.1.0`.
+the [configuration library](../README.md). It is checked in the workspace but
+is not independently published (`publish = false`).
 
 From the repository root:
 

@@ -142,8 +142,9 @@ fai test -C packages llm
 python scripts/tests/llm_toolchain.py --fai /path/to/fai
 ```
 
-Named tests and properties cover pure encoders, reducers, schema decoding, tool invocation,
-retry decisions, persistence encoding and arbitrary SSE chunk boundaries. The
+Library tests cover pure encoders, reducers, schema decoding, tool invocation,
+and retry decisions. The private example project (`fai test -C packages llm-examples`)
+covers persistence, replay chunks, and local-provider scenarios. The
 integration fixture uses local model servers for both protocols through JIT and
 AOT, including real file/command tools and SQLite. Unix PTY checks cover the live
 assistant and terminal restoration. No live provider credentials are needed for

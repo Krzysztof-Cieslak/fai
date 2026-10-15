@@ -1,6 +1,12 @@
 module LlmLimitsSpec
 
-import llm_examples.LlmFixtures
+import llm.Llm
+import llm.LlmAnthropic
+import llm.LlmMessage
+import llm.LlmOpenAI
+import llm.LlmReplay
+import llm.LlmTypes
+import llm.LlmValidate
 
 let request = Llm.request "fixture"
 

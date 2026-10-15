@@ -51,6 +51,11 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Private workspace/example projects declare `[package] publish = false`.
+  They retain ordinary checking and execution but cannot be release candidates.
+  Example-specific tests belong to those projects; public libraries do not depend
+  on private helpers. The release workflow selects only publishable libraries.
+
 - Diff alignment separates original equality from key/review equivalence.
   Myers reports minimal edit scripts, patience reports anchored scripts, and
   explicit work fallback reports coarse scripts. Unified export retains every

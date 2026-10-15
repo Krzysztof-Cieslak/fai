@@ -81,6 +81,7 @@ fn package_defaults_are_explicit_model_values() {
     assert_eq!(package.source_dir.as_str(), "src");
     assert_eq!(package.test_dir.as_str(), "tests");
     assert!(package.auto_main);
+    assert!(package.publish);
     assert!(!package.explicit_fai_version);
     assert_eq!(package.fai_version.to_string(), "*");
 }
@@ -90,6 +91,21 @@ fn virtual_workspace_is_valid() {
     let document = parse("manifest-version = 1\n[workspace]\nmembers = ['apps/*', 'packages/*']\n");
     assert!(document.manifest().package.is_none());
     assert_eq!(document.manifest().workspace.as_ref().unwrap().members, ["apps/*", "packages/*"]);
+}
+
+#[test]
+fn private_workspace_package_opts_out_of_publication() {
+    let document = parse(&format!("{BASE}publish = false\n"));
+    assert!(!document.manifest().package.as_ref().unwrap().publish);
+}
+
+#[test]
+fn publication_policy_requires_a_boolean() {
+    let text = format!("{BASE}publish = 'no'\n");
+    let diagnostics = errors(&text);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code.as_str(), "FAI0800");
+    assert_eq!(excerpt(&text, &diagnostics[0]), "'no'");
 }
 
 #[test]
