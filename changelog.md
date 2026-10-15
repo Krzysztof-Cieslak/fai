@@ -29,6 +29,8 @@
   configuration and location fields while preserving existing event identities.
 
 ### Fixed
+- Allow bounded cold Windows PowerShell startup in installer archive tests while
+  keeping validation failures and process timeouts fatal.
 - Scope independent release, performance and JUnit tooling changes to their
   validation lanes, and avoid native-runner queues for documentation-only CI.
 - Keep malformed JUnit timings and invalid report roots from crashing the CI
