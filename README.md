@@ -101,6 +101,7 @@ can work from a module's interface without reading its implementation.
 
 ### Capabilities and effects you can see
 
+Fai's row-based effect system is inspired by [Koka](https://koka-lang.github.io/).
 The clock, randomness, environment, file system, console, and network are explicit
 capabilities, passed from `main` through ordinary values. A function can request
 only the fields it needs using an open record type.
@@ -130,7 +131,6 @@ let main runtime =
 `save` accepts a larger runtime but uses only the console and file system. Effects
 also travel with captured capabilities and through higher-order functions:
 mapping a console-using function incurs `Console` too.
-The row-based effect system is inspired by [Koka](https://koka-lang.github.io/).
 
 ### Executable contracts and structured feedback
 
@@ -155,11 +155,31 @@ Native code comes from [Cranelift](https://cranelift.dev/): ahead-of-time for
 standalone executables, and just-in-time for `run` and `test` without a link step.
 Automatic memory management uses
 [Perceus-style reference counting and reuse analysis](https://www.microsoft.com/en-us/research/wp-content/uploads/2020/11/perceus-tr-v1.pdf).
-Uniquely owned data can be updated in place, reducing allocations while preserving
-immutable values. There is no tracing garbage collector; releasing a value still
-costs work, so this is not a hard real-time or pause-free guarantee. See the
-[benchmark methodology](docs/BENCHMARK.md) and
-[current performance reports](docs/PERFORMANCE_REPORTS.md) for measurements.
+Last-use analysis releases values when they are no longer needed, and reuse
+analysis updates uniquely owned data in place. Operations such as mapping a
+unique list or updating a record can reuse existing storage while preserving
+immutable value semantics. Sequence fusion removes intermediate collections,
+further reducing allocations—all without manual frees or a tracing collector.
+
+## Performance
+
+Fai combines immutable values and automatic memory management with competitive
+native performance. In the published shared-algorithm comparison, its
+geometric-mean execution time is approximately on par with Rust and **41% lower
+than OCaml**.
+
+| Shared-algorithm comparison | Fai / Rust | Fai / OCaml |
+| --- | ---: | ---: |
+| Warm AOT execution time | **0.99×** | **0.59×** |
+| Peak process memory (RSS) | **1.14×** | **0.66×** |
+
+These are geometric means over each report's eligible cases from the
+[October 11, 2026 checkpoint](https://gist.github.com/Krzysztof-Cieslak/3ca0105a8e3c215fda734b41bc522a3b/9909a71ec24b04ab28d737ed155ecad1cb0b35bf).
+Lower ratios are better; warm execution excludes process startup. The
+[runtime comparison](https://github.com/Krzysztof-Cieslak/fai/issues/747) and
+[memory comparison](https://github.com/Krzysztof-Cieslak/fai/issues/746) include
+per-workload results, hardware, and compiler configurations. See the
+[benchmark methodology](docs/BENCHMARK.md) for how comparisons are measured.
 
 ## Libraries and examples
 
