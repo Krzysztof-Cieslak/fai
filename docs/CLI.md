@@ -1,5 +1,9 @@
 # Fai — CLI Reference
 
+This reference follows the current repository sources. For an installed release,
+use the documentation at its Git tag; development documentation can include
+unreleased changes.
+
 The CLI creates projects, manages dependencies, checks and formats source, builds
 native executables, runs programs and tests, and provides editor intelligence.
 `fai build` uses ahead-of-time compilation; `fai run` and `fai test` use JIT
@@ -13,7 +17,7 @@ object cache. `--no-daemon` selects in-process command handling; program and tes
 execution still use isolated workers. Read requests use database snapshots, with
 in-flight work cancelled and retried when source changes. The daemon and worker
 support Linux, macOS, and Windows. Non-streaming daemon replies carry rendered
-stdout/stderr; test results stream as `$/testEvent` notifications. The command and
+stdout/stderr; test results stream as `TestEvent` frames. The command and
 protocol sections below document flags, outputs, resource limits, and failure
 behavior.
 
@@ -349,8 +353,8 @@ before opening the project or daemon. Missing or changed registrations report
 Commands that take a `<symbol>` accept either form:
 
 - **Name path** (preferred — stable across edits):
-  `Module.Submodule.name`, e.g. `Collections.map`. Disambiguate colliding names
-  with `--kind`.
+  `Module.Submodule.name`, e.g. `Collections.map`. Use a source position when a
+  name alone is ambiguous.
 - **Position**: `path/to/File.fai:LINE:COL` (1-based), resolving the symbol at
   that location.
 
@@ -523,7 +527,7 @@ in a supervised isolated worker, so a body that traps on a generated input fails
   Contracts blocked before execution are counted separately, not as failed
   assertions. Unavailable generators are `not run`, not ignored successes.
 - **Streaming:** each validated per-contract pass/fail event is delivered as soon
-  as its worker frame arrives (`$/testEvent`, from the daemon), before later
+  as its worker frame arrives (`TestEvent`, from the daemon), before later
   contracts finish. An acknowledged result is emitted once, including when a
   later contract crashes or times out and the worker resumes after it.
 - **Output (json):** the test report uses **`schemaVersion: 2`** (diagnostic and
@@ -768,55 +772,72 @@ final response keep it active; passive tap subscribers do not.
 
 ## 7. Daemon protocol (IPC / wire)
 
-The client↔daemon link is **JSON-RPC 2.0 semantics encoded with MessagePack**.
-(The LSP endpoint is unaffected — it remains standard LSP: JSON over
-`Content-Length`.)
+The client↔daemon link is a **versioned, length-prefixed MessagePack protocol**.
+It serializes the Rust enums and records in
+[`crates/fai-server/src/protocol.rs`](../crates/fai-server/src/protocol.rs), not
+JSON-RPC `method`/`params` envelopes. The JSON examples below show decoded frame
+bodies as printed by `--protocol-log` and `fai daemon tap`; JSON is not a wire
+transport option. The LSP endpoint is separate and remains standard LSP JSON-RPC
+with `Content-Length` framing.
 
 ### 7.1 Transport & discovery
 
 - **Transport:** unix-domain socket (POSIX); named pipe (Windows).
-- **Path:** `${XDG_RUNTIME_DIR:-$TMPDIR}/fai/<workspace-hash>-<compilerVersion>-<build-prefix>.sock`.
-  The build prefix is the first 16 hexadecimal characters of the whole-tool
-  identity. Different builds of the same package version use separate daemons.
-- **Permissions:** `0600`, owner-only. Local only — no network.
-- **Spawn race:** startup takes an exclusive lock / atomic bind; the loser
-  connects to the winner.
-- **Lifecycle:** idle-timeout shutdown; explicit `shutdown`/`exit`.
+- **Unix path:** `<runtime-dir>/fai/<workspace-hash>-<compiler-version>-<build-prefix>.sock`.
+  The runtime directory is selected from `FAI_RUNTIME_DIR`, `XDG_RUNTIME_DIR`,
+  `TMPDIR`, then `/tmp`. Workspace and whole-tool build prefixes are 16 hexadecimal
+  characters. Different compiler builds use separate endpoints.
+- **Windows name:** `fai-<workspace-hash>-<compiler-version>-<build-prefix>.sock`
+  in the local named-pipe namespace.
+- **Permissions:** Unix socket files are set to `0600`. The transport is local;
+  it does not open a TCP port.
+- **Spawn race:** a successful bind owns the endpoint; a losing process connects
+  to the existing daemon. A stale Unix socket is reclaimed after a failed connect.
+- **Lifecycle:** idle-timeout shutdown or explicit `Shutdown`. `Exit` closes only
+  the requesting connection and does not shut down the daemon.
 
 ### 7.2 Framing & encoding
 
-- Each message is a **length-prefixed frame**: `u32` little-endian byte length,
-  followed by a **MessagePack**-encoded JSON-RPC 2.0 object.
-- Message kinds: **request** (`id`, `method`, `params`), **response**
-  (`id`, `result` | `error`), **notification** (`method`, `params`, no `id`).
+- Each frame starts with a `u32` little-endian body length, followed by MessagePack
+  serialized with `rmp_serde::to_vec_named`. Readers reject bodies over 64 MiB.
+- Enums are externally tagged: a payload variant is a single-key object such as
+  `{"Initialize": {...}}`; a unit variant is a string such as `"Status"`.
+  Record fields use their Rust snake-case names. Variant names are case-sensitive.
+- There are no request IDs. Clients issue one operation at a time on a connection,
+  reading any streamed frames until a terminal `{"Result": ...}` frame. The
+  connection can then carry another operation. A run additionally accepts credited
+  stdin frames while it is executing.
 - **Debugging:** `--protocol-log <file>` decodes one connection's frames to JSON;
   `fai daemon tap` subscribes to a live decode of the frames on *every other*
   connection (the daemon broadcasts each frame, best-effort, to attached taps),
-  printing `#<conn> <arrow> <json>` per frame until interrupted. A dev-only
-  `--protocol=json` switches the wire to plaintext JSON-RPC.
+  printing `#<conn> <arrow> <json>` per frame until interrupted. There is no
+  `--protocol=json` option.
 
 ### 7.3 Handshake & versioning
 
-The first request is `initialize`:
+Clients start with `Initialize`. The version and build ID must identify the exact
+compiler being used; the values below are illustrative:
 
 ```jsonc
 // → request
-{ "method": "initialize",
-  "params": { "protocolVersion": 7, "compilerVersion": "0.1.0", "compilerBuildId": "…",
-              "schemaVersion": 1, "workspaceRoot": "/abs/path",
-              "clientInfo": { "name": "fai-cli", "version": "0.1.0" } } }
+{ "Initialize": { "protocol_version": 7, "compiler_version": "0.0.1",
+                  "compiler_build_id": "<exact whole-tool build ID>",
+                  "workspace_root": "/abs/path" } }
 // ← response
-{ "result": { "serverCapabilities": { "streaming": true, "query": true },
-               "compilerVersion": "0.1.0", "compilerBuildId": "…", "protocolVersion": 7, "schemaVersion": 1 } }
+{ "Result": { "Initialized": { "protocol_version": 7, "compiler_version": "0.0.1",
+                              "compiler_build_id": "<exact whole-tool build ID>" } } }
 ```
 
-Because the client and daemon are the **same binary**, a version mismatch means a
-*stale* daemon: the client sends `exit`, then respawns and re-initializes.
-The protocol requires the full executable build identity in both
-directions; matching `0.1.0` version strings alone cannot reuse a stale compiler.
-Source-qualified contract events remain required.
-Protocol 5 carries a `project` options record (`no_local`, `locked`, `offline`,
-`no_vendor`) on command, run, and test requests. Each context is
+Protocol version **7**, compiler release, and full whole-tool build identity must
+match in both directions. A matching release number alone is insufficient.
+Older published compilers can use an earlier protocol; use their matching source
+and handshake rather than assuming this repository's current protocol version.
+A mismatch returns `{"Result": {"Error": "compiler mismatch: ..."}}`.
+The handshake does not contain a CLI-output `schemaVersion`, client metadata, or
+a capability-negotiation object.
+
+`Command`, `Run`, and `Test` carry a `project` options record (`no_local`, `locked`,
+`offline`, `no_vendor`); omitted policy fields default to false. Each context is
 prepared independently; located manifest failures use the same result envelope
 as one-shot execution, including when opening a project fails.
 Dependency restoration runs before acquiring the compiler database lock. Prepared
@@ -833,83 +854,98 @@ shows dependency progress and failures in its status bar.
 
 ### 7.4 Session & consistency model
 
-- **Stateless per invocation:** connect → (optionally declare dirty files) →
-  issue request(s) → stream results → disconnect.
+- **Per invocation:** connect → initialize → issue an operation (with any dirty
+  files) → read its streamed frames and terminal result → disconnect.
 - **Concurrency:** reads run concurrently (each on a cloned database snapshot,
   off-lock). An input change bumps the salsa revision and **cancels** in-flight
-  reads, which restart on the new revision. *(Implemented.)*
-- **Cancellation:** input-change cancellation is implemented (above).
-  Client-initiated `$/cancelRequest { id }` and cancelling a client's outstanding
-  requests on disconnect are **not yet implemented** (future work).
+  reads, which restart on the new revision.
+- **Cancellation:** there is no general client cancellation request or
+  `$/cancelRequest` frame. A disconnected `Run` client causes its worker to be
+  killed and reaped, including when the program is silent. Other operations do
+  not have a general disconnect-cancellation guarantee; their normal resource
+  limits and result-delivery failures still apply.
+- **No replay after uncertain execution:** the CLI does not automatically rerun
+  a submitted `Run`, `Build`, or writing `Fmt` when its result is lost. It reports
+  `FAI0008` instead of potentially repeating effects.
 
 ### 7.5 File-state sync
 
 The daemon keeps salsa inputs in sync with disk:
 
-- On each request it performs an **incremental scan** — compares mtime/size and
-  re-hashes only changed files — then updates inputs for what actually changed.
-- A client that knows what it edited may send an explicit **dirty set** as a
-  fast path (skips the scan):
+- For command preparation it performs an **incremental scan** — compares
+  mtime/size and re-hashes changed files — then updates inputs for what actually
+  changed.
+- A client that knows what it edited may put a **dirty set** in its `Command`,
+  `Run`, or `Test` payload. Content, when supplied, is the authoritative
+  already-written text; the hash is advisory. A command frame can look like:
 
-```jsonc
-"params": { "...": "...",
-            "dirty": [ { "path": "src/A.fai", "hash": "blake3:…" },
-                       { "path": "src/B.fai", "content": "module B\n…" } ] }
+```json
+{
+  "Command": {
+    "project": { "no_local": false, "locked": false, "offline": false, "no_vendor": false },
+    "spec": { "Check": { "path": "src/Main.fai", "examples": true } },
+    "opts": { "format": "Json", "color": false },
+    "dirty": [ { "path": "src/Main.fai", "hash": null,
+                 "content": "module Main\n" } ]
+  }
+}
 ```
 
-Hypothetical **overlays** (evaluate proposed content without writing it) are
-deferred; the request shape reserves room for them.
+The ordinary CLI sends an empty dirty set. This IPC field is not a supported
+speculative-edit API. Unsaved editor overlays belong to the separate LSP session.
 
-### 7.6 Methods
+### 7.6 Request variants
 
-| CLI command | RPC method |
+| Operation | Decoded request shape |
 |---|---|
-| (handshake) | `initialize`, `shutdown`, `exit` |
-| `fai check` | `check` |
-| `fai build` | `build` |
-| `fai run` | `run` |
-| `fai test` | `test` |
-| `fai fmt` | `fmt` |
-| `fai query <q>` | `query/<q>` (`symbols`, `def`, `refs`, `type`, `docs`, `outline`, `api`, `dependents`, `callers`, `callees`, `search`, `caps`) |
-| `fai daemon tap` | `tap` |
+| Handshake | `{"Initialize": InitParams}` |
+| Check, build, format, or query | `{"Command": {"project": ProjectOptions, "spec": CommandSpec, "opts": RenderOpts, "dirty": [...]}}` |
+| Run | `{"Run": {"project": ProjectOptions, "path": "...", "args": [...], "dirty": [...]}}` |
+| Test | `{"Test": {"project": ProjectOptions, "path": null, "match": null, "seed": null, "count": null, "max_size": null, "list": false, "deny_focused": false, "junit": false, "opts": RenderOpts, "dirty": [...]}}` |
+| Status, tap, daemon shutdown, connection close | `"Status"`, `"Tap"`, `"Shutdown"`, `"Exit"` |
+| Run stdin | `{"Input": [byte, ...]}` or `"InputEof"` |
 
-### 7.7 Notifications (server → client)
+`CommandSpec` is itself tagged: `Check`, `Build`, `Fmt`, or `Query`. `Query` wraps
+the tagged query variants from
+[`crates/fai-driver/src/query.rs`](../crates/fai-driver/src/query.rs), such as
+`{"Query": {"Api": {"module": "Collections"}}}`. `RenderOpts.format` is `"Human"`
+or `"Json"`; it selects rendered CLI output, not the MessagePack framing.
 
-| Notification | Payload | Used by |
+### 7.7 Server messages and terminal responses
+
+| Variant | Decoded payload | Used by |
 |---|---|---|
-| `$/progress` | `{ id, message, done?, total? }` | build/check/test progress |
-| `$/diagnostic` | `{ id, diagnostic: Diagnostic }` | streamed diagnostics |
-| `$/testEvent` | `TestEvent` (per the `fai test` schema: `source`, `ordinal`, `location?`, `symbol?`, `kind`, `status`, `counterexample?`, `seed`, `trials`, `maxSize`) | `test` |
-| `$/junitReport` | complete JUnit XML string, requested by the test request's `junit` boolean, before its terminal response | `test --junit` |
-| `$/output` | `{ id, stream: "stdout"\|"stderr", chunk: bytes }` | `run` worker output; `test` human header and package notices |
-| `inputReady` | one credit for up to 8192 stdin bytes | server → run client |
-| `input` / `inputEof` | one credited byte chunk / terminal EOF | run client → server |
-| `$/log` | `{ level, message }` | daemon logs |
+| `Output` | `{"stream": "Stdout"\|"Stderr", "chunk": [byte, ...]}` | Run output; test header and package notices |
+| `TestEvent` | A serialized contract/named-test event, described in §5 | Test results |
+| `JunitReport` | Complete XML string, before the terminal response | Tests requesting `junit: true` |
+| `InputReady` | Unit variant: `"InputReady"`; grants one chunk of at most 8192 bytes or EOF | Run stdin |
+| `TapFrame` | `{"conn": number, "direction": "Inbound"\|"Outbound", "json": "..."}` | Passive traffic observation |
+| `Result` | A tagged `Response` | Terminal response |
 
-A streaming command emits notifications keyed by the request `id`, then sends the
-final `result`.
+`Response` is `Initialized`, `Command`, `Status`, `RunExit`, `Test`, `Error`, or
+the unit variant `Ok`. `Command` and `Test` contain a rendered
+`{"stdout": "...", "stderr": "...", "exit": 0}` record. For example, a successful
+run ends with `{"Result": {"RunExit": 0}}`; a shutdown acknowledgement is
+`{"Result": "Ok"}`. There are no separate progress, diagnostic, or log frame
+variants. Diagnostics are part of the rendered command/test result.
 
-A `tap` request is acknowledged with an `Ok` result and then turns the connection
-into a passive subscriber: the daemon streams a `tapFrame` (`{ conn, direction,
-json }`) for every frame read or written on any *other* connection — a JSON
-decode of live traffic — until the subscriber disconnects. Delivery is
-best-effort (a subscriber that falls behind drops frames rather than throttling
-the connection producing them).
+`Tap` is acknowledged with `{"Result": "Ok"}` and then turns the connection into
+a passive subscriber. Its `TapFrame` values describe other connections until it
+disconnects. Delivery is best-effort: a subscriber that falls behind drops frames
+rather than throttling the connection producing them.
 
 ### 7.8 Execution model (`run` / `test`)
 
 The daemon builds a portable IR bundle warm (reusing cached function code), then
 ships it to an **isolated worker process** that JIT-compiles and runs it. For
 `run`, the worker carries the requested capabilities; its stdout/stderr stream
-back as `$/output` (stdin is forwarded as needed — piped in v1; full PTY behavior
-is a later refinement) and its exit code (or crash/timeout) is the final
-`result`. For `test`, the worker checks each contract and streams a per-contract
-`$/testEvent`; if a contract aborts (a runtime trap) or exceeds the time limit,
-the supervisor records *that* contract as aborted and re-spawns a worker to resume
-after it, so one bad contract never aborts the run — the final `result` is the
-rendered report. Either way the daemon enforces timeouts (`FAI_RUN_TIMEOUT_MS` /
-`FAI_TEST_TIMEOUT_MS`) and a self-imposed CPU limit on each worker, so a runaway
-program can never take down the daemon.
+back as `Output` frames and its exit code (including crash/timeout status) is the
+terminal `RunExit` response. Stdin uses byte pipes and credit-based forwarding,
+not a PTY. For `test`, isolated workers execute selected contracts and named
+cases; the daemon streams `TestEvent` frames and returns the rendered report in
+`Result(Test(...))`. A contract crash or timeout is recorded without aborting
+the remaining selection. Worker timeout and resource controls are described in
+§5; isolation keeps a worker failure separate from the warm compiler database.
 
 A program that uses concurrency or networking runs on the runtime's M:N scheduler.
 Its **worker-thread count** defaults to the host's available parallelism — which
@@ -921,10 +957,12 @@ I/O, DNS) run on a separate pool sized up to `FAI_BLOCKING_THREADS` (default 512
 
 ### 7.9 Errors & security
 
-- Failures use JSON-RPC `error` objects; compiler-specific failures carry
-  `error.data.code = "FAInnnn"`.
-- The socket is local-only with `0600` permissions; the protocol never opens a
-  network port.
+- Protocol/handshake failures use `{"Result": {"Error": "message"}}`. Command
+  failures normally use the rendered `Command`/`Test` response with a nonzero
+  `exit`. With JSON rendering, their `stdout` contains the versioned diagnostic
+  envelope and stable `FAInnnn` codes; there is no JSON-RPC `error.data` object.
+- The transport is local-only; Unix socket files are set to `0600`. It is not
+  a remote service or a sandbox for running untrusted native code.
 
 ---
 
@@ -933,22 +971,23 @@ I/O, DNS) run on a separate pool sized up to `FAI_BLOCKING_THREADS` (default 512
 `fai query <subcommand>` is the **read-only** code-intelligence surface for
 agents. Shared behavior:
 
-- **Output is JSON by default** (`--human` for a readable rendering).
+- **Output is JSON by default.** The global `--message-format=human` selects the
+  human renderer, which currently also prints JSON for query results.
 - **Addressing:** name path (`Module.name`) or `file:line:col` (§3).
 - **Best-effort:** partial results are returned even when the workspace has
   errors.
-- **Bounding:** list-producing commands accept `--limit <n>` and report
-  `"truncated": true` when results were capped (result cursors may come later).
-- Served from the warm daemon, so answers are typically sub-millisecond.
+- **Bounding:** list-producing result schemas report `"truncated": true` when
+  capped. The current CLI does not expose the driver's optional `limit` inputs.
+- Queries reuse the warm daemon; latency depends on the query and workspace.
 
 ### `fai query symbols`
 List/search symbols.
 
-- **Options:** `--module <M>`, `--kind <k>`, `--match <pat>`, `--limit <n>`.
+- The current CLI lists workspace symbols without module/kind/name filters.
 - **Output:** `{ "schemaVersion": 1, "symbols": [SymbolRef], "truncated": bool }`
 
 ```
-$ fai query symbols --module Collections --kind function
+$ fai query symbols
 { "schemaVersion": 1, "symbols": [ { "path": "Collections.map", "kind": "function",
   "signature": "('a -> 'b) -> List 'a -> List 'b", "...": "..." } ], "truncated": false }
 ```
@@ -961,7 +1000,7 @@ Resolve to definition site(s).
 ### `fai query refs <target>`
 Find all use sites.
 
-- **Options:** `--include-definition`, `--kind <k>`, `--limit <n>`.
+- The current CLI takes only the target; inclusion/filter options are not exposed.
 - **Output:** `{ "schemaVersion": 1, "target": SymbolRef, "references": [Location], "truncated": bool }`
 
 ```
@@ -999,7 +1038,7 @@ boundary alone.
 Reverse dependencies (blast radius) of a symbol or module — what a change would
 affect. Computed from the same dependency graph the incremental engine maintains.
 
-- **Options:** `--transitive`, `--limit <n>`.
+- **Options:** `--transitive`.
 - **Output:** `{ "schemaVersion": 1, "target": SymbolRef, "dependents": [SymbolRef], "transitive": bool, "truncated": bool }`
 
 ### `fai query callers <symbol>` / `fai query callees <symbol>`
@@ -1011,7 +1050,7 @@ Inbound / outbound call edges (call hierarchy).
 Hoogle-style search: find functions whose type matches a pattern (unification up
 to row polymorphism), e.g. `List 'a -> Int`.
 
-- **Options:** `--limit <n>`.
+- The current CLI takes the type pattern without a result-limit flag.
 - **Output:** `{ "schemaVersion": 1, "query": string, "results": [ { "symbol": SymbolRef, "type": TypeRepr, "score": number } ], "truncated": bool }`
 
 ### `fai query caps <symbol>`
@@ -1052,7 +1091,10 @@ These are treated as **public, versioned APIs**:
 - The **JSON output schemas** (`schemaVersion`).
 - The **diagnostic codes** `FAInnnn` (never renumbered; every code is documented
   in the catalog **`ERROR_CODES.md`**).
-- The **daemon protocol** (`protocolVersion`) and **query method names**.
+- The **query command names** and their structured results.
 
-Within a major version, changes are additive and backward-compatible. Breaking
-changes bump the relevant version number and are documented in the changelog.
+Breaking output-schema changes bump the relevant schema version and are documented
+in the changelog. The daemon protocol is an internal, separately versioned
+compiler interface: incompatible wire changes increment `PROTOCOL_VERSION`, and
+clients must match the compiler version and complete build identity as well.
+It does not promise interoperability across compiler releases or builds.

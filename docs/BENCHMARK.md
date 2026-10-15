@@ -27,9 +27,10 @@ lane and can preview the existing exported data directly.
   languages execute native AOT programs in persistent workers, with runtime input
   windows, identical batches and explicit harness-floor measurements.
 - **End-to-end AOT:** `algorithms_aot` includes process startup, one runtime-sized
-  workload, output and exit. `algorithms_mem` measures isolated processes at both
-  registered sizes and multiple whole-workload repetition counts, with a matched
-  floor execution of each exact binary.
+  workload, output and exit. `algorithms_mem` measures isolated processes over
+  independently declared memory-size curves and whole-workload repetition counts,
+  with a matched floor execution of each exact binary. These curves can contain
+  more than two sizes and are not the compute suite's small/large inputs.
 - **Compiler allocation attribution:** `allocation_design` compiles identical Fai
   source with one optimization disabled. Optimized instrumented AOT executions
   expose allocation requests, live object storage, backing storage and copies.
@@ -254,8 +255,9 @@ Performance is guarded two different ways, for two different reasons.
 `crates/fai-tests/tests/perf_guards.rs` is the **regression gate**. It asserts the
 *incrementality* properties the architecture promises using the query-execution
 **event log** — a deterministic count of which salsa queries re-ran — rather than
-wall-clock time. Because it counts query executions, it is immune to CI-runner
-noise and gates in the ordinary `cargo test` run.
+wall-clock time. Because it counts query executions, it is independent of
+CI-runner timing noise and runs in the required Linux nextest suite when compiler
+checks are selected.
 
 The headline property: the work to re-check after a localized edit is
 **independent of total workspace size** (the cross-module firewall). For example,
@@ -272,11 +274,17 @@ The [divan] benches under `crates/fai-tests/benches/` (and
 are **not a CI pass/fail gate** — shared runners are too noisy for that, which is
 precisely why the deterministic guards above exist.
 
-To keep them from bitrotting, the `CI` workflow still **compiles** them
-(`build --all-targets`). The separate **Benchmarks workflow** is disabled by
-default and has a manual-only trigger. An intentional run after re-enabling it
-publishes an informational report. It never fails on timings — only when a benchmark
-crashes or (for the Fai-vs-Rust algorithm benches) computes a wrong result.
+When compiler checks are selected, the `CI` lint job checks benchmark targets with
+`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+on Linux. Test jobs build through `scripts/compiler.py build-tests` and nextest
+using the `ci` profile; macOS/Windows use the narrower cross-platform test
+selection. They do not run a blanket cross-platform `cargo build --all-targets`
+benchmark gate.
+
+The separate **Benchmarks workflow** is disabled by default and has a manual-only
+trigger. An intentional run after re-enabling it builds and executes the benches
+and publishes an informational report. It never fails on timing thresholds;
+build failures, crashes, invalid evidence, or wrong results can fail the run.
 
 ## Running the benches
 
@@ -345,7 +353,7 @@ output with the `bench-summary` tool
 - A benchmark *case* label that looks like a source location (`<path>.fai#Lnn`,
   produced by the real-world language-server benches) is **linked** to the exact
   file and line on the forge, so a report row points at the code it measured.
-- Warm `WARMSTAT` records are rendered first, with per-invocation time, batch size,
+- Warm `WARMSTAT2` records are rendered first, with per-invocation time, batch size,
   floor fractions and reliability status. The JSON `warmAot` array retains every
   raw batch/floor duration and its pass metadata.
 - Other comparison groups get a ratio table within their own scope. Historical
@@ -424,9 +432,10 @@ performance change is measured broadly rather than against a handful of cases:
 - **interface dispatch** — `interface_dispatch`.
 
 The associative-container workloads use the unordered `HashDict`/`HashSet`
-(O(1)-average open-addressing tables), so they no longer degenerate on sorted
-insertion the way the ordered BST-backed `Dict`/`Set` would; their sizes are kept
-modest only for stable medians.
+(O(1)-average open-addressing tables). The ordered `Dict`/`Set` are weight-balanced
+trees with O(log n) operations regardless of insertion order; they remain useful
+for sorted traversal. The hash workloads compare native table policies, not a
+balanced tree against a hash table.
 
 ### "JIT" and "AOT" describe how *Fai* is compiled — not Rust
 
@@ -491,7 +500,7 @@ floor-limited despite batching; those rows cannot prove compute parity.
 Use the default baseline target CPU for Rust, the portable Fai AOT ISA, and the
 recorded OCaml configuration; record any CPU/profile override as another
 configuration. The sampler's `WARMMETA` and `AOTARTIFACT` records identify its
-configuration and worker paths, while `WARMSTAT` carries raw batch and floor
+configuration and worker paths, while `WARMSTAT2` carries raw batch and floor
 durations. The CI artifact retains worker executables, source and compiler data.
 
 ### `algorithms_aot` — delivered binaries, end to end
@@ -510,9 +519,9 @@ durations. The CI artifact retains worker executables, source and compiler data.
   installed; the Benchmarks workflow installs it.
 
 Each timed iteration is a whole process: startup, the workload, print, exit.
-(Skipped on Windows, which needs the MSVC environment for the build/link + spawn
-path; it still compiles there so `--all-targets` keeps it from bitrotting, and the
-workflow runs on Linux.)
+(Execution is skipped on Windows. The manual workflow builds and runs this suite
+on Linux; required Windows CI targets the cross-platform tests, not benchmark
+execution.)
 
 Native worker fixtures use the same workload definitions with a persistent
 line protocol. Their first line supplies a window of 1–64 nonnegative sizes;
@@ -579,7 +588,8 @@ Reading peak RSS:
 - **Linux-only.** Peak RSS is read from `/proc`, so the table is populated by the
   Linux Benchmarks workflow; on other platforms (and on Windows, which also skips
   the build/link + spawn path) the bench prints a skip note and reports no rows.
-  The bench still compiles everywhere so `--all-targets` keeps it from bitrotting.
+  Required Linux lint checks cover the benchmark target; native measurement runs
+  belong to the manual workflow or an explicit local invocation.
 
 ### The OCaml baseline
 
@@ -819,9 +829,11 @@ benchmark wrappers supply that registered size at runtime on every side. To add 
 reference and a registry entry in `algorithms.rs`, add the `samples/algorithms/`
 module with the matching baked size, add a match arm in `ocaml/baseline.ml`, add a
 `validate` test in `tests/algorithms.rs`, list it in both `algorithm_benches!`
-macros, and add its native-worker dispatch and `aot_benchmarks` case. The
-`algorithms_mem` bench and the `algo-baseline` binary iterate the
-registry directly, so they pick up the new algorithm automatically; the
+macros, and add its native-worker dispatch and `aot_benchmarks` case. Add the
+reviewed workload contract in `crates/fai-bench-workloads/src/contracts.rs` and an
+independent size curve in `crates/fai-bench-workloads/src/memory_workloads.rs`.
+The `algorithms_mem` bench and `algo-baseline` binary iterate the registry, but a
+missing contract or memory profile still fails validation. The
 `registry_is_fully_covered` test guards the hand-maintained lists — it fails if a
 registered algorithm is missing from either runtime bench, from the OCaml
 baseline's dispatch, or from the validation tests, and `ocaml_baseline_matches_oracle`
@@ -859,8 +871,9 @@ verification (a build or run failure crashes the bench). The leaves:
   server task echoes a one-byte message and the client sends/reads it back N times,
   driving the reactor's park/wake on every round-trip.
 
-Like `algorithms_aot`, the suite is skipped on Windows (the build/link + spawn
-path), still compiling there so `build --all-targets` keeps it from bitrotting.
+Like `algorithms_aot`, execution of this suite is skipped on Windows. The manual
+Linux benchmark workflow builds and runs it; required Linux all-target lint checks
+also check its source.
 
 ## Language-server benchmarks
 
