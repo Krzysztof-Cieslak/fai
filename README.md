@@ -105,10 +105,11 @@ The clock, randomness, environment, file system, console, and network are explic
 capabilities, passed from `main` through ordinary values. A function can request
 only the fields it needs using an open record type.
 
-Each function arrow also carries an **effect row**, written after `/`, describing
-the effects a call may perform. Effects are inferred and must be accounted for in
-public signatures; a bare arrow is pure. Effect bounds can be conservative through
-abstractions. Holding a capability is pure; invoking its methods incurs effects.
+A function's signature also describes the effects a call may perform, using an
+**effect row** written after `/`. Effects are inferred and must be accounted for
+in public signatures; a function type without an effect annotation is pure.
+Effect bounds can be conservative through abstractions. Holding a capability is
+pure; invoking its methods incurs effects.
 
 ```fai
 module Capabilities
