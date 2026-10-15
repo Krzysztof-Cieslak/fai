@@ -252,6 +252,52 @@ class InstalledCompilerTests(PackageFixture):
             package_release.install_compiler(self.value, self.root.parent / "compiler", self.root)
 
 
+class ValidationInvocationTests(PackageFixture):
+    def setUp(self):
+        super().setUp()
+        self.plan = self.reports()[0]["plan"]
+        self.info = self.reports()[0]["compiler"]
+        self.output = self.root.parent / "qualification.json"
+        self.real_process_run = subprocess.run
+        self.status = 0
+        self.change_source = False
+        self.commands = []
+
+    def execute(self, command, **kwargs):
+        if command[0] == "published-fai":
+            self.commands.append(command)
+            if self.change_source:
+                self.write("packages/alpha/README.md", "changed by a test")
+            return subprocess.CompletedProcess(command, self.status, json.dumps(self.plan), "located validation error")
+        return self.real_process_run(command, **kwargs)
+
+    def validate(self):
+        with mock.patch.object(package_release, "require_merged"), \
+             mock.patch.object(package_release, "install_compiler", return_value=(Path("published-fai"), {}, self.info)), \
+             mock.patch.object(subprocess, "run", side_effect=self.execute):
+            return package_release.validate(self.value, self.root.parent / "compiler", self.output, self.root)
+
+    def test_validation_uses_exact_compiler_and_read_only_publisher(self):
+        result = self.validate()
+        self.assertEqual(result["request"], self.value)
+        self.assertEqual(self.commands[0][1], "+0.1.0")
+        self.assertIn("--plan", self.commands[0])
+        self.assertTrue(self.output.is_file())
+        self.assertEqual(self.git("tag"), "")
+
+    def test_failed_validation_preserves_compiler_diagnostics(self):
+        self.status = 3
+        with self.assertRaisesRegex(release.ReleaseError, "located validation error"):
+            self.validate()
+        self.assertFalse(self.output.exists())
+
+    def test_validation_cannot_publish_evidence_after_a_source_edit(self):
+        self.change_source = True
+        with self.assertRaisesRegex(release.ReleaseError, "clean committed"):
+            self.validate()
+        self.assertFalse(self.output.exists())
+
+
 class PublicationTests(PackageFixture):
     def setUp(self):
         super().setUp()
