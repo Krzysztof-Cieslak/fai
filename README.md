@@ -202,7 +202,9 @@ file I/O, networking, HTTP/TLS, and date/time types. Optional
 - [LLM clients and a coding-assistant example](packages/llm/README.md#coding-assistant).
 
 Packages are declared in `fai.toml` and imported explicitly; they are not embedded
-in the compiler. See the [package guide](docs/PACKAGES.md) to add dependencies.
+in the compiler. The initial package releases require Fai 0.1.x. See the
+[package guide](docs/PACKAGES.md) to add dependencies and each package's README
+for its installation command and changelog.
 
 ## Tooling
 
