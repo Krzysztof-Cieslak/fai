@@ -166,12 +166,17 @@ fai run -C packages http-client/examples/DownloadCheck.fai -- /tmp/download-chec
 fai run -C packages http-client/examples/Download.fai -- https://example.com/data output.bin
 ```
 
-The lifecycle checks cover early return while the pool remains open, cancellation,
+The lifecycle checks cover early return while the pool remains open, cancellation
+before response headers and during body consumption,
 deadline expiry during a stalled body, exactly one callback after a retry, a stream
 larger than the configured buffering limit, and consumer failures. They also check
 deadline expiration inside callbacks and retry delays, and status rejection before
 callback invocation. `DownloadCheck` streams a loopback response to the supplied
 file and verifies its complete UTF-8 contents, covering FileSystem effect forwarding.
+
+Cancellation checks synchronize on protocol progress, not sleeps: the server
+drains a complete request, and body cancellation waits until the client has read
+the response headers. Both cases require the cancellation result and peer EOF.
 
 ## Reading server-sent events
 
