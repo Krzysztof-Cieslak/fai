@@ -37,6 +37,18 @@ path = "uuid"
 path = "uuid"
 
 [[packages]]
+id = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
+version = "0.1.0"
+manifest-fingerprint = "blake3:a72f40a1ae528b250dbaf4305c667e55f2240ed6405ee47e75db33de120c3fb0"
+
+[packages.logical]
+git = "https://github.com/krzysztof-cieslak/fai.git"
+subdir = "packages/unicode"
+
+[packages.source]
+path = "unicode"
+
+[[packages]]
 id = "p-142643f7d2c212ebc797b3e85eb03db53e9d918c3ef7a537ee4cab97aed036d0"
 version = "0.1.0"
 manifest-fingerprint = "blake3:29828d1078071db41a9b4e53f9ebf7b96d1e39a346b845fc849f558ab28d995f"
@@ -392,6 +404,17 @@ path = "tui"
 path = "tui"
 
 [[packages]]
+id = "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b"
+version = "0.1.0"
+manifest-fingerprint = "blake3:113337db71370261f2dc00bd24f5ba363e1fb731d2a7b620719f245abf35aa4b"
+
+[packages.logical]
+path = "diff"
+
+[packages.source]
+path = "diff"
+
+[[packages]]
 id = "p-9e8fa41ccdd01407b0fe07711249293075798e6392a18804f0c3912ba447258e"
 version = "0.1.0"
 manifest-fingerprint = "blake3:ac74761554ee62a8edd1df163a37ab8c4d5ba01f764125f96261956ae41a9d2d"
@@ -529,6 +552,17 @@ path = "sqlite"
 path = "sqlite"
 
 [[packages]]
+id = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+version = "0.1.0"
+manifest-fingerprint = "blake3:84655e1c96e5355db23727448b1026692ad422eda85b5982495c05e19472e627"
+
+[packages.logical]
+path = "diff/examples"
+
+[packages.source]
+path = "diff/examples"
+
+[[packages]]
 id = "p-d56ce2bf7b3531d2df865f19be8a6d5d026236365e5814be6bd50a866e4939b5"
 version = "0.1.0"
 manifest-fingerprint = "blake3:70eeff34c28bf3e559bcdf721529bbcefd89bfa873db9f95185d78be362a4c9a"
@@ -572,6 +606,18 @@ path = "decimal"
 
 [packages.source]
 path = "decimal"
+
+[[packages]]
+id = "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a"
+version = "0.1.0"
+manifest-fingerprint = "blake3:113337db71370261f2dc00bd24f5ba363e1fb731d2a7b620719f245abf35aa4b"
+
+[packages.logical]
+git = "https://github.com/krzysztof-cieslak/fai.git"
+subdir = "packages/diff"
+
+[packages.source]
+path = "diff"
 
 [[packages]]
 id = "p-f2588a5eed16965c0187486d88eb85484a8b64254dee776efb4ac9bf0aecfb24"
@@ -1348,6 +1394,261 @@ from = "p-b6c2cfca38ab13a8f56034ed3c2d9eec78a7926607296a6e2f25bead99f9becf"
 alias = "uuid"
 kind = "normal"
 to = "p-1b25d13cd2f4cce7904de4c3e3a1d843c0a5ffac3ab1642362fdf8a6e1c6ea48"
+
+[[graphs]]
+id = "g-51d7d6c72910f211c68a65b6e0a933af67e65401f583b52b58ac8a0d688bbcf3"
+root = "diff"
+target = "aarch64-apple-darwin"
+root-package = "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b"
+input-fingerprint = "blake3:e93376ef9e43539bb0f66851d18e9b4f7f608d54b238340b8fbb5a9b2d5483f2"
+packages = [
+    "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4",
+    "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b",
+]
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs.edges]]
+from = "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b"
+alias = "unicode"
+kind = "normal"
+to = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
+
+[[graphs]]
+id = "g-df133d192432ce58e4d9f78a61f09ed43cb1aa7625840bc4ce6fc412c4a62002"
+root = "diff"
+target = "x86_64-pc-windows-msvc"
+root-package = "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b"
+input-fingerprint = "blake3:5118fdaf3a3f5746504a7809b8a442359754e93418983a9104bcb21dbd75d035"
+packages = [
+    "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4",
+    "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b",
+]
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs.edges]]
+from = "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b"
+alias = "unicode"
+kind = "normal"
+to = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
+
+[[graphs]]
+id = "g-36dbeb4e63508d4367e0a7645da3b37c5d28a44200556c68cb9d6dde23b6995f"
+root = "diff"
+target = "x86_64-unknown-linux-gnu"
+root-package = "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b"
+input-fingerprint = "blake3:a5eabf49f790fb07d56d778a704d98673a6de286b0aa6c038c335a90420a7b3c"
+packages = [
+    "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4",
+    "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b",
+]
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs.edges]]
+from = "p-9cead5d406948a6143bed15935e0fab8d48e1fa3e576b3343ce1b3e971c2379b"
+alias = "unicode"
+kind = "normal"
+to = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
+
+[[graphs]]
+id = "g-97a5836f0fb19176d88bfb63dcd20639fcc7de2389983229745d7b2fb751da40"
+root = "diff/examples"
+target = "aarch64-apple-darwin"
+root-package = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+input-fingerprint = "blake3:2b985b8350fa2f668e4461a7a6abf6969cfe2bc7298a7bf5b6a0cf424a20dd78"
+packages = [
+    "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4",
+    "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9",
+    "p-616abdd5f4e5ba9f0cfaa38cab574494ef4f3cd2d1f48297e4bd6d2040f38e06",
+    "p-834550b683a44178449240d58df9b3f98c03a7ad20d3a6884ab59db17115d800",
+    "p-b1faf26774164a1fad217878e7aa719c7ef4dd4a451202461f590791a402bc3f",
+    "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258",
+    "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a",
+]
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs.edges]]
+from = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
+alias = "encoding"
+kind = "normal"
+to = "p-b1faf26774164a1fad217878e7aa719c7ef4dd4a451202461f590791a402bc3f"
+
+[[graphs.edges]]
+from = "p-616abdd5f4e5ba9f0cfaa38cab574494ef4f3cd2d1f48297e4bd6d2040f38e06"
+alias = "tui"
+kind = "normal"
+to = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "cli"
+kind = "normal"
+to = "p-834550b683a44178449240d58df9b3f98c03a7ad20d3a6884ab59db17115d800"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "diff"
+kind = "normal"
+to = "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "process"
+kind = "normal"
+to = "p-616abdd5f4e5ba9f0cfaa38cab574494ef4f3cd2d1f48297e4bd6d2040f38e06"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "tui"
+kind = "normal"
+to = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "unicode"
+kind = "normal"
+to = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
+
+[[graphs.edges]]
+from = "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a"
+alias = "unicode"
+kind = "normal"
+to = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
+
+[[graphs]]
+id = "g-52fd070e3df88e864aa7fd71689e14a0f759877635bb19855e39c36a69bb02c7"
+root = "diff/examples"
+target = "x86_64-pc-windows-msvc"
+root-package = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+input-fingerprint = "blake3:baa0e7f94183e28b49e53d99029545d98df9dd10d59376c856cd3a1c4ffca84f"
+packages = [
+    "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4",
+    "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9",
+    "p-616abdd5f4e5ba9f0cfaa38cab574494ef4f3cd2d1f48297e4bd6d2040f38e06",
+    "p-834550b683a44178449240d58df9b3f98c03a7ad20d3a6884ab59db17115d800",
+    "p-b1faf26774164a1fad217878e7aa719c7ef4dd4a451202461f590791a402bc3f",
+    "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258",
+    "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a",
+]
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs.edges]]
+from = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
+alias = "encoding"
+kind = "normal"
+to = "p-b1faf26774164a1fad217878e7aa719c7ef4dd4a451202461f590791a402bc3f"
+
+[[graphs.edges]]
+from = "p-616abdd5f4e5ba9f0cfaa38cab574494ef4f3cd2d1f48297e4bd6d2040f38e06"
+alias = "tui"
+kind = "normal"
+to = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "cli"
+kind = "normal"
+to = "p-834550b683a44178449240d58df9b3f98c03a7ad20d3a6884ab59db17115d800"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "diff"
+kind = "normal"
+to = "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "process"
+kind = "normal"
+to = "p-616abdd5f4e5ba9f0cfaa38cab574494ef4f3cd2d1f48297e4bd6d2040f38e06"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "tui"
+kind = "normal"
+to = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "unicode"
+kind = "normal"
+to = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
+
+[[graphs.edges]]
+from = "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a"
+alias = "unicode"
+kind = "normal"
+to = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
+
+[[graphs]]
+id = "g-c35719c25a8ba4c1c3e0071b33a76074aa0f84d8d4a0fbadf304e4e478d1be51"
+root = "diff/examples"
+target = "x86_64-unknown-linux-gnu"
+root-package = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+input-fingerprint = "blake3:66a955c39e210fa2826dcad05dd48ea42f18417e8d7e518b421f7729ef5b5df6"
+packages = [
+    "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4",
+    "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9",
+    "p-616abdd5f4e5ba9f0cfaa38cab574494ef4f3cd2d1f48297e4bd6d2040f38e06",
+    "p-834550b683a44178449240d58df9b3f98c03a7ad20d3a6884ab59db17115d800",
+    "p-b1faf26774164a1fad217878e7aa719c7ef4dd4a451202461f590791a402bc3f",
+    "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258",
+    "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a",
+]
+branches = []
+resolved-with = "0.0.1"
+
+[[graphs.edges]]
+from = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
+alias = "encoding"
+kind = "normal"
+to = "p-b1faf26774164a1fad217878e7aa719c7ef4dd4a451202461f590791a402bc3f"
+
+[[graphs.edges]]
+from = "p-616abdd5f4e5ba9f0cfaa38cab574494ef4f3cd2d1f48297e4bd6d2040f38e06"
+alias = "tui"
+kind = "normal"
+to = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "cli"
+kind = "normal"
+to = "p-834550b683a44178449240d58df9b3f98c03a7ad20d3a6884ab59db17115d800"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "diff"
+kind = "normal"
+to = "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "process"
+kind = "normal"
+to = "p-616abdd5f4e5ba9f0cfaa38cab574494ef4f3cd2d1f48297e4bd6d2040f38e06"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "tui"
+kind = "normal"
+to = "p-2893c6ee62987785829334ca4616411b59de55c4ca85bdb34fe4425eb2b183e9"
+
+[[graphs.edges]]
+from = "p-caa12ec2bdcf18fa0b7f89e2da6e19c714ac34910913799a11c33f9963c6c258"
+alias = "unicode"
+kind = "normal"
+to = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
+
+[[graphs.edges]]
+from = "p-f01dcfefae5c8aaec1636930357c6220d9f7813fdeecb4b4f95761927c42a91a"
+alias = "unicode"
+kind = "normal"
+to = "p-0a41a9fcd7ed4099a7b7ee023db588c4b77ff2263a4948f0b00835b1c1aecdf4"
 
 [[graphs]]
 id = "g-772b5f07d8f2ec5951c1896bbae4b39354db43e08dfa74a3b1a932b76dbf96ad"

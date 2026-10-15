@@ -1,0 +1,28 @@
+module DiffCli
+
+import cli.Args
+import diff.Diff
+import diff.DiffText
+
+public main : Runtime -> Unit / { Console, Env, FileSystem }
+let main env =
+  match Args.parse DiffDemo.arguments (env.env.args ()) with
+  | Err error -> env.console.writeError (Args.errorToString error ++ "\n")
+  | Ok (Args.Help text) -> env.console.write text
+  | Ok (Args.Version text) -> env.console.writeLine text
+  | Ok (Args.Parsed config) ->
+    match (DiffDemo.read env.fs config.oldPath, DiffDemo.read env.fs config.newPath) with
+    | (Err error, _) -> env.console.writeError (error ++ "\n")
+    | (_, Err error) -> env.console.writeError (error ++ "\n")
+    | (Ok old, Ok new) ->
+      match DiffDemo.compare config old new with
+      | Err error -> env.console.writeError (error ++ "\n")
+      | Ok comparison ->
+        let warning =
+          if DiffText.quality comparison = Diff.Coarse then
+            env.console.writeError "coarse diff: unresolved regions were replaced\n"
+          else
+            ()
+        match DiffDemo.unified config.oldPath config.newPath comparison with
+        | Err error -> env.console.writeError (error ++ "\n")
+        | Ok text -> env.console.write text

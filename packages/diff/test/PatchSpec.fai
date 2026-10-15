@@ -1,0 +1,81 @@
+module PatchSpec
+
+let patch = "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n"
+
+let parse text = Result.withDefault Array.empty (UnifiedDiff.parse text)
+
+let applied mode text patch =
+  match UnifiedDiff.parse patch with
+  | Err _ -> None
+  | Ok files ->
+    match Patch.applyFileWith Patch.limits mode (Array.unsafeGet 0 files) (Some text) with
+    | Err _ -> None
+    | Ok result -> result.text
+example: applied Patch.Strict "a\nb\n" patch = Some "a\nc\n"
+example: applied Patch.Strict "x\na\nb\n" patch = None
+example: applied (Patch.Relocate 3) "x\na\nb\n" patch = Some "x\na\nc\n"
+example: applied (Patch.Relocate 10) "x\na\nb\na\nb\n" patch = None
+example: (match UnifiedDiff.parse patch with
+| Err _ -> false
+| Ok parsed -> Result.isOk (UnifiedDiff.toString parsed))
+example: UnifiedDiff.reverse (UnifiedDiff.reverse (parse patch)) = parse patch
+example: (match UnifiedDiff.toString (UnifiedDiff.reverse (parse patch)) with
+| Err _ -> false
+| Ok reverse -> applied Patch.Strict "a\nc\n" reverse = Some "a\nb\n")
+example: UnifiedDiff.parse "--- a\n+++ b\n@@ -1,2 +1,1 @@\n-x\n+y\n" |> Result.isErr
+example: UnifiedDiff.parse "--- a\n+++ b\n@@ -9223372036854775808 +1 @@\n-x\n+y\n" |> Result.isErr
+example: UnifiedDiff.parse "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n" |> Result.isErr
+example: UnifiedDiff.parse "diff --git a/x b/x\nGIT binary patch\n" |> Result.isErr
+example: UnifiedDiff.parse "garbage\n" |> Result.isErr
+example: UnifiedDiff.parse "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y" |> Result.isErr
+example: applied Patch.Strict "a\r\nb\r\n" "--- a\n+++ b\n@@ -1,2 +1,2 @@\n a\r\n-b\r\n+c\r\n" = Some "a\r\nc\r\n"
+example: applied Patch.Strict "x" "--- a\n+++ b\n@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+y\n\\ No newline at end of file\n" = Some "y"
+example: applied Patch.Strict "x\n" "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n\\ No newline at end of file\n" = Some "y"
+example: (match UnifiedDiff.parse "--- /dev/null\n+++ x\n@@ -0,0 +1 @@\n+a\n" with
+| Err _ -> false
+| Ok files ->
+  Result.map (fun result ->
+    result.text) (Patch.applyFile (Array.unsafeGet 0 files) None) = Ok (Some "a\n"))
+example: (match UnifiedDiff.parse "--- x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n" with
+| Err _ -> false
+| Ok files ->
+  Result.map (fun result ->
+    result.text) (Patch.applyFile (Array.unsafeGet 0 files) (Some "a\n")) = Ok None)
+
+let roundtrip old new =
+  match DiffText.compare old new with
+  | Err _ -> false
+  | Ok comparison ->
+    match UnifiedDiff.fromComparison (Some "file") (Some "file") comparison with
+    | Err _ -> false
+    | Ok files ->
+      let forward =
+        Result.map (fun result ->
+          result.text) (Patch.applyFile (Array.unsafeGet 0 files) (Some old))
+      let reverse =
+        Result.map (fun result ->
+          result.text) (Patch.applyFile (Array.unsafeGet 0 (UnifiedDiff.reverse files)) (Some new))
+      forward = Ok (Some new) && reverse = Ok (Some old)
+forall old new: roundtrip old new
+forall old new: roundtrip (String.join "\n" (List.take 8 old)) (String.join "\n" (List.take 8 new))
+example: roundtrip "a\nb\nc\n" "a\nx\nc\n"
+example: roundtrip "" "x"
+example: roundtrip "x" ""
+example: roundtrip "\n" ""
+example: roundtrip "" "\n"
+example: roundtrip "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\n" "x\nb\nc\nd\ne\nf\ng\nh\ni\nj\ny\n"
+
+let ignoredPatch =
+  match DiffText.compareWith DiffText.limits { DiffText.options with
+    case = DiffText.UnicodeInsensitive
+  } "Straße\n" "STRASSE\n" with
+  | Err _ -> false
+  | Ok comparison ->
+    match UnifiedDiff.fromComparison (Some "file") (Some "file") comparison with
+    | Err _ -> false
+    | Ok files ->
+      Result.map (fun result ->
+        result.text) (Patch.applyFile (Array.unsafeGet 0 files) (Some "Straße\n")) = Ok (Some "STRASSE\n")
+example: ignoredPatch
+example: UnifiedDiff.parse "--- /dev/null\n+++ x\n@@ -1 +1 @@\n-x\n+y\n" |> Result.isErr
+example: UnifiedDiff.parse "--- x\n+++ /dev/null\n@@ -1 +1 @@\n-x\n+y\n" |> Result.isErr

@@ -1,0 +1,318 @@
+module Patch
+
+/// Strict uses declared positions. Relocate searches at most this many lines away.
+public type Mode =
+  | Strict
+  | Relocate Int
+
+/// Application limits bound snapshots, output, candidate search and patch models.
+public type Limits = {
+  maxInputBytes : Int,
+  maxOutputBytes : Int,
+  maxSearchWork : Int,
+  patch : UnifiedDiff.Limits
+}
+
+/// A successful hunk shift, using zero-based original-source line indexes.
+public type Relocation = { actual : Int, declared : Int, hunk : Int }
+
+/// None means successful file deletion; no filesystem writes are performed.
+public type Applied = { relocations : Array Relocation, text : Option String }
+
+/// Proposed batch update for a caller-mapped path identifier.
+public type Update = { path : String, relocations : Array Relocation, text : Option String }
+
+/// Stable failure categories; ambiguity never selects an arbitrary candidate.
+public type ErrorKind =
+  | InvalidPatch
+  | InvalidOptions
+  | MissingFile
+  | ExistingFile
+  | Mismatch
+  | Ambiguous
+  | ResourceLimit
+  | PathConflict
+
+/// A failed hunk/file and a bounded human description. No partial batch is returned.
+public type Error = { hunk : Option Int, kind : ErrorKind, message : String, path : Option String }
+
+/// Default per-file source limit, aggregate output limit, and shared search budget.
+public limits : Limits
+let limits = {
+  maxInputBytes = 16777216,
+  maxOutputBytes = 16777216,
+  maxSearchWork = 5000000,
+  patch = UnifiedDiff.limits
+}
+
+/// Render a failure with its optional mapped path and zero-based hunk index.
+public errorToString : Error -> String
+let errorToString error =
+  (match error.path with
+  | None -> ""
+  | Some path -> path ++ ": ") ++ error.message ++ (match error.hunk with
+  | None -> ""
+  | Some index -> " (hunk " ++ Int.toString index ++ ")")
+
+let error kind hunk message = { hunk = hunk, kind = kind, message = message, path = None }
+
+let at start count = if count = 0 then start else start - 1
+
+payload : UnifiedDiff.Line -> String
+let payload line = line.text ++ if line.newline then "\n" else ""
+
+oldLines : UnifiedDiff.Hunk -> Array UnifiedDiff.Line
+let oldLines hunk = Array.filter (fun line -> line.kind <> UnifiedDiff.Add) hunk.lines
+
+newLines : UnifiedDiff.Hunk -> Array UnifiedDiff.Line
+let newLines hunk = Array.filter (fun line -> line.kind <> UnifiedDiff.Remove) hunk.lines
+
+matches : Array String -> Array UnifiedDiff.Line -> Int -> Int -> Int -> Result (Bool * Int) Error
+let matches source expected position index remaining =
+  if position < 0 || position > Array.length source - Array.length expected then
+    Ok (false, remaining)
+  else if index = Array.length expected then
+    Ok (true, remaining)
+  else if remaining = 0 then
+    Err (error ResourceLimit None "patch search work limit exceeded")
+  else if Array.unsafeGet (position + index) source <> payload (Array.unsafeGet index expected) then
+    Ok (false, remaining - 1)
+  else
+    matches source expected position (index + 1) (remaining - 1)
+
+findUnique : Array String -> Array UnifiedDiff.Line -> Int -> Int -> Option Int -> Int -> Result (Int * Int) Error
+let findUnique source expected position high found remaining =
+  if position > high then
+    match found with
+    | None -> Err (error Mismatch None "old-side hunk text does not match the source")
+    | Some position -> Ok (position, remaining)
+  else
+    match matches source expected position 0 remaining with
+    | Err error -> Err error
+    | Ok (false, remaining) -> findUnique source expected (position + 1) high found remaining
+    | Ok (true, remaining) ->
+      match found with
+      | Some _ -> Err (error Ambiguous None "more than one exact hunk placement exists")
+      | None -> findUnique source expected (position + 1) high (Some position) remaining
+
+locate : Mode -> Array String -> Array UnifiedDiff.Line -> Int -> Int -> Int -> Result (Int * Int) Error
+let locate mode source expected declared minimum remaining =
+  match matches source expected declared 0 remaining with
+  | Err error -> Err error
+  | Ok (true, remaining) ->
+    if declared < minimum then
+      Err (error Mismatch None "hunk overlaps an earlier applied hunk")
+    else
+      Ok (declared, remaining)
+  | Ok (false, remaining) ->
+    match mode with
+    | Strict -> Err (error Mismatch None "old-side hunk text differs at the declared position")
+    | Relocate radius ->
+      if Array.isEmpty expected then
+        Err (error Mismatch None "a context-free insertion cannot be relocated")
+      else
+        let low = if declared < radius then 0 else declared - radius
+        let low = if low < minimum then minimum else low
+        let maximum = Array.length source - Array.length expected
+        let high =
+          if declared >= maximum || radius >= maximum - declared then maximum else declared + radius
+        findUnique source expected low high None remaining
+
+type Build = {
+  closed : Bool,
+  cursor : Int,
+  delta : Int,
+  pieces : List String,
+  relocations : Array Relocation,
+  remaining : Int,
+  size : Int
+}
+
+appendText : Limits -> String -> Build -> Result Build Error
+let appendText limits text state =
+  let size = Bytes.length (Bytes.fromString text)
+  if state.closed && size > 0 then
+    Err (error InvalidPatch None "a no-newline payload must be the final output line")
+  else if size > limits.maxOutputBytes - state.size then
+    Err (error ResourceLimit None "patched output exceeds byte limit")
+  else
+    Ok { state with
+      closed = state.closed || (size > 0 && String.drop (String.length text - 1) text <> "\n"),
+      pieces = text :: state.pieces,
+      size = state.size + size
+    }
+
+appendRange : Limits -> Array String -> Int -> Int -> Build -> Result Build Error
+let appendRange limits source first finish state =
+  if first = finish then
+    Ok state
+  else
+    match appendText limits (Array.unsafeGet first source) state with
+    | Err error -> Err error
+    | Ok state -> appendRange limits source (first + 1) finish state
+
+applyHunks : Limits -> Mode -> Array String -> Array UnifiedDiff.Hunk -> Int -> Build -> Result Build Error
+let applyHunks limits mode source hunks index state =
+  if index = Array.length hunks then
+    appendRange limits source state.cursor (Array.length source) state
+  else
+    let hunk = Array.unsafeGet index hunks
+    let declared = at hunk.oldStart hunk.oldCount
+    if at hunk.newStart hunk.newCount <> declared + state.delta then
+      Err (error InvalidPatch (Some index) "new-side hunk coordinates disagree with preceding edits")
+    else
+      match locate mode source (oldLines hunk) declared state.cursor state.remaining with
+      | Err failure -> Err { failure with hunk = Some index }
+      | Ok (actual, remaining) ->
+        match appendRange limits source state.cursor actual { state with
+          remaining = remaining
+        } with
+        | Err error -> Err { error with hunk = Some index }
+        | Ok state ->
+          let lines = Array.map payload (newLines hunk)
+          match appendRange limits lines 0 (Array.length lines) state with
+          | Err error -> Err { error with hunk = Some index }
+          | Ok state ->
+            let relocations =
+              if actual = declared then
+                state.relocations
+              else
+                Array.push { actual = actual, declared = declared, hunk = index } state.relocations
+            applyHunks limits mode source hunks (index + 1) { state with
+              cursor = actual + hunk.oldCount,
+              delta = state.delta + hunk.newCount - hunk.oldCount,
+              relocations = relocations
+            }
+
+applyFileState : Limits -> Mode -> UnifiedDiff.FilePatch -> Option String -> Result (Applied * Int) Error
+let applyFileState limits mode file original =
+  if limits.maxInputBytes < 0 || limits.maxOutputBytes < 0 || limits.maxSearchWork < 0 || (match mode with
+  | Strict -> false
+  | Relocate radius -> radius < 0) then
+    Err (error InvalidOptions None "patch application limits/radius must be nonnegative")
+  else
+    match UnifiedDiff.toStringWith limits.patch [| file |] with
+    | Err failure -> Err (error InvalidPatch None failure.message)
+    | Ok _ ->
+      if file.oldPath = None && original <> None then
+        Err (error ExistingFile None "file creation requires an absent original")
+      else if file.oldPath <> None && original = None then
+        Err (error MissingFile None "patch requires an existing original")
+      else
+        let text = Option.withDefault "" original
+        let bytes = Bytes.fromString text
+        if Bytes.length bytes > limits.maxInputBytes then
+          Err (error ResourceLimit None "patch source exceeds byte limit")
+        else
+          match DiffText.linesWith { DiffText.limits with
+            unicode = { DiffText.limits.unicode with maxInputBytes = limits.maxInputBytes }
+          } text with
+          | Err failure -> Err (error ResourceLimit None (DiffText.errorToString failure))
+          | Ok lines ->
+            let source =
+              Array.map (fun line ->
+                Option.withDefault "" (Bytes.toString (Bytes.slice line.span.start line.span.end bytes))) lines
+            match applyHunks limits mode source file.hunks 0 {
+              closed = false,
+              cursor = 0,
+              delta = 0,
+              pieces = [],
+              relocations = Array.empty,
+              remaining = limits.maxSearchWork,
+              size = 0
+            } with
+            | Err error -> Err error
+            | Ok state ->
+              let output = String.join "" (List.reverse state.pieces)
+              if file.newPath = None && output <> "" then
+                Err (error InvalidPatch None "file deletion leaves content behind")
+              else
+                Ok ({
+                  relocations = state.relocations,
+                  text = if file.newPath = None then None else Some output
+                }, state.remaining)
+
+/// Apply one validated text patch to a snapshot, preserving exact content and endings.
+public applyFileWith : Limits -> Mode -> UnifiedDiff.FilePatch -> Option String -> Result Applied Error
+let applyFileWith limits mode file original =
+  Result.map appliedValue (applyFileState limits mode file original)
+
+let appliedValue pair =
+  let (applied, _) = pair
+  applied
+
+/// Strict single-file application under default budgets.
+public applyFile : UnifiedDiff.FilePatch -> Option String -> Result Applied Error
+let applyFile file original = applyFileWith limits Strict file original
+
+let inventory files index found =
+  if index = Array.length files then
+    Ok found
+  else
+    let (path, text) = Array.unsafeGet index files
+    if Dict.member path found then
+      Err { hunk = None, kind = PathConflict, message = "duplicate source path", path = Some path }
+    else
+      inventory files (index + 1) (Dict.insert path text found)
+
+batch : Limits -> Mode -> (String -> String) -> UnifiedDiff.Patch -> Dict String String -> Int -> Set String -> Array Update -> Int -> Int -> Result (Array Update) Error
+let batch limits mode mapPath patch sources index used output outputBytes remaining =
+  if index = Array.length patch then
+    Ok output
+  else
+    let file = Array.unsafeGet index patch
+    let old = Option.map mapPath file.oldPath
+    let new = Option.map mapPath file.newPath
+    let path =
+      Option.withDefault "" (match new with
+      | Some path -> Some path
+      | None -> old)
+    if path = "" || String.contains path "\u{0}" || (old <> None && new <> None && old <> new) then
+      Err {
+        hunk = None,
+        kind = PathConflict,
+        message = "paths must map to one nonempty identifier; renames are unsupported",
+        path = Some path
+      }
+    else if Set.member path used then
+      Err {
+        hunk = None,
+        kind = PathConflict,
+        message = "multiple file patches map to one path",
+        path = Some path
+      }
+    else
+      match applyFileState { limits with
+        maxOutputBytes = limits.maxOutputBytes - outputBytes,
+        maxSearchWork = remaining
+      } mode file (Dict.get path sources) with
+      | Err error -> Err { error with path = Some path }
+      | Ok (applied, remaining) ->
+        let bytes = Bytes.length (Bytes.fromString (Option.withDefault "" applied.text))
+        batch limits mode mapPath patch sources (index + 1) (Set.insert path used) (Array.push {
+          path = path,
+          relocations = applied.relocations,
+          text = applied.text
+        } output) (outputBytes + bytes) remaining
+
+/// All-or-error proposed updates. Mapping paths and committing files belong to callers.
+public applyBatchWith : Limits -> Mode -> (String -> String) -> UnifiedDiff.Patch -> Array (String * String) -> Result (Array Update) Error
+let applyBatchWith limits mode mapPath patch files =
+  if limits.maxInputBytes < 0 || limits.maxOutputBytes < 0 || limits.maxSearchWork < 0 || (match mode with
+  | Strict -> false
+  | Relocate radius -> radius < 0) then
+    Err (error InvalidOptions None "patch application limits/radius must be nonnegative")
+  else if Array.length files > limits.patch.maxFiles then
+    Err (error ResourceLimit None "snapshot file count exceeds batch limit")
+  else
+    match UnifiedDiff.toStringWith limits.patch patch with
+    | Err failure -> Err (error InvalidPatch None failure.message)
+    | Ok _ ->
+      match inventory files 0 Dict.empty with
+      | Err error -> Err error
+      | Ok sources ->
+        batch limits mode mapPath patch sources 0 Set.empty Array.empty 0 limits.maxSearchWork
+
+/// Strict in-memory batch application, using path identifiers without rewriting them.
+public applyBatch : UnifiedDiff.Patch -> Array (String * String) -> Result (Array Update) Error
+let applyBatch patch files = applyBatchWith limits Strict identity patch files

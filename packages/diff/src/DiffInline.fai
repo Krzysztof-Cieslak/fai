@@ -1,0 +1,338 @@
+module DiffInline
+
+import unicode.Unicode
+import unicode.UnicodeCase
+import unicode.UnicodeNormalize
+import unicode.UnicodeGrapheme
+import unicode.UnicodeWord
+
+/// Word boundaries, extended graphemes, or individual Unicode scalars.
+public type Granularity =
+  | Words
+  | Graphemes
+  | Scalars
+
+/// Exact original contributing ranges. Review expansions can overlap across changes.
+public type Change = { kind : DiffText.Kind, new : Array Unicode.Span, old : Array Unicode.Span }
+
+/// Inline source ranges and the selected search's quality guarantee.
+public type Detail = { changes : Array Change, quality : Diff.Quality }
+
+let width byte = if byte < 128 then 1 else if byte < 224 then 2 else if byte < 240 then 3 else 4
+
+let failure kind message = DiffText.UnicodeFailure { kind = kind, message = message, offset = None }
+
+identityMaps : Unicode.Limits -> Bytes -> Int -> Array Unicode.Mapping -> Result (Array Unicode.Mapping) DiffText.Error
+let identityMaps limits bytes index output =
+  if index = Bytes.length bytes then
+    Ok output
+  else if Array.length output >= limits.maxScalars || Array.length output >= limits.maxMappings / 2 then
+    Err (failure Unicode.MappingLimit "inline source mapping limit exceeded")
+  else if Array.length output >= limits.maxWork then
+    Err (failure Unicode.WorkLimit "inline source mapping work limit exceeded")
+  else
+    let finish = index + width (Bytes.unsafeGet index bytes)
+    let span = { end = finish, start = index }
+    identityMaps limits bytes finish (Array.push { output = span, sources = [| span |] } output)
+
+firstMapping : Array Unicode.Mapping -> Int -> Int -> Int -> Int
+let firstMapping mappings byte low high =
+  if low = high then
+    low
+  else
+    let middle = low + (high - low) / 2
+    if (Array.unsafeGet middle mappings).output.end <= byte then
+      firstMapping mappings byte (middle + 1) high
+    else
+      firstMapping mappings byte low middle
+
+collectSources : Array Unicode.Mapping -> Unicode.Span -> Int -> Array Unicode.Span -> Array Unicode.Span
+let collectSources mappings span index output =
+  if index = Array.length mappings || (Array.unsafeGet index mappings).output.start >= span.end then
+    output
+  else
+    collectSources mappings span (index + 1) (Array.append output (Array.unsafeGet index mappings).sources)
+
+mergeSpans : Array Unicode.Span -> Int -> Array Unicode.Span -> Array Unicode.Span
+let mergeSpans spans index output =
+  if index = Array.length spans then
+    output
+  else
+    let span = Array.unsafeGet index spans
+    let output =
+      match Array.get (Array.length output - 1) output with
+      | Some last ->
+        if span.start <= last.end then
+          Array.unsafeSet (Array.length output - 1) { last with
+            end = if span.end > last.end then span.end else last.end
+          } output
+        else
+          Array.push span output
+      | None -> [| span |]
+    mergeSpans spans (index + 1) output
+
+canonical : Array Unicode.Span -> Array Unicode.Span
+let canonical spans =
+  mergeSpans (Array.sortBy (fun a b ->
+    Prelude.compare (a.start, a.end) (b.start, b.end)) spans) 0 Array.empty
+
+provenance : Array Unicode.Mapping -> Unicode.Span -> Array Unicode.Span
+let provenance mappings span =
+  canonical (collectSources mappings span (firstMapping mappings span.start 0 (Array.length mappings)) Array.empty)
+
+composeMaps : Unicode.Limits -> Array Unicode.Mapping -> Array Unicode.Mapping -> Int -> Int -> Int -> Array Unicode.Mapping -> Result (Array Unicode.Mapping) DiffText.Error
+let composeMaps limits before after index entries remaining output =
+  if index = Array.length after then
+    Ok output
+  else
+    let item = Array.unsafeGet index after
+    let sources = canonical (Array.concatMap (provenance before) item.sources)
+    let entries = entries + Array.length sources + 1
+    let cost = 64 * Array.length item.sources + 4 * Array.length sources + 1
+    if entries > limits.maxMappings then
+      Err (failure Unicode.MappingLimit "composed inline source mapping limit exceeded")
+    else if cost > remaining then
+      Err (failure Unicode.WorkLimit "inline source composition work limit exceeded")
+    else
+      composeMaps limits before after (index + 1) entries (remaining - cost) (Array.push {
+        output = item.output,
+        sources = sources
+      } output)
+
+combine : Unicode.Limits -> Unicode.Mapped -> Result Unicode.Mapped Unicode.Error -> Result Unicode.Mapped DiffText.Error
+let combine limits before result =
+  match result with
+  | Err error -> Err (DiffText.UnicodeFailure error)
+  | Ok after ->
+    Result.map (fun mappings -> {
+      mappings = mappings,
+      text = after.text
+    }) (composeMaps limits before.mappings after.mappings 0 0 limits.maxWork Array.empty)
+
+normalize : Unicode.Limits -> UnicodeNormalize.Form -> Unicode.Mapped -> Result Unicode.Mapped DiffText.Error
+let normalize limits form mapped =
+  combine limits mapped (UnicodeNormalize.normalizeMappedWith limits form mapped.text)
+
+asciiMapped : Unicode.Mapped -> Unicode.Mapped
+let asciiMapped mapped =
+  let bytes = Bytes.fromString mapped.text
+  let pieces = Array.map (asciiScalar bytes) mapped.mappings
+  { mapped with text = String.joinArray "" pieces }
+
+asciiScalar : Bytes -> Unicode.Mapping -> String
+let asciiScalar bytes mapping =
+  let text =
+    Option.withDefault "" (Bytes.toString (Bytes.slice mapping.output.start mapping.output.end bytes))
+  let code = Bytes.unsafeGet mapping.output.start bytes
+  if code >= 65 && code <= 90 then
+    Char.toString (Option.withDefault ' ' (Char.fromCode (code + 32)))
+  else
+    text
+
+type Piece = { sources : Array Unicode.Span, text : String }
+
+scalarSpace : DiffText.Options -> String -> Bool
+let scalarSpace options text =
+  if options.unicodeWhitespace then
+    Unicode.isWhitespace (Option.withDefault '\u{0}' (scalarChar text))
+  else
+    text = " " || text = "\t"
+
+// This helper decodes one known whole UTF-8 scalar, without compiler-version casing.
+let scalarChar text =
+  let bytes = Bytes.fromString text
+  let a = Bytes.unsafeGet 0 bytes
+  let code =
+    if a < 128 then
+      a
+    else if a < 224 then
+      (a - 192) * 64 + Bytes.unsafeGet 1 bytes - 128
+    else if a < 240 then
+      (a - 224) * 4096 + (Bytes.unsafeGet 1 bytes - 128) * 64 + Bytes.unsafeGet 2 bytes - 128
+    else
+      (a - 240) * 262144 + (Bytes.unsafeGet 1 bytes - 128) * 4096 + (Bytes.unsafeGet 2 bytes - 128) * 64 + Bytes.unsafeGet 3 bytes - 128
+  Char.fromCode code
+
+flushSpaces : DiffText.Options -> Array Piece -> Array Piece -> Array Piece
+let flushSpaces options pending output =
+  if Array.isEmpty pending then
+    output
+  else if options.whitespace = DiffText.CollapseRuns then
+    Array.push {
+      sources = canonical (Array.concatMap (fun piece -> piece.sources) pending),
+      text = " "
+    } output
+  else
+    Array.append output pending
+
+filterSpaces : DiffText.Options -> Array Piece -> Int -> Array Piece -> Array Piece -> Array Piece
+let filterSpaces options pieces index pending output =
+  if index = Array.length pieces then
+    if options.whitespace = DiffText.IgnoreTrailing || options.whitespace = DiffText.IgnoreAll then
+      match Array.get (Array.length output - 1) output with
+      | None -> output
+      | Some last -> Array.unsafeSet (Array.length output - 1) (absorb pending last) output
+    else
+      flushSpaces options pending output
+  else
+    let piece = Array.unsafeGet index pieces
+    let eol =
+      piece.text = "\n" || (piece.text = "\r" && index + 1 < Array.length pieces && (Array.unsafeGet (index + 1) pieces).text = "\n")
+    if eol then
+      if options.whitespace = DiffText.IgnoreTrailing || options.whitespace = DiffText.IgnoreAll then
+        filterSpaces options pieces (index + 1) Array.empty (Array.push (absorb pending piece) output)
+      else
+        filterSpaces options pieces (index + 1) Array.empty (Array.push piece (flushSpaces options pending output))
+    else if scalarSpace options piece.text then
+      filterSpaces options pieces (index + 1) (Array.push piece pending) output
+    else if options.whitespace = DiffText.IgnoreAll then
+      filterSpaces options pieces (index + 1) Array.empty (Array.push (absorb pending piece) output)
+    else
+      filterSpaces options pieces (index + 1) Array.empty (Array.push piece (flushSpaces options pending output))
+
+absorb : Array Piece -> Piece -> Piece
+let absorb pending piece = { piece with
+  sources = canonical (Array.append (Array.concatMap (fun p -> p.sources) pending) piece.sources)
+}
+
+rebuild : Array Piece -> Int -> Int -> List String -> Array Unicode.Mapping -> Unicode.Mapped
+let rebuild pieces index offset text mappings =
+  if index = Array.length pieces then
+    { mappings = mappings, text = String.join "" (List.reverse text) }
+  else
+    let piece = Array.unsafeGet index pieces
+    let finish = offset + Bytes.length (Bytes.fromString piece.text)
+    rebuild pieces (index + 1) finish (piece.text :: text) (Array.push {
+      output = { end = finish, start = offset },
+      sources = piece.sources
+    } mappings)
+
+spaces : DiffText.Options -> Unicode.Mapped -> Unicode.Mapped
+let spaces options mapped =
+  if options.whitespace = DiffText.ExactWhitespace then
+    mapped
+  else
+    let bytes = Bytes.fromString mapped.text
+    let pieces =
+      Array.map (fun item -> {
+        sources = item.sources,
+        text = Option.withDefault "" (Bytes.toString (Bytes.slice item.output.start item.output.end bytes))
+      }) mapped.mappings
+    rebuild (filterSpaces options pieces 0 Array.empty Array.empty) 0 0 [] Array.empty
+
+prepare : DiffText.Limits -> DiffText.Options -> String -> Result Unicode.Mapped DiffText.Error
+let prepare limits options text =
+  let bytes = Bytes.fromString text
+  match DiffText.linesWith limits text with
+  | Err error -> Err error
+  | Ok _ ->
+    match identityMaps limits.unicode bytes 0 Array.empty with
+    | Err error -> Err error
+    | Ok mappings ->
+      let mapped = { mappings = mappings, text = text }
+      let first =
+        match options.normalization with
+        | None -> Ok mapped
+        | Some form -> normalize limits.unicode form mapped
+      match first with
+      | Err error -> Err error
+      | Ok mapped ->
+        let folded =
+          match options.case with
+          | DiffText.Sensitive -> Ok mapped
+          | DiffText.AsciiInsensitive -> Ok (asciiMapped mapped)
+          | DiffText.UnicodeInsensitive ->
+            combine limits.unicode mapped (UnicodeCase.foldMappedWith limits.unicode mapped.text)
+        match folded with
+        | Err error -> Err error
+        | Ok mapped ->
+          let final =
+            match options.normalization with
+            | None -> Ok mapped
+            | Some form -> normalize limits.unicode form mapped
+          Result.map (spaces options) final
+
+tokens : DiffText.Limits -> Granularity -> Unicode.Mapped -> Result (Array Unicode.Span) DiffText.Error
+let tokens limits granularity mapped =
+  match granularity with
+  | Scalars -> Ok (Array.map (fun item -> item.output) mapped.mappings)
+  | Graphemes ->
+    Result.mapError DiffText.UnicodeFailure (UnicodeGrapheme.spansWith limits.unicode mapped.text)
+  | Words ->
+    Result.mapError DiffText.UnicodeFailure (UnicodeWord.spansWith limits.unicode mapped.text)
+
+rangeSources : Unicode.Mapped -> Array Unicode.Span -> Diff.Range -> Array Unicode.Span
+let rangeSources mapped tokens range =
+  if range.start = range.end then
+    Array.empty
+  else
+    provenance mapped.mappings {
+      end = (Array.unsafeGet (range.end - 1) tokens).end,
+      start = (Array.unsafeGet range.start tokens).start
+    }
+
+sourceText : Bytes -> Array Unicode.Span -> String
+let sourceText bytes spans =
+  String.joinArray "" (Array.map (fun span ->
+    Option.withDefault "" (Bytes.toString (Bytes.slice span.start span.end bytes))) spans)
+
+key : Bytes -> Unicode.Span -> String
+let key bytes span = Option.withDefault "" (Bytes.toString (Bytes.slice span.start span.end bytes))
+
+/// Refine caller-selected text with original-byte provenance and review equivalence.
+public compareWith : DiffText.Limits -> DiffText.Options -> Granularity -> String -> String -> Result Detail DiffText.Error
+let compareWith limits options granularity oldText newText =
+  match (prepare limits options oldText, prepare limits options newText) with
+  | (Err error, _) -> Err error
+  | (_, Err error) -> Err error
+  | (Ok old, Ok new) ->
+    match (tokens limits granularity old, tokens limits granularity new) with
+    | (Err error, _) -> Err error
+    | (_, Err error) -> Err error
+    | (Ok oldTokens, Ok newTokens) ->
+      let a = Bytes.fromString old.text
+      let b = Bytes.fromString new.text
+      match Diff.diffWith limits.sequence options.sequence (Array.map (key a) oldTokens) (Array.map (key b) newTokens) with
+      | Err error -> Err (DiffText.SequenceFailure error)
+      | Ok script ->
+        let originalA = Bytes.fromString oldText
+        let originalB = Bytes.fromString newText
+        if Array.isEmpty script.edits && oldText <> newText then
+          Ok {
+            changes = [|
+              {
+                kind = DiffText.Equivalent,
+                new = if newText = "" then
+                  Array.empty
+                else
+                  [| { end = Bytes.length originalB, start = 0 } |],
+                old = if oldText = "" then
+                  Array.empty
+                else
+                  [| { end = Bytes.length originalA, start = 0 } |]
+              }
+            |],
+            quality = script.quality
+          }
+        else
+          Ok {
+            changes = Array.map (fun item ->
+              makeChange old new oldTokens newTokens originalA originalB item) script.edits,
+            quality = script.quality
+          }
+
+makeChange : Unicode.Mapped -> Unicode.Mapped -> Array Unicode.Span -> Array Unicode.Span -> Bytes -> Bytes -> Diff.Edit -> Change
+let makeChange old new oldTokens newTokens a b item =
+  let oldSpans = rangeSources old oldTokens item.old
+  let newSpans = rangeSources new newTokens item.new
+  let kind =
+    match item.kind with
+    | Diff.Delete -> DiffText.Deleted
+    | Diff.Insert -> DiffText.Inserted
+    | Diff.Match ->
+      if sourceText a oldSpans = sourceText b newSpans then DiffText.Equal else DiffText.Equivalent
+  { kind = kind, new = newSpans, old = oldSpans }
+
+/// Exact grapheme-level detail for an explicitly selected replacement block.
+public compare : String -> String -> Result Detail DiffText.Error
+let compare oldText newText = compareWith DiffText.limits DiffText.options Graphemes oldText newText

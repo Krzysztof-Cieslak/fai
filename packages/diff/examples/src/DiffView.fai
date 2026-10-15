@@ -1,0 +1,81 @@
+module DiffView
+
+import diff.DiffInline
+import diff.DiffText
+import tui.Ui
+import tui.TuiStyle
+import unicode.Unicode
+
+let style kind =
+  match kind with
+  | DiffText.Equal -> TuiStyle.normal
+  | DiffText.Equivalent -> { TuiStyle.normal with
+    foreground = TuiStyle.Indexed 3,
+    underline = true
+  }
+  | DiffText.Deleted -> { TuiStyle.normal with bold = true, foreground = TuiStyle.Indexed 1 }
+  | DiffText.Inserted -> { TuiStyle.normal with bold = true, foreground = TuiStyle.Indexed 2 }
+
+styled : Bool -> String -> DiffInline.Change -> List Ui.Span
+let styled old text change =
+  let spans = if old then change.old else change.new
+  Array.toList (Array.map (fun span -> {
+    style = style change.kind,
+    text = Result.withDefault "" (Unicode.slice span text)
+  }) spans)
+
+splitParts : TuiStyle.Style -> List String -> List Ui.Span -> Array (List Ui.Span) -> (List Ui.Span * Array (List Ui.Span))
+let splitParts style parts current output =
+  match parts with
+  | [] -> (current, output)
+  | [last] -> ({ style = style, text = last } :: current, output)
+  | first :: rest ->
+    splitParts style rest [] (Array.push (List.reverse ({
+      style = style,
+      text = first
+    } :: current)) output)
+
+splitSpans : List Ui.Span -> List Ui.Span -> Array (List Ui.Span) -> Array (List Ui.Span)
+let splitSpans spans current output =
+  match spans with
+  | [] ->
+    if List.all (fun span -> span.text = "") current then
+      output
+    else
+      Array.push (List.reverse current) output
+  | span :: rest ->
+    let (current, output) = splitParts span.style (String.split "\n" span.text) current output
+    splitSpans rest current output
+
+numberRows : String -> Int -> Array (List Ui.Span) -> Array (List Ui.Span)
+let numberRows side start rows =
+  Array.init (Array.length rows) (fun index ->
+    {
+      style = TuiStyle.defaultTheme.muted,
+      text = side ++ Int.toString (start + index + 1) ++ "  "
+    } :: Array.unsafeGet index rows)
+
+/// Refine just the selected hunk; line prefixes retain original side coordinates.
+public rows : DiffText.Options -> Bool -> Int -> DiffText.Comparison -> Result (Array (List Ui.Span) * Int) String
+let rows options showIgnored index comparison =
+  match DiffText.hunks 3 showIgnored comparison with
+  | Err error -> Err (DiffText.errorToString error)
+  | Ok hunks ->
+    match Array.get index hunks with
+    | None ->
+      Ok ([|
+        [{ style = TuiStyle.defaultTheme.muted, text = "No visible changes" }]
+      |], Array.length hunks)
+    | Some hunk ->
+      match DiffText.detach comparison hunk with
+      | Err error -> Err (DiffText.errorToString error)
+      | Ok detached ->
+        match DiffInline.compareWith DiffText.limits DiffText.options DiffInline.Words detached.oldText detached.newText with
+        | Err error -> Err (DiffText.errorToString error)
+        | Ok detail ->
+          let changes = detail.changes
+          let old =
+            splitSpans (Array.toList changes |> List.concatMap (styled true detached.oldText)) [] Array.empty
+          let new =
+            splitSpans (Array.toList changes |> List.concatMap (styled false detached.newText)) [] Array.empty
+          Ok (Array.append (numberRows "-" hunk.old.start old) (numberRows "+" hunk.new.start new), Array.length hunks)

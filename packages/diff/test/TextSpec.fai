@@ -1,0 +1,47 @@
+module DiffTextSpec
+
+import unicode.UnicodeNormalize
+
+let kinds options old new =
+  Result.map (fun result ->
+    Array.map (fun change ->
+      change.kind) (DiffText.changes result)) (DiffText.compareWith DiffText.limits options old new)
+example: kinds DiffText.options "a\n" "a\n" = Ok [| DiffText.Equal |]
+example: kinds { DiffText.options with
+  case = DiffText.UnicodeInsensitive
+} "Straße\n" "STRASSE\n" = Ok [| DiffText.Equivalent |]
+example: kinds { DiffText.options with
+  case = DiffText.AsciiInsensitive
+} "A\n" "a\n" = Ok [| DiffText.Equivalent |]
+example: kinds { DiffText.options with
+  normalization = Some UnicodeNormalize.NFC
+} "á\n" "a\u{301}\n" = Ok [| DiffText.Equivalent |]
+example: kinds { DiffText.options with
+  whitespace = DiffText.IgnoreTrailing
+} "a \t\n" "a\n" = Ok [| DiffText.Equivalent |]
+example: kinds { DiffText.options with
+  whitespace = DiffText.CollapseRuns
+} "a \t b\n" "a b\n" = Ok [| DiffText.Equivalent |]
+example: kinds { DiffText.options with
+  whitespace = DiffText.IgnoreAll
+} "a b\n" "ab\n" = Ok [| DiffText.Equivalent |]
+example: DiffText.lines "" = Ok [||]
+example: DiffText.lines "a\r\nb" = Ok [|
+  { content = { end = 1, start = 0 }, span = { end = 3, start = 0 } },
+  { content = { end = 4, start = 3 }, span = { end = 4, start = 3 } }
+|]
+example: Result.map Array.length (DiffText.lines "a\n") = Ok 1
+example: kinds { DiffText.options with
+  whitespace = DiffText.IgnoreAll
+} "a\r\n" "a\n" <> Ok [| DiffText.Equivalent |]
+
+let contextHunk =
+  match DiffText.compare "a\nb\nc\n" "a\nx\nc\n" with
+  | Err _ -> false
+  | Ok result ->
+    match DiffText.hunks 1 true result with
+    | Err _ -> false
+    | Ok hunks ->
+      Array.length hunks = 1 && Result.map (fun h ->
+        h.oldText) (DiffText.detach result (Array.unsafeGet 0 hunks)) = Ok "a\nb\nc\n"
+example: contextHunk

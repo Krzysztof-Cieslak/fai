@@ -1,0 +1,551 @@
+module UnifiedDiff
+
+/// Text payload kind in a unified hunk.
+public type Kind =
+  | Context
+  | Remove
+  | Add
+
+/// Payload excludes its LF byte; CR, when present, remains part of text.
+public type Line = { kind : Kind, newline : Bool, text : String }
+
+/// Unified coordinates are one-based, except empty ranges use the preceding line.
+public type Hunk = {
+  lines : Array Line,
+  newCount : Int,
+  newStart : Int,
+  oldCount : Int,
+  oldStart : Int,
+  section : String
+}
+
+/// None denotes /dev/null. Paths are decoded identifiers, never resolved on disk.
+public type FilePatch = { hunks : Array Hunk, newPath : Option String, oldPath : Option String }
+
+/// A complete multi-file text patch, independent of any filesystem.
+public type Patch = Array FilePatch
+
+/// Parsing/rendering failures never silently skip unsupported operations.
+public type ErrorKind =
+  | InvalidSyntax
+  | UnsupportedFeature
+  | ResourceLimit
+  | InvalidModel
+
+/// One-based patch line and byte column; model errors have location zero.
+public type Error = { column : Int, kind : ErrorKind, line : Int, message : String }
+
+/// Independent limits for patch text and its materialized model.
+public type Limits = {
+  maxFiles : Int,
+  maxHunks : Int,
+  maxInputBytes : Int,
+  maxLines : Int,
+  maxOutputBytes : Int
+}
+
+/// Defaults bound text to 16 MiB and payloads to one million lines.
+public limits : Limits
+let limits = {
+  maxFiles = 10000,
+  maxHunks = 100000,
+  maxInputBytes = 16777216,
+  maxLines = 1000000,
+  maxOutputBytes = 16777216
+}
+
+/// Render a located parser failure or an unlocated model-validation error.
+public errorToString : Error -> String
+let errorToString error =
+  error.message ++ if error.line = 0 then
+    ""
+  else
+    " at " ++ Int.toString error.line ++ ":" ++ Int.toString error.column
+
+let error kind line column message = {
+  column = column,
+  kind = kind,
+  line = line,
+  message = message
+}
+
+let failure line message = Err (error InvalidSyntax (line + 1) 1 message)
+
+let begins prefix text = String.take (String.length prefix) text = prefix
+
+let byte bytes index = Option.withDefault (-1) (Bytes.get index bytes)
+
+let digit value = value >= 48 && value <= 57
+
+let number bytes index value seen =
+  let next = byte bytes index
+  if not (digit next) then
+    if seen then Some (value, index) else None
+  else if value > (9223372036854775807 - (next - 48)) / 10 then
+    None
+  else
+    number bytes (index + 1) (value * 10 + next - 48) true
+
+let range bytes index =
+  match number bytes index 0 false with
+  | None -> None
+  | Some (start, index) ->
+    if byte bytes index = 44 then
+      match number bytes (index + 1) 0 false with
+      | None -> None
+      | Some (count, index) -> Some (start, count, index)
+    else
+      Some (start, 1, index)
+
+let validRange start count =
+  start >= 0 && count >= 0 && (count = 0 || start > 0) && start <= 9223372036854775807 - count
+
+let header text =
+  let bytes = Bytes.fromString text
+  if not (begins "@@ -" text) then
+    None
+  else
+    match range bytes 4 with
+    | None -> None
+    | Some (oldStart, oldCount, index) ->
+      if byte bytes index <> 32 || byte bytes (index + 1) <> 43 then
+        None
+      else
+        match range bytes (index + 2) with
+        | None -> None
+        | Some (newStart, newCount, finish) ->
+          if byte bytes finish <> 32 || byte bytes (finish + 1) <> 64 || byte bytes (finish + 2) <> 64 || not (validRange oldStart oldCount) || not (validRange newStart newCount) then
+            None
+          else
+            let after = finish + 3
+            if after < Bytes.length bytes && byte bytes after <> 32 then
+              None
+            else
+              Some {
+                lines = Array.empty,
+                newCount = newCount,
+                newStart = newStart,
+                oldCount = oldCount,
+                oldStart = oldStart,
+                section = String.drop after text
+              }
+
+let octal value = value >= 48 && value <= 55
+
+let escaped byte =
+  if byte = 97 then
+    7
+  else if byte = 98 then
+    8
+  else if byte = 116 then
+    9
+  else if byte = 110 then
+    10
+  else if byte = 118 then
+    11
+  else if byte = 102 then
+    12
+  else if byte = 114 then 13 else if byte = 92 || byte = 34 then byte else -1
+
+let quoted bytes index output =
+  let current = byte bytes index
+  if current < 0 then
+    None
+  else if current = 34 then
+    if index + 1 < Bytes.length bytes && byte bytes (index + 1) <> 9 then
+      None
+    else
+      Bytes.toString (Bytes.fromList (List.reverse output))
+  else if current = 92 then
+    let first = byte bytes (index + 1)
+    if octal first then
+      let second = byte bytes (index + 2)
+      let third = byte bytes (index + 3)
+      if not (octal second && octal third) || first > 51 then
+        None
+      else
+        quoted bytes (index + 4) (((first - 48) * 64 + (second - 48) * 8 + third - 48) :: output)
+    else
+      let value = escaped first
+      if value < 0 then None else quoted bytes (index + 2) (value :: output)
+  else
+    quoted bytes (index + 1) (current :: output)
+
+let path text =
+  let value =
+    if begins "\"" text then
+      quoted (Bytes.fromString text) 1 []
+    else
+      Some (Option.withDefault "" (List.head (String.split "\t" text)))
+  match value with
+  | None -> None
+  | Some value ->
+    if value = "" || String.contains value "\u{0}" || String.contains value "\n" || String.contains value "\r" then
+      None
+    else
+      Some (if value = "/dev/null" then None else Some value)
+
+type Parsed = { hunk : Hunk, newRead : Int, next : Int, oldRead : Int }
+
+readHunk : Limits -> Array String -> Int -> Hunk -> Int -> Int -> Result Parsed Error
+let readHunk limits input index hunk oldRead newRead =
+  if index >= Array.length input then
+    if oldRead = hunk.oldCount && newRead = hunk.newCount then
+      Ok { hunk = hunk, newRead = newRead, next = index, oldRead = oldRead }
+    else
+      failure index "truncated unified hunk"
+  else
+    let text = Array.unsafeGet index input
+    if text = "\\ No newline at end of file" then
+      match Array.get (Array.length hunk.lines - 1) hunk.lines with
+      | None -> failure index "no-newline marker has no preceding payload"
+      | Some previous ->
+        if not previous.newline then
+          failure index "duplicate no-newline marker"
+        else
+          readHunk limits input (index + 1) { hunk with
+            lines = Array.unsafeSet (Array.length hunk.lines - 1) { previous with
+              newline = false
+            } hunk.lines
+          } oldRead newRead
+    else if oldRead = hunk.oldCount && newRead = hunk.newCount then
+      Ok { hunk = hunk, newRead = newRead, next = index, oldRead = oldRead }
+    else
+      let tag = String.take 1 text
+      if tag <> " " && tag <> "-" && tag <> "+" then
+        failure index "expected unified hunk payload"
+      else
+        let oldNext = oldRead + if tag = "+" then 0 else 1
+        let newNext = newRead + if tag = "-" then 0 else 1
+        if oldNext > hunk.oldCount || newNext > hunk.newCount then
+          failure index "hunk payload exceeds declared counts"
+        else if Array.length hunk.lines >= limits.maxLines then
+          Err (error ResourceLimit (index + 1) 1 "hunk line limit exceeded")
+        else
+          let line = {
+            kind = if tag = " " then Context else if tag = "-" then Remove else Add,
+            newline = true,
+            text = String.drop 1 text
+          }
+          readHunk limits input (index + 1) { hunk with
+            lines = Array.push line hunk.lines
+          } oldNext newNext
+
+let startIndex start count = if count = 0 then start else start - 1
+
+countLine : (Int * Int * Bool * Bool * Bool) -> Line -> (Int * Int * Bool * Bool * Bool)
+let countLine state line =
+  let (old, new, oldClosed, newClosed, valid) = state
+  let readsOld = line.kind <> Add
+  let readsNew = line.kind <> Remove
+  (old + (if readsOld then
+    1
+  else
+    0), new + (if readsNew then
+    1
+  else
+    0), oldClosed || (readsOld && not line.newline), newClosed || (readsNew && not line.newline), valid && not (readsOld && oldClosed) && not (readsNew && newClosed) && not (String.contains line.text "\n"))
+
+validHunk : Hunk -> Bool
+let validHunk hunk =
+  let (old, new, _, _, valid) = Array.foldl countLine (0, 0, false, false, true) hunk.lines
+  valid && old = hunk.oldCount && new = hunk.newCount && validRange hunk.oldStart hunk.oldCount && validRange hunk.newStart hunk.newCount
+
+readFile : Limits -> Array String -> Int -> FilePatch -> Int -> Int -> Int -> Int -> Bool -> Result (FilePatch * Int * Int * Int) Error
+let readFile limits input index file hunks lines oldEnd newEnd closed =
+  if index >= Array.length input || not (begins "@@" (Array.unsafeGet index input)) then
+    Ok (file, index, hunks, lines)
+  else if closed then
+    failure index "a hunk follows an end-of-file no-newline marker"
+  else if hunks >= limits.maxHunks then
+    Err (error ResourceLimit (index + 1) 1 "patch hunk limit exceeded")
+  else
+    match header (Array.unsafeGet index input) with
+    | None -> failure index "invalid unified hunk header"
+    | Some hunk ->
+      if startIndex hunk.oldStart hunk.oldCount < oldEnd || startIndex hunk.newStart hunk.newCount < newEnd then
+        failure index "overlapping or out-of-order hunks"
+      else
+        match readHunk { limits with
+          maxLines = limits.maxLines - lines
+        } input (index + 1) hunk 0 0 with
+        | Err error -> Err error
+        | Ok parsed ->
+          if not (validHunk parsed.hunk) then
+            failure index "invalid no-newline placement or hunk counts"
+          else
+            readFile limits input parsed.next { file with
+              hunks = Array.push parsed.hunk file.hunks
+            } (hunks + 1) (lines + Array.length parsed.hunk.lines) (startIndex hunk.oldStart hunk.oldCount + hunk.oldCount) (startIndex hunk.newStart hunk.newCount + hunk.newCount) (Array.any (fun line ->
+              not line.newline) parsed.hunk.lines)
+
+let unsupported text =
+  begins "GIT binary patch" text || begins "Binary files " text || begins "rename " text || begins "copy " text || begins "similarity index " text || begins "dissimilarity index " text || begins "old mode " text || begins "new mode " text || begins "diff --cc " text || begins "diff --combined " text
+
+parseFiles : Limits -> Array String -> Int -> Patch -> Int -> Int -> Int -> Result Patch Error
+let parseFiles limits input index output hunks lines pending =
+  if index = Array.length input then
+    if pending <> 0 then failure index "Git section lacks text file headers" else Ok output
+  else
+    let text = Array.unsafeGet index input
+    if unsupported text then
+      Err (error UnsupportedFeature (index + 1) 1 "unsupported binary, rename, copy, combined or mode-changing patch")
+    else if begins "diff --git " text then
+      if pending <> 0 then
+        failure index "Git section lacks text file headers"
+      else
+        parseFiles limits input (index + 1) output hunks lines 1
+    else if begins "index " text && pending <> 0 then
+      parseFiles limits input (index + 1) output hunks lines pending
+    else if text = "new file mode 100644" && pending = 1 then
+      parseFiles limits input (index + 1) output hunks lines 2
+    else if text = "deleted file mode 100644" && pending = 1 then
+      parseFiles limits input (index + 1) output hunks lines 3
+    else if begins "new file mode " text || begins "deleted file mode " text then
+      Err (error UnsupportedFeature (index + 1) 1 "only ordinary text file creation/deletion is supported")
+    else if text = "" then
+      parseFiles limits input (index + 1) output hunks lines pending
+    else if begins "--- " text && index + 1 < Array.length input && begins "+++ " (Array.unsafeGet (index + 1) input) then
+      match (path (String.drop 4 text), path (String.drop 4 (Array.unsafeGet (index + 1) input))) with
+      | (Some oldPath, Some newPath) ->
+        if oldPath = None && newPath = None then
+          failure index "both patch paths are /dev/null"
+        else if (pending = 2 && oldPath <> None) || (pending = 3 && newPath <> None) then
+          failure index "Git file operation disagrees with /dev/null headers"
+        else if Array.length output >= limits.maxFiles then
+          Err (error ResourceLimit (index + 1) 1 "patch file limit exceeded")
+        else
+          match readFile limits input (index + 2) {
+            hunks = Array.empty,
+            newPath = newPath,
+            oldPath = oldPath
+          } hunks lines 0 0 false with
+          | Err error -> Err error
+          | Ok (file, next, hunks, lines) ->
+            if (file.oldPath = None && Array.any (fun hunk ->
+              hunk.oldCount <> 0 || hunk.oldStart <> 0) file.hunks) || (file.newPath = None && Array.any (fun hunk ->
+              hunk.newCount <> 0 || hunk.newStart <> 0) file.hunks) then
+              failure index "absent file side must have empty zero-position ranges"
+            else
+              parseFiles limits input next (Array.push file output) hunks lines 0
+      | _ -> failure index "invalid or non-UTF-8 path quoting"
+    else
+      failure index "unexpected patch content"
+
+/// Parse the supported unified/Git text subset; reject malformed and unsupported data.
+public parseWith : Limits -> String -> Result Patch Error
+let parseWith limits text =
+  if limits.maxInputBytes < 0 || limits.maxOutputBytes < 0 || limits.maxFiles < 0 || limits.maxHunks < 0 || limits.maxLines < 0 then
+    Err (error InvalidModel 0 0 "patch limits must be nonnegative")
+  else if Bytes.length (Bytes.fromString text) > limits.maxInputBytes then
+    Err (error ResourceLimit 1 1 "patch input byte limit exceeded")
+  else if text <> "" && String.drop (String.length text - 1) text <> "\n" then
+    failure 0 "patch text must end in LF framing"
+  else
+    parseFiles limits (String.splitArray "\n" text) 0 Array.empty 0 0 0
+
+/// Parse with default patch budgets.
+public parse : String -> Result Patch Error
+let parse text = parseWith limits text
+
+let quoteFrom bytes index output =
+  if index = Bytes.length bytes then
+    "\"" ++ String.join "" (List.reverse output) ++ "\""
+  else
+    let byte = Bytes.unsafeGet index bytes
+    let text =
+      if byte >= 32 && byte < 127 && byte <> 34 && byte <> 92 then
+        Option.withDefault "" (Bytes.toString (Bytes.fromList [byte]))
+      else
+        "\\" ++ Int.toString (byte / 64) ++ Int.toString (byte / 8 % 8) ++ Int.toString (byte % 8)
+    quoteFrom bytes (index + 1) (text :: output)
+
+let renderPath path =
+  match path with
+  | None -> "/dev/null"
+  | Some text -> quoteFrom (Bytes.fromString text) 0 []
+
+let rangeText start count = Int.toString start ++ "," ++ Int.toString count
+
+renderLine : Line -> String
+let renderLine line =
+  (match line.kind with
+  | Context -> " "
+  | Remove -> "-"
+  | Add ->
+    "+") ++ line.text ++ "\n" ++ (if line.newline then "" else "\\ No newline at end of file\n")
+
+let quotedSize bytes index count limit =
+  if index = Bytes.length bytes then
+    Ok count
+  else
+    let byte = Bytes.unsafeGet index bytes
+    let size = if byte >= 32 && byte < 127 && byte <> 34 && byte <> 92 then 1 else 4
+    if size > limit - count then
+      Err (error ResourceLimit 0 0 "quoted path exceeds output byte limit")
+    else
+      quotedSize bytes (index + 1) (count + size) limit
+
+let pathSize limit path =
+  match path with
+  | None -> Ok 9
+  | Some text -> quotedSize (Bytes.fromString text) 0 2 limit
+
+let addSize limit amount size =
+  if amount > limit - size then
+    Err (error ResourceLimit 0 0 "patch output byte limit exceeded")
+  else
+    Ok (size + amount)
+
+lineSizes : Limits -> Array Line -> Int -> Int -> Result Int Error
+let lineSizes limits lines index size =
+  if index = Array.length lines then
+    Ok size
+  else
+    let line = Array.unsafeGet index lines
+    let amount = Bytes.length (Bytes.fromString line.text) + 2 + (if line.newline then 0 else 28)
+    match addSize limits.maxOutputBytes amount size with
+    | Err error -> Err error
+    | Ok size -> lineSizes limits lines (index + 1) size
+
+hunkSizes : Limits -> Array Hunk -> Int -> Int -> Int -> Int -> Result (Int * Int * Int) Error
+let hunkSizes limits hunks index hunkCount lineCount size =
+  if index = Array.length hunks then
+    Ok (hunkCount, lineCount, size)
+  else
+    let hunk = Array.unsafeGet index hunks
+    let count = Array.length hunk.lines
+    if not (validHunk hunk) then
+      Err (error InvalidModel 0 0 "invalid hunk ranges, payload or no-newline markers")
+    else if hunkCount >= limits.maxHunks || count > limits.maxLines - lineCount then
+      Err (error ResourceLimit 0 0 "patch hunk/line limit exceeded")
+    else
+      let heading =
+        "@@ -" ++ rangeText hunk.oldStart hunk.oldCount ++ " +" ++ rangeText hunk.newStart hunk.newCount ++ " @@"
+      let amount = String.length heading + Bytes.length (Bytes.fromString hunk.section) + 1
+      match addSize limits.maxOutputBytes amount size with
+      | Err error -> Err error
+      | Ok size ->
+        match lineSizes limits hunk.lines 0 size with
+        | Err error -> Err error
+        | Ok size -> hunkSizes limits hunks (index + 1) (hunkCount + 1) (lineCount + count) size
+
+fileSizes : Limits -> Patch -> Int -> Int -> Int -> Int -> Result Int Error
+let fileSizes limits patch index hunks lines size =
+  if index = Array.length patch then
+    Ok size
+  else
+    let file = Array.unsafeGet index patch
+    match (pathSize limits.maxOutputBytes file.oldPath, pathSize limits.maxOutputBytes file.newPath) with
+    | (Err error, _) -> Err error
+    | (_, Err error) -> Err error
+    | (Ok oldSize, Ok newSize) ->
+      match addSize limits.maxOutputBytes (oldSize + newSize + 10) size with
+      | Err error -> Err error
+      | Ok size ->
+        match hunkSizes limits file.hunks 0 hunks lines size with
+        | Err error -> Err error
+        | Ok (hunks, lines, size) -> fileSizes limits patch (index + 1) hunks lines size
+
+renderHunk : Hunk -> String
+let renderHunk hunk =
+  "@@ -" ++ rangeText hunk.oldStart hunk.oldCount ++ " +" ++ rangeText hunk.newStart hunk.newCount ++ " @@" ++ hunk.section ++ "\n" ++ String.joinArray "" (Array.map renderLine hunk.lines)
+
+/// Validate public patch models and render canonical unified text.
+public toStringWith : Limits -> Patch -> Result String Error
+let toStringWith limits patch =
+  if limits.maxOutputBytes < 0 || limits.maxFiles < 0 || limits.maxHunks < 0 || limits.maxLines < 0 then
+    Err (error InvalidModel 0 0 "patch limits must be nonnegative")
+  else if Array.length patch > limits.maxFiles then
+    Err (error ResourceLimit 0 0 "patch file limit exceeded")
+  else
+    match fileSizes limits patch 0 0 0 0 with
+    | Err error -> Err error
+    | Ok _ ->
+      let rendered =
+        String.joinArray "" (Array.map (fun file ->
+          "--- " ++ renderPath file.oldPath ++ "\n+++ " ++ renderPath file.newPath ++ "\n" ++ String.joinArray "" (Array.map renderHunk file.hunks)) patch)
+      match parseWith { limits with maxInputBytes = limits.maxOutputBytes } rendered with
+      | Err error -> Err { error with kind = InvalidModel }
+      | Ok parsed ->
+        if parsed = patch then
+          Ok rendered
+        else
+          Err (error InvalidModel 0 0 "patch model has invalid paths or hunk metadata")
+
+/// Render canonical unified text with default budgets.
+public toString : Patch -> Result String Error
+let toString patch = toStringWith limits patch
+
+/// Reverse file paths, coordinates and payload directions without losing endings.
+public reverse : Patch -> Patch
+let reverse patch =
+  Array.map (fun file -> {
+    hunks = Array.map (fun hunk -> {
+      lines = Array.map (fun line -> { line with
+        kind = match line.kind with
+        | Context -> Context
+        | Add -> Remove
+        | Remove -> Add
+      }) hunk.lines,
+      newCount = hunk.oldCount,
+      newStart = hunk.oldStart,
+      oldCount = hunk.newCount,
+      oldStart = hunk.newStart,
+      section = hunk.section
+    }) file.hunks,
+    newPath = file.oldPath,
+    oldPath = file.newPath
+  }) patch
+
+sourceLine : Kind -> Bytes -> Array DiffText.Line -> Int -> Line
+let sourceLine kind bytes lines index =
+  let line = Array.unsafeGet index lines
+  let newline = line.span.end > line.span.start && Bytes.unsafeGet (line.span.end - 1) bytes = 10
+  let finish = line.span.end - if newline then 1 else 0
+  {
+    kind = kind,
+    newline = newline,
+    text = Option.withDefault "" (Bytes.toString (Bytes.slice line.span.start finish bytes))
+  }
+
+sourceLines : Kind -> String -> Array DiffText.Line -> Diff.Range -> Array Line
+let sourceLines kind text lines range =
+  let bytes = Bytes.fromString text
+  Array.init (range.end - range.start) (fun index ->
+    sourceLine kind bytes lines (range.start + index))
+
+changedLines : DiffText.Comparison -> DiffText.Change -> Array Line
+let changedLines comparison change =
+  let old kind =
+    sourceLines kind (DiffText.oldText comparison) (DiffText.oldLines comparison) change.old
+  let new kind =
+    sourceLines kind (DiffText.newText comparison) (DiffText.newLines comparison) change.new
+  match change.kind with
+  | DiffText.Equal -> old Context
+  | DiffText.Deleted -> old Remove
+  | DiffText.Inserted -> new Add
+  | DiffText.Equivalent -> Array.append (old Remove) (new Add)
+
+/// Export exact edits, including changes suppressed by review comparison options.
+public fromComparisonWith : Limits -> Int -> Option String -> Option String -> DiffText.Comparison -> Result Patch Error
+let fromComparisonWith limits context oldPath newPath comparison =
+  match DiffText.hunks context true comparison with
+  | Err failure -> Err (error InvalidModel 0 0 (DiffText.errorToString failure))
+  | Ok hunks ->
+    let hunks =
+      Array.map (fun hunk -> {
+        lines = Array.concatMap (changedLines comparison) hunk.changes,
+        newCount = hunk.new.end - hunk.new.start,
+        newStart = hunk.new.start + if hunk.new.start = hunk.new.end then 0 else 1,
+        oldCount = hunk.old.end - hunk.old.start,
+        oldStart = hunk.old.start + if hunk.old.start = hunk.old.end then 0 else 1,
+        section = ""
+      }) hunks
+    let patch = [| { hunks = hunks, newPath = newPath, oldPath = oldPath } |]
+    Result.map (fun _ -> patch) (toStringWith limits patch)
+
+/// Exact unified export with three context lines and default patch budgets.
+public fromComparison : Option String -> Option String -> DiffText.Comparison -> Result Patch Error
+let fromComparison oldPath newPath comparison =
+  fromComparisonWith limits 3 oldPath newPath comparison
