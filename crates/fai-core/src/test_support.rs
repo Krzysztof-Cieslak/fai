@@ -30,6 +30,7 @@ pub fn test_location_target(db: &dyn Db, caller: SourceFile, def: DefId) -> Opti
     let module = module_name(db, file)?;
     let target = match (module.0.as_str(), def.name.as_str()) {
         ("Test", "test") => "testAt",
+        ("Test", "property") => "propertyAt",
         ("Test", "describe") => "describeAt",
         ("Test", "error") => "errorAt",
         ("Expect", "equal") => "equalAt",

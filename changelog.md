@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Added
+- Add `Test.property` for named property-based tests with explicit generators,
+  runner-controlled seed/count/size, shrinking, and located assertion details.
+  Hand-built `Test.Context` values must now include `trials` and `maxSize`;
+  ordinary runner-supplied contexts include them automatically.
 - Add the pure `CompressionEngine` native bridge for bounded gzip, zlib and raw
   DEFLATE snapshots, backing the optional `compression` source package.
 

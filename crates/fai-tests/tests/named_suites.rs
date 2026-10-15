@@ -27,6 +27,15 @@ fn pure_suite_cannot_hide_an_effectful_case() {
 }
 
 #[test]
+fn named_properties_cannot_hide_effectful_predicates() {
+    let result = check(
+        "module M\nnoisy : Int -> Test.Check / { Console }\nlet noisy n =\n  let printed = stdConsole.writeLine (Int.toString n)\n  Test.pass\ntests : Test.Suite Test.Context {}\nlet tests = Test.property \"noisy\" Test.int noisy\n",
+    );
+    assert!(!result.ok);
+    assert!(result.diagnostics.iter().any(|d| matches!(d.code.as_str(), "FAI3001" | "FAI3004")));
+}
+
+#[test]
 fn ordinary_function_lists_still_require_equal_effects() {
     let result = check(
         "module M\na : Runtime -> Unit / { Console }\nlet a rt = rt.console.writeLine \"a\"\nb : Runtime -> Unit / { Clock }\nlet b rt = rt.clock.sleep 1\nlet functions = [a, b]\n",
@@ -47,6 +56,20 @@ fn a_user_type_named_suite_does_not_get_the_testing_join() {
 #[test]
 fn source_coordinates_do_not_enter_the_lowered_suite_body() {
     let source = "module M\ntests : Test.Suite Test.Context {}\nlet tests = Test.test \"one\" (fun _ -> Expect.equal Int.toString 1 1)\n";
+    let mut db = fai_db::FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source("M.fai".into(), source.into());
+    let file = db.source_file(id).unwrap();
+    let name = fai_syntax::Symbol::intern("tests");
+    let before = fai_core::core(&db, file, name);
+    db.add_source("M.fai".into(), format!("// shifted 🌍\n\n{source}"));
+    let after = fai_core::core(&db, file, name);
+    assert_eq!(before, after);
+}
+
+#[test]
+fn property_source_coordinates_do_not_enter_the_lowered_suite_body() {
+    let source = "module M\ntests : Test.Suite Test.Context {}\nlet tests = Test.property \"identity\" Test.int (fun n -> Expect.equal Int.toString n n)\n";
     let mut db = fai_db::FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
     let id = db.add_source("M.fai".into(), source.into());

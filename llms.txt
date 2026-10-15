@@ -2024,7 +2024,7 @@ concurrency thunk` masks sticky cancellation during bounded resource cleanup.
 `example` and `forall` remain pure. For named scenarios, define an explicitly
 typed `tests : Test.Suite Test.Context { ... }` value in a package's test sources.
 `fai test` discovers it without executing its bodies, then runs each selected
-case in a fresh supervised worker. `Test.Context` supplies `runtime`, `seed`,
+case in a fresh supervised worker. `Test.Context` supplies `runtime`, `seed`, `trials`, `maxSize`,
 the stable string `id`, and an absolute, temporary `tempRoot : Path`.
 
 ```fai
@@ -2035,6 +2035,15 @@ let tests = Test.describe "arithmetic" [
   Test.test "sum" (fun _ -> Expect.equal Int.toString 4 (2 + 2))
 ]
 ```
+
+Use `example`/`forall` for documentation and laws beside library code. Dedicated
+test sources use named cases, including `Test.property name arbitrary predicate`.
+For example, `Test.property "integer identity" Test.int (fun n ->
+Expect.equal Int.toString n (identity n))`. Its pure predicate returns a
+`Test.Check`; generators compose with `Test.list`, `Test.tuple2`, etc. The runner
+supplies `--seed`, `--count` and `--max-size`, shrinks failures, and reports the
+counterexample and reproduction settings with the original assertion details.
+Generation is deferred until execution; listing and skipping do not run it.
 
 `Test.test name callback` and `Test.describe name children` construct pure suite
 descriptions. `Test.focus suite` narrows a run; `Test.skip reason suite` skips a
