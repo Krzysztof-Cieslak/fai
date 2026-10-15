@@ -158,8 +158,12 @@ def validate(value, destination, output, root=ROOT):
     release.git("switch", "-c", "fai-package-validation", root=root)
     command = [str(launcher), f"+{value['compilerVersion']}", "--no-daemon", "-C", "packages", "publish",
                *intents, "--plan", "--remote", "origin", "--branch", "main", "--message-format=json"]
-    plan = json.loads(release.run(*command, root=root, env=environment))
+    completed = subprocess.run(command, cwd=root, env=environment, capture_output=True, text=True, encoding="utf-8")
+    if completed.returncode:
+        raise release.ReleaseError(f"candidate validation failed:\n{completed.stdout}\n{completed.stderr}")
+    plan = json.loads(completed.stdout)
     verify_plan(value, plan, info["target"])
+    verify_request(value, root)
     report = {"schemaVersion": 1, "request": value, "compiler": info, "plan": plan}
     write_json(output, report)
     return report

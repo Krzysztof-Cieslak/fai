@@ -30,17 +30,17 @@ Fish's `conf.d/fai.fish`. Start a new shell or add `$FAI_HOME/bin` to the curren
 PATH. PowerShell installation updates the user environment and current PATH.
 
 To inspect the script or supply options explicitly, download an exact published
-release. These examples use `0.0.1`; choose another version from the
+release. These examples use `0.1.0`; choose another version from the
 [release list](https://github.com/Krzysztof-Cieslak/fai/releases) when needed:
 
 ```sh
-curl -fsSLO https://github.com/Krzysztof-Cieslak/fai/releases/download/v0.0.1/install.sh
-sh install.sh --version 0.0.1 --home "$HOME/tools/fai" --no-modify-path
+curl -fsSLO https://github.com/Krzysztof-Cieslak/fai/releases/download/v0.1.0/install.sh
+sh install.sh --version 0.1.0 --home "$HOME/tools/fai" --no-modify-path
 ```
 
 ```powershell
-Invoke-WebRequest https://github.com/Krzysztof-Cieslak/fai/releases/download/v0.0.1/install.ps1 -OutFile install.ps1
-./install.ps1 -Version 0.0.1 -HomeDirectory "$HOME/tools/fai" -NoModifyPath
+Invoke-WebRequest https://github.com/Krzysztof-Cieslak/fai/releases/download/v0.1.0/install.ps1 -OutFile install.ps1
+./install.ps1 -Version 0.1.0 -HomeDirectory "$HOME/tools/fai" -NoModifyPath
 ```
 
 An exact prerelease is installed in the same way. Fresh installations select the
@@ -58,8 +58,8 @@ fai upgrade                    # stable compiler and global default
 fai installer upgrade          # native launcher/version manager
 fai installer --version
 
-fai toolchain install 0.0.1
-fai toolchain default 0.0.1
+fai toolchain install 0.1.0
+fai toolchain default 0.1.0
 fai toolchain list
 fai toolchain list --available
 fai toolchain which
@@ -68,8 +68,8 @@ fai toolchain which
 From a project directory, select or pin that installed compiler:
 
 ```sh
-fai +0.0.1 check
-fai toolchain pin 0.0.1
+fai +0.1.0 check
+fai toolchain pin 0.1.0
 ```
 
 To remove a different installed version that is neither selected as the default

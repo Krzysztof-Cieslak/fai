@@ -200,6 +200,58 @@ class QualificationTests(PackageFixture):
             package_release.verify_reports(self.value, reports)
 
 
+class InstalledCompilerTests(PackageFixture):
+    def setUp(self):
+        super().setUp()
+        self.info = {"version": "0.1.0", "profile": "release", "debugAssertions": False,
+                     "sourceId": "a" * 64, "target": package_release.TARGETS[0]}
+        self.actual = copy.deepcopy(self.info)
+        self.real_run = release.run
+        self.real_process_run = subprocess.run
+        self.installations = []
+
+    def installer(self, command, **kwargs):
+        if command[0] in {"sh", "powershell.exe"}:
+            self.installations.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return self.real_process_run(command, **kwargs)
+
+    def command(self, *arguments, **kwargs):
+        if arguments[:3] == ("gh", "release", "download"):
+            destination = Path(arguments[arguments.index("--dir") + 1])
+            package_release.write_json(destination / "release.json", {"targets": {self.info["target"]: {"buildInfo": self.info}}})
+            return ""
+        if arguments[-1] == "build-info":
+            return json.dumps(self.actual)
+        return self.real_run(*arguments, **kwargs)
+
+    def test_installs_only_after_verifying_the_exact_published_release(self):
+        with mock.patch.object(release, "run", side_effect=self.command), \
+             mock.patch.object(release, "verify") as verify, \
+             mock.patch.object(subprocess, "run", side_effect=self.installer):
+            _, environment, info = package_release.install_compiler(self.value, self.root.parent / "compiler", self.root)
+        self.assertEqual(verify.call_args.args[0], "0.1.0")
+        self.assertEqual(info, self.info)
+        self.assertEqual(Path(environment["FAI_HOME"]), self.root.parent / "compiler")
+        self.assertIn("0.1.0", self.installations[0])
+
+    def test_unverified_release_never_executes_installer(self):
+        with mock.patch.object(release, "run", side_effect=self.command), \
+             mock.patch.object(release, "verify", side_effect=release.ReleaseError("invalid published checksum")), \
+             mock.patch.object(subprocess, "run", side_effect=self.installer), \
+             self.assertRaisesRegex(release.ReleaseError, "checksum"):
+            package_release.install_compiler(self.value, self.root.parent / "compiler", self.root)
+        self.assertEqual(self.installations, [])
+
+    def test_installed_build_must_match_published_build(self):
+        self.actual["sourceId"] = "b" * 64
+        with mock.patch.object(release, "run", side_effect=self.command), \
+             mock.patch.object(release, "verify"), \
+             mock.patch.object(subprocess, "run", side_effect=self.installer), \
+             self.assertRaisesRegex(release.ReleaseError, "exact published build"):
+            package_release.install_compiler(self.value, self.root.parent / "compiler", self.root)
+
+
 class PublicationTests(PackageFixture):
     def setUp(self):
         super().setUp()
@@ -258,6 +310,13 @@ class PublicationTests(PackageFixture):
     def test_unqualified_publication_is_rejected(self):
         with mock.patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(release.ReleaseError, "manually dispatched"):
             package_release.publish(self.value, self.reports(), self.output, self.root)
+
+    def test_missing_host_prevents_any_tag_publication(self):
+        with mock.patch.object(self, "reports", return_value=[]), \
+             self.assertRaisesRegex(release.ReleaseError, "all three"):
+            self.perform()
+        self.assertEqual(self.git("tag"), "")
+        self.assertEqual(self.github, {})
 
     def test_conflicting_release_notes_are_not_overwritten(self):
         self.perform()
