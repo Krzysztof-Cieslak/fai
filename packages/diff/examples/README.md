@@ -1,8 +1,8 @@
 # Diff examples
 
-Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+Private example/test project · Requires **Fai 0.1.x**
 
-This runnable example package uses the release tag `packages/diff/examples/v0.1.0`.
+This runnable example project is not independently published (`publish = false`).
 Applications should normally depend on the [diff library](../README.md) instead.
 
 This is a separate package so using `diff` does not add CLI, TUI, or process

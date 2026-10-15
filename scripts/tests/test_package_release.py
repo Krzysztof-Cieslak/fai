@@ -120,6 +120,31 @@ class PreparedMetadataTests(PackageFixture):
         with self.assertRaisesRegex(release.ReleaseError, "compiler requirement"):
             package_release.prepared_packages("all", self.root)
 
+    def add_private_example(self):
+        self.write("packages/alpha/examples/fai.toml", 'manifest-version = 1\n[package]\nname = "alpha-examples"\nversion = "0.1.0"\npublish = false\n')
+
+    def test_all_excludes_private_examples_without_changelogs(self):
+        self.add_private_example()
+        self.assertEqual(package_release.prepared_packages("all", self.root), self.value["packages"])
+
+    def test_explicit_private_selection_is_rejected(self):
+        self.add_private_example()
+        with self.assertRaisesRegex(release.ReleaseError, "private example/test"):
+            package_release.prepared_packages('{"alpha-examples":"0.1.0"}', self.root)
+
+    def test_public_package_cannot_depend_on_private_test_project(self):
+        self.add_private_example()
+        with (self.root / "packages/alpha/fai.toml").open("a") as stream:
+            stream.write('[dev-dependencies]\nexamples = {path = "examples"}\n')
+        with self.assertRaisesRegex(release.ReleaseError, "depends on private"):
+            package_release.prepared_packages("all", self.root)
+
+    def test_publication_policy_is_not_a_string(self):
+        with (self.root / "packages/alpha/fai.toml").open("a") as stream:
+            stream.write('publish = "false"\n')
+        with self.assertRaisesRegex(release.ReleaseError, "must be a boolean"):
+            package_release.prepared_packages("all", self.root)
+
     def test_dirty_source_cannot_be_prepared(self):
         self.write("packages/alpha/README.md", "changed")
         with self.assertRaisesRegex(release.ReleaseError, "clean committed"):
@@ -374,7 +399,8 @@ class PublicationTests(PackageFixture):
 class RepositoryReleaseTests(unittest.TestCase):
     def test_every_source_package_has_prepared_documentation(self):
         selected = package_release.prepared_packages("all")
-        self.assertEqual(len(selected), len(package_release.packages.discover()))
+        self.assertTrue(selected)
+        self.assertTrue(all(not item["name"].endswith("-examples") for item in selected))
         self.assertTrue(all(item["version"] in (package_release.ROOT / item["path"] / "README.md").read_text()
                             for item in selected))
 

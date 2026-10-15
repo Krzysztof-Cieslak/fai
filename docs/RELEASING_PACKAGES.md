@@ -9,11 +9,14 @@ files, creates a version-bump commit, pushes `main`, or force-moves a tag.
 
 1. Update each selected package's `fai.toml` version, README, and `changelog.md` on
    a feature branch. Move its Unreleased entries into a nonempty, dated version
-   section. All initial packages, including the six nested example packages,
-   start at **0.1.0** and require **Fai 0.1.x**.
+   section. The 27 public libraries start at **0.1.0** and require **Fai 0.1.x**.
+   The six nested example/test projects set `[package] publish = false`; they
+   remain workspace members but have no independent releases or changelogs.
 2. Preserve authored dependency ranges. Include any as-yet-unpublished dependency
-   versions in the same batch, including development/example dependencies.
-   For the first release, select `all` so all 33 members are available together.
+   versions in the same batch, including published development dependencies.
+   Public packages must not depend on private projects: put tests needing example
+   helpers in the example project's test directory instead.
+   For the first release, select `all` to release all 27 public libraries together.
 3. Run `python3 scripts/package_release.py check` to check prepared package
    metadata. Run the affected native package tests and integrations as described
    in [DEVELOPMENT.md](DEVELOPMENT.md).
@@ -46,9 +49,9 @@ gh workflow run package-release.yml --ref main \
   -f compiler_version=0.1.0 -f source_ref=COMMIT -F publish=false
 ```
 
-`all` selects the exact versions already written in every member manifest. It
+`all` selects the exact versions already written in every publishable manifest. It
 does not calculate bumps. Explicit JSON selections must match committed versions;
-unknown/duplicate names and unprepared changelogs are rejected.
+unknown/duplicate names, private projects, and unprepared changelogs are rejected.
 
 Inspect the resulting run in Actions or use `gh run list --workflow
 package-release.yml`, then `gh run watch RUN_ID --exit-status`. Avoid confusing
@@ -70,6 +73,8 @@ against the same source commit and version batch. The publisher checks:
 The first batch has no prior API baseline. The workflow is not a replacement
 for provisioned database/terminal integration tests in normal CI, and does not
 claim native execution on the three additional compiler release architectures.
+Private example/test projects retain their own workspace checks and integration
+programs in CI, but never receive package release tags.
 Validation artifacts retain the request, compiler build information, complete
 plans, and API differences. No publication job runs unless every host succeeds.
 

@@ -1,6 +1,4 @@
 module LlmFailureRuntime
 
-import llm_examples.LlmFailureChecks
-
 tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
 let tests = Test.describe "LLM runtime" [LlmFailureChecks.tests]

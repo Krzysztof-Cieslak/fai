@@ -5,6 +5,9 @@
 ## [0.1.0] - 2026-10-15
 
 ### Added
+- Add `[package] publish = false` for private workspace and example projects;
+  both release planning and publication reject them. Keep example-specific tests
+  outside published libraries and exclude private projects from release batches.
 - Add a manual source-package release workflow with exact published-compiler
   qualification on Linux, macOS, and Windows, atomic package tags, and immutable
   per-package release notes without changing the compiler's Latest channel.

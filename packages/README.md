@@ -7,8 +7,9 @@ make a version available to `fai add`.
 
 Packages are released independently through the manual
 [package release workflow](../docs/RELEASING_PACKAGES.md). A package tag looks like
-`packages/json/v0.1.0`; the initial `all` batch includes nested example packages
-needed by development dependencies.
+`packages/json/v0.1.0`; the initial `all` batch includes the 27 public libraries.
+The six nested example/test projects set `publish = false`: they are ordinary
+workspace projects for development, not independently released dependencies.
 
 After publication, add a library to an application using its repository and
 subdirectory, rather than copying sources:
@@ -34,9 +35,10 @@ fai run -C packages web/examples/JsonWebExample.fai
 fai resolve -C packages
 ```
 
-The `config`, `csv`, `llm`, and `postgres` examples share helper modules in nested
-example packages. Select them by names such as `llm-examples`, or run an explicit
-example file. Their parent libraries do not acquire example-only dependencies.
+The `config`, `csv`, `diff`, `glob`, `llm`, and `postgres` examples share helper
+modules in private nested projects. Select them by names such as `llm-examples`,
+or run an explicit example file. Tests needing those helpers live in the private
+project, so published libraries do not acquire example-only dependencies.
 
 Repository CI reads normal and development dependencies directly from these
 manifests. Inline `example` and `forall` declarations document nearby library

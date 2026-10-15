@@ -1,6 +1,4 @@
 module LlmOpenAIRuntime
 
-import llm_examples.LlmOpenAICheck
-
 tests : Test.Suite Test.Context { Clock, Concurrency, Net, Tls }
 let tests = Test.describe "LLM runtime" [LlmOpenAICheck.tests]

@@ -215,7 +215,7 @@ jobs:
           python scripts/tests/json_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
           python scripts/tests/web_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
       - uses: ./.github/actions/postgres
-        if: contains(fromJSON(needs.changes.outputs.packages), 'postgres')
+        if: contains(fromJSON(needs.changes.outputs.packages), 'postgres') || contains(fromJSON(needs.changes.outputs.packages), 'postgres-examples')
         timeout-minutes: 10
       - uses: ./.github/actions/tui
         if: contains(fromJSON(needs.changes.outputs.packages), 'tui')
@@ -227,7 +227,7 @@ jobs:
         if: contains(fromJSON(needs.changes.outputs.packages), 'http-client')
         timeout-minutes: 10
       - uses: ./.github/actions/llm
-        if: contains(fromJSON(needs.changes.outputs.packages), 'llm')
+        if: contains(fromJSON(needs.changes.outputs.packages), 'llm') || contains(fromJSON(needs.changes.outputs.packages), 'llm-examples')
         timeout-minutes: 10
       - uses: ./.github/actions/logging
         if: contains(fromJSON(needs.changes.outputs.packages), 'logging')
@@ -373,7 +373,7 @@ jobs:
         if: needs.changes.outputs.compiler == 'true' && needs.changes.outputs.packages != '[]'
         run: python scripts/tests/web_toolchain.py --fai '${{ steps.compiler.outputs.binary }}'
       - uses: ./.github/actions/postgres
-        if: contains(fromJSON(needs.changes.outputs.packages), 'postgres')
+        if: contains(fromJSON(needs.changes.outputs.packages), 'postgres') || contains(fromJSON(needs.changes.outputs.packages), 'postgres-examples')
         timeout-minutes: 10
       - uses: ./.github/actions/tui
         if: contains(fromJSON(needs.changes.outputs.packages), 'tui')
@@ -385,7 +385,7 @@ jobs:
         if: contains(fromJSON(needs.changes.outputs.packages), 'http-client')
         timeout-minutes: 10
       - uses: ./.github/actions/llm
-        if: contains(fromJSON(needs.changes.outputs.packages), 'llm')
+        if: contains(fromJSON(needs.changes.outputs.packages), 'llm') || contains(fromJSON(needs.changes.outputs.packages), 'llm-examples')
         timeout-minutes: 10
       - uses: ./.github/actions/logging
         if: contains(fromJSON(needs.changes.outputs.packages), 'logging')

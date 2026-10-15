@@ -1,0 +1,7 @@
+module ConfigExampleSettingsSpec
+
+let emptyArguments _ =
+  Expect.isTrue "absent CLI options do not override configuration" (ConfigExampleSettings.cli [] = Ok [])
+
+tests : Test.Suite Test.Context { }
+let tests = Test.test "absent CLI options" emptyArguments

@@ -1,6 +1,5 @@
 module ConfigBoundarySpec
 
-import config_examples.ConfigExampleSettings
 import toml.TomlTypes
 
 let configured source =
@@ -109,10 +108,6 @@ let case008 _ =
   let testActual = leadingZeros
   Expect.isTrue "leadingZeros" testActual
 
-let case009 _ =
-  let testActual = ConfigExampleSettings.cli [] = Ok []
-  Expect.isTrue "ConfigExampleSettings.cli [] = Ok []" testActual
-
 tests : Test.Suite Test.Context { }
 let tests = Test.describe "ConfigBoundarySpec" [
   Test.test "missingLocation" case001,
@@ -122,6 +117,5 @@ let tests = Test.describe "ConfigBoundarySpec" [
   Test.test "(match configured \"values=[{x=1,unknown=2},{x='bad'}]\" with | Ok config -> (match ConfigDecode.decode (ConfigDecode.field \"values\" (ConfigDecode.array (Confi…" case005,
   Test.test "(match configured \"date=2026-10-12\\ntime=12:30\\nlocal=2026-10-12T12:30\\noffset=2026-10-12T12:30Z\" with | Ok config -> ConfigDecode.decode (ConfigDecode.succe…" case006,
   Test.test "(match configured \"time=12:30:00.1234567891\" with | Ok config -> ConfigDecode.decode (ConfigDecode.field \"time\" ConfigDecode.time) config |> Result.isErr | _…" case007,
-  Test.test "leadingZeros" case008,
-  Test.test "ConfigExampleSettings.cli [] = Ok []" case009
+  Test.test "leadingZeros" case008
 ]

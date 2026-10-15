@@ -1,6 +1,8 @@
 module LlmReplaySpec
 
-import llm_examples.LlmFixtures
+import llm.Llm
+import llm.LlmReplay
+import llm.LlmTypes
 
 let openai = Bytes.fromString (LlmFixtures.openai true)
 

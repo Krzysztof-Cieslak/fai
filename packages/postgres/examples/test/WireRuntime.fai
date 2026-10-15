@@ -1,6 +1,4 @@
 module PostgresWireRuntime
 
-import postgres_examples.WireChecks
-
 tests : Test.Suite Test.Context { Clock, Concurrency, Crypto.Entropy, Net, Tls }
 let tests = WireChecks.tests

@@ -1,9 +1,9 @@
 # Glob examples and interoperability checks
 
-Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
+Private example/test project · Requires **Fai 0.1.x**
 
 The `glob-examples` package keeps native process dependencies out of the
-[glob library](../README.md). Its release tag is `packages/glob/examples/v0.1.0`.
+[glob library](../README.md). It is not independently published (`publish = false`).
 
 From the repository root, with Git installed:
 

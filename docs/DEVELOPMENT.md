@@ -5,6 +5,10 @@ Source-package releases use the manual workflow described in
 `changelog.md`; prepare version changes in a PR, then qualify the merged source
 with an exact published compiler. `python3 scripts/package_release.py check`
 checks release metadata without building or publishing anything.
+Private example/test projects declare `publish = false`, retain their workspace
+checks, and do not need release changelogs. For LLM replay, persistence, and local
+provider scenarios run `fai test -C packages llm-examples`; pure library contracts
+remain under `fai test -C packages llm`.
 
 Terminal library contracts are ordinary Fai tests: `fai test -C packages tui`.
 Headless lifecycle checks run with `fai run -C packages
@@ -101,8 +105,9 @@ and backpressure. `scripts/tests/logging_toolchain.py --fai /path/to/fai` retain
 AOT, console-wire and effect-negative checks. `.github/actions/logging` runs these
 checks with the cached compiler when logging or a dependency is selected.
 
-The LLM package runs pure contracts and named local-provider scenarios with
-`fai test -C packages llm`, including tools, failures and SQLite persistence.
+The LLM library runs pure contracts with `fai test -C packages llm`; its private
+example project runs replay, local-provider scenarios, and SQLite persistence
+with `fai test -C packages llm-examples`.
 `scripts/tests/llm_toolchain.py --fai /path/to/fai` retains AOT,
 effect-negative compiler fixtures and Unix terminal integration. `.github/actions/llm` uses the
 same exact compiler cache and dependency-aware package selection. Live provider

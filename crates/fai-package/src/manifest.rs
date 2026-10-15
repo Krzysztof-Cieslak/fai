@@ -611,6 +611,7 @@ impl Parser<'_> {
             &[
                 "name",
                 "version",
+                "publish",
                 "fai-version",
                 "source-dir",
                 "test-dir",
@@ -649,6 +650,7 @@ impl Parser<'_> {
         let test_dir =
             self.convert(Some(test_dir), "package.test-dir", INVALID_SOURCE, PackagePath::parse);
         let auto_main = self.boolean(table, "auto-main", "package", true);
+        let publish = self.boolean(table, "publish", "package", true);
         let default_run = self.string(table, "default-run", "package", false);
         let default_run =
             self.convert(default_run, "package.default-run", INVALID_TARGET, PackageName::parse);
@@ -670,6 +672,7 @@ impl Parser<'_> {
         Some(Package {
             name: name?,
             version: version?,
+            publish,
             fai_version,
             explicit_fai_version: table.contains_key("fai-version"),
             source_dir: source_dir?,

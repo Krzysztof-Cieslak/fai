@@ -10,6 +10,3 @@ test-dir = "."
 dotenv = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/dotenv", version = "^0.1.0" }
 json = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/json", version = "^0.1.0" }
 toml = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/toml", version = "^0.1.0" }
-
-[dev-dependencies]
-config_examples = { git = "https://github.com/Krzysztof-Cieslak/fai.git", subdir = "packages/config/examples", version = "^0.1.0" }

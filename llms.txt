@@ -28,6 +28,9 @@ published, add one with, for example, `fai add github:Krzysztof-Cieslak/fai
 --subdir packages/json --as json --version '^0.1.0'`; import `json.Json` rather
 than copying its sources. Each package README and changelog describes its own
 version. Compiler and source-package releases are independent.
+An example or application can set `[package] publish = false` to remain a private
+workspace project. It still supports check/test/run, but cannot be published;
+this setting does not change source-level `public` or `internal` visibility.
 
 1. What Fai is
 2. Rules you must internalize first
