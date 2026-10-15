@@ -23,7 +23,7 @@ def main():
         base = "/tmp/opencode"
     with tempfile.TemporaryDirectory(prefix="fai-postgres-", dir=base) as temporary:
         directory = Path(temporary)
-        prepare(directory, ["postgres", "sql", "json", "uuid"])
+        prepare(directory, ["postgres", "sql", "json", "uuid"], portable=True)
         tests = directory / "tests"
         tests.mkdir()
         for name in ("Basic", "Integration", "WireChecks"):
