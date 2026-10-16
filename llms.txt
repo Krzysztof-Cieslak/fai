@@ -1122,6 +1122,11 @@ before retrying an unconsumed suffix. Feed empty bytes only to report TCP EOF.
 `readPlaintext` returns `Result (Option Bytes) String`; `None` means pending,
 `Some Bytes.empty` means authenticated TLS EOF, and truncation returns `Err`.
 
+HTTP/1.1 requests reuse a connection unless either peer sends `Connection: close`.
+Pipelined requests run sequentially, with fully read, independent request bodies.
+HTTP/1.0 closes after its response. Cancel the serving task to terminate idle
+connections as well; there is no implicit idle timeout.
+
 HTTP servers can own scoped producers with `Http.produced` and managed listeners:
 the producer receives a lifetime-checked chunk writer after headers are sent.
 This supports structured source/timer tasks through an entire response. The
@@ -1964,7 +1969,11 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   whitespace before sending any bytes. Server:
   `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
-   connection; cancel the serving task to shut down. A received `resp.body` is a
+   connection, serving ordered requests until either peer sends `Connection: close`.
+   HTTP/1.0 requests close after their response. Cancel the serving task to shut
+   down, including idle connections; no implicit idle timeout is imposed.
+   Request bodies are fully read before handlers run, and surplus bytes are
+   retained for the next request. A received `resp.body` is a
    **lazy `Stream Bytes`** decoded on demand (chunked / Content-Length / read-to-EOF),
    so a big download streams; consume it with `bodyBytes`/`bodyText` or the `Stream`
    combinators, and drop the response to close the connection. Build a request/sent

@@ -805,45 +805,53 @@ let chunkedWith finish t buf = chunkedPhase finish t buf ChunkSize
 chunkedPhase : (Bytes -> Stream Bytes 'e / 'e) -> Transport 'e -> Bytes -> ChunkPhase -> Stream Bytes 'e
 let chunkedPhase finish t buf phase = Stream.defer (fun u -> chunkedStep finish t buf phase)
 
+type ChunkRead =
+  | ChunkEnd Bytes
+  | ChunkPart Bytes Bytes ChunkPhase
+
 chunkedStep : (Bytes -> Stream Bytes 'e / 'e) -> Transport 'e -> Bytes -> ChunkPhase -> Stream Bytes 'e / 'e
 let chunkedStep finish t buf phase =
+  match readChunk t buf phase with
+  | Err e -> Stream.failed e
+  | Ok (ChunkEnd rest) -> finish rest
+  | Ok (ChunkPart data rest next) -> Stream.cons data (chunkedPhase finish t rest next)
+
+// Both lazy response bodies and fully read requests retain the bytes following
+// the trailer terminator. A connection owner decides whether to reuse them.
+readChunk : Transport 'e -> Bytes -> ChunkPhase -> Result ChunkRead String / 'e
+let readChunk t buf phase =
   match phase with
   | ChunkSize ->
     match readLine t buf with
-    | Err e -> Stream.failed e
+    | Err e -> Err e
     | Ok (line, afterSize) ->
       match parseChunkSize line with
-      | Err e -> Stream.failed e
+      | Err e -> Err e
       | Ok size ->
         if size = 0 then
-          match readTrailers t afterSize 0 with
-          | Err e -> Stream.failed e
-          | Ok rest -> finish rest
+          Result.map ChunkEnd (readTrailers t afterSize 0)
         else
-          chunkedStep finish t afterSize (ChunkData size)
+          readChunk t afterSize (ChunkData size)
   | ChunkData remaining ->
     if Bytes.length buf = 0 then
       match t.recv (minInt remaining 16384) with
-      | Err e -> Stream.failed e
+      | Err e -> Err e
       | Ok got ->
-        if Bytes.length got = 0 then
-          Stream.failed "connection closed mid-chunk"
-        else
-          chunkedStep finish t got phase
+        if Bytes.length got = 0 then Err "connection closed mid-chunk" else readChunk t got phase
     else
       let count = minInt remaining (minInt 16384 (Bytes.length buf))
       let data = Bytes.slice 0 count buf
       let rest = Bytes.slice count (Bytes.length buf) buf
       let next = if count = remaining then ChunkTerminator else ChunkData (remaining - count)
-      Stream.cons data (chunkedPhase finish t rest next)
+      Ok (ChunkPart data rest next)
   | ChunkTerminator ->
     match readExact t buf 2 with
-    | Err e -> Stream.failed e
+    | Err e -> Err e
     | Ok (ending, rest) ->
       if ending = Bytes.fromString "\r\n" then
-        chunkedStep finish t rest ChunkSize
+        readChunk t rest ChunkSize
       else
-        Stream.failed "invalid chunk data terminator"
+        Err "invalid chunk data terminator"
 
 // A one-shot body's surplus bytes are discarded when its transport closes.
 chunkedBody : Transport 'e -> Bytes -> Stream Bytes 'e
@@ -1665,39 +1673,77 @@ let honorExpectation t version headers framing =
     | Err e -> Err e
     | Ok sent -> Err "unsupported HTTP expectation"
 
-// Parse a request from a transport: the head, then the body read in full and
-// materialized (so the transport is free for writing the response). The body is
-// decoded per its framing — chunked, Content-Length, or absent (a request with
-// neither has no body, unlike a response, which reads to EOF).
+// Fully read the request into independent chunks, retaining any next-request
+// bytes. The public body never holds the reusable connection or reads from it.
+readRequestSized : Transport 'e -> Bytes -> Int -> List Bytes -> Result (List Bytes * Bytes) String / 'e
+let readRequestSized t buf remaining chunks =
+  if remaining = 0 then
+    Ok (List.reverse chunks, buf)
+  else if Bytes.isEmpty buf then
+    match t.recv (minInt remaining 16384) with
+    | Err e -> Err e
+    | Ok got ->
+      if Bytes.isEmpty got then
+        Err "connection closed before end of body"
+      else
+        readRequestSized t got remaining chunks
+  else
+    let count = minInt remaining (Bytes.length buf)
+    readRequestSized t (Bytes.slice count (Bytes.length buf) buf) (remaining - count) (Bytes.slice 0 count buf :: chunks)
+
+readRequestChunked : Transport 'e -> Bytes -> ChunkPhase -> List Bytes -> Result (List Bytes * Bytes) String / 'e
+let readRequestChunked t buf phase chunks =
+  match readChunk t buf phase with
+  | Err e -> Err e
+  | Ok (ChunkEnd rest) -> Ok (List.reverse chunks, rest)
+  | Ok (ChunkPart data rest next) -> readRequestChunked t rest next (data :: chunks)
+
+readRequestBody : Transport 'e -> Bytes -> BodyFraming -> Result (List Bytes * Bytes) String / 'e
+let readRequestBody t buf framing =
+  match framing with
+  | NoBody -> Ok ([], buf)
+  | SizedBody n -> readRequestSized t buf n []
+  | Chunked -> readRequestChunked t buf ChunkSize []
+  | UntilEof -> Err "request body requires explicit framing"
+
+// None is a clean EOF between requests. A partial head or body remains an error.
+// HTTP/1.0 connections close even if a peer asks for the optional keep-alive.
+parseRequestAfter : Transport 'e -> Bytes -> Result (Option (Request 'r * Bool * Bytes)) String / 'e
+let parseRequestAfter t buffered =
+  match readHeaderProgress t buffered with
+  | Err (true, _) -> Ok None
+  | Err (false, e) -> Err e
+  | Ok (headBytes, leftover) ->
+    match Bytes.toString headBytes with
+    | None -> Err "request headers are not valid UTF-8"
+    | Some headText ->
+      match parseRequestHead headText with
+      | Err e -> Err e
+      | Ok (method, url, headers, version) ->
+        match framingOf headers NoBody with
+        | Err e -> Err e
+        | Ok framing ->
+          match honorExpectation t version headers framing with
+          | Err e -> Err e
+          | Ok _ ->
+            match readRequestBody t leftover framing with
+            | Err e -> Err e
+            | Ok (chunks, rest) ->
+              let request = {
+                body = Stream.fromList chunks,
+                headers = headers,
+                method = method,
+                url = url
+              }
+              Ok (Some (request, version <> "HTTP/1.1" || hasConnectionClose headers, rest))
+
+// Read one request without exposing connection bookkeeping.
 parseRequest : Transport 'e -> Result (Request 'r) String / 'e
 let parseRequest t =
-  match readHeaderBlock t Bytes.empty with
+  match parseRequestAfter t Bytes.empty with
   | Err e -> Err e
-  | Ok block ->
-    match block with
-    | (headBytes, leftover) ->
-      match Bytes.toString headBytes with
-      | None -> Err "request headers are not valid UTF-8"
-      | Some headText ->
-        match parseRequestHead headText with
-        | Err e -> Err e
-        | Ok parsed ->
-          match parsed with
-          | (method, url, headers, version) ->
-            match framingOf headers NoBody with
-            | Err e -> Err e
-            | Ok framing ->
-              match honorExpectation t version headers framing with
-              | Err e -> Err e
-              | Ok ready ->
-                match bodyBytes (bodyStream t leftover framing) with
-                | Err e -> Err e
-                | Ok body -> Ok {
-                  body = bytesBody body,
-                  headers = headers,
-                  method = method,
-                  url = url
-                }
+  | Ok None -> Err "connection closed before end of headers"
+  | Ok (Some (request, _, _)) -> Ok request
 
 // --- Server ----------------------------------------------------------------
 // Run the handler over a parsed request, mapping an `Err` to a 500 response.
@@ -1707,38 +1753,37 @@ let respond handler req =
   | Ok r -> r
   | Err message -> errorResponse 500 message
 
-// Send a response (chunked-streamed or Content-Length per its headers), then close
-// the connection (one response per connection).
+// Sending and connection ownership are separate: a response must finish before
+// the next request can run, but need not close a persistent transport.
+writeResponse : Bool -> Method -> Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
+let writeResponse closeConn method t resp =
+  let startLine = "HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n"
+  if resp.status < 100 || resp.status > 999 || not (validHead startLine resp.headers) then
+    Err "invalid outgoing HTTP status line or header"
+  else if resp.status = 101 || (methodName method = "CONNECT" && resp.status >= 200 && resp.status < 300) then
+    Err "HTTP protocol upgrades and CONNECT tunnels are not supported"
+  else if responseHasBody method resp.status then
+    sendMessage closeConn t startLine resp.headers resp.body
+  else
+    let headers = Headers.remove "Transfer-Encoding" resp.headers
+    let framed =
+      if resp.status = 204 || (resp.status >= 100 && resp.status < 200) then
+        Headers.remove "Content-Length" headers
+      else
+        headers
+    match framingOf framed NoBody with
+    | Err e -> Err e
+    | Ok _ ->
+      t.send (renderHead startLine (if closeConn then
+        Headers.set "Connection" "close" framed
+      else
+        framed))
+
 sendResponse : Method -> Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
 let sendResponse method t resp =
-  let startLine = "HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n"
-  let result =
-    if resp.status < 100 || resp.status > 999 || not (validHead startLine resp.headers) then
-      Err "invalid outgoing HTTP status line or header"
-    else if resp.status = 101 || (methodName method = "CONNECT" && resp.status >= 200 && resp.status < 300) then
-      Err "HTTP protocol upgrades and CONNECT tunnels are not supported"
-    else if responseHasBody method resp.status then
-      sendMessage true t startLine resp.headers resp.body
-    else
-      let headers = Headers.remove "Transfer-Encoding" resp.headers
-      let framed =
-        if resp.status = 204 || (resp.status >= 100 && resp.status < 200) then
-          Headers.remove "Content-Length" headers
-        else
-          headers
-      match framingOf framed NoBody with
-      | Err e -> Err e
-      | Ok framing -> t.send (renderHead startLine (Headers.set "Connection" "close" framed))
-  match result with
-  | Err e -> Err e
-  | Ok sent -> Ok (t.close ())
-
-// Handle one connection: parse the request, run the handler (Err -> 500), reply.
-handleOver : Transport { Net, Tls } -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Net, Tls | 'h }
-let handleOver t handler =
-  match parseRequest t with
-  | Err e -> Err e
-  | Ok req -> sendResponse req.method t (respond handler req)
+  let result = writeResponse true method t resp
+  let closed = t.close ()
+  result
 
 // Complete a server-side TLS handshake on a connection, returning a TLS transport.
 secureServer : { net : Net, tls : Tls | 'r } -> Connection -> Bytes -> Bytes -> Result (Transport { Net, Tls }) String / { Net, Tls }
@@ -1760,34 +1805,15 @@ let buildServerTransport env conn tlsConfig =
     match certKey with
     | (cert, key) -> secureServer env conn cert key
 
-handleConnection : { net : Net, tls : Tls | 'r } -> Connection -> Option (Bytes * Bytes) -> (Request 'ein -> Result (Response 'h) String / 'h) -> Unit / { Net, Tls | 'h }
-let handleConnection env conn tlsConfig handler =
-  match buildServerTransport env conn tlsConfig with
-  | Err e -> ()
-  | Ok t ->
-    match handleOver t handler with
-    | Ok done -> ()
-    | Err e -> ()
-
-// Accept connections forever, spawning an isolated task per connection (so one
-// connection's failure never affects others). Returns when `accept` fails — e.g.
-// when the serving task is cancelled (graceful shutdown) or the listener closes.
-acceptLoop : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (Response 'h) String / 'h) -> Nursery -> Result Unit String / { Concurrency, Net, Tls | 'h }
-let acceptLoop env listener tlsConfig handler nursery =
-  match env.net.accept listener with
-  | Err e -> Ok ()
-  | Ok conn ->
-    let task = env.concurrency.spawn nursery (fun u -> handleConnection env conn tlsConfig handler)
-    acceptLoop env listener tlsConfig handler nursery
-
 serveListenerWith : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net, Tls | 'h }
 let serveListenerWith env listener tlsConfig handler =
-  env.concurrency.scope (acceptLoop env listener tlsConfig handler)
+  serveManagedWith env listener tlsConfig (fun request -> Ok (Ready (respond handler request)))
 
 /// Serve plaintext HTTP on an already-bound listener: accept connections and
 /// dispatch each to `handler` on its own task. Runs until the serving task is
 /// cancelled (graceful shutdown: it stops accepting and the structured scope joins
-/// in-flight connections) or the listener errors. A handler `Err` becomes a 500.
+/// in-flight connections) or the listener errors. HTTP/1.1 requests share their
+/// connection until either peer asks to close. A handler `Err` becomes a 500.
 public serveListener : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net, Tls | 'h }
 let serveListener env listener handler = serveListenerWith env listener None handler
 
@@ -1850,10 +1876,10 @@ let producerWrite c gate transport bytes =
     let released = c.send gate result
     result
 
-sendProduced : Concurrency -> Method -> Transport { Net, Tls } -> ResponseHead -> BodyProducer 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
-let sendProduced c method transport head produce =
+sendProduced : Bool -> Concurrency -> Method -> Transport { Net, Tls } -> ResponseHead -> BodyProducer 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let sendProduced closeConn c method transport head produce =
   if not (responseHasBody method head.status) then
-    sendResponse method transport {
+    writeResponse closeConn method transport {
       body = emptyBody,
       headers = head.headers,
       reason = head.reason,
@@ -1861,8 +1887,9 @@ let sendProduced c method transport head produce =
     }
   else
     let start = "HTTP/1.1 " ++ Int.toString head.status ++ " " ++ head.reason ++ "\r\n"
-    let headers =
-      Headers.set "Connection" "close" (Headers.set "Transfer-Encoding" "chunked" (Headers.remove "Content-Length" head.headers))
+    let framed =
+      Headers.set "Transfer-Encoding" "chunked" (Headers.remove "Content-Length" head.headers)
+    let headers = if closeConn then Headers.set "Connection" "close" framed else framed
     let result =
       if head.status < 100 || head.status > 999 || not (validHead start headers) then
         Err "invalid outgoing HTTP status line or header"
@@ -1886,29 +1913,39 @@ let sendProduced c method transport head produce =
             | None -> Err "response production cancelled"
             | Some (Err error) -> Err error
             | Some (Ok _) -> transport.send (Bytes.fromString "0\r\n\r\n")
-    let closed = transport.close ()
     result
 
-sendPlanned : Concurrency -> Method -> Transport { Net, Tls } -> ServerResponse 'e -> Result Unit String / { Concurrency, Net, Tls | 'e }
-let sendPlanned c method transport response =
+sendPlanned : Bool -> Concurrency -> Method -> Transport { Net, Tls } -> ServerResponse 'e -> Result Bool String / { Concurrency, Net, Tls | 'e }
+let sendPlanned requestedClose c method transport response =
   match response with
-  | Ready response -> sendResponse method transport response
-  | Produced head produce -> sendProduced c method transport head produce
+  | Ready response ->
+    let closeConn = requestedClose || hasConnectionClose response.headers || response.status < 200
+    Result.map (fun _ -> closeConn) (writeResponse closeConn method transport response)
+  | Produced head produce ->
+    let closeConn = requestedClose || hasConnectionClose head.headers || head.status < 200
+    Result.map (fun _ -> closeConn) (sendProduced closeConn c method transport head produce)
+
+serveRequests : Concurrency -> Transport { Net, Tls } -> Bytes -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serveRequests c transport buffered handler =
+  match parseRequestAfter transport buffered with
+  | Err error -> Err error
+  | Ok None -> Ok ()
+  | Ok (Some (request, closeConn, rest)) ->
+    let response =
+      match handler request with
+      | Ok response -> response
+      | Err error -> Ready (errorResponse 500 error)
+    match sendPlanned closeConn c request.method transport response with
+    | Err error -> Err error
+    | Ok true -> Ok ()
+    | Ok false -> serveRequests c transport rest handler
 
 handleManaged : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Connection -> Option (Bytes * Bytes) -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Unit / { Concurrency, Net, Tls | 'e }
 let handleManaged env connection tlsConfig handler =
   match buildServerTransport env connection tlsConfig with
   | Err _ -> ()
   | Ok transport ->
-    let result =
-      match parseRequest transport with
-      | Err error -> Err error
-      | Ok request ->
-        let response =
-          match handler request with
-          | Ok response -> response
-          | Err error -> Ready (errorResponse 500 error)
-        sendPlanned env.concurrency request.method transport response
+    let result = serveRequests env.concurrency transport Bytes.empty handler
     transport.close ()
 
 acceptManaged : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Nursery -> Result Unit String / { Concurrency, Net, Tls | 'e }
@@ -1920,13 +1957,38 @@ let acceptManaged env listener tlsConfig handler nursery =
       env.concurrency.spawn nursery (fun _ -> handleManaged env connection tlsConfig handler)
     acceptManaged env listener tlsConfig handler nursery
 
+// Keep the accept task alive until it cancels its own connection children. This
+// also terminates idle reads when accept fails without external cancellation.
+acceptOwned : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Nursery -> Channel (Task (Result Unit String)) -> Unit -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let acceptOwned env listener tlsConfig handler nursery self _ =
+  let owner = env.concurrency.recv self
+  let result = acceptManaged env listener tlsConfig handler nursery
+  let stopped =
+    match owner with
+    | None -> ()
+    | Some task -> env.concurrency.cancel task
+  result
+
+serveManagedScope : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Nursery -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serveManagedScope env listener tlsConfig handler nursery =
+  let self = env.concurrency.channel 1
+  let accept =
+    env.concurrency.spawn nursery (acceptOwned env listener tlsConfig handler nursery self)
+  let started = env.concurrency.send self accept
+  env.concurrency.await accept
+
+serveManagedWith : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serveManagedWith env listener tlsConfig handler =
+  env.concurrency.scope (serveManagedScope env listener tlsConfig handler)
+
 /// Serve ordinary or producer-backed responses over HTTP. Each producer runs
 /// inside its connection task and owns its scoped resources through the write.
+/// Persistent requests run sequentially; a completed producer's writer expires
+/// before the connection serves another request.
 public serveManagedListener : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Unit String / { Concurrency, Net, Tls | 'e }
-let serveManagedListener env listener handler =
-  env.concurrency.scope (acceptManaged env listener None handler)
+let serveManagedListener env listener handler = serveManagedWith env listener None handler
 
 /// Serve ordinary or producer-backed responses over HTTPS.
 public serveManagedListenerTls : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Bytes -> Bytes -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Unit String / { Concurrency, Net, Tls | 'e }
 let serveManagedListenerTls env listener cert key handler =
-  env.concurrency.scope (acceptManaged env listener (Some (cert, key)) handler)
+  serveManagedWith env listener (Some (cert, key)) handler
