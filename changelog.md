@@ -6,6 +6,12 @@
 - Add a standalone published-JSON example with a portable dependency lock,
   executable serialization contract, and README walkthrough.
 
+### Changed
+- Keep HTTP/1.1 server connections alive across sequential and pipelined requests,
+  preserving buffered bytes and scoped response-writer lifetimes. Send
+  `Connection: close` in a request or response to retain one-request behavior;
+  HTTP/1.0 remains close-by-default. Server termination also releases idle connections.
+
 ### Fixed
 - Use full HTTPS package URLs in onboarding examples so they work with the
   released 0.1.0 compiler.

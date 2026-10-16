@@ -5241,6 +5241,15 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     invalid decimal ports; bracketed host spelling is preserved for rendering.
     HTTP removes IPv6 authority brackets at the socket/TLS handoff, shared by
     one-shot and pooled connections, while retaining them in the Host header.
+  - **Persistent server connections.** HTTP/1.1 servers process requests in wire
+    order on one connection task. Fully decoded request chunks do not capture the
+    transport; bytes beyond a length-delimited body or chunked trailers are carried
+    into the next request. Either peer's `Connection: close`, HTTP/1.0, framing
+    failure or failed response transmission terminates reuse. Scoped producers
+    expire their writers before advancing. Cancelling the server or ending its
+    accept loop cancels connection children, including idle reads; no implicit
+    idle timeout or request-count cutoff is imposed. Existing serving signatures
+    remain unchanged; clients needing one-response lifetime send `Connection: close`.
   - **HTTP (pure Fai).** `std/networking/Http.fai` is an HTTP/1.1 client and server over `Net`,
     with an opaque validated `Url` (`std/networking/Url.fai`) and a case-insensitive, order- and
     duplicate-preserving `Headers` (`std/networking/Headers.fai`). `Url` is an opaque **union**

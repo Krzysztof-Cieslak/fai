@@ -38,6 +38,12 @@ fai run -C packages web/examples/JsonWebExample.fai
 
 ## The handler model
 
+`Web.serve` and `Web.serveTls` retain HTTP/1.1 connections across requests and
+process pipelined requests in order. Set `Connection: close` on a request or
+response to end reuse. HTTP/1.0 connections close after one response. Cancelling
+the serving task also terminates idle connections; there is no implicit idle
+timeout. A scoped response writer expires before the next request is handled.
+
 The single building block is an `HttpHandler` — a function from a request context
 to an `Outcome`:
 

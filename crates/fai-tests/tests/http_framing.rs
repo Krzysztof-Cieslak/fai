@@ -167,6 +167,95 @@ fn cancellation_never_hints_at_replay() {
     );
 }
 
+#[test]
+fn request_body_survives_after_the_next_request_is_parsed() {
+    check(
+        &format!(
+            r#"let channel = testChannel env {}
+let t = testTransport env channel
+match parseRequestAfter t Bytes.empty with
+| Ok (Some (first, false, rest)) ->
+  match parseRequestAfter t rest with
+  | Ok (Some (second, false, tail)) -> bodyText first.body = Ok "abc" && Url.path second.url = "/two" && Bytes.isEmpty tail
+  | _ -> false
+| _ -> false"#,
+            chunks(&[
+                "POST /one HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcGET /two HTTP/1.1\r\n\r\n"
+            ])
+        ),
+        true,
+    );
+}
+
+#[test]
+fn request_chunked_trailer_terminator_can_cross_transport_reads() {
+    check(
+        &format!(
+            r#"let channel = testChannel env {}
+let t = testTransport env channel
+match parseRequestAfter t Bytes.empty with
+| Ok (Some (first, false, rest)) ->
+  match parseRequestAfter t rest with
+  | Ok (Some (second, false, tail)) -> bodyText first.body = Ok "ab" && Url.path second.url = "/two"
+  | _ -> false
+| _ -> false"#,
+            chunks(&[
+                "POST /one HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n1\r",
+                "\na\r\n1\r\nb\r\n0\r\nX-End: yes\r",
+                "\n\r",
+                "\nGET /two HTTP/1.1\r\n\r\n"
+            ])
+        ),
+        true,
+    );
+}
+
+#[test]
+fn request_clean_eof_is_not_a_parse_failure() {
+    check(
+        "let t = { Transport with close u = (), recv n = Ok Bytes.empty, send b = Ok () }\nmatch parseRequestAfter t Bytes.empty with\n| Ok None -> true\n| _ -> false",
+        false,
+    );
+}
+
+#[test]
+fn request_partial_head_eof_remains_a_parse_failure() {
+    check(
+        "let t = { Transport with close u = (), recv n = Ok Bytes.empty, send b = Ok () }\nmatch parseRequestAfter t (Bytes.fromString \"GET /\") with\n| Err message -> message = \"connection closed before end of headers\"\n| _ -> false",
+        false,
+    );
+}
+
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::{check, chunks};
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(8))]
+
+        #[test]
+        fn persistent_request_parsing_is_independent_of_fragment_boundaries(split in 0usize..127) {
+            let wire = "POST /one HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n0\r\nX-End: yes\r\n\r\nGET /two HTTP/1.1\r\n\r\n";
+            let split = 1 + split % (wire.len() - 1);
+            check(
+                &format!(
+                    r#"let channel = testChannel env {}
+let t = testTransport env channel
+match parseRequestAfter t Bytes.empty with
+| Ok (Some (first, false, rest)) ->
+  match parseRequestAfter t rest with
+  | Ok (Some (second, false, tail)) -> bodyText first.body = Ok "ab" && Url.path second.url = "/two" && Bytes.isEmpty tail
+  | _ -> false
+| _ -> false"#,
+                    chunks(&[&wire[..split], &wire[split..]])
+                ),
+                true,
+            );
+        }
+    }
+}
+
 #[track_caller]
 fn check(body: &str, concurrent: bool) {
     let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

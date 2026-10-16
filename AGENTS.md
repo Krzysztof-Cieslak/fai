@@ -1906,6 +1906,14 @@ lines, and control characters before any bytes are sent. `Http.multipartBody`
 returns `Result (Stream Bytes 'e) String`, validating boundary and metadata before
 construction; disposition names and filenames escape quotes and backslashes.
 
+HTTP/1.1 servers retain connections across sequential and ordered pipelined
+requests. Request bodies are fully decoded into independent chunks before the
+handler runs; surplus bytes belong to the next request. Either peer's
+`Connection: close` ends reuse, and HTTP/1.0 requests close their connection.
+Response producers finish and expire their writers before another request runs.
+Cancellation and accept failure terminate the connection tasks, including idle
+reads. There is no implicit idle timeout; applications own the serving lifetime.
+
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;
 unsupported or ambiguous framing returns `Err`. Chunked bodies validate data
