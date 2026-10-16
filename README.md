@@ -96,13 +96,14 @@ not need to clone the Fai repository:
 
 ```sh
 fai init hello-json
-fai add -C hello-json https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/json --as json --version '^0.1.0'
+cd hello-json
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/json --as json --version '^0.1.0'
 ```
 
-`-C hello-json` selects your new local project. `--subdir packages/json` selects
-the JSON package inside the **remote repository**, not a local directory.
+`--subdir packages/json` selects the JSON package inside the **remote repository**,
+not a local directory.
 
-Replace `hello-json/src/Main.fai` with:
+Replace `src/Main.fai` with:
 
 ```fai
 module Main
@@ -116,7 +117,7 @@ public main : Runtime -> Unit / { Console }
 let main runtime = runtime.console.writeLine (Json.toString greeting)
 ```
 
-Run `fai run -C hello-json` to print `{"message":"Hello, Fai!"}`. This fetches a
+Run `fai run` to print `{"message":"Hello, Fai!"}`. This fetches a
 published dependency from Git; no library source copying is needed. The
 [complete example](samples/published-json/) includes a lockfile and can also be
 checked, tested, and compiled to a native executable.
