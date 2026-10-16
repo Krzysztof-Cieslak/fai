@@ -3,7 +3,7 @@
 Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/http-client --as http_client --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/http-client --as http_client --version '^0.1.0'
 ```
 
 `HttpClient` is an ordinary Fai source package over the standard HTTP/1.1 and

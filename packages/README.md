@@ -15,7 +15,7 @@ After publication, add a library to an application using its repository and
 subdirectory, rather than copying sources:
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/json --as json --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/json --as json --version '^0.1.0'
 ```
 
 These libraries are ordinary Fai packages. Each `fai.toml` declares its public

@@ -3,7 +3,7 @@
 Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/toml --as toml --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/toml --as toml --version '^0.1.0'
 ```
 
 A pure Fai TOML 1.1 library. The scalar foundation preserves temporal spellings

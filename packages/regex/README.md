@@ -3,7 +3,7 @@
 Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/regex --as regex --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/regex --as regex --version '^0.1.0'
 ```
 
 `regex` provides pure, reusable compiled patterns over Unicode text (`Regex`) and

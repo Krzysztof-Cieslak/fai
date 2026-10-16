@@ -17,6 +17,10 @@ files, creates a version-bump commit, pushes `main`, or force-moves a tag.
    Public packages must not depend on private projects: put tests needing example
    helpers in the example project's test directory instead.
    For the first release, select `all` to release all 27 public libraries together.
+   If the repository limits ref updates per push, instead select smaller batches
+   in dependency order. Each selected batch remains atomic; publish and verify
+   its dependencies before dispatching the next batch. The initial 0.1.0 releases
+   used batches of at most five libraries without changing repository protection.
 3. Run `python3 scripts/package_release.py check` to check prepared package
    metadata. Run the affected native package tests and integrations as described
    in [DEVELOPMENT.md](DEVELOPMENT.md).

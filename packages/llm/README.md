@@ -3,7 +3,7 @@
 Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/llm --as llm --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/llm --as llm --version '^0.1.0'
 ```
 
 `llm` uses the `json`, `sse`, `http-client`, and `encoding` source packages. Request and schema
