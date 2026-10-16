@@ -42,6 +42,14 @@ class PublishedJsonSampleTests(unittest.TestCase):
         source = (SAMPLE / "src/Main.fai").read_text().strip()
         self.assertIn(f"```fai\n{source}\n```", (ROOT / "README.md").read_text())
 
+    def test_readme_enters_the_project_before_running_commands(self):
+        readme = (ROOT / "README.md").read_text()
+        section = readme.split("### Use a published package", 1)[1].split("## Design ideas", 1)[0]
+        self.assertIn("fai init hello-json\ncd hello-json\nfai add https://", section)
+        self.assertNotIn("-C hello-json", section)
+        self.assertIn("Replace `src/Main.fai`", section)
+        self.assertIn("Run `fai run`", section)
+
 
 if __name__ == "__main__":
     unittest.main()
