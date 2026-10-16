@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- Add a standalone published-JSON example with a portable dependency lock,
+  executable serialization contract, and README walkthrough.
+
+### Fixed
+- Use full HTTPS package URLs in onboarding examples so they work with the
+  released 0.1.0 compiler.
+
 ## [0.1.0] - 2026-10-15
 
 ### Added

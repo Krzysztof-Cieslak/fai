@@ -3,7 +3,7 @@
 Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/postgres --as postgres --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/postgres --as postgres --version '^0.1.0'
 ```
 
 An explicit-capability PostgreSQL v3 client written in Fai. Declare `postgres` in

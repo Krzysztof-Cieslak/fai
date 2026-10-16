@@ -1,0 +1,9 @@
+module Main
+
+import json.Json
+
+let greeting = Json.Object [| ("message", Json.String "Hello, Fai!") |]
+example: Json.toString greeting = "{\"message\":\"Hello, Fai!\"}"
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Json.toString greeting)

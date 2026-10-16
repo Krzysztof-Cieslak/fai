@@ -89,6 +89,34 @@ fai test Collections.fai
 properties against generated inputs, shrinking failing cases to counterexamples.
 Passing a property test is evidence, not a proof for every possible input.
 
+### Use a published package
+
+Create a project and add the JSON library:
+
+```sh
+fai init hello-json
+fai add -C hello-json https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/json --as json --version '^0.1.0'
+```
+
+Replace `hello-json/src/Main.fai` with:
+
+```fai
+module Main
+
+import json.Json
+
+let greeting = Json.Object [| ("message", Json.String "Hello, Fai!") |]
+example: Json.toString greeting = "{\"message\":\"Hello, Fai!\"}"
+
+public main : Runtime -> Unit / { Console }
+let main runtime = runtime.console.writeLine (Json.toString greeting)
+```
+
+Run `fai run -C hello-json` to print `{"message":"Hello, Fai!"}`. This fetches a
+published dependency from Git; no library source copying is needed. The
+[complete example](samples/published-json/) includes a lockfile and can also be
+checked, tested, and compiled to a native executable.
+
 Explore the [language examples](samples/) for unions, records, interfaces,
 concurrency, and more.
 

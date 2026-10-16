@@ -3,7 +3,7 @@
 Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/dotenv --as dotenv --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/dotenv --as dotenv --version '^0.1.0'
 ```
 
 Pure literal dotenv parsing: `Dotenv.parse`/`parseBytes` return a document with

@@ -3,7 +3,7 @@
 Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/uuid --as uuid --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/uuid --as uuid --version '^0.1.0'
 ```
 
 Pure Fai UUID values and codecs, following RFC 9562. `Uuid.Uuid` is an opaque,

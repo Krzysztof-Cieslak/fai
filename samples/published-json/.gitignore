@@ -1,0 +1,6 @@
+/.fai/
+/target/
+/fai.local.toml
+/fai.local.lock
+/hello-json
+/hello-json.exe

@@ -208,7 +208,7 @@ in-process run. Full protocol in §7; lifecycle commands in §6.
 ```sh
 fai init hello                 # application with src/Main.fai
 fai init helpers --lib         # library package
-fai add github:owner/library --as library --version '^1.2.0'
+fai add https://github.com/owner/library.git --as library --version '^1.2.0'
 fai add --path ../helpers --dev
 fai remove library
 fai resolve                    # conservative lock repair, declared target matrix

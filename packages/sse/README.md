@@ -3,7 +3,7 @@
 Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/sse --as sse --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/sse --as sse --version '^0.1.0'
 ```
 
 `Sse` is a shared protocol codec used by HTTP clients and servers. It depends

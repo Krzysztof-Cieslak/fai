@@ -3,7 +3,7 @@
 Version **0.1.0** · Requires **Fai 0.1.x** · [Changelog](changelog.md)
 
 ```sh
-fai add github:Krzysztof-Cieslak/fai --subdir packages/semver --as semver --version '^0.1.0'
+fai add https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/semver --as semver --version '^0.1.0'
 ```
 
 Pure Fai SemVer 2.0 values, explicit version requirements, stable selection and
