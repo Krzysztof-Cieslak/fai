@@ -11,6 +11,8 @@
   preserving buffered bytes and scoped response-writer lifetimes. Send
   `Connection: close` in a request or response to retain one-request behavior;
   HTTP/1.0 remains close-by-default. Server termination also releases idle connections.
+  Request bodies remain fully read but may contain multiple independent chunks;
+  use `Http.bodyBytes` or `Http.bodyText` when a combined payload is required.
 
 ### Fixed
 - Use full HTTPS package URLs in onboarding examples so they work with the
