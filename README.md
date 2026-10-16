@@ -91,12 +91,16 @@ Passing a property test is evidence, not a proof for every possible input.
 
 ### Use a published package
 
-Create a project and add the JSON library:
+From any working directory, create a project and add the JSON library. You do
+not need to clone the Fai repository:
 
 ```sh
 fai init hello-json
 fai add -C hello-json https://github.com/Krzysztof-Cieslak/fai.git --subdir packages/json --as json --version '^0.1.0'
 ```
+
+`-C hello-json` selects your new local project. `--subdir packages/json` selects
+the JSON package inside the **remote repository**, not a local directory.
 
 Replace `hello-json/src/Main.fai` with:
 
