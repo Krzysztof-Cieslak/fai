@@ -68,7 +68,11 @@ fn server_config(
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut control = loop {
             match coordinator.accept() {
-                Ok((socket, _)) => break BufReader::new(socket),
+                Ok((socket, _)) => {
+                    // Accepted sockets may inherit the listener's nonblocking mode.
+                    socket.set_nonblocking(false).unwrap();
+                    break BufReader::new(socket);
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     assert!(Instant::now() < deadline, "server did not announce its port");
                     std::thread::sleep(Duration::from_millis(5));
@@ -417,20 +421,20 @@ let handle r request =
 fn retained_producer_writer_cannot_write_into_the_next_response() {
     server_with(
         r#"
-produce : Runtime -> Channel (Bytes -> Result Unit String / { Concurrency, Net, Tls }) -> Http.BodyProducer {}
-let produce r writers write =
-  let saved = r.concurrency.send writers write
-  write (Bytes.fromString "first")
-handle : Runtime -> Channel (Bytes -> Result Unit String / { Concurrency, Net, Tls }) -> Http.Request {} -> Result (Http.ServerResponse {}) String / { Concurrency, Net, Tls }
-let handle r writers request =
-  if Url.path request.url = "/save" then
-    Ok (Http.produced 200 Headers.empty (produce r writers))
+produce : Runtime -> Channel (Bytes -> Result Unit String / { Concurrency, Net, Tls }) -> String -> Http.BodyProducer {}
+let produce r writers path write =
+  if path = "/save" then
+    let saved = r.concurrency.send writers write
+    write (Bytes.fromString "first")
   else
     match r.concurrency.recv writers with
     | None -> Err "missing writer"
-    | Some write ->
-      let result = write (Bytes.fromString "corruption")
-      Ok (Http.Ready (Http.textResponse 200 (if result = Err "response writer scope has ended" then "safe" else "unsafe")))
+    | Some previous ->
+      let result = previous (Bytes.fromString "corruption")
+      write (Bytes.fromString (if result = Err "response writer scope has ended" then "safe" else "unsafe"))
+handle : Runtime -> Channel (Bytes -> Result Unit String / { Concurrency, Net, Tls }) -> Http.Request {} -> Result (Http.ServerResponse {}) String
+let handle r writers request =
+  Ok (Http.produced 200 Headers.empty (produce r writers (Url.path request.url)))
 "#,
         "  let writers = r.concurrency.channel 1\n  let app = handle r writers",
         true,
@@ -576,7 +580,10 @@ fn accept_failure_cancels_an_idle_connection_before_joining() {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut socket = loop {
             match trigger.accept() {
-                Ok((socket, _)) => break socket,
+                Ok((socket, _)) => {
+                    socket.set_nonblocking(false).unwrap();
+                    break socket;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     assert!(Instant::now() < deadline, "missing accept controller");
                     std::thread::sleep(Duration::from_millis(5));
@@ -650,6 +657,8 @@ let testDecodeLoop count total =
     | _ -> -1
 public testDecodeMany : Int -> Int
 let testDecodeMany count = testDecodeLoop count 0
+public main : Runtime -> Unit
+let main _ = ()
 "#,
         file.text(&db)
     );
