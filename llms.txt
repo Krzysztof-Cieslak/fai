@@ -1124,6 +1124,8 @@ before retrying an unconsumed suffix. Feed empty bytes only to report TCP EOF.
 
 HTTP/1.1 requests reuse a connection unless either peer sends `Connection: close`.
 Pipelined requests run sequentially, with fully read, independent request bodies.
+Request-body chunk boundaries are unspecified; use `Http.bodyBytes`/`bodyText`
+to combine them when needed.
 HTTP/1.0 closes after its response. Cancel the serving task to terminate idle
 connections as well; there is no implicit idle timeout.
 
