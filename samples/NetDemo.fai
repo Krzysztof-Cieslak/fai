@@ -1,6 +1,7 @@
 module NetDemo
 
 // Ports are validated in 0..65535. Zero chooses an ephemeral listener/bind port.
+// Small receives use bounded scratch storage; returned Bytes remain independent.
 // With one scheduler worker, readiness is polled at idle without a reactor-thread handoff.
 // Busy task queues also service readiness between bounded batches of resumes.
 // TCP networking through the `Net` capability, threaded in from `main`. A program
