@@ -1110,6 +1110,8 @@ The full tour (TCP + UDP) is `samples/NetDemo.fai`.
 A single scheduler worker drives network readiness and timers while idle;
 multi-worker execution uses a dedicated reactor thread. This is transparent to
 the direct-style `Net` and `Clock` APIs, including cancellation.
+Bounded task batches also poll nonblocking, preserving I/O and timer progress
+when other tasks keep the runnable queue nonempty.
 
 TCP/UDP port arguments are checked in `0..65535`; invalid values return `Err`
 before network activity. Zero requests an ephemeral port for listen/bind.

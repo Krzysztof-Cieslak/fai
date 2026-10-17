@@ -22,6 +22,8 @@
   use `Http.bodyBytes` or `Http.bodyText` when a combined payload is required.
 
 ### Fixed
+- Keep timers and network events progressing under a continuously runnable
+  single-worker queue by polling nonblocking between bounded task batches.
 - Use full HTTPS package URLs in onboarding examples so they work with the
   released 0.1.0 compiler.
 

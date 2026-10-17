@@ -156,11 +156,21 @@ pub(crate) fn wake_worker_poll() {
 /// A single worker can poll directly instead of exchanging OS-thread wakeups
 /// with a dedicated reactor. It calls this only after exhausting runnable work.
 pub(crate) fn poll_on_idle() -> bool {
+    poll_worker(true)
+}
+
+/// Service ready events without blocking a worker that still has runnable tasks.
+pub(crate) fn poll_ready() {
+    poll_worker(false);
+}
+
+fn poll_worker(block: bool) -> bool {
     let Some(reactor) = REACTOR.get() else { return false };
     let Some(driver) = &reactor.worker_poll else { return false };
     let mut driver = driver.lock().expect("worker reactor poll");
     let WorkerPoll { poll, events } = &mut *driver;
-    let _ = poll.poll(events, next_timeout());
+    let timeout = if block { next_timeout() } else { Some(Duration::ZERO) };
+    let _ = poll.poll(events, timeout);
     dispatch_events(events);
     true
 }
@@ -1028,6 +1038,11 @@ mod tests {
     }
 
     #[test]
+    fn due_timer_progresses_while_a_task_keeps_itself_runnable() {
+        run_worker_driver_case("busy-timer");
+    }
+
+    #[test]
     fn worker_driver_child() {
         let Ok(case) = std::env::var("FAI_WORKER_DRIVER_CASE") else { return };
         block_on(Box::new(|| {
@@ -1035,6 +1050,36 @@ mod tests {
             imm(0)
         }));
         match case.as_str() {
+            "busy-timer" => {
+                let result = block_on(Box::new(|| {
+                    let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let observed = Arc::clone(&fired);
+                    let busy = scheduler::spawn(Box::new(move || {
+                        for _ in 0..4096 {
+                            if observed.load(Ordering::Acquire) {
+                                return imm(1);
+                            }
+                            scheduler::unpark(scheduler::current_parked());
+                            scheduler::park();
+                        }
+                        imm(0)
+                    }));
+                    {
+                        let mut timers = reactor().timers.lock().unwrap();
+                        let seq = timers.next_seq;
+                        timers.next_seq += 1;
+                        timers.heap.push(Reverse(TimerEntry {
+                            deadline: Instant::now(),
+                            seq,
+                            waiter: scheduler::current_parked(),
+                        }));
+                    }
+                    scheduler::park();
+                    fired.store(true, Ordering::Release);
+                    scheduler::await_handle(&busy)
+                }));
+                assert_eq!(of_imm(result), 1, "timer waited until the runnable queue emptied");
+            }
             "network" => reactor_wakes_a_task_on_connection_and_readability(),
             "timer" => sleep_until_wakes_after_its_deadline(),
             "external" => {
