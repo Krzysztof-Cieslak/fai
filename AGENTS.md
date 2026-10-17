@@ -434,6 +434,10 @@ establish the fact, concatenation propagates it, and Unicode appends clear it.
 Other strings retain Unicode-scalar indexing and all indices stay clamped.
 String slicing releases owned full-width index/count boxes after decoding them,
 including negative and oversized arguments that are clamped to the string.
+`String.splitOnce separator text` returns the two pieces around the first match,
+or None; an empty separator splits at the start. HTTP and URL parsing use this
+without building full split lists. `Int.fromString` scans ASCII bytes directly,
+retaining optional-minus syntax and wrapping decimal overflow.
 
 ```fai
 module Hello

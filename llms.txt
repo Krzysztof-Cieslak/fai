@@ -1679,6 +1679,7 @@ toLower    : String -> String
 trim       : String -> String
 contains   : String -> String -> Bool                  // contains s needle
 split      : String -> String -> List String           // split sep s
+splitOnce  : String -> String -> Option (String * String) // first occurrence; empty separator splits at start
 splitArray : String -> String -> Array String
 substring  : Int -> Int -> String -> String            // start, len, s (clamped)
 take       : Int -> String -> String

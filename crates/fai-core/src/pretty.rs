@@ -80,6 +80,7 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::ToLower => "toLower",
         Prim::Trim => "trim",
         Prim::StringContains => "stringContains",
+        Prim::StringFind => "stringFind",
         Prim::StringSplit => "split",
         Prim::StringJoin => "join",
         Prim::StringSubstring => "substring",

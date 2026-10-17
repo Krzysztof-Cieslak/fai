@@ -34,6 +34,16 @@ public split : String -> String -> List String
 let split sep s = Prim.split sep s
 example: split "," "a,b,c" = ["a", "b", "c"]
 
+/// Split on the first occurrence of `sep`, leaving further occurrences in the
+/// suffix. None means no occurrence. An empty separator yields Some ("", s).
+public splitOnce : String -> String -> Option (String * String)
+let splitOnce sep s =
+  let index = Prim.stringFind sep s
+  if index < 0 then None else Some (take index s, drop (index + length sep) s)
+example: splitOnce ":" "a:b:c" = Some ("a", "b:c")
+example: splitOnce ":" "abc" = None
+example: splitOnce "" "é😀" = Some ("", "é😀")
+
 /// Split `s` on every occurrence of `sep` into an `Array` — the contiguous
 /// counterpart to `split`, for iterate- or index-heavy use of the pieces.
 public splitArray : String -> String -> Array String

@@ -293,11 +293,7 @@ let methodName m =
 // --- Small shared helpers --------------------------------------------------
 // Split `s` on the first occurrence of `sep`, or `None` if absent.
 splitFirst : String -> String -> Option (String * String)
-let splitFirst sep s =
-  match String.split sep s with
-  | [] -> None
-  | only :: [] -> None
-  | first :: rest -> Some (first, String.join sep rest)
+let splitFirst sep s = String.splitOnce sep s
 
 // The `Host` header value for a URL: host, plus `:port` when a port was explicit.
 hostHeaderValue : Url -> String

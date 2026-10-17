@@ -42,11 +42,7 @@ let isSome opt =
 // Split `s` on the first occurrence of `sep`: `Some (before, after)`, or `None`
 // when `sep` does not occur. `after` keeps any further occurrences intact.
 splitFirst : String -> String -> Option (String * String)
-let splitFirst sep s =
-  match String.split sep s with
-  | [] -> None
-  | only :: [] -> None
-  | first :: rest -> Some (first, String.join sep rest)
+let splitFirst sep s = String.splitOnce sep s
 
 // Parse `host[:port]` (or `[ipv6][:port]`) into a host and optional port.
 parseHostPort : String -> Result (Option String * Option Int) String

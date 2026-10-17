@@ -97,6 +97,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_trim", rt::fai_trim);
     sym!("fai_trim_borrowed", rt::fai_trim_borrowed);
     sym!("fai_string_contains", rt::fai_string_contains);
+    sym!("fai_string_find", rt::fai_string_find);
+    sym!("fai_string_find_borrowed", rt::fai_string_find_borrowed);
     sym!("fai_string_split", rt::fai_string_split);
     sym!("fai_string_split_borrowed", rt::fai_string_split_borrowed);
     sym!("fai_string_join", rt::fai_string_join);

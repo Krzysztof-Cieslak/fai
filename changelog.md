@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Parse decimal integers directly from bytes with the existing wrapping rules.
+- Add `String.splitOnce` and use first-separator searches in HTTP and URL parsing,
+  avoiding full split lists and reconstructed suffixes.
 - Transfer uniquely owned inline buffers between String and Bytes without
   copying, while preserving UTF-8 validation, substring views and shared aliases.
 - Read buffered HTTP request bodies in bounded 64 KiB batches, reducing receive

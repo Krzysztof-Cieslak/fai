@@ -3532,6 +3532,28 @@ pub extern "C" fn fai_string_contains_borrowed(s: Value, needle: Value) -> Value
     from_bool(found)
 }
 
+/// First Unicode-scalar index of `needle` in `s`, or -1 when absent. Both
+/// operands are borrowed; finding an empty needle yields index zero.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_find_borrowed(needle: Value, s: Value) -> Value {
+    // SAFETY: both operands are live String values; find returns a UTF-8 boundary.
+    let index = unsafe {
+        let text = string_str(s);
+        text.find(string_str(needle))
+            .map(|offset| if string_is_ascii(s) { offset } else { text[..offset].chars().count() })
+    };
+    make_int(index.map_or(-1, |value| value as i64))
+}
+
+/// Consuming ABI for the first-substring index operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_string_find(needle: Value, s: Value) -> Value {
+    let result = fai_string_find_borrowed(needle, s);
+    fai_drop(needle);
+    fai_drop(s);
+    result
+}
+
 /// Builds a Fai `List` value from owned string pieces (Nil is the immediate tag).
 fn list_of_strings(pieces: &[Value]) -> Value {
     let mut list = imm_int(NIL_TAG);
@@ -5504,6 +5526,8 @@ mod reuse_tests;
 mod scalar_proptests;
 #[cfg(test)]
 mod shared_rc_tests;
+#[cfg(test)]
+mod string_find_tests;
 #[cfg(test)]
 mod string_indices;
 #[cfg(test)]
