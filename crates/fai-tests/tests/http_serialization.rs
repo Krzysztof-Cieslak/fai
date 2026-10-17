@@ -110,6 +110,43 @@ fn valid_duplicate_headers_and_tabbed_unicode_values_remain_valid() {
     );
 }
 
+#[test]
+fn sized_heads_preserve_order_and_replace_every_length_field() {
+    check(
+        r#"let headers = Headers.fromList [("Content-Length", "7"), ("Set-Cookie", "a=1"), ("content-length", "007"), ("Set-Cookie", "b=2"), ("X-Note", "café\t世界")]
+renderSizedHead "HTTP/1.1 200 OK\r\n" headers 42 = renderHead "HTTP/1.1 200 OK\r\n" (Headers.set "Content-Length" "42" headers)"#,
+        false,
+    );
+}
+
+#[test]
+fn invalid_authored_length_is_rejected_before_collecting_the_body() {
+    check(
+        r#"let transport = { Transport with close u = (), recv n = Ok Bytes.empty, send b = Err "transport touched" }
+sendMessage false transport "HTTP/1.1 200 OK\r\n" (Headers.fromList [("Content-Length", "-1")]) (Stream.failed "body forced") = Err "invalid Content-Length""#,
+        true,
+    );
+}
+
+#[test]
+fn sized_message_uses_utf8_byte_length() {
+    check(
+        r#"let expected = Bytes.fromString "HTTP/1.1 200 OK\r\nX: kept\r\nContent-Length: 6\r\n\r\né😀"
+let transport = { Transport with close u = (), recv n = Ok Bytes.empty, send bytes = if bytes = expected then Ok () else Err "unexpected wire data" }
+sendMessage false transport "HTTP/1.1 200 OK\r\n" (Headers.fromList [("X", "kept")]) (stringBody "é😀") = Ok ()"#,
+        true,
+    );
+}
+
+#[test]
+fn sized_head_field_rendering_keeps_constant_stack() {
+    check(
+        r#"let headers = Headers.fromList (List.map (fun _ -> ("X", "v")) (List.range 0 4000))
+Bytes.length (renderSizedHead "HTTP/1.1 200 OK\r\n" headers 0) = 24038"#,
+        false,
+    );
+}
+
 #[track_caller]
 fn rejected_part(part: &str) {
     check(
