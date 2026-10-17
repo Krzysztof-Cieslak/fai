@@ -795,6 +795,9 @@ so discarding an immediate value in shared generic code needs no call.
 Proven permanent String literals and capture-free closures skip native dup/drop
 operations entirely. Dynamic values, unknown merges and loop parameters retain
 their normal ownership paths.
+Read-only Array length and element access can use native loads under concurrency.
+Boxed results acquire references through the concurrency-aware runtime; mutation
+and allocation retain their runtime paths without cached worker-local pointers.
 Structural comparisons and hashes also borrow polymorphic operands. Borrow
 inference follows these readers and permits unchanged inspect-only self-tail
 parameters to remain borrowed; changing or newly constructed arguments stay

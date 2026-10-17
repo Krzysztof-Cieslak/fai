@@ -382,6 +382,28 @@ fn merging_literals_with_owned_text_keeps_the_dynamic_release() {
 }
 
 #[test]
+fn concurrent_array_length_is_a_native_load() {
+    let ir = function_ir_options(
+        "M.fai",
+        "module M\npublic length : Array Int -> Int\nlet length values = Array.length values\n",
+        "length",
+        fai_db::SourceOrigin::User,
+        false,
+        true,
+    )
+    .remove(0);
+    assert_eq!(call_count(&ir), 0, "read-only length needs no runtime call:\n{ir}");
+    assert!(ir.contains("load.i64"), "missing length load:\n{ir}");
+}
+
+#[test]
+fn concurrent_array_float_reads_use_raw_slots() {
+    let ir = function_ir_options("M.fai", "module M\npublic at : Int -> Array Float -> Float\nlet at i values = Array.unsafeGet i values\n", "at", fai_db::SourceOrigin::User, false, true).remove(0);
+    assert_eq!(call_count(&ir), 1, "only the bounds fault remains:\n{ir}");
+    assert!(ir.contains("load.f64"), "missing raw float load:\n{ir}");
+}
+
+#[test]
 fn byte_reads_use_unsigned_native_loads_without_reference_counts() {
     let ir = entry_ir(
         "module M\npublic at : Int -> Bytes -> Int\nlet at i bytes = Bytes.unsafeGet i bytes + Bytes.unsafeGet (i + 1) bytes\n",
