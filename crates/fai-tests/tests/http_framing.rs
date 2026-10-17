@@ -281,6 +281,30 @@ fn check(body: &str, concurrent: bool) {
     assert_eq!(out, "ok\n");
 }
 
+#[test]
+fn header_token_scanner_accepts_exactly_http_tchar_bytes() {
+    check(
+        "List.filter isTokenByte (List.range 0 256) = Bytes.toList (Bytes.fromString \"!#$%&'*+-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ^_`abcdefghijklmnopqrstuvwxyz|~\")",
+        false,
+    );
+}
+
+#[test]
+fn header_value_scanner_accepts_exactly_field_value_bytes() {
+    check(
+        "List.filter (fun c -> validHeaderValue (Bytes.fromList [c]) 0) (List.range 0 256) = 9 :: List.append (List.range 32 127) (List.range 128 256)",
+        false,
+    );
+}
+
+#[test]
+fn header_scanners_honor_offsets_and_empty_suffixes() {
+    check(
+        "let bytes = Bytes.fromString \" a-b\"\nnot (validTokenFrom bytes 0) && validTokenFrom bytes 1 && validTokenFrom bytes 4 && validTokenFrom bytes 5 && validTokenFrom Bytes.empty 0 && not (validHeaderValue (Bytes.fromList [0, 9, 255]) 0) && validHeaderValue (Bytes.fromList [0, 9, 255]) 1 && validHeaderValue Bytes.empty 0",
+        false,
+    );
+}
+
 #[track_caller]
 fn invalid_headers(fields: &[(&str, &str)]) {
     let fields = fields

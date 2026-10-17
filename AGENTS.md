@@ -1914,6 +1914,9 @@ Response producers finish and expire their writers before another request runs.
 Cancellation and accept failure terminate the connection tasks, including idle
 reads. There is no implicit idle timeout; applications own the serving lifetime.
 
+Header validation uses fixed ASCII token predicates and carries immutable byte
+lengths through scans. Outgoing response heads are validated before body framing.
+
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;
 unsupported or ambiguous framing returns `Err`. Chunked bodies validate data

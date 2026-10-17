@@ -5245,6 +5245,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     point. External scheduling interrupts the poll with its waker. A reactor
     initialized outside that mode keeps its dedicated thread; socket readiness
     locks and task ownership rules are unchanged.
+  - HTTP validation retains the exact ASCII token and field-value rules while
+    avoiding per-byte membership lists and repeated buffer-length reads. A
+    validated outgoing response head enters body framing without revalidation.
   - **Persistent server connections.** HTTP/1.1 servers process requests in wire
     order on one connection task. Fully decoded request chunks do not capture the
     transport; bytes beyond a length-delimited body or chunked trailers are carried

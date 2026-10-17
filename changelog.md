@@ -10,6 +10,8 @@
 - Drive network readiness and timers directly from an idle single scheduler
   worker, avoiding reactor-thread handoffs. Multi-worker execution retains its
   dedicated reactor; cancellation and off-thread work still wake idle workers.
+- Avoid temporary punctuation lists and repeated length reads during HTTP header
+  validation; validate outgoing response heads once before framing their bodies.
 - Keep HTTP/1.1 server connections alive across sequential and pipelined requests,
   preserving buffered bytes and scoped response-writer lifetimes. Send
   `Connection: close` in a request or response to retain one-request behavior;
