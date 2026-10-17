@@ -1948,6 +1948,8 @@ unsupported or ambiguous framing returns `Err`. Chunked bodies validate data
 CRLFs and consume all trailers through the final empty line before pool reuse.
 Framing lines/trailers are bounded, large chunks are streamed in bounded pieces,
 and buffered surplus travels with the pooled connection.
+Buffered Content-Length request bodies use reads of at most 64 KiB, further
+bounded by their remaining length. No per-connection receive buffer is retained.
 HEAD, 204, and 304 responses have no body regardless of length metadata. Clients
 skip bounded informational responses before the final head; protocol upgrades
 and CONNECT tunnels return an explicit error. Servers omit forbidden payloads

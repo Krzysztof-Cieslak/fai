@@ -1,5 +1,6 @@
 module HttpDemo
 
+// Request-body reads use bounded batches; response bodies remain lazy streams.
 // get/getWith follow 307/308 with their known-empty body. General request streams
 // return those redirects instead of dropping or replaying their original content.
 // An HTTP/1.1 client and server over the `Net` capability (std/networking/Http.fai). This

@@ -690,3 +690,36 @@ fn large_chunks_are_yielded_in_bounded_pieces() {
         true,
     );
 }
+
+#[test]
+fn buffered_request_reads_use_bounded_larger_batches() {
+    let first = "x".repeat(65536);
+    let last = "y".repeat(34464);
+    check(
+        &format!(
+            r#"let input = testChannel env [Bytes.fromString {first:?}, Bytes.fromString {last:?}]
+let requested = env.concurrency.channel 2
+let receive n =
+  let _ = env.concurrency.send requested n
+  testRead env input
+let transport = {{ Transport with close u = (), recv n = receive n, send b = Ok () }}
+let result = readRequestSized transport Bytes.empty 100000 []
+let _ = env.concurrency.close requested
+let first = env.concurrency.recv requested
+let second = env.concurrency.recv requested
+match result with
+| Ok (parts, leftover) -> List.sum (List.map Bytes.length parts) = 100000 && Bytes.isEmpty leftover && first = Some 65536 && second = Some 34464
+| Err _ -> false"#
+        ),
+        true,
+    );
+}
+
+#[test]
+fn enormous_advertised_request_lengths_do_not_enlarge_the_read_batch() {
+    check(
+        r#"let transport = { Transport with close u = (), recv n = if n = 65536 then Ok Bytes.empty else Err "wrong batch", send b = Ok () }
+readRequestSized transport Bytes.empty 9223372036854775807 [] = Err "connection closed before end of body""#,
+        false,
+    );
+}
