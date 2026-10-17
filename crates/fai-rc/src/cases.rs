@@ -34,6 +34,49 @@ fn no_reuse(src: &str, name: &str) {
     assert!(!out.contains("reset %"), "unexpected reset for `{name}`:\n{out}");
 }
 
+#[test]
+fn byte_length_and_access_borrow_the_buffer() {
+    let source = "module M\nlet read bytes = Bytes.length bytes + Bytes.unsafeGet 0 bytes\n";
+    sound(source, "read");
+    assert_eq!(crate::tests::borrow_sig(source, "read"), vec![true]);
+}
+
+#[test]
+fn byte_utf8_validation_borrows_the_buffer() {
+    let source = "module M\nlet valid bytes = Bytes.isValidUtf8 bytes\n";
+    sound(source, "valid");
+    assert_eq!(crate::tests::borrow_sig(source, "valid"), vec![true]);
+}
+
+#[test]
+fn returned_byte_buffers_keep_owned_parameters() {
+    let source =
+        "module M\nlet retain bytes = if Bytes.isValidUtf8 bytes then bytes else Bytes.empty\n";
+    sound(source, "retain");
+    assert_eq!(crate::tests::borrow_sig(source, "retain"), vec![false]);
+}
+
+#[test]
+fn byte_slices_keep_owned_parameters_for_transfer() {
+    let source = "module M\nlet prefix bytes = Bytes.slice 0 1 bytes\n";
+    sound(source, "prefix");
+    assert_eq!(crate::tests::borrow_sig(source, "prefix"), vec![false]);
+}
+
+#[test]
+fn byte_concat_keeps_owned_parameters_for_reuse() {
+    let source = "module M\nlet append bytes = Bytes.concat bytes (Bytes.fromList [1])\n";
+    sound(source, "append");
+    assert_eq!(crate::tests::borrow_sig(source, "append"), vec![false]);
+}
+
+#[test]
+fn byte_reader_loop_borrows_its_unchanging_buffer() {
+    let source = "module M\nlet sum i bytes total = if i >= Bytes.length bytes then total else sum (i + 1) bytes (total + Bytes.unsafeGet i bytes)\n";
+    sound(source, "sum");
+    assert_eq!(crate::tests::borrow_sig(source, "sum"), vec![false, true, false]);
+}
+
 /// Asserts `name` is sound and updates a record in place (`recordUpdate`).
 #[track_caller]
 fn updates_in_place(src: &str, name: &str) {

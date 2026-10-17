@@ -7,6 +7,8 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Borrow byte buffers for length, indexing and UTF-8 validation, avoiding
+  temporary reference-count traffic in reader functions and loops.
 - Transfer full-range Bytes slices without copying their buffer, retaining
   clamped indexing, immutable aliases and prompt release of large buffers.
 - Let repository documentation checks accept package Unreleased entries during

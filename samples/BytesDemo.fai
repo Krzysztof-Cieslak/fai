@@ -28,3 +28,15 @@ let prefix n b = Bytes.slice 0 n b
 example: prefix 2 (Bytes.fromList [10, 20, 30]) = Bytes.fromList [10, 20]
 example: Bytes.toList (prefix 0 (Bytes.fromString "x")) = []
 example: prefix 100 (Bytes.fromList [0, 128, 255]) = Bytes.fromList [0, 128, 255]
+
+/// Sum unsigned byte values, borrowing one immutable buffer throughout the scan.
+public checksum : Bytes -> Int
+let checksum bytes = checksumFrom bytes 0 0
+
+let checksumFrom bytes index total =
+  if index >= Bytes.length bytes then
+    total
+  else
+    checksumFrom bytes (index + 1) (total + Bytes.unsafeGet index bytes)
+example: checksum (Bytes.fromList [0, 128, 255]) = 383
+example: checksum Bytes.empty = 0

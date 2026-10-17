@@ -1703,6 +1703,8 @@ owned left buffer, growing geometrically when full, and copies shared buffers.
 An empty operand returns the other value. Inputs remain immutable values.
 `slice` transfers the input for a clamped full-width range and copies partial
 ranges. Retained aliases stay immutable in both cases.
+Length, indexing and UTF-8 validation borrow their input buffers. Reader helpers
+can forward that borrowing, while builders and slices keep ownership for reuse.
 
 A contiguous buffer of raw bytes, **distinct from the UTF-8 `String`** (the two
 never compare equal). Its elements are bytes read and written as `Int`s (0–255).
