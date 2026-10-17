@@ -1380,6 +1380,8 @@ Unicode, bytes, shared programs, cursor aliases, callback order and output bound
 Checked UTF-8 byte-range slicing borrows its source String while returning an
 independent copy. Borrow inference propagates through slicing helpers; scalar
 indices remain consumed, including full-width boxed values on error paths.
+Native primitive ownership is tracked per argument, so borrowing a buffer does
+not implicitly lend scalar indices to an entry that consumes them.
 
 The optional `packages/logging` source package provides structured log records,
 typed fields, target-prefix filtering and pure human/JSON Lines formatting.

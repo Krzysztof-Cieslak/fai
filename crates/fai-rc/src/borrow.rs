@@ -373,10 +373,9 @@ impl Analyzer<'_> {
                 ) {
                     self.reconstructs = true;
                 }
-                let borrows = args.first().is_some_and(|arg| op.borrows_operand(&arg.ty));
-                for a in args {
+                for (index, a) in args.iter().enumerate() {
                     self.scan(a, false);
-                    if !borrows {
+                    if !op.borrows_argument(index, &args[0].ty) {
                         self.inspect(a);
                     }
                 }

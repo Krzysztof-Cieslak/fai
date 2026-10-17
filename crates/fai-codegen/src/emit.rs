@@ -3877,9 +3877,9 @@ impl<M: Module> Translator<'_, M> {
         let vals: Vec<Value> = args.iter().map(|a| self.expr_boxed(a)).collect();
         // An inspect-only primitive whose operands reference counting lent (boxed,
         // reference-counted values) calls the non-consuming runtime variant — the
-        // caller drops them at their last use. The borrow decision is the same one
-        // `fai-rc` made (`Prim::borrows_operand` on the operand type), so the
-        // emitted drops and the runtime's (non-)consumption agree.
+        // caller drops them at their last use. Reference counting selects the
+        // same variant and follows its per-argument contract; borrowed byte/text
+        // readers still consume their scalar indices.
         let symbol = match op.borrowed_runtime_symbol() {
             Some(borrowed) if args.first().is_some_and(|a| op.borrows_operand(&a.ty)) => borrowed,
             _ => op.runtime_symbol(),
