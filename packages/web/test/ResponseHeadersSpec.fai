@@ -1,0 +1,66 @@
+module ResponseHeadersSpec
+
+observe : Headers -> Web.HttpHandler { } -> Result (List (String * String) * Int * String) String
+let observe initial handler =
+  match Web.mockContext Http.GET "/" with
+  | Err error -> Err error
+  | Ok original ->
+    let response = original.response
+    let ctx = { original with response = { response with headers = initial } }
+    match handler ctx with
+    | Web.Halt done ->
+      Result.map (fun body ->
+        (Headers.toList done.response.headers, done.response.status, body)) (Http.bodyText done.response.body)
+    | _ -> Err "expected terminal response"
+
+let render =
+  (Test.result (Test.tuple3 (Test.list (Test.tuple2 Test.string Test.string)) Test.int Test.string) Test.string).show
+
+let keepsCookies _ =
+  let fields = [
+    ("CONTENT-TYPE", "old"),
+    ("Set-Cookie", "a=1"),
+    ("Content-Length", "999"),
+    ("set-cookie", "b=2"),
+    ("content-type", "also old")
+  ]
+  let initial = Headers.fromList fields
+  let actual = observe initial (Web.text "body")
+  let expected =
+    Ok ([
+      ("Set-Cookie", "a=1"),
+      ("set-cookie", "b=2"),
+      ("Content-Type", "text/plain; charset=utf-8")
+    ], 200, "body")
+  Expect.all [
+    Expect.equal render expected actual,
+    Expect.equal (Test.list (Test.tuple2 Test.string Test.string)).show fields (Headers.toList initial)
+  ]
+
+let noContent _ =
+  Expect.equal render (Ok ([], 204, "")) (observe (Headers.fromList [
+    ("content-type", "old"),
+    ("CONTENT-LENGTH", "999")
+  ]) Web.noContent)
+
+let replacesLocation _ =
+  Expect.equal render (Ok ([
+    ("X-Kept", "value"),
+    ("Location", "/new")
+  ], 302, "")) (observe (Headers.fromList [
+    ("LOCATION", "/old"),
+    ("X-Kept", "value")
+  ]) (Web.redirect "/new"))
+
+let emptyMiddleware _ =
+  Expect.equal render (Ok ([
+    ("Content-Type", "text/plain; charset=utf-8")
+  ], 200, "body")) (observe Headers.empty (Web.text "body"))
+
+tests : Test.Suite Test.Context { }
+let tests = Test.describe "terminal response headers" [
+  Test.test "strip stale body metadata once and preserve cookies and aliases" keepsCookies,
+  Test.test "bodyless responses discard stale metadata" noContent,
+  Test.test "explicit terminal headers replace same-name middleware fields" replacesLocation,
+  Test.test "an empty middleware set keeps the terminal headers" emptyMiddleware
+]

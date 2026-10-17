@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Changed
+- Finish responses with one pass over middleware headers and reuse a simple
+  terminal header set directly when no middleware fields survive.
 - Construct the immutable initial 404 response once per server handler and reuse
   it for unhandled requests, preserving response isolation and body semantics.
 - Compile routing into flat node/edge arrays and an exact-path index at startup,

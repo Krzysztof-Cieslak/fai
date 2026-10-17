@@ -221,6 +221,9 @@ A real static endpoint wins path selection; if its method gates or handlers all
 The server adapter prepares its immutable initial 404 response once when the
 handler is built. Each request still has independent context/response values;
 updating one request's headers or body cannot affect subsequent requests.
+Terminal responders remove stale Content-Type/Content-Length metadata in one
+pass and preserve other middleware fields, including duplicate cookies. A simple
+terminal header set is reused directly when no middleware fields survive.
 
 ## Capabilities (the dependency-injection replacement)
 
