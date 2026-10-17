@@ -40,6 +40,21 @@ public interface Transport 'e =
   recv : Int -> Result Bytes String / 'e
   send : Bytes -> Result Unit String / 'e
 
+// Buffered messages can use a capability's gather operation while arbitrary
+// transports retain their existing contiguous send contract.
+interface ChunkSender =
+  send : List Bytes -> Result Unit String / { Net, Tls }
+
+bufferedChunkSender : Transport { Net, Tls } -> ChunkSender
+let bufferedChunkSender transport = { ChunkSender with
+  send chunks = transport.send (Bytes.concatMany chunks)
+}
+
+plainChunkSender : Net -> Connection -> ChunkSender
+let plainChunkSender net connection = { ChunkSender with
+  send chunks = net.sendMany connection chunks
+}
+
 // --- Body helpers ----------------------------------------------------------
 /// The empty body (no bytes).
 public emptyBody : Stream Bytes 'e
@@ -408,6 +423,10 @@ let sendMessage closeConn t startLine headers body =
 
 sendValidMessage : Bool -> Transport { Net, Tls } -> String -> Headers -> Stream Bytes 'b -> Result Unit String / { Net, Tls | 'b }
 let sendValidMessage closeConn t startLine headers body =
+  sendValidMessageWith (bufferedChunkSender t) closeConn t startLine headers body
+
+sendValidMessageWith : ChunkSender -> Bool -> Transport { Net, Tls } -> String -> Headers -> Stream Bytes 'b -> Result Unit String / { Net, Tls | 'b }
+let sendValidMessageWith sender closeConn t startLine headers body =
   let framed = if closeConn then Headers.set "Connection" "close" headers else headers
   match framingOf framed NoBody with
   | Err e -> Err e
@@ -421,7 +440,7 @@ let sendValidMessage closeConn t startLine headers body =
     | Ok chunks ->
       match bodySize chunks 0 with
       | Err e -> Err e
-      | Ok size -> t.send (Bytes.concatMany (renderSizedHead startLine framed size :: chunks))
+      | Ok size -> sender.send (renderSizedHead startLine framed size :: chunks)
 
 // Add a Host header from the URL if the caller supplied none.
 ensureHost : Headers -> Url -> Headers
@@ -1879,13 +1898,17 @@ let respond handler req =
 // the next request can run, but need not close a persistent transport.
 writeResponse : Bool -> Method -> Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
 let writeResponse closeConn method t resp =
+  writeResponseWith (bufferedChunkSender t) closeConn method t resp
+
+writeResponseWith : ChunkSender -> Bool -> Method -> Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
+let writeResponseWith sender closeConn method t resp =
   let startLine = "HTTP/1.1 " ++ Int.toString resp.status ++ " " ++ resp.reason ++ "\r\n"
   if resp.status < 100 || resp.status > 999 || not (validHead startLine resp.headers) then
     Err "invalid outgoing HTTP status line or header"
   else if resp.status = 101 || (methodName method = "CONNECT" && resp.status >= 200 && resp.status < 300) then
     Err "HTTP protocol upgrades and CONNECT tunnels are not supported"
   else if responseHasBody method resp.status then
-    sendValidMessage closeConn t startLine resp.headers resp.body
+    sendValidMessageWith sender closeConn t startLine resp.headers resp.body
   else
     let headers = Headers.remove "Transfer-Encoding" resp.headers
     let framed =
@@ -2039,16 +2062,24 @@ let sendProduced closeConn c method transport head produce =
 
 sendPlanned : Bool -> Concurrency -> Method -> Transport { Net, Tls } -> ServerResponse 'e -> Result Bool String / { Concurrency, Net, Tls | 'e }
 let sendPlanned requestedClose c method transport response =
+  sendPlannedWith (bufferedChunkSender transport) requestedClose c method transport response
+
+sendPlannedWith : ChunkSender -> Bool -> Concurrency -> Method -> Transport { Net, Tls } -> ServerResponse 'e -> Result Bool String / { Concurrency, Net, Tls | 'e }
+let sendPlannedWith sender requestedClose c method transport response =
   match response with
   | Ready response ->
     let closeConn = requestedClose || hasConnectionClose response.headers || response.status < 200
-    Result.map (fun _ -> closeConn) (writeResponse closeConn method transport response)
+    Result.map (fun _ -> closeConn) (writeResponseWith sender closeConn method transport response)
   | Produced head produce ->
     let closeConn = requestedClose || hasConnectionClose head.headers || head.status < 200
     Result.map (fun _ -> closeConn) (sendProduced closeConn c method transport head produce)
 
 serveRequests : Concurrency -> Transport { Net, Tls } -> Bytes -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Unit String / { Concurrency, Net, Tls | 'e }
 let serveRequests c transport buffered handler =
+  serveRequestsWith (bufferedChunkSender transport) c transport buffered handler
+
+serveRequestsWith : ChunkSender -> Concurrency -> Transport { Net, Tls } -> Bytes -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serveRequestsWith sender c transport buffered handler =
   match parseRequestAfter transport buffered with
   | Err error -> Err error
   | Ok None -> Ok ()
@@ -2057,17 +2088,21 @@ let serveRequests c transport buffered handler =
       match handler request with
       | Ok response -> response
       | Err error -> Ready (errorResponse 500 error)
-    match sendPlanned closeConn c request.method transport response with
+    match sendPlannedWith sender closeConn c request.method transport response with
     | Err error -> Err error
     | Ok true -> Ok ()
-    | Ok false -> serveRequests c transport rest handler
+    | Ok false -> serveRequestsWith sender c transport rest handler
 
 handleManaged : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Connection -> Option (Bytes * Bytes) -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Unit / { Concurrency, Net, Tls | 'e }
 let handleManaged env connection tlsConfig handler =
   match buildServerTransport env connection tlsConfig with
   | Err _ -> ()
   | Ok transport ->
-    let result = serveRequests env.concurrency transport Bytes.empty handler
+    let sender =
+      match tlsConfig with
+      | None -> plainChunkSender env.net connection
+      | Some _ -> bufferedChunkSender transport
+    let result = serveRequestsWith sender env.concurrency transport Bytes.empty handler
     transport.close ()
 
 acceptManaged : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Nursery -> Result Unit String / { Concurrency, Net, Tls | 'e }

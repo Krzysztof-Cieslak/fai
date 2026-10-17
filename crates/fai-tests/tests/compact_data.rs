@@ -44,7 +44,7 @@ fn check(source: &str, expected: &str, route: Route) {
         Route::Bundle => {
             let bundle = fai_driver::build_run_bundle(&db, file).bundle.unwrap();
             let bytes = serde_json::to_vec(&bundle).unwrap();
-            let bundle = serde_json::from_slice(&bytes).unwrap();
+            let bundle = fai_driver::bundle_from_slice(&bytes).unwrap();
             fai_runtime::capture_start();
             assert_eq!(fai_driver::jit_run_bundle(&bundle), 0);
             assert_eq!(fai_runtime::capture_take().trim(), expected);

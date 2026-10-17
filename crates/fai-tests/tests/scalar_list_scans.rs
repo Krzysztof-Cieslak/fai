@@ -152,7 +152,7 @@ fn scalar_list_shape_survives_the_worker_wire() {
     let id = db.add_source("Main.fai".into(), source.into());
     let bundle = fai_driver::build_run_bundle(&db, db.source_file(id).unwrap()).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let bundle = serde_json::from_slice(&bytes).unwrap();
+    let bundle = fai_driver::bundle_from_slice(&bytes).unwrap();
     rt::capture_start();
     assert_eq!(fai_driver::jit_run_bundle(&bundle), 0);
     assert_eq!(rt::capture_take(), "499500\n");

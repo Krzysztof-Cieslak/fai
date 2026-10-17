@@ -72,7 +72,7 @@ fn bundle_json_round_trip(bencher: Bencher, program: (&str, &str)) {
     let bundle = build_run_bundle(&db, file).bundle.expect("clean program");
     bencher.bench(|| {
         let json = serde_json::to_vec(&bundle).unwrap();
-        let decoded: WireBundle = serde_json::from_slice(&json).unwrap();
+        let decoded: WireBundle = fai_driver::bundle_from_slice(&json).unwrap();
         black_box(from_wire(&decoded))
     });
 }

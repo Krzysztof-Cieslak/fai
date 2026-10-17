@@ -5288,6 +5288,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Header and framing-line reads resume delimiter search at the previous suffix,
     retaining three bytes for a header terminator and one for CRLF. Byte offsets
     survive buffer growth, preserving the first terminator and buffered surplus.
+    Large native TCP receives fill their final Bytes allocation directly and
+    compact a short result below one quarter capacity. A scoped owner frees the
+    private buffer on failure. `Net.sendMany` retains ordered chunks across bounded
+    vectored writes; managed plain HTTP uses it after buffering the complete body.
+    TLS and arbitrary Transport values retain the contiguous send fallback.
   - `Bytes.concatMany` checks the complete length and copies ordered chunks into
     one output allocation, transferring a sole nonempty chunk directly. HTTP
     buffering uses it after full stream consumption, preserving failure order.

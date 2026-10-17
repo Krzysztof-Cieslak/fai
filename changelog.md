@@ -18,6 +18,13 @@
   suffix, avoiding quadratic rescanning under highly fragmented input.
 - Inline read-only Array length and element access in concurrent programs,
   preserving shared ownership, raw Float slots and bounds diagnostics.
+- Receive large TCP payloads into their final byte allocation, compacting short
+  reads and releasing private buffers on failure.
+- Add `Net.sendMany` for bounded vectored writes and use it for managed plain-HTTP
+  buffered responses. Custom `Net` instances must implement the new method; a
+  fallback may pass `Bytes.concatMany chunks` to their existing send operation.
+  Bundle transport tests and benchmarks use the production deep-bundle decoder
+  to cover the larger capability dictionary.
 - Transfer uniquely owned inline buffers between String and Bytes without
   copying, while preserving UTF-8 validation, substring views and shared aliases.
 - Read buffered HTTP request bodies in bounded 64 KiB batches, reducing receive

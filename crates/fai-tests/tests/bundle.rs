@@ -331,7 +331,7 @@ fn bundle_survives_the_json_transport_hop() {
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
 
     let json = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&json).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&json).unwrap();
 
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
@@ -349,7 +349,7 @@ fn wide_float_return_survives_the_json_transport_hop() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let json = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&json).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&json).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -372,7 +372,7 @@ fn owned_map_slots_survive_the_json_transport_hop() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let json = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&json).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&json).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     let exit = jit_run_bundle(&decoded);
@@ -387,7 +387,7 @@ fn owned_float_record_layout_guards_survive_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let encoded = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&encoded).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&encoded).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -401,7 +401,7 @@ fn invariant_callback_entries_survive_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -414,7 +414,7 @@ fn unique_constructor_tag_evidence_survives_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -427,7 +427,7 @@ fn borrowed_uniform_fields_survive_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -440,7 +440,7 @@ fn spread_self_loops_survive_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -453,7 +453,7 @@ fn canonical_callbacks_survive_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -466,7 +466,7 @@ fn numeric_array_loop_versions_survive_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -479,7 +479,7 @@ fn borrowed_scalar_list_scans_survive_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -492,7 +492,7 @@ fn exact_scalar_fixed_points_survive_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -506,7 +506,7 @@ fn bulk_repeat_survives_worker_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -522,7 +522,7 @@ fn shared_integer_boxes_survive_worker_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -535,7 +535,7 @@ fn scalar_specializations_survive_worker_transport() {
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
     let bytes = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&bytes).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&bytes).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -547,8 +547,7 @@ fn repeated_scalar_maps_survive_worker_transport() {
     let dir = workspace(&[("Main.fai", include_str!("fixtures/RepeatedScalarMaps.fai"))]);
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
-    let decoded: fai_driver::WireBundle =
-        serde_json::from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -572,8 +571,7 @@ fn canonical_comparator_predicates_survive_worker_transport() {
     let dir = workspace(&[("Main.fai", include_str!("fixtures/CanonicalComparator.fai"))]);
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
-    let decoded: fai_driver::WireBundle =
-        serde_json::from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -588,8 +586,7 @@ fn integer_state_returns_survive_worker_transport() {
     ]);
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
-    let decoded: fai_driver::WireBundle =
-        serde_json::from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -601,8 +598,7 @@ fn reuse_entry_option_results_survive_worker_transport() {
     let dir = workspace(&[("Main.fai", include_str!("fixtures/ReuseOptionReturn.fai"))]);
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
-    let decoded: fai_driver::WireBundle =
-        serde_json::from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -614,8 +610,7 @@ fn local_constructor_branches_survive_worker_transport() {
     let dir = workspace(&[("Main.fai", include_str!("fixtures/LocalConstructors.fai"))]);
     let session = Session::open(dir).unwrap();
     let bundle = build_run_bundle(session.db(), entry(&session, "Main.fai")).bundle.unwrap();
-    let decoded: fai_driver::WireBundle =
-        serde_json::from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();
     assert_eq!(jit_run_bundle(&decoded), 0);
@@ -779,7 +774,7 @@ fn jit_run_bundle_drops_data_cleanly_with_reconstructed_types() {
 
     // Through the JSON transport hop, as the daemon ships it to the worker.
     let json = serde_json::to_vec(&bundle).unwrap();
-    let decoded: fai_driver::WireBundle = serde_json::from_slice(&json).unwrap();
+    let decoded = fai_driver::bundle_from_slice(&json).unwrap();
 
     let _guard = RUN_LOCK.lock().unwrap();
     fai_runtime::capture_start();

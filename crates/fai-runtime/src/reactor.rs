@@ -744,6 +744,98 @@ fn send_loop(sock: &Mutex<TcpStream>, src: &Arc<IoSource>, data: &[u8]) -> Resul
     Ok(())
 }
 
+/// Send ordered byte chunks without constructing one contiguous buffer. The
+/// owned list keeps every slice live across partial writes and task suspension.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_net_send_many(conn: Value, chunks: Value) -> Value {
+    let result = {
+        let object = net_of(conn);
+        match &**object {
+            NetObject::Conn { sock, src } => send_many_chunks(chunks, |batch| {
+                try_io(&src.write, || sock.lock().expect("connection lock").write_vectored(batch))
+            }),
+            NetObject::Listener { .. } | NetObject::Udp { .. } => {
+                Err("send: handle is not a connection".to_owned())
+            }
+        }
+    };
+    crate::fai_drop(conn);
+    crate::fai_drop(chunks);
+    match result {
+        Ok(()) => ok_result(crate::FAI_UNIT),
+        Err(error) => err_result(&error),
+    }
+}
+
+// The list remains borrowed for the whole call. Each boxed cell has a Bytes head
+// and List tail; no intermediate vector grows with the number of chunks.
+unsafe fn byte_chunk<'a>(cell: Value) -> (&'a [u8], Value) {
+    // SAFETY: callers traverse a live List Bytes retained by the operation. The
+    // returned slice is used only before that owner is released.
+    unsafe {
+        let object = crate::as_obj(cell);
+        let offset = crate::data_offset(object);
+        let head = crate::read_i64(object, offset);
+        (crate::bytes_bytes(head), crate::read_i64(object, offset + 8))
+    }
+}
+
+fn send_many_chunks(
+    chunks: Value,
+    mut write: impl FnMut(&[io::IoSlice<'_>]) -> io::Result<usize>,
+) -> Result<(), String> {
+    let mut cursor = chunks;
+    let mut offset = 0;
+    while crate::is_boxed(cursor) {
+        let mut batch = [io::IoSlice::new(&[]); 16];
+        let mut used = 0;
+        let mut next = cursor;
+        let mut skip = offset;
+        while crate::is_boxed(next) && used < batch.len() {
+            // SAFETY: chunks owns this cons cell and its Bytes head until return.
+            let (bytes, tail) = unsafe { byte_chunk(next) };
+            if skip < bytes.len() {
+                batch[used] = io::IoSlice::new(&bytes[skip..]);
+                used += 1;
+            }
+            skip = 0;
+            next = tail;
+        }
+        if used == 0 {
+            break;
+        }
+        if scheduler::is_cancelled() {
+            return Err(scheduler::CANCELLED_MESSAGE.to_owned());
+        }
+        let mut written = match write(&batch[..used]) {
+            Ok(0) => return Err("send: connection closed".to_owned()),
+            Ok(count) => count,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        while crate::is_boxed(cursor) {
+            // SAFETY: the original chunks owner is still live through this walk.
+            let (bytes, tail) = unsafe { byte_chunk(cursor) };
+            let remaining = bytes.len() - offset;
+            if written < remaining {
+                offset += written;
+                break;
+            }
+            written -= remaining;
+            cursor = tail;
+            offset = 0;
+        }
+    }
+    Ok(())
+}
+
 /// `Net.recv`: read up to `max` bytes from a connection (parking until data is
 /// available). Returns `Result Bytes String`; an empty buffer signals end of
 /// stream (the peer closed). Consumes the connection reference; `max` is an `Int`.
@@ -777,7 +869,9 @@ fn recv_value(
     } else if capacity <= 4096 {
         recv_stack::<4096>(sock, src, capacity)
     } else {
-        recv_loop(sock, src, capacity).map(|bytes| crate::make_bytes(&bytes))
+        let mut buffer = ReceiveBuffer::new(capacity);
+        let count = recv_into(sock, src, buffer.bytes_mut())?;
+        Ok(buffer.finish(count))
     }
 }
 
@@ -795,11 +889,61 @@ fn recv_stack<const N: usize>(
     Ok(crate::make_bytes(&buffer[..count]))
 }
 
+#[cfg(test)]
 fn recv_loop(sock: &Mutex<TcpStream>, src: &Arc<IoSource>, cap: usize) -> Result<Vec<u8>, String> {
     let mut buffer = vec![0u8; cap];
     let count = recv_into(sock, src, &mut buffer)?;
     buffer.truncate(count);
     Ok(buffer)
+}
+
+struct ReceiveBuffer {
+    value: Value,
+    capacity: usize,
+}
+
+impl ReceiveBuffer {
+    fn new(capacity: usize) -> Self {
+        let size = crate::checked_buffer_size(crate::STRING_BYTES_OFFSET, capacity, 1)
+            .unwrap_or_else(|| crate::fai_allocation_size_panic());
+        let pointer = crate::alloc_obj(size, &crate::FAI_BYTES_DESC);
+        // SAFETY: the private allocation holds capacity bytes. Read's initialized
+        // buffer contract is satisfied before passing its payload to the socket.
+        unsafe {
+            crate::write_u64(pointer, crate::STRING_LEN_OFFSET, 0);
+            std::ptr::write_bytes(pointer.add(crate::STRING_BYTES_OFFSET), 0, capacity);
+        }
+        Self { value: crate::from_obj(pointer), capacity }
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: this guard is the only owner of its initialized private buffer.
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                crate::as_obj(self.value).add(crate::STRING_BYTES_OFFSET),
+                self.capacity,
+            )
+        }
+    }
+
+    fn finish(mut self, length: usize) -> Value {
+        debug_assert!(length <= self.capacity);
+        if length < self.capacity / 4 {
+            // A tiny read must not pin a mostly unused large allocation.
+            return crate::make_bytes(&self.bytes_mut()[..length]);
+        }
+        // SAFETY: recv_into initialized this prefix; only that prefix is exposed.
+        unsafe {
+            crate::write_u64(crate::as_obj(self.value), crate::STRING_LEN_OFFSET, length as u64)
+        };
+        std::mem::replace(&mut self.value, crate::FAI_UNIT)
+    }
+}
+
+impl Drop for ReceiveBuffer {
+    fn drop(&mut self) {
+        crate::fai_drop(self.value);
+    }
 }
 
 fn recv_into(
@@ -1032,6 +1176,119 @@ mod tests {
 
     use super::*;
     use crate::scheduler::block_on;
+
+    #[test]
+    fn gather_write_handles_partial_progress_and_empty_chunks() {
+        let _guard = crate::tests::lock();
+        let base = (crate::live_count(), crate::live_bytes());
+        let chunks = crate::cons_list(&[
+            crate::make_bytes(b"ab"),
+            crate::make_bytes(b""),
+            crate::make_bytes(b"cdef"),
+            crate::make_bytes(b"ghi"),
+        ]);
+        let mut output = Vec::new();
+        send_many_chunks(chunks, |batch| {
+            let part: Vec<u8> =
+                batch.iter().flat_map(|bytes| bytes.iter().copied()).take(3).collect();
+            output.extend_from_slice(&part);
+            Ok(part.len())
+        })
+        .unwrap();
+        assert_eq!(output, b"abcdefghi");
+        crate::fai_drop(chunks);
+        assert_eq!((crate::live_count(), crate::live_bytes()), base);
+    }
+
+    #[test]
+    fn gather_write_bounds_each_vector_batch() {
+        let _guard = crate::tests::lock();
+        let values: Vec<_> = (0u8..65).map(|byte| crate::make_bytes(&[byte])).collect();
+        let chunks = crate::cons_list(&values);
+        let mut output = Vec::new();
+        send_many_chunks(chunks, |batch| {
+            assert!(batch.len() <= 16);
+            let part: Vec<u8> = batch.iter().flat_map(|bytes| bytes.iter().copied()).collect();
+            output.extend_from_slice(&part);
+            Ok(part.len())
+        })
+        .unwrap();
+        assert_eq!(output, (0u8..65).collect::<Vec<_>>());
+        crate::fai_drop(chunks);
+    }
+
+    #[test]
+    fn gather_write_retries_interrupted_calls() {
+        let _guard = crate::tests::lock();
+        let chunks = crate::cons_list(&[crate::make_bytes(b"retry")]);
+        let mut interrupted = false;
+        send_many_chunks(chunks, |batch| {
+            if !interrupted {
+                interrupted = true;
+                Err(io::ErrorKind::Interrupted.into())
+            } else {
+                assert_eq!(&*batch[0], b"retry");
+                Ok(5)
+            }
+        })
+        .unwrap();
+        crate::fai_drop(chunks);
+    }
+
+    #[test]
+    fn gather_write_rejects_zero_progress() {
+        let _guard = crate::tests::lock();
+        let chunks = crate::cons_list(&[crate::make_bytes(b"pending")]);
+        assert_eq!(send_many_chunks(chunks, |_| Ok(0)), Err("send: connection closed".into()));
+        crate::fai_drop(chunks);
+    }
+
+    #[test]
+    fn empty_gather_write_does_not_call_the_writer() {
+        let _guard = crate::tests::lock();
+        let chunks = crate::cons_list(&[crate::make_bytes(b"")]);
+        assert_eq!(send_many_chunks(chunks, |_| panic!("empty write")), Ok(()));
+        crate::fai_drop(chunks);
+    }
+
+    #[test]
+    fn full_receive_buffer_transfers_its_allocation() {
+        let _guard = crate::tests::lock();
+        let base = (crate::live_count(), crate::live_bytes());
+        crate::reset_allocations();
+        let mut buffer = ReceiveBuffer::new(65536);
+        let original = buffer.value;
+        buffer.bytes_mut().fill(255);
+        let result = buffer.finish(65536);
+        assert_eq!(result, original);
+        assert_eq!(crate::allocations(), 1);
+        // SAFETY: the finished buffer owns its initialized visible payload.
+        assert!(unsafe { crate::bytes_bytes(result) }.iter().all(|&byte| byte == 255));
+        crate::fai_drop(result);
+        assert_eq!((crate::live_count(), crate::live_bytes()), base);
+    }
+
+    #[test]
+    fn short_receive_does_not_retain_large_storage() {
+        let _guard = crate::tests::lock();
+        let base = (crate::live_count(), crate::live_bytes());
+        let mut buffer = ReceiveBuffer::new(65536);
+        buffer.bytes_mut()[0] = 42;
+        let result = buffer.finish(1);
+        assert!(crate::live_bytes() - base.1 < 128);
+        // SAFETY: finish published exactly one initialized byte.
+        assert_eq!(unsafe { crate::bytes_bytes(result) }, [42]);
+        crate::fai_drop(result);
+        assert_eq!((crate::live_count(), crate::live_bytes()), base);
+    }
+
+    #[test]
+    fn failed_receive_releases_its_private_buffer() {
+        let _guard = crate::tests::lock();
+        let base = (crate::live_count(), crate::live_bytes());
+        drop(ReceiveBuffer::new(65536));
+        assert_eq!((crate::live_count(), crate::live_bytes()), base);
+    }
 
     #[track_caller]
     fn run_worker_driver_case(case: &str) {
