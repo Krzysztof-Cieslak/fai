@@ -784,6 +784,7 @@ interface Net =
   accept : Listener -> Result Connection String / { Net }
   connect : String -> Int -> Result Connection String / { Net }
   send : Connection -> Bytes -> Result Unit String / { Net }
+  sendMany : Connection -> List Bytes -> Result Unit String / { Net }
   recv : Connection -> Int -> Result Bytes String / { Net }
   close : Connection -> Unit / { Net }
   udpBind : Int -> Result UdpSocket String / { Net }
@@ -1063,6 +1064,10 @@ scheduler exactly as a concurrent one does.
   reports it); `accept listener` → `Connection`; `connect host port` →
   `Connection`; `send conn bytes`; `recv conn max` (an empty `Bytes` means the peer
   closed); `close conn`.
+  `sendMany conn chunks` writes ordered byte chunks using bounded vectored writes.
+  Custom `Net` instances implement it too; a contiguous fallback can call the
+  existing sender with `Bytes.concatMany chunks`. Partial writes and cancellation
+  retain all buffer owners until the operation finishes.
   `connect` tries all DNS addresses in resolver order, closing failed candidates
   before advancing. Cancellation stops the sequence; if none connect, the last
   error is returned. Numeric IP addresses bypass DNS.
@@ -1690,6 +1695,8 @@ joinArray  : String -> Array String -> String
 
 (Concatenate with the prelude `++`.)
 `join` and `joinArray` copy directly into one checked, pre-sized result buffer.
+`splitOnce sep text` searches only for the first separator and returns the two
+pieces in `Some`, or `None` when absent. An empty separator splits at the start.
 Character-indexed slicing has an ASCII-prefix fast path and preserves Unicode
 scalar boundaries for mixed text.
 Known-ASCII strings and views of their bases use stored byte counts for length

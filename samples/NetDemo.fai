@@ -33,7 +33,7 @@ let talk env port =
   match env.net.connect "127.0.0.1" port with
   | Err e -> e
   | Ok conn ->
-    match env.net.send conn (Bytes.fromString "hello") with
+    match env.net.sendMany conn [Bytes.fromString "he", Bytes.fromString "llo"] with
     | Err e -> e
     | Ok u ->
       match env.net.recv conn 1024 with

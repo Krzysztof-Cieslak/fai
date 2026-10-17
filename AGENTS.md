@@ -2064,6 +2064,12 @@ Socket I/O attempts hold their direction's readiness lock through a failed
 nonblocking probe and waiter registration, then release it before parking.
 TCP reads up to 4 KiB use bounded coroutine-stack scratch storage. The stack
 remains owned across suspension; only an independent Bytes value is returned.
+Larger TCP reads own their final byte buffer during suspension, publishing only
+the initialized prefix and compacting reads below one quarter of its capacity.
+`Net.sendMany` writes ordered chunks in bounded vectors, retaining their owners
+through partial writes. Managed plain-HTTP buffered responses use it after the
+body has completed. Custom Net instances supply the new method, optionally by
+concatenating chunks and forwarding to their existing send operation.
 When the scheduler has one worker at reactor initialization, that worker polls
 network readiness and timers while idle. Off-thread scheduling wakes the poll;
 multi-worker execution retains the dedicated reactor thread.

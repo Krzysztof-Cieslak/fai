@@ -5523,8 +5523,8 @@ pub use scheduler::{
 // `fai_*` like every other runtime primitive.
 pub use reactor::{
     fai_net_accept, fai_net_close, fai_net_connect, fai_net_listen, fai_net_local_port,
-    fai_net_recv, fai_net_send, fai_udp_bind, fai_udp_close, fai_udp_local_port, fai_udp_recv,
-    fai_udp_send,
+    fai_net_recv, fai_net_send, fai_net_send_many, fai_udp_bind, fai_udp_close, fai_udp_local_port,
+    fai_udp_recv, fai_udp_send,
 };
 
 // The file-handle C-ABI entry points (the progressive `FileSystem` operations),

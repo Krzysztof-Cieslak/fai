@@ -214,6 +214,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_net_accept", rt::fai_net_accept);
     sym!("fai_net_connect", rt::fai_net_connect);
     sym!("fai_net_send", rt::fai_net_send);
+    sym!("fai_net_send_many", rt::fai_net_send_many);
     sym!("fai_net_recv", rt::fai_net_recv);
     sym!("fai_net_close", rt::fai_net_close);
     sym!("fai_udp_bind", rt::fai_udp_bind);

@@ -609,6 +609,7 @@ let controlledNet r trigger = {{ Net with
   localPort listener = r.net.localPort listener,
   recv connection count = r.net.recv connection count,
   send connection bytes = r.net.send connection bytes,
+  sendMany connection chunks = r.net.sendMany connection chunks,
   udpBind port = r.net.udpBind port,
   udpClose socket = r.net.udpClose socket,
   udpLocalPort socket = r.net.udpLocalPort socket,

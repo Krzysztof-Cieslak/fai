@@ -249,6 +249,7 @@ public interface Net =
   localPort : Listener -> Int / { Net }
   recv : Connection -> Int -> Result Bytes String / { Net }
   send : Connection -> Bytes -> Result Unit String / { Net }
+  sendMany : Connection -> List Bytes -> Result Unit String / { Net }
   udpBind : Int -> Result UdpSocket String / { Net }
   udpClose : UdpSocket -> Unit / { Net }
   udpLocalPort : UdpSocket -> Int / { Net }
@@ -423,6 +424,8 @@ foreign "fai_net_connect" netConnect : String -> Int -> Result Connection String
 
 foreign "fai_net_send" netSend : Connection -> Bytes -> Result Unit String / { Net }
 
+foreign "fai_net_send_many" netSendMany : Connection -> List Bytes -> Result Unit String / { Net }
+
 foreign "fai_net_recv" netRecv : Connection -> Int -> Result Bytes String / { Net }
 
 foreign "fai_net_close" netClose : Connection -> Unit / { Net }
@@ -569,6 +572,7 @@ let stdNet = { Net with
   localPort listener = netLocalPort listener,
   recv conn max = netRecv conn max,
   send conn bytes = netSend conn bytes,
+  sendMany conn chunks = netSendMany conn chunks,
   udpBind port = udpBindRaw port,
   udpClose sock = udpCloseRaw sock,
   udpLocalPort sock = udpLocalPortRaw sock,

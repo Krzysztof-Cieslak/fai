@@ -179,7 +179,7 @@ fn bounds_worker() {
     if case == "fused-wire" {
         let bundle = fai_driver::build_run_bundle(&db, file).bundle.unwrap();
         let bytes = serde_json::to_vec(&bundle).unwrap();
-        let bundle = serde_json::from_slice(&bytes).unwrap();
+        let bundle = fai_driver::bundle_from_slice(&bytes).unwrap();
         assert_eq!(fai_driver::jit_run_bundle(&bundle), 0);
         return;
     }

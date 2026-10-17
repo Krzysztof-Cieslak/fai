@@ -46,7 +46,7 @@ fn run(body: &str, native: bool) -> (String, i32) {
         let wire = fai_driver::build_run_bundle(&db, file);
         let bundle = wire.bundle.unwrap_or_else(|| panic!("{:?}", wire.diagnostics));
         let encoded = serde_json::to_vec(&bundle).unwrap();
-        let bundle = serde_json::from_slice(&encoded).unwrap();
+        let bundle = fai_driver::bundle_from_slice(&encoded).unwrap();
         fai_runtime::capture_start();
         let exit = fai_driver::jit_run_bundle(&bundle);
         (fai_runtime::capture_take(), exit)

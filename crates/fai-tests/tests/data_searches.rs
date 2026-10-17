@@ -112,7 +112,7 @@ fn resource_free_search_metadata_survives_worker_transport() {
     let bundle = fai_driver::build_run_bundle(&db, db.source_file(id).unwrap()).bundle.unwrap();
     let json = serde_json::to_string(&bundle).unwrap();
     assert!(json.contains("\"resource_free\":true"));
-    let bundle = serde_json::from_str(&json).unwrap();
+    let bundle = fai_driver::bundle_from_slice(json.as_bytes()).unwrap();
     rt::capture_start();
     assert_eq!(fai_driver::jit_run_bundle(&bundle), 0);
     assert_eq!(rt::capture_take(), "2331\n");
