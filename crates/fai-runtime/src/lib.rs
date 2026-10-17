@@ -3920,8 +3920,8 @@ pub extern "C" fn fai_bytes_concat(a: Value, b: Value) -> Value {
     }
 }
 
-/// `Bytes.slice start end b`: the bytes in `[start, end)`, clamped to the buffer
-/// (a fresh copy). All operands consumed.
+/// `Bytes.slice start end b`: the bytes in `[start, end)`, clamped to the buffer.
+/// A full-width range transfers the input; other ranges copy. All operands consumed.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_bytes_slice(start: Value, end: Value, b: Value) -> Value {
     let s = unbox_int(start);
@@ -3932,6 +3932,11 @@ pub extern "C" fn fai_bytes_slice(start: Value, end: Value, b: Value) -> Value {
         let len = bytes.len() as i64;
         let lo = s.clamp(0, len) as usize;
         let hi = e.clamp(lo as i64, len) as usize;
+        if lo == 0 && hi == bytes.len() {
+            fai_drop(start);
+            fai_drop(end);
+            return b;
+        }
         make_bytes(&bytes[lo..hi])
     };
     fai_drop(start);
@@ -5369,6 +5374,8 @@ mod array_tests;
 mod ascii_strings;
 #[cfg(test)]
 mod bytes_concat_tests;
+#[cfg(test)]
+mod bytes_slice_tests;
 #[cfg(test)]
 mod drop_work_tests;
 #[cfg(test)]

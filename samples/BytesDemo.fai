@@ -22,8 +22,9 @@ public appendedLength : Bytes -> Bytes -> Int
 let appendedLength a b = Bytes.length (Bytes.concat a b)
 example: appendedLength (Bytes.fromString "abc") (Bytes.fromString "de") = 5
 
-/// The first `n` bytes of a buffer (a fresh buffer).
+/// The first `n` bytes. A full-range prefix reuses the buffer; partial prefixes copy.
 public prefix : Int -> Bytes -> Bytes
 let prefix n b = Bytes.slice 0 n b
 example: prefix 2 (Bytes.fromList [10, 20, 30]) = Bytes.fromList [10, 20]
 example: Bytes.toList (prefix 0 (Bytes.fromString "x")) = []
+example: prefix 100 (Bytes.fromList [0, 128, 255]) = Bytes.fromList [0, 128, 255]

@@ -743,10 +743,10 @@ pub enum Prim {
     /// `Bytes` element access by index (the byte 0–255 as an `Int`; out-of-bounds
     /// aborts).
     BytesGet,
-    /// `Bytes` concatenation (a fresh buffer).
+    /// `Bytes` concatenation, reusing a uniquely owned left buffer when possible.
     BytesConcat,
-    /// `Bytes` slice `start end b` — the bytes in `[start, end)`, clamped (a fresh
-    /// buffer).
+    /// `Bytes` slice `start end b` — the bytes in `[start, end)`, clamped. A complete
+    /// range transfers the input; a partial range copies.
     BytesSlice,
     /// Build `Bytes` from a `List Int` (each element truncated to a byte).
     BytesFromList,
