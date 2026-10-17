@@ -416,6 +416,56 @@ match parseRequestHeadMeta (Bytes.fromString text) text with
     );
 }
 
+#[test]
+fn body_collection_keeps_shared_chunks_immutable() {
+    check(
+        r#"let chunk = Bytes.fromList [0, 255, 128]
+let chunks = [chunk, Bytes.empty, chunk]
+bodyBytes (Stream.fromList chunks) = Ok (Bytes.fromList [0, 255, 128, 0, 255, 128]) && chunks = [Bytes.fromList [0, 255, 128], Bytes.empty, Bytes.fromList [0, 255, 128]]"#,
+        false,
+    );
+}
+
+#[test]
+fn body_collection_does_not_return_a_partial_body_after_an_error() {
+    check(
+        "bodyBytes (Stream.cons (Bytes.fromString \"prefix\") (Stream.failed \"tail failed\")) = Err \"tail failed\"",
+        false,
+    );
+}
+
+#[test]
+fn body_collection_rejoins_split_utf8_before_decoding() {
+    check(
+        "bodyText (Stream.fromList [Bytes.fromList [240, 159], Bytes.empty, Bytes.fromList [152, 128]]) = Ok \"😀\"",
+        false,
+    );
+}
+
+#[test]
+fn large_body_collection_has_linear_allocation_volume() {
+    use fai_runtime as rt;
+    use fai_syntax::Symbol;
+
+    let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut db = fai_db::FaiDatabase::new();
+    fai_types::std_lib::load_std(&mut db);
+    let id = db.add_source(
+        "Body.fai".into(),
+        "module Body\npublic collect : Int -> Bytes -> Bytes\nlet collect count chunk = Result.withDefault Bytes.empty (Http.bodyBytes (Stream.fromList (List.map (fun _ -> chunk) (List.range 0 count))))\npublic main : Runtime -> Unit\nlet main _ = ()\n".into(),
+    );
+    let mut program = fai_driver::jit_compile(&db, db.source_file(id).unwrap()).unwrap();
+    let function = program.function(Symbol::intern("collect")).unwrap();
+    let baseline = (rt::live_count(), rt::live_bytes());
+    let chunk = rt::fai_bytes_from_string(rt::make_str(&"x".repeat(1024)));
+    rt::reset_allocations();
+    let result = rt::apply(function, &[rt::make_int(1024), chunk]);
+    assert!(rt::allocated_bytes() < 8 * 1024 * 1024, "body collection must not copy every prefix");
+    assert_eq!(rt::read_int(rt::fai_bytes_length(rt::fai_dup(result))), 1024 * 1024);
+    rt::fai_drop(result);
+    assert_eq!((rt::live_count(), rt::live_bytes()), baseline);
+}
+
 #[track_caller]
 fn invalid_headers(fields: &[(&str, &str)]) {
     let fields = fields

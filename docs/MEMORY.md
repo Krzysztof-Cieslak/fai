@@ -5258,8 +5258,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   - Buffered HTTP messages render their computed length directly, preserving the
     field order of replacing Content-Length while avoiding a transient header list.
     Authored framing is still validated before the body is collected.
-  - Bytes concatenation checks its complete output allocation and copies both
-    inputs directly into that final buffer, without an intermediate native vector.
+  - Bytes concatenation appends into a unique left buffer and grows geometrically,
+    preserving shared inputs. Empty operands transfer the other value directly.
+    This bounds repeated-prefix copying during HTTP body collection.
+    Allocating paths check the complete output size and copy both inputs directly
+    into the final buffer, without an intermediate native vector.
     Aliases and binary content retain their existing semantics.
   - Request header fields use one byte scan for token/value validation and ASCII
     whitespace boundaries. Final strings use the existing byte-addressed String

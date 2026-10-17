@@ -9,6 +9,9 @@
 ### Changed
 - Let repository documentation checks accept package Unreleased entries during
   development; prepared release candidates still require promoted release notes.
+- Append into uniquely owned byte buffers with geometric growth, avoiding
+  repeated prefix copying when collecting large HTTP bodies. Shared byte values
+  keep their contents; concatenation with an empty buffer returns the other value.
 - Collect request framing, expectation and connection metadata during the
   validated field scan, avoiding repeated header lookups and case conversion.
 - Render computed HTTP Content-Length fields directly without constructing a

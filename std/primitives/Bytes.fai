@@ -36,7 +36,9 @@ public unsafeGet : Int -> Bytes -> Int
 let unsafeGet i b = Prim.bytesGet b i
 example: unsafeGet 0 (fromList [7, 8]) = 7
 
-/// `a` followed by `b` (a fresh buffer).
+/// `a` followed by `b`. A uniquely owned left buffer can append in place; growth
+/// doubles its capacity. Shared inputs retain their original contents. An empty
+/// operand returns the other buffer directly.
 public concat : Bytes -> Bytes -> Bytes
 let concat a b = Prim.bytesConcat a b
 example: concat (fromList [1, 2]) (fromList [3, 4]) = fromList [1, 2, 3, 4]
