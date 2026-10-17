@@ -1937,7 +1937,8 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   `resolve` (relative refs / redirects); accessors `scheme`/`userinfo`/`host`/
   `port`/`effectivePort`/`path`/`query`/`fragment`/`requestTarget`/`isHttps`;
   `queryPairs`, `encodeComponent`/`decodeComponent` (percent-encoding).
-  Decoding preserves literal Unicode, malformed percent escapes, and `+`. If
+  Decoding preserves literal Unicode, malformed percent escapes, and `+`.
+  Unescaped components pass through without replacement buffers. If
   decoded bytes would be invalid UTF-8, the original component is returned
   unchanged instead of discarding text.
   `resolve` supports empty and query/fragment-only references, `//host/path`, and

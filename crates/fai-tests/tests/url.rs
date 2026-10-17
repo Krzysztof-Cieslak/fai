@@ -43,6 +43,29 @@ fn unescaped_unicode_is_preserved() {
 }
 
 #[test]
+fn empty_component_is_preserved() {
+    decoded("", "");
+}
+
+#[test]
+fn unescaped_component_does_not_allocate_or_consume_other_owners() {
+    let _guard = lock();
+    let mut program = compile();
+    let function = program.function(Symbol::intern("decode")).unwrap();
+    let baseline = rt::live_count();
+    let input = rt::make_str("café+😀\0");
+    rt::reset_allocations();
+    let decoded = rt::apply(rt::fai_dup(function), &[rt::fai_dup(input)]);
+    assert_eq!(rt::allocations(), 0);
+    let appended = rt::fai_string_concat(decoded, rt::make_str("!"));
+    assert_eq!(rt::read_string(input), "café+😀\0".as_bytes());
+    assert_eq!(rt::read_string(appended), "café+😀\0!".as_bytes());
+    rt::fai_drop(input);
+    rt::fai_drop(appended);
+    assert_eq!(rt::live_count(), baseline);
+}
+
+#[test]
 fn invalid_hex_is_preserved_literally() {
     decoded("%GG%2G", "%GG%2G");
 }

@@ -22,6 +22,7 @@ module HttpDemo
 // Likewise, feedIncoming reports ciphertext progress. readPlaintext distinguishes
 // pending (None), clean TLS EOF (Some empty bytes), and truncation (Err).
 example: Url.decodeComponent "café%20😀" = "café 😀"
+example: Url.decodeComponent "café+😀" = "café+😀"
 example: Url.decodeComponent "%GG" = "%GG"
 
 // The request handler: echo the requested path back as plain text. A handler

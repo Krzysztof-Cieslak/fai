@@ -882,6 +882,7 @@ records transport EOF. `Tls.readPlaintext` returns `Result (Option Bytes) String
 EOF without that notification is an error after buffered plaintext is drained.
 
 `Url.decodeComponent` preserves unescaped Unicode and malformed percent escapes.
+Components without percent escapes pass through without replacement buffers.
 It leaves `+` literal. If the decoded bytes are not valid UTF-8, it returns the
 original component unchanged; valid Unicode percent-encoding round-trips exactly.
 
