@@ -491,6 +491,15 @@ pub extern "C" fn fai_regex_byte_index(text: Value, index: Value) -> Value {
 /// Copy a checked UTF-8 byte range. Matches themselves retain only input/ranges.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_regex_slice(text: Value, start: Value, end: Value) -> Value {
+    let result = fai_regex_slice_borrowed(text, start, end);
+    crate::fai_drop(text);
+    result
+}
+
+/// Copy a checked UTF-8 byte range, borrowing the source and consuming the indices.
+/// The independent result does not retain the source on either success or failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_regex_slice_borrowed(text: Value, start: Value, end: Value) -> Value {
     let (a, b) = (crate::unbox_int(start), crate::unbox_int(end));
     // SAFETY: input has static String type; str::get checks both UTF-8 boundaries.
     let input = unsafe { crate::string_str(text) };
@@ -502,7 +511,6 @@ pub extern "C" fn fai_regex_slice(text: Value, start: Value, end: Value) -> Valu
             .map(|s| crate::make_string(s.as_bytes()))
             .ok_or_else(|| error(7, "invalid text span"))
     };
-    crate::fai_drop(text);
     crate::fai_drop(start);
     crate::fai_drop(end);
     result(outcome, |v| v)

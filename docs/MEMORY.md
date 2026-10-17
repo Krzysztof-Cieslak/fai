@@ -256,6 +256,12 @@ retired; IDs are not reused).
   invariant rather than revalidating the full input at every cursor step. Tests
   cover native cache lifetime, cross-module cutoff, effects and JIT/AOT behavior.
 
+- Checked UTF-8 range extraction borrows its source String and copies the selected
+  bytes into an independent result. Its native borrowed entry still consumes both
+  scalar indices; the owned entry releases its source for uniform callers. This
+  avoids retain/release pairs in repeated extraction without changing range
+  validation, error values or the result's lifetime.
+
 - Regex replacement text is literal unless compiled as a capture template.
   Template references are validated before matching and bind to one regex schema.
   Callback replacement processes original-input matches once in order, forwards

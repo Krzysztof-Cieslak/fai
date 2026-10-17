@@ -5477,8 +5477,8 @@ pub use compression::{fai_compression_create, fai_compression_step};
 pub use path::{fai_path_components, fai_path_operation};
 pub use regex_engine::{
     fai_regex_byte_index, fai_regex_compile, fai_regex_escape, fai_regex_find_bytes,
-    fai_regex_find_text, fai_regex_names, fai_regex_slice, fai_regex_test_bytes,
-    fai_regex_test_text,
+    fai_regex_find_text, fai_regex_names, fai_regex_slice, fai_regex_slice_borrowed,
+    fai_regex_test_bytes, fai_regex_test_text,
 };
 
 mod crypto;
@@ -5582,6 +5582,8 @@ mod linear_drop_tests;
 mod pair_ops_tests;
 #[cfg(test)]
 mod proptests;
+#[cfg(test)]
+mod regex_slice_tests;
 #[cfg(test)]
 mod reuse_tests;
 #[cfg(test)]

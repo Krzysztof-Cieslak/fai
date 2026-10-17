@@ -1377,6 +1377,9 @@ Regex splitting preserves empty pieces and uses explicit split counts separately
 from resource limits. Native text requests validate scalar boundaries without
 rescanning UTF-8 prefixes. Package contracts and relocated JIT/AOT fixtures cover
 Unicode, bytes, shared programs, cursor aliases, callback order and output bounds.
+Checked UTF-8 byte-range slicing borrows its source String while returning an
+independent copy. Borrow inference propagates through slicing helpers; scalar
+indices remain consumed, including full-width boxed values on error paths.
 
 The optional `packages/logging` source package provides structured log records,
 typed fields, target-prefix filtering and pure human/JSON Lines formatting.
