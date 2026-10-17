@@ -1920,8 +1920,10 @@ lengths through scans. Outgoing response heads are validated before body framing
 Request fields are scanned once for validation and whitespace boundaries, then
 materialized from the validated UTF-8 head. Duplicate order and first-error
 precedence remain intact; the scan carries byte offsets in a constant-stack loop.
-Bytes concatenation checks the complete output size and copies inputs directly
-into one final buffer, retaining independent values and immutable aliases.
+Bytes concatenation checks the complete output size and appends into uniquely
+owned left buffers, growing geometrically when full. Shared buffers copy into
+a fresh result, and empty operands return the other value. Binary contents and
+immutable aliases are preserved, including during large HTTP body collection.
 Buffered HTTP messages render their computed Content-Length directly after the
 other fields, avoiding a temporary header collection while keeping validation.
 Request framing, expectation and connection values are collected during the

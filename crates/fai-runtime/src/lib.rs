@@ -3861,33 +3861,63 @@ pub extern "C" fn fai_bytes_get(b: Value, i: Value) -> Value {
     fai_box_int(byte)
 }
 
-/// `Bytes.concat`: a fresh buffer of `a` followed by `b` (both consumed).
+/// `Bytes.concat`: `a` followed by `b` (both consumed). Unique left buffers append
+/// in place, doubling capacity on growth; shared buffers retain value semantics.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_bytes_concat(a: Value, b: Value) -> Value {
-    // SAFETY: `a` and `b` are boxed `Bytes`; the slices are copied before either
-    // operand is dropped. The checked destination has room for its length and
-    // both payloads, and cannot overlap either still-live input.
-    let result = unsafe {
-        let ba = bytes_bytes(a);
-        let bb = bytes_bytes(b);
-        let length = ba.len().checked_add(bb.len()).unwrap_or_else(|| fai_allocation_size_panic());
-        let size = checked_buffer_size(STRING_BYTES_OFFSET, length, 1)
+    // SAFETY: Bytes are inline buffers. A unique left operand cannot alias the
+    // right: two owned references would make its count at least two. All copies
+    // therefore use disjoint, live ranges within the checked capacity.
+    unsafe {
+        let (pa, pb) = (as_obj(a), as_obj(b));
+        let la = read_u64(pa, STRING_LEN_OFFSET) as usize;
+        let lb = read_u64(pb, STRING_LEN_OFFSET) as usize;
+        if lb == 0 {
+            fai_drop(b);
+            return a;
+        }
+        if la == 0 {
+            fai_drop(a);
+            return b;
+        }
+        let length = la.checked_add(lb).unwrap_or_else(|| fai_allocation_size_panic());
+        let tight_size = checked_buffer_size(STRING_BYTES_OFFSET, length, 1)
             .unwrap_or_else(|| fai_allocation_size_panic());
+        let unique = rc_load(pa) == 1;
+        let capacity = read_u64(pa, SIZE_OFFSET) as usize - STRING_BYTES_OFFSET;
+        if unique && length <= capacity {
+            std::ptr::copy_nonoverlapping(
+                pb.add(STRING_BYTES_OFFSET),
+                pa.add(STRING_BYTES_OFFSET + la),
+                lb,
+            );
+            write_u64(pa, STRING_LEN_OFFSET, length as u64);
+            fai_drop(b);
+            return a;
+        }
+        let size = if unique {
+            let grown = grow_cap(capacity, length, MAX_ALLOCATION_SIZE - STRING_BYTES_OFFSET);
+            checked_buffer_size(STRING_BYTES_OFFSET, grown, 1)
+                .unwrap_or_else(|| fai_allocation_size_panic())
+        } else {
+            tight_size
+        };
         let output = alloc_obj(size, &FAI_BYTES_DESC);
         write_u64(output, STRING_LEN_OFFSET, length as u64);
-        // The fresh destination has room for both slices and cannot overlap
-        // either still-owned input, including when both inputs are aliases.
-        std::ptr::copy_nonoverlapping(ba.as_ptr(), output.add(STRING_BYTES_OFFSET), ba.len());
         std::ptr::copy_nonoverlapping(
-            bb.as_ptr(),
-            output.add(STRING_BYTES_OFFSET + ba.len()),
-            bb.len(),
+            pa.add(STRING_BYTES_OFFSET),
+            output.add(STRING_BYTES_OFFSET),
+            la,
         );
+        std::ptr::copy_nonoverlapping(
+            pb.add(STRING_BYTES_OFFSET),
+            output.add(STRING_BYTES_OFFSET + la),
+            lb,
+        );
+        fai_drop(a);
+        fai_drop(b);
         from_obj(output)
-    };
-    fai_drop(a);
-    fai_drop(b);
-    result
+    }
 }
 
 /// `Bytes.slice start end b`: the bytes in `[start, end)`, clamped to the buffer

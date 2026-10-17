@@ -45,6 +45,13 @@ let stringLoops n total =
     stringLoops (n - 1) (total + String.length text)
 public stringLoop : Int -> Int
 let stringLoop n = stringLoops n 0
+let appendBytes n chunk value = if n <= 0 then value else appendBytes (n - 1) chunk (Bytes.concat value chunk)
+let byteLoops n chunk total =
+  if n <= 0 then total else
+    let buffer = appendBytes 32 chunk Bytes.empty
+    byteLoops (n - 1) chunk (total + Bytes.length buffer)
+public byteLoop : Int -> Int
+let byteLoop n = byteLoops n (Bytes.fromList (List.map (fun _ -> 255) (List.range 0 1024))) 0
 let emptyStringLoops n total =
   if n <= 0 then total else
     let text = append 8 ""
@@ -186,6 +193,11 @@ fn reserved_boxed_builders_keep_initialized_storage_bounded() {
 #[test]
 fn literal_string_loops_keep_fixed_state_storage_bounded() {
     bounded("stringLoop", |n| n * 17);
+}
+
+#[test]
+fn repeated_byte_growth_releases_large_mappings() {
+    bounded("byteLoop", |n| n * 32768);
 }
 
 #[test]
