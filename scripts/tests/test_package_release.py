@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -397,12 +398,21 @@ class PublicationTests(PackageFixture):
 
 
 class RepositoryReleaseTests(unittest.TestCase):
-    def test_every_source_package_has_prepared_documentation(self):
-        selected = package_release.prepared_packages("all")
-        self.assertTrue(selected)
-        self.assertTrue(all(not item["name"].endswith("-examples") for item in selected))
-        self.assertTrue(all(item["version"] in (package_release.ROOT / item["path"] / "README.md").read_text()
-                            for item in selected))
+    def test_every_source_package_has_versioned_documentation(self):
+        catalog = package_release.packages.discover(package_release.ROOT)
+        self.assertTrue(catalog)
+        # A development checkout may have Unreleased notes. Release readiness is
+        # checked on prepared candidates, including the fixture tests above.
+        for name, package in catalog.items():
+            metadata = tomllib.loads((package.directory / "fai.toml").read_text(encoding="utf-8"))["package"]
+            if not metadata.get("publish", True):
+                continue
+            with self.subTest(package=name):
+                self.assertFalse(name.endswith("-examples"))
+                self.assertIn(metadata["version"], (package.directory / "README.md").read_text(encoding="utf-8"))
+                changelog = (package.directory / "changelog.md").read_text(encoding="utf-8")
+                self.assertIn("Unreleased", release.sections(changelog))
+                self.assertTrue(release.notes(changelog, metadata["version"]).strip())
 
     def test_workflow_is_manual_and_requires_all_native_reports(self):
         workflow = (package_release.ROOT / ".github/workflows/package-release.yml").read_text()
