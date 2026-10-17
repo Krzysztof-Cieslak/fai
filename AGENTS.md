@@ -1924,6 +1924,11 @@ Bytes concatenation checks the complete output size and appends into uniquely
 owned left buffers, growing geometrically when full. Shared buffers copy into
 a fresh result, and empty operands return the other value. Binary contents and
 immutable aliases are preserved, including during large HTTP body collection.
+`Bytes.concatMany` collects a list of binary chunks into one checked allocation,
+or transfers a sole nonempty chunk. HTTP buffering uses it after the body stream
+has completed, preserving errors and chunk order without repeated growth copies.
+Buffered sends calculate the checked length and join the head with those chunks
+directly, without first materializing a separate flat body buffer.
 `Bytes.slice` transfers its input when the clamped range covers the complete
 buffer. Partial ranges remain independent copies, and full-width index boxes
 are released on either path.

@@ -66,6 +66,13 @@ let byteTextLoop n text =
     | Some restored -> byteTextLoop (n - 1) restored
 public byteTextRounds : Int -> Int
 let byteTextRounds n = byteTextLoop n (String.join "" (List.map (fun _ -> "text") (List.range 0 8192)))
+let byteJoins n chunks total =
+  if n <= 0 then total
+  else byteJoins (n - 1) chunks (total + Bytes.length (Bytes.concatMany chunks))
+public byteJoinLoop : Int -> Int
+let byteJoinLoop n =
+  let chunk = Bytes.fromList (List.map (fun _ -> 255) (List.range 0 8192))
+  byteJoins n [chunk, chunk, chunk, chunk] 0
 let emptyStringLoops n total =
   if n <= 0 then total else
     let text = append 8 ""
@@ -222,6 +229,11 @@ fn full_range_byte_slices_keep_storage_bounded() {
 #[test]
 fn byte_text_round_trips_keep_fixed_storage() {
     bounded("byteTextRounds", |_| 32768);
+}
+
+#[test]
+fn repeated_byte_collection_releases_output_mappings() {
+    bounded("byteJoinLoop", |n| n * 32768);
 }
 
 #[test]

@@ -42,3 +42,8 @@ let checksumFrom bytes index total =
     checksumFrom bytes (index + 1) (total + Bytes.unsafeGet index bytes)
 example: checksum (Bytes.fromList [0, 128, 255]) = 383
 example: checksum Bytes.empty = 0
+example: Bytes.toList (Bytes.concatMany [
+  Bytes.fromList [0, 255],
+  Bytes.empty,
+  Bytes.fromList [128]
+]) = [0, 255, 128]

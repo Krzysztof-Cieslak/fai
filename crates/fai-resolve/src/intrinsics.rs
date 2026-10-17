@@ -67,6 +67,7 @@ pub const INTRINSICS: &[&str] = &[
     "bytesLength",
     "bytesGet",
     "bytesConcat",
+    "bytesConcatMany",
     "bytesSlice",
     "bytesFromList",
     "bytesToList",

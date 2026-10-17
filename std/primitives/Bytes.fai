@@ -44,6 +44,13 @@ let concat a b = Prim.bytesConcat a b
 example: concat (fromList [1, 2]) (fromList [3, 4]) = fromList [1, 2, 3, 4]
 example: concat empty (fromList [1]) = fromList [1]
 
+/// Concatenate chunks in order with one final allocation. Empty chunks add no
+/// bytes; a sole nonempty chunk can reuse its buffer. All aliases remain immutable.
+public concatMany : List Bytes -> Bytes
+let concatMany chunks = Prim.bytesConcatMany chunks
+example: concatMany [fromList [0, 255], empty, fromList [128]] = fromList [0, 255, 128]
+example: concatMany [] = empty
+
 /// The bytes in `[start, end)`, with both indices clamped to the buffer's bounds
 /// (a copy unless the clamped range is the complete buffer).
 public slice : Int -> Int -> Bytes -> Bytes

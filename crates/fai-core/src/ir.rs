@@ -745,6 +745,8 @@ pub enum Prim {
     BytesGet,
     /// `Bytes` concatenation, reusing a uniquely owned left buffer when possible.
     BytesConcat,
+    /// Concatenate an owned list of byte buffers into one checked result.
+    BytesConcatMany,
     /// `Bytes` slice `start end b` — the bytes in `[start, end)`, clamped. A complete
     /// range transfers the input; a partial range copies.
     BytesSlice,
@@ -965,6 +967,7 @@ impl Prim {
             Prim::BytesLength => "fai_bytes_length",
             Prim::BytesGet => "fai_bytes_get",
             Prim::BytesConcat => "fai_bytes_concat",
+            Prim::BytesConcatMany => "fai_bytes_concat_many",
             Prim::CryptoSha256 => "fai_crypto_sha256",
             Prim::CryptoHmacSha256 => "fai_crypto_hmac_sha256",
             Prim::CryptoPbkdf2Sha256 => "fai_crypto_pbkdf2_sha256",
@@ -1022,6 +1025,7 @@ impl Prim {
             | Prim::ArrayLength
             | Prim::ArrayUnique
             | Prim::BytesLength
+            | Prim::BytesConcatMany
             | Prim::BytesFromList
             | Prim::BytesToList
             | Prim::BytesFromString
@@ -1100,6 +1104,7 @@ impl Prim {
             "bytesLength" => Prim::BytesLength,
             "bytesGet" => Prim::BytesGet,
             "bytesConcat" => Prim::BytesConcat,
+            "bytesConcatMany" => Prim::BytesConcatMany,
             "cryptoSha256" => Prim::CryptoSha256,
             "cryptoHmacSha256" => Prim::CryptoHmacSha256,
             "cryptoPbkdf2Sha256" => Prim::CryptoPbkdf2Sha256,

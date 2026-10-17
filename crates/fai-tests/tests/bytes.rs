@@ -20,7 +20,7 @@ const CONCURRENT_MAIN: &str = r#"
 public main : Runtime -> Unit / { Concurrency, Console }
 let main runtime =
   let bytes = Bytes.fromList [0, 127, 128, 255]
-  let (left, right) = Async.parallel2 runtime.concurrency (fun _ -> sum bytes) (fun _ -> sum bytes)
+  let (left, right) = Async.parallel2 runtime.concurrency (fun _ -> sum (Bytes.concatMany [bytes])) (fun _ -> sum bytes)
   runtime.console.writeLine (Int.toString (left + right + Bytes.length bytes))
 "#;
 
@@ -62,6 +62,19 @@ fn scanning_all_byte_values_keeps_them_unsigned() {
 #[test]
 fn an_empty_buffer_scan_never_indexes_it() {
     output(&program("runtime.console.writeLine (Int.toString (sum Bytes.empty))"), "0");
+}
+
+#[test]
+fn collecting_binary_chunks_preserves_aliases_and_order() {
+    output(
+        &program(
+            r#"let chunk = Bytes.fromList [0, 255, 128]
+let chunks = [Bytes.empty, chunk, Bytes.empty, chunk]
+let output = Callbacks.call Bytes.concatMany chunks
+runtime.console.writeLine (if Bytes.toList output = [0, 255, 128, 0, 255, 128] && Bytes.toList chunk = [0, 255, 128] && List.length chunks = 4 then "ok" else "wrong")"#,
+        ),
+        "ok",
+    );
 }
 
 #[test]

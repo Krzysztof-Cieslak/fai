@@ -148,6 +148,9 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
             Ty::Con(Con::Bytes),
         )),
         "bytesFromList" => Scheme::mono(Ty::arrow(Ty::list(Ty::int()), Ty::Con(Con::Bytes))),
+        "bytesConcatMany" => {
+            Scheme::mono(Ty::arrow(Ty::list(Ty::Con(Con::Bytes)), Ty::Con(Con::Bytes)))
+        }
         "bytesToList" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::list(Ty::int()))),
         "bytesFromString" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::Con(Con::Bytes))),
         "bytesToString" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::Con(Con::String))),

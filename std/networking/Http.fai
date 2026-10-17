@@ -61,8 +61,19 @@ public bodyBytes : Stream Bytes 'e -> Result Bytes String / 'e
 let bodyBytes body =
   match Stream.toList body with
   | Err e -> Err e
-  | Ok chunks -> Ok (List.foldl Bytes.concat Bytes.empty chunks)
+  | Ok chunks -> Ok (Bytes.concatMany chunks)
 example: bodyBytes (stringBody "abc") = Ok (Bytes.fromString "abc")
+
+bodySize : List Bytes -> Int -> Result Int String
+let bodySize chunks total =
+  match chunks with
+  | [] -> Ok total
+  | chunk :: rest ->
+    let size = Bytes.length chunk
+    if size > 9223372036854775807 - total then
+      Err "HTTP body is too large"
+    else
+      bodySize rest (total + size)
 
 /// Drain a body stream and decode it as UTF-8 text.
 public bodyText : Stream Bytes 'e -> Result String String / 'e
@@ -409,10 +420,12 @@ let sendValidMessage closeConn t startLine headers body =
     | Err e -> Err e
     | Ok sent -> sendChunkedBody t body
   | Ok _ ->
-    match bodyBytes body with
+    match Stream.toList body with
     | Err e -> Err e
-    | Ok bytes ->
-      t.send (Bytes.concat (renderSizedHead startLine framed (Bytes.length bytes)) bytes)
+    | Ok chunks ->
+      match bodySize chunks 0 with
+      | Err e -> Err e
+      | Ok size -> t.send (Bytes.concatMany (renderSizedHead startLine framed size :: chunks))
 
 // Add a Host header from the URL if the caller supplied none.
 ensureHost : Headers -> Url -> Headers

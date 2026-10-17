@@ -105,6 +105,7 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::BytesLength => "bytesLength",
         Prim::BytesGet => "bytesGet",
         Prim::BytesConcat => "bytesConcat",
+        Prim::BytesConcatMany => "bytesConcatMany",
         Prim::CryptoSha256 => "cryptoSha256",
         Prim::CryptoHmacSha256 => "cryptoHmacSha256",
         Prim::CryptoPbkdf2Sha256 => "cryptoPbkdf2Sha256",
