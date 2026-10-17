@@ -14,7 +14,7 @@ let scan bytes i total =
   else scan bytes (i + 1) (total + Bytes.unsafeGet i bytes)
 "#;
 
-const CALLBACKS: &str = "module Callbacks\npublic call : ('a -> 'b / 'e) -> 'a -> 'b / 'e\nlet call f value = f value\n";
+const CALLBACKS: &str = "module Callbacks\npublic call : ('a -> 'b / 'e) -> 'a -> 'b / 'e\nlet call f value = f value\npublic getAt : Int -> Bytes -> Option Int\nlet getAt i bytes = Bytes.get i bytes\n";
 
 const CONCURRENT_MAIN: &str = r#"
 public main : Runtime -> Unit / { Concurrency, Console }
@@ -62,6 +62,53 @@ fn scanning_all_byte_values_keeps_them_unsigned() {
 #[test]
 fn an_empty_buffer_scan_never_indexes_it() {
     output(&program("runtime.console.writeLine (Int.toString (sum Bytes.empty))"), "0");
+}
+
+#[test]
+fn safe_indexing_handles_full_width_boundaries() {
+    output(
+        &program(
+            r#"let bytes = Bytes.fromList [0, 127, 128, 255]
+let indices = [0 - 9223372036854775807 - 1, 0 - 1, 0, 3, 4, 9223372036854775807]
+let values = List.map (fun i -> Callbacks.getAt i bytes) indices
+runtime.console.writeLine (if values = [None, None, Some 0, Some 255, None, None] then "ok" else "wrong")"#,
+        ),
+        "ok",
+    );
+}
+
+#[test]
+fn length_loads_observe_new_values_after_unique_growth() {
+    output(
+        &format!(
+            "{READERS}\nlet grow n bytes = if n <= 0 then Bytes.length bytes else grow (n - 1) (Bytes.concat bytes (Bytes.fromList [255]))\npublic main : Runtime -> Unit / {{ Console }}\nlet main runtime =\n  let bytes = Bytes.fromList [128]\n  let initial = Bytes.length bytes\n  runtime.console.writeLine (Int.toString (initial + grow 32 bytes))\n"
+        ),
+        "34",
+    );
+}
+
+#[test]
+fn byte_fields_keep_their_owner_during_reads_and_later_updates() {
+    output(
+        &format!(
+            r#"{READERS}
+type Packet = | Packet Bytes
+let inspect packet =
+  match packet with
+  | Packet bytes ->
+    let first = Bytes.unsafeGet 0 bytes
+    let changed = Bytes.concat bytes (Bytes.fromList [42])
+    (first, Bytes.length changed)
+public main : Runtime -> Unit / {{ Console }}
+let main runtime =
+  let packet = Packet (Bytes.fromList [255, 128])
+  let (first, length) = inspect packet
+  let preserved = match packet with | Packet bytes -> Bytes.toList bytes = [255, 128]
+  runtime.console.writeLine (if first = 255 && length = 3 && preserved then "ok" else "wrong")
+"#
+        ),
+        "ok",
+    );
 }
 
 #[test]

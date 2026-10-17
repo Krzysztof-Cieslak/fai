@@ -1930,6 +1930,9 @@ are released on either path.
 Byte length, indexing and UTF-8 validation borrow their buffer. Borrow inference
 propagates that loan through reader helpers and invariant-buffer loops; builders
 and slice operations keep owned arguments so they can transfer or reuse storage.
+Byte lengths and element reads compile to native loads with raw integer indices
+and results, including in concurrent programs. Bounds failures keep the runtime
+byte-index diagnostic; uniform and first-class boundaries retain normal boxing.
 Buffered HTTP messages render their computed Content-Length directly after the
 other fields, avoiding a temporary header collection while keeping validation.
 Request framing, expectation and connection values are collected during the

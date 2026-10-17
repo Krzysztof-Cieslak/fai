@@ -7,6 +7,8 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Compile byte lengths and indexed reads to native loads, including concurrent
+  code, while preserving bounds faults and full-width integer arguments.
 - Borrow byte buffers for length, indexing and UTF-8 validation, avoiding
   temporary reference-count traffic in reader functions and loops.
 - Transfer full-range Bytes slices without copying their buffer, retaining

@@ -5270,6 +5270,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   - Byte length, element access and UTF-8 validation borrow their immutable input.
     Reader helpers and invariant-buffer loops propagate the loan through ordinary
     borrow inference. Slice/concat remain owned so transfer and reuse are possible.
+    Byte length and indexed access lower to native loads, including concurrent
+    code. An unsigned bounds check rejects negative and oversized raw indices;
+    uniform scalar arguments are consumed at conversion and results keep the
+    ordinary raw-Int/boxed boundary rules.
   - Request header fields use one byte scan for token/value validation and ASCII
     whitespace boundaries. Final strings use the existing byte-addressed String
     slicing primitive after whole-head UTF-8 validation. Accumulated fields are
