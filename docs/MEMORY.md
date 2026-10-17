@@ -5267,6 +5267,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   - A full-range `Bytes.slice` transfers its input after clamping both bounds.
     Partial ranges copy; boxed indices are released on both paths, and retained
     aliases keep their contents through subsequent concatenation.
+  - Byte length, element access and UTF-8 validation borrow their immutable input.
+    Reader helpers and invariant-buffer loops propagate the loan through ordinary
+    borrow inference. Slice/concat remain owned so transfer and reuse are possible.
   - Request header fields use one byte scan for token/value validation and ASCII
     whitespace boundaries. Final strings use the existing byte-addressed String
     slicing primitive after whole-head UTF-8 validation. Accumulated fields are

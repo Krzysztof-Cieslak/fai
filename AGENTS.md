@@ -1927,6 +1927,9 @@ immutable aliases are preserved, including during large HTTP body collection.
 `Bytes.slice` transfers its input when the clamped range covers the complete
 buffer. Partial ranges remain independent copies, and full-width index boxes
 are released on either path.
+Byte length, indexing and UTF-8 validation borrow their buffer. Borrow inference
+propagates that loan through reader helpers and invariant-buffer loops; builders
+and slice operations keep owned arguments so they can transfer or reuse storage.
 Buffered HTTP messages render their computed Content-Length directly after the
 other fields, avoiding a temporary header collection while keeping validation.
 Request framing, expectation and connection values are collected during the

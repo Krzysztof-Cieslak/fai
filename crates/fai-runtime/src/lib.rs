@@ -3837,9 +3837,16 @@ unsafe fn bytes_bytes<'a>(v: Value) -> &'a [u8] {
 /// `Bytes.length`: the byte count (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_bytes_length(b: Value) -> Value {
+    let length = fai_bytes_length_borrowed(b);
+    fai_drop(b);
+    length
+}
+
+/// `Bytes.length`, borrowing the buffer and returning an owned integer value.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_length_borrowed(b: Value) -> Value {
     // SAFETY: `b` is a boxed `Bytes`; its length is inline at `STRING_LEN_OFFSET`.
     let len = unsafe { read_u64(as_obj(b), STRING_LEN_OFFSET) } as i64;
-    fai_drop(b);
     fai_box_int(len)
 }
 
@@ -3847,6 +3854,15 @@ pub extern "C" fn fai_bytes_length(b: Value) -> Value {
 /// out-of-bounds index. Both operands consumed.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_bytes_get(b: Value, i: Value) -> Value {
+    let byte = fai_bytes_get_borrowed(b, i);
+    fai_drop(b);
+    byte
+}
+
+/// `Bytes.unsafeGet`, borrowing the buffer and consuming the index. The returned
+/// byte is an immediate integer; an invalid index retains the ordinary fault.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_get_borrowed(b: Value, i: Value) -> Value {
     let idx = unbox_int(i);
     // SAFETY: `b` is a boxed `Bytes`. The byte is copied out before `b` is dropped.
     let byte = unsafe {
@@ -3856,7 +3872,6 @@ pub extern "C" fn fai_bytes_get(b: Value, i: Value) -> Value {
         }
         bytes[idx as usize] as i64
     };
-    fai_drop(b);
     fai_drop(i);
     fai_box_int(byte)
 }
@@ -4007,9 +4022,16 @@ pub extern "C" fn fai_bytes_to_string(b: Value) -> Value {
 /// consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_bytes_is_utf8(b: Value) -> Value {
+    let valid = fai_bytes_is_utf8_borrowed(b);
+    fai_drop(b);
+    valid
+}
+
+/// `Bytes.isValidUtf8`, borrowing the immutable buffer for the complete scan.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_is_utf8_borrowed(b: Value) -> Value {
     // SAFETY: `b` is a boxed `Bytes`.
     let valid = unsafe { std::str::from_utf8(bytes_bytes(b)).is_ok() };
-    fai_drop(b);
     from_bool(valid)
 }
 
@@ -5374,6 +5396,8 @@ mod array_tests;
 mod ascii_strings;
 #[cfg(test)]
 mod bytes_concat_tests;
+#[cfg(test)]
+mod bytes_read_tests;
 #[cfg(test)]
 mod bytes_slice_tests;
 #[cfg(test)]

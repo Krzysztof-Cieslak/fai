@@ -848,6 +848,9 @@ impl Prim {
                 | Prim::Trim
                 | Prim::StringSplit
                 | Prim::StringJoin
+                | Prim::BytesLength
+                | Prim::BytesGet
+                | Prim::BytesIsUtf8
                 | Prim::ArrayLength
                 | Prim::ArrayGet
                 | Prim::ArrayPeek
@@ -873,6 +876,9 @@ impl Prim {
             Prim::ToLower => Some("fai_to_lower_borrowed"),
             Prim::Trim => Some("fai_trim_borrowed"),
             Prim::StringSplit => Some("fai_string_split_borrowed"),
+            Prim::BytesLength => Some("fai_bytes_length_borrowed"),
+            Prim::BytesGet => Some("fai_bytes_get_borrowed"),
+            Prim::BytesIsUtf8 => Some("fai_bytes_is_utf8_borrowed"),
             Prim::ArrayLength => Some("fai_array_length_borrowed"),
             Prim::ArrayGet => Some("fai_array_get_borrowed"),
             Prim::ArrayPeek => Some("fai_array_peek"),

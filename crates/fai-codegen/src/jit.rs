@@ -106,7 +106,9 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_array_join", rt::fai_array_join);
     sym!("fai_array_join_borrowed", rt::fai_array_join_borrowed);
     sym!("fai_bytes_length", rt::fai_bytes_length);
+    sym!("fai_bytes_length_borrowed", rt::fai_bytes_length_borrowed);
     sym!("fai_bytes_get", rt::fai_bytes_get);
+    sym!("fai_bytes_get_borrowed", rt::fai_bytes_get_borrowed);
     sym!("fai_bytes_concat", rt::fai_bytes_concat);
     sym!("fai_bytes_slice", rt::fai_bytes_slice);
     sym!("fai_bytes_from_list", rt::fai_bytes_from_list);
@@ -114,6 +116,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_bytes_from_string", rt::fai_bytes_from_string);
     sym!("fai_bytes_to_string", rt::fai_bytes_to_string);
     sym!("fai_bytes_is_utf8", rt::fai_bytes_is_utf8);
+    sym!("fai_bytes_is_utf8_borrowed", rt::fai_bytes_is_utf8_borrowed);
     sym!("fai_string_substring", rt::fai_string_substring);
     sym!("fai_string_take", rt::fai_string_take);
     sym!("fai_string_drop", rt::fai_string_drop);
