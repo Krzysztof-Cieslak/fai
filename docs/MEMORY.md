@@ -3866,6 +3866,9 @@ Editor integration:
     Empty pools, wider shapes and concurrent code retain runtime construction.
     Tail loops cache the pool base; a non-looping branch fetches it at allocation
     so recursive leaf calls do not pay a lookup. Debug counters remain balanced.
+    Native SSA values known to be permanent String literals or capture-free
+    closures need no ownership operations, including under concurrency. Unknown
+    merges and loop-carried values keep their ordinary reference-count behavior.
     A missing reuse token takes the same inline small-data allocation path; a
     wrong-sized token retains runtime handling. Pool lookup stays lazy for a
     function that otherwise only reuses cells, avoiding overhead on successful

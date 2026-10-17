@@ -349,6 +349,39 @@ fn byte_length_is_a_native_load() {
 }
 
 #[test]
+fn a_literal_reader_needs_no_reference_count_calls() {
+    let ir = entry_ir(
+        "module M\npublic has : String -> Bool\nlet has text = String.contains text \"needle\"\n",
+        "has",
+    );
+    assert_eq!(call_count(&ir), 1, "only the borrowed text search remains:\n{ir}");
+}
+
+#[test]
+fn concurrent_literal_readers_need_no_reference_count_calls() {
+    let ir = function_ir_options(
+        "M.fai",
+        "module M\npublic has : String -> Bool\nlet has text = String.contains text \"needle\"\n",
+        "has",
+        fai_db::SourceOrigin::User,
+        false,
+        true,
+    )
+    .remove(0);
+    assert_eq!(call_count(&ir), 1, "permanent literals need no concurrent drop:\n{ir}");
+}
+
+#[test]
+fn merging_literals_with_owned_text_keeps_the_dynamic_release() {
+    assert_eq!(
+        run(
+            "module Main\nlet has text suffix =\n  let needle = if text = \"literal\" then \"literal\" else suffix ++ \"!\"\n  String.contains text needle\npublic main : Runtime -> Unit / { Console }\nlet main r = r.console.writeLine (if has \"literal\" \"ignored\" && has \"dynamic!\" \"dynamic\" then \"ok\" else \"wrong\")\n"
+        ),
+        (0, "ok\n".into())
+    );
+}
+
+#[test]
 fn byte_reads_use_unsigned_native_loads_without_reference_counts() {
     let ir = entry_ir(
         "module M\npublic at : Int -> Bytes -> Int\nlet at i bytes = Bytes.unsafeGet i bytes + Bytes.unsafeGet (i + 1) bytes\n",

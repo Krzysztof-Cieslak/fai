@@ -1004,6 +1004,7 @@ fn build_fn<M: Module>(
             f64_locals: FxHashSet::default(),
             int_locals: FxHashSet::default(),
             raw_int_values: FxHashSet::default(),
+            immortal_values: FxHashSet::default(),
             bool_predicates: FxHashMap::default(),
             tag_sources: FxHashMap::default(),
             tag_tests: FxHashMap::default(),
@@ -1435,6 +1436,9 @@ fn declare_descriptor_in_data<M: Module>(
 
 /// Per-function translation state.
 struct Translator<'a, M: Module> {
+    /// SSA values emitted as permanent literals or capture-free function cells.
+    /// Unknown merges and loop parameters retain ordinary ownership operations.
+    immortal_values: FxHashSet<Value>,
     module: &'a mut M,
     builder: FunctionBuilder<'a>,
     namer: &'a dyn Fn(DefId) -> String,
@@ -2264,12 +2268,18 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn call1(&mut self, name: &'static str, a: Value) -> Value {
+        if name == "fai_dup" && self.immortal_values.contains(&a) {
+            return a;
+        }
         let f = self.runtime(name, 1, true);
         let call = self.builder.ins().call(f, &[a]);
         self.builder.inst_results(call)[0]
     }
 
     fn call_drop(&mut self, value: Value) {
+        if self.immortal_values.contains(&value) {
+            return;
+        }
         let f = self.runtime("fai_drop", 1, false);
         self.builder.ins().call(f, &[value]);
     }
@@ -2484,6 +2494,9 @@ impl<M: Module> Translator<'_, M> {
     /// local dup and to dup a value with no backing local — an element read from an
     /// array slot. Leaves the builder in the continuation block.
     fn emit_rc_incr_value(&mut self, cell: Value, tag_check: bool) {
+        if self.immortal_values.contains(&cell) {
+            return;
+        }
         self.unique_float_cells.remove(&cell);
         if !tag_check {
             self.increment_boxed_rc(cell);
@@ -2554,6 +2567,9 @@ impl<M: Module> Translator<'_, M> {
         special: bool,
         dead: impl FnOnce(&mut Self, Value),
     ) {
+        if self.immortal_values.contains(&cell) {
+            return;
+        }
         let cont_b = self.builder.create_block();
         let dead_b = self.builder.create_block();
 
@@ -3682,8 +3698,8 @@ impl<M: Module> Translator<'_, M> {
             .copy_from_slice(&(bytes.len() as u64).to_le_bytes());
         data[rt::STRING_BYTES_OFFSET..].copy_from_slice(bytes);
 
-        // Writable: although immortal, `fai_drop` still decrements the reference
-        // count in place, so the object must live in writable memory.
+        // Retain the ordinary data section and relocatable descriptor layout.
+        // Immortal reference counts are never changed by runtime ownership ops.
         let data_id =
             self.module.declare_data(&name, Linkage::Local, true, false).expect("declare string");
         let mut desc = DataDescription::new();
@@ -3696,7 +3712,9 @@ impl<M: Module> Translator<'_, M> {
 
         let ptr = self.ptr();
         let gv = self.module.declare_data_in_func(data_id, self.builder.func);
-        self.builder.ins().symbol_value(ptr, gv)
+        let value = self.builder.ins().symbol_value(ptr, gv);
+        self.immortal_values.insert(value);
+        value
     }
 
     /// A reference to a definition as a value: the static closure for a function,
@@ -3709,6 +3727,7 @@ impl<M: Module> Translator<'_, M> {
         let ptr = self.ptr();
         let gv = self.module.declare_data_in_func(data_id, self.builder.func);
         let closure = self.builder.ins().symbol_value(ptr, gv);
+        self.immortal_values.insert(closure);
         if (self.arity_of)(def) == 0 {
             // Force the value binding: apply the closure to zero arguments.
             let null = self.builder.ins().iconst(types::I64, 0);
@@ -7397,7 +7416,9 @@ impl<M: Module> Translator<'_, M> {
         let data = self.lambda_closures[func.index()].expect("non-capturing lambda static closure");
         let ptr = self.ptr();
         let gv = self.module.declare_data_in_func(data, self.builder.func);
-        self.builder.ins().symbol_value(ptr, gv)
+        let value = self.builder.ins().symbol_value(ptr, gv);
+        self.immortal_values.insert(value);
+        value
     }
 
     /// A capturing lambda that provably does not escape its creating activation:
