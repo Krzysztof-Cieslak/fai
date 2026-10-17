@@ -752,9 +752,9 @@ pub enum Prim {
     BytesFromList,
     /// Explode `Bytes` to a `List Int` (one element per byte, 0–255).
     BytesToList,
-    /// Reinterpret a `String`'s UTF-8 bytes as `Bytes` (a fresh copy).
+    /// Reinterpret a String's UTF-8 bytes, transferring a unique inline buffer.
     BytesFromString,
-    /// Reinterpret `Bytes` as a `String` (a fresh copy); the caller guarantees the
+    /// Reinterpret Bytes as a String, transferring a unique buffer; the caller guarantees the
     /// bytes are valid UTF-8 (see [`Prim::BytesIsUtf8`]).
     BytesToString,
     /// Whether a `Bytes` value is valid UTF-8.

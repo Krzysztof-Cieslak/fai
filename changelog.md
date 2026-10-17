@@ -7,6 +7,8 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Transfer uniquely owned inline buffers between String and Bytes without
+  copying, while preserving UTF-8 validation, substring views and shared aliases.
 - Compile byte lengths and indexed reads to native loads, including concurrent
   code, while preserving bounds faults and full-width integer arguments.
 - Borrow byte buffers for length, indexing and UTF-8 validation, avoiding

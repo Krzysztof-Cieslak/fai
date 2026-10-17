@@ -1708,6 +1708,8 @@ can forward that borrowing, while builders and slices keep ownership for reuse.
 Byte length and indexed reads use native loads in both ordinary and concurrent
 code. Indexed reads preserve bounds checks, with raw integers inside native
 functions and normal boxing at generic or first-class boundaries.
+Conversions between String and Bytes can transfer uniquely owned inline storage.
+Shared values and substring views copy; UTF-8 validation remains required for text.
 
 A contiguous buffer of raw bytes, **distinct from the UTF-8 `String`** (the two
 never compare equal). Its elements are bytes read and written as `Int`s (0–255).

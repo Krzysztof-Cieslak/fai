@@ -1933,6 +1933,9 @@ and slice operations keep owned arguments so they can transfer or reuse storage.
 Byte lengths and element reads compile to native loads with raw integer indices
 and results, including in concurrent programs. Bounds failures keep the runtime
 byte-index diagnostic; uniform and first-class boundaries retain normal boxing.
+String/Bytes conversion transfers a unique inline buffer by changing its kind.
+Shared values and substring views copy; byte-to-text conversion still validates
+UTF-8 and records the resulting String's ASCII property.
 Buffered HTTP messages render their computed Content-Length directly after the
 other fields, avoiding a temporary header collection while keeping validation.
 Request framing, expectation and connection values are collected during the

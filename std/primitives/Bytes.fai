@@ -62,13 +62,15 @@ let toList b = Prim.bytesToList b
 example: toList (fromList [1, 2, 3]) = [1, 2, 3]
 example: toList empty = []
 
-/// The UTF-8 bytes of `s` as a `Bytes` buffer.
+/// The UTF-8 bytes of `s` as a `Bytes` buffer. A unique inline string transfers
+/// its storage; shared strings and substring views are copied.
 public fromString : String -> Bytes
 let fromString s = Prim.bytesFromString s
 example: toList (fromString "AB") = [65, 66]
 example: length (fromString "") = 0
 
 /// Decode `b` as a UTF-8 `String`, or `None` when its bytes are not valid UTF-8.
+/// A unique buffer transfers its storage after validation; shared buffers copy.
 public toString : Bytes -> Option String
 let toString b = if Prim.bytesIsUtf8 b then Some (Prim.bytesToString b) else None
 example: toString (fromString "hi") = Some "hi"
