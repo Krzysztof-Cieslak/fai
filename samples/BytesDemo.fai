@@ -4,6 +4,7 @@ module BytesDemo
 example: Int.fromString "18446744073709551617" = Some 1
 example: String.splitOnce "=" "key=one=two" = Some ("key", "one=two")
 
+// Empty byte buffers share storage while preserving immutable value semantics.
 // `Bytes` is an immutable contiguous binary buffer, distinct from the UTF-8
 // `String`. Its elements are raw bytes read and written as `Int`s (0–255); its
 // operations are reached qualified, e.g. `Bytes.fromList`. `Bytes` is the payload

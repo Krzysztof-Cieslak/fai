@@ -1702,6 +1702,7 @@ unchanged.
 Concatenation checks the complete allocation size. It appends into a uniquely
 owned left buffer, growing geometrically when full, and copies shared buffers.
 An empty operand returns the other value. Inputs remain immutable values.
+Empty buffers share immortal storage. Appending and converting preserve aliases.
 `concatMany` collects ordered chunks into one checked final allocation; a sole
 nonempty chunk can transfer directly without a copy.
 `slice` transfers the input for a clamped full-width range and copies partial

@@ -5272,6 +5272,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     matches at the start. HTTP/URL helpers use it for nonempty delimiters.
     `Int.fromString` scans ASCII bytes, preserving optional-minus syntax and
     wrapping arithmetic without per-digit substrings or string comparisons.
+  - Unchanged text transforms return an owned reference to their input. ASCII
+    lowercase output and decimal integer formatting avoid native temporary
+    Strings. Empty Bytes share immortal storage, and native drop plans retain
+    the immortal-state guard for byte buffers.
   - Buffered Content-Length request bodies read at most 64 KiB per receive, bounded
     by their remaining length. This reduces large-body allocation/syscall work
     without retaining a per-connection buffer or enlarging streaming response reads.

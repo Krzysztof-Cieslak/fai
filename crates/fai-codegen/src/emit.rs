@@ -8246,11 +8246,18 @@ fn is_immediate_ty(ty: &Ty) -> bool {
     matches!(ty, Ty::Unit | Ty::Con(Con::Bool) | Ty::Con(Con::Char))
 }
 
-/// Only literal strings and function closures have immortal heap cells. Data,
+/// Literal strings, empty byte buffers and function closures can be immortal. Data,
 /// arrays, numeric boxes and handles are allocated normally. Unknown types keep
 /// the state guard; niche payloads are handled separately by the caller.
 fn may_be_immortal(ty: &Ty) -> bool {
-    matches!(ty, Ty::Con(Con::String) | Ty::Arrow(..) | Ty::Var(_) | Ty::Error | Ty::EffectArg(_))
+    matches!(
+        ty,
+        Ty::Con(Con::String | Con::Bytes)
+            | Ty::Arrow(..)
+            | Ty::Var(_)
+            | Ty::Error
+            | Ty::EffectArg(_)
+    )
 }
 
 /// Lists have one nonnullary shape: two uniform cons fields, even for Floats.
