@@ -1781,7 +1781,7 @@ let readRequestSized t buf remaining chunks =
   if remaining = 0 then
     Ok (List.reverse chunks, buf)
   else if Bytes.isEmpty buf then
-    match t.recv (minInt remaining 16384) with
+    match t.recv (minInt remaining 65536) with
     | Err e -> Err e
     | Ok got ->
       if Bytes.isEmpty got then

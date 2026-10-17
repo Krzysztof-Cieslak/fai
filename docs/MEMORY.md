@@ -5267,6 +5267,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   - String/Bytes conversion transfers unique inline storage and copies shared
     values or substring views. Byte-to-text validation remains explicit, and a
     transferred String receives the ASCII descriptor only when its bytes qualify.
+  - Buffered Content-Length request bodies read at most 64 KiB per receive, bounded
+    by their remaining length. This reduces large-body allocation/syscall work
+    without retaining a per-connection buffer or enlarging streaming response reads.
   - A full-range `Bytes.slice` transfers its input after clamping both bounds.
     Partial ranges copy; boxed indices are released on both paths, and retained
     aliases keep their contents through subsequent concatenation.

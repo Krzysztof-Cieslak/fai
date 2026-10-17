@@ -9,6 +9,8 @@
 ### Changed
 - Transfer uniquely owned inline buffers between String and Bytes without
   copying, while preserving UTF-8 validation, substring views and shared aliases.
+- Read buffered HTTP request bodies in bounded 64 KiB batches, reducing receive
+  allocations for large payloads without changing streaming response chunk sizes.
 - Compile byte lengths and indexed reads to native loads, including concurrent
   code, while preserving bounds faults and full-width integer arguments.
 - Borrow byte buffers for length, indexing and UTF-8 validation, avoiding
