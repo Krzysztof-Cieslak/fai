@@ -12,6 +12,8 @@
   avoiding full split lists and reconstructed suffixes.
 - Reuse unchanged lowercase/trimmed/split strings and one immortal empty Bytes
   buffer. Integer formatting writes directly from bounded stack storage.
+- Eliminate reference-count operations on proven permanent String literals and
+  capture-free closures, including in concurrent code.
 - Transfer uniquely owned inline buffers between String and Bytes without
   copying, while preserving UTF-8 validation, substring views and shared aliases.
 - Read buffered HTTP request bodies in bounded 64 KiB batches, reducing receive
