@@ -311,6 +311,24 @@ renderHead : String -> Headers -> Bytes
 let renderHead startLine headers =
   Bytes.fromString (startLine ++ String.join "" (List.map renderField (Headers.toList headers)) ++ "\r\n")
 
+// Render the computed length at the end, matching Headers.set's wire order,
+// without constructing a replacement collection solely for serialization.
+sizedFieldLines : String -> List (String * String) -> Int -> List String -> List String
+let sizedFieldLines lower fields length reversed =
+  match fields with
+  | [] -> List.reverse (("Content-Length: " ++ Int.toString length ++ "\r\n") :: reversed)
+  | field :: rest ->
+    match field with
+    | (name, _) ->
+      if String.toLower name = lower then
+        sizedFieldLines lower rest length reversed
+      else
+        sizedFieldLines lower rest length (renderField field :: reversed)
+
+renderSizedHead : String -> Headers -> Int -> Bytes
+let renderSizedHead startLine headers length =
+  Bytes.fromString (startLine ++ String.join "" (sizedFieldLines "content-length" (Headers.toList headers) length []) ++ "\r\n")
+
 validField : (String * String) -> Bool
 let validField field =
   match field with
@@ -394,8 +412,7 @@ let sendValidMessage closeConn t startLine headers body =
     match bodyBytes body with
     | Err e -> Err e
     | Ok bytes ->
-      let hs = Headers.set "Content-Length" (Int.toString (Bytes.length bytes)) framed
-      t.send (Bytes.concat (renderHead startLine hs) bytes)
+      t.send (Bytes.concat (renderSizedHead startLine framed (Bytes.length bytes)) bytes)
 
 // Add a Host header from the URL if the caller supplied none.
 ensureHost : Headers -> Url -> Headers

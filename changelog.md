@@ -9,6 +9,8 @@
 ### Changed
 - Let repository documentation checks accept package Unreleased entries during
   development; prepared release candidates still require promoted release notes.
+- Render computed HTTP Content-Length fields directly without constructing a
+  temporary replacement header collection, preserving validation and wire order.
 - Concatenate Bytes directly into one final buffer with checked allocation size,
   avoiding an intermediate native vector and an extra full-payload copy.
 - Parse HTTP request fields in one validation/whitespace scan, materializing the

@@ -1983,7 +1983,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    whitespace before sending any bytes. HTTP header scans carry byte lengths
    and use fixed ASCII token predicates without temporary membership lists.
    Request fields are validated and trimmed in one byte scan, preserving UTF-8,
-   duplicate order, and first-error precedence. Server:
+   duplicate order, and first-error precedence.
+   Buffered sends render computed Content-Length directly, preserving validation
+   and field order without a temporary replacement header collection. Server:
   `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection, serving ordered requests until either peer sends `Connection: close`.

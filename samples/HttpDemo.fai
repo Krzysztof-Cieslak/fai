@@ -15,6 +15,7 @@ module HttpDemo
 // HTTP/1.1 servers reuse connections and process pipelined requests in order.
 // Header validation preserves HTTP's ASCII rules without per-byte temporary lists.
 // Request field scanning preserves Unicode values and duplicate field order.
+// Buffered sends render their computed byte length after the other header fields.
 // Either peer can send Connection: close; cancellation also ends idle reads.
 // HEAD, 204, and 304 responses are bodyless; a server skips their body stream.
 // Informational responses are skipped before the client's final response.
