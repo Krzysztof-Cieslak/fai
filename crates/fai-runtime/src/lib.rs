@@ -358,6 +358,27 @@ pub static FAI_STRING_SLICE_DESC: Descriptor = descriptor(KIND_STRING_SLICE, "St
 #[unsafe(no_mangle)]
 pub static FAI_BYTES_DESC: Descriptor = descriptor(KIND_BYTES, "Bytes");
 
+#[repr(C)]
+struct EmptyBytes {
+    header: ObjHeader,
+    length: u64,
+}
+
+struct EmptyBytesCell(std::cell::UnsafeCell<EmptyBytes>);
+
+// SAFETY: the immutable empty buffer has an immortal count. Count inspections are
+// atomic, reference-count operations do not write, and mutation requires rc = 1.
+unsafe impl Sync for EmptyBytesCell {}
+
+static EMPTY_BYTES: EmptyBytesCell = EmptyBytesCell(std::cell::UnsafeCell::new(EmptyBytes {
+    header: ObjHeader {
+        rc: IMMORTAL_RC,
+        descriptor: &raw const FAI_BYTES_DESC,
+        size: STRING_BYTES_OFFSET as u64,
+    },
+    length: 0,
+}));
+
 /// Descriptor for a network socket handle (its slot owns a raw `Arc` to reactor
 /// socket state, released by `free_obj`).
 #[unsafe(no_mangle)]
@@ -3352,6 +3373,9 @@ unsafe fn make_string_slice(base: Value, byte_off: usize, byte_len: usize) -> Va
 unsafe fn make_piece(base: Value, byte_off: usize, byte_len: usize) -> Value {
     // SAFETY: `base` is string-like; the range is valid.
     unsafe {
+        if byte_off == 0 && byte_len == string_bytes(base).len() {
+            return fai_dup(base);
+        }
         let inline_base_len = if is_string_slice(base) {
             read_u64(as_obj(read_i64(as_obj(base), SLICE_BASE_OFFSET)), STRING_LEN_OFFSET) as usize
         } else {
@@ -3431,7 +3455,23 @@ pub extern "C" fn fai_string_drop(n: Value, s: Value) -> Value {
 /// Renders an `Int` as a `String` (operand consumed).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_int_to_string(n: Value) -> Value {
-    let result = make_string_with_ascii(unbox_int(n).to_string().as_bytes(), true);
+    let integer = unbox_int(n);
+    let mut magnitude = integer.unsigned_abs();
+    let mut buffer = [0u8; 20];
+    let mut start = buffer.len();
+    loop {
+        start -= 1;
+        buffer[start] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if integer < 0 {
+        start -= 1;
+        buffer[start] = b'-';
+    }
+    let result = make_string_with_ascii(&buffer[start..], true);
     fai_drop(n);
     result
 }
@@ -3492,6 +3532,20 @@ pub extern "C" fn fai_to_lower(s: Value) -> Value {
 /// Lowercases a `String`, *borrowing* the operand (the caller releases it).
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_to_lower_borrowed(s: Value) -> Value {
+    // SAFETY: the borrowed String and its backing storage remain live.
+    let bytes = unsafe { string_bytes(s) };
+    if bytes.is_ascii() {
+        if !bytes.iter().any(u8::is_ascii_uppercase) {
+            return fai_dup(s);
+        }
+        let output = alloc_string_with_ascii(bytes.len(), bytes.len(), true);
+        for (index, byte) in bytes.iter().enumerate() {
+            // SAFETY: ASCII case conversion preserves length, and every output
+            // byte is initialized before the resulting String is published.
+            unsafe { output.add(STRING_BYTES_OFFSET + index).write(byte.to_ascii_lowercase()) };
+        }
+        return from_obj(output);
+    }
     // SAFETY: `s` is a boxed `String`.
     let out = unsafe { string_str(s) }.to_lowercase();
     make_string(out.as_bytes())
@@ -3509,8 +3563,11 @@ pub extern "C" fn fai_trim(s: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_trim_borrowed(s: Value) -> Value {
     // SAFETY: `s` is a boxed `String`.
-    let out = unsafe { string_str(s) }.trim().to_owned();
-    make_string(out.as_bytes())
+    let source = unsafe { string_str(s) };
+    let trimmed = source.trim();
+    let offset = trimmed.as_ptr() as usize - source.as_ptr() as usize;
+    // SAFETY: trim returns a scalar-boundary substring of this live String.
+    unsafe { make_piece(s, offset, trimmed.len()) }
 }
 
 /// Whether `s` contains `needle` as a substring (both consumed) — a `Bool`.
@@ -3830,6 +3887,9 @@ pub extern "C" fn fai_list_reverse_prefix(count: Value, mut list: Value) -> Valu
 
 /// Allocates a tight `Bytes` object from `bytes` (rc = 1).
 fn make_bytes(bytes: &[u8]) -> Value {
+    if bytes.is_empty() {
+        return EMPTY_BYTES.0.get() as usize as Value;
+    }
     let len = bytes.len();
     let size = checked_buffer_size(STRING_BYTES_OFFSET, len, 1)
         .unwrap_or_else(|| fai_allocation_size_panic());
@@ -5498,6 +5558,8 @@ mod array_repeat_tests;
 mod array_tests;
 #[cfg(test)]
 mod ascii_strings;
+#[cfg(test)]
+mod buffer_noop_tests;
 #[cfg(test)]
 mod bytes_concat_many_tests;
 #[cfg(test)]

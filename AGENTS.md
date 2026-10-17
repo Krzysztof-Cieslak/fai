@@ -438,6 +438,10 @@ including negative and oversized arguments that are clamped to the string.
 or None; an empty separator splits at the start. HTTP and URL parsing use this
 without building full split lists. `Int.fromString` scans ASCII bytes directly,
 retaining optional-minus syntax and wrapping decimal overflow.
+Unchanged ASCII lowercasing, trimming and full-width split pieces reuse their
+input String. Unicode casing and whitespace rules remain intact. Empty Bytes
+share an immortal buffer; appending preserves its empty value. Decimal integer
+formatting uses bounded stack scratch before constructing its final String.
 
 ```fai
 module Hello
