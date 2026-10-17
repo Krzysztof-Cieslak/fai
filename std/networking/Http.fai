@@ -1821,7 +1821,9 @@ let readRequestSized t buf remaining chunks =
   if remaining = 0 then
     Ok (List.reverse chunks, buf)
   else if Bytes.isEmpty buf then
-    match t.recv (minInt remaining 65536) with
+    // Keep transient receive buffers below the page-mapped allocation class.
+    // The final collected body still uses its ordinary checked allocation.
+    match t.recv (minInt remaining 12288) with
     | Err e -> Err e
     | Ok got ->
       if Bytes.isEmpty got then
