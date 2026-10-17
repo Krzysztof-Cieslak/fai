@@ -16,7 +16,7 @@ packaging story.
 ```
 packages/web/
   src/Web.fai        # the handler core: combinators, responses, request access, serve
-  src/Router.fai     # the route tree: route / subRoute / verb groupers / router
+  src/Router.fai     # compiled routing: route / subRoute / verb groupers / router
   examples/Main.fai  # a runnable server
   examples/JsonWebExample.fai  # typed JSON request/response server
   test/WebSpec.fai   # named behavioural tests
@@ -209,8 +209,10 @@ handler. Requests check those methods and invoke candidates directly, without
 constructing temporary handler lists. Static matches reuse an already-empty
 parameter context; successful matches still replace inherited route parameters.
 
-Matching walks the path one segment at a time (static segments first, then a
-capture), so lookup cost is proportional to the path length.
+Startup compilation produces contiguous node and edge arrays and an exact-path
+index. Canonical static paths reach their terminal node directly. Other paths
+walk segments through the compiled nodes, binary-searching sorted static edges
+before trying a capture. Repeated/trailing slash behavior remains the same.
 A static prefix without a terminal route is a path miss and allows a capture
 alternative: `/user/new/edit` does not hide `/user/{id}` for `/user/new`.
 A real static endpoint wins path selection; if its method gates or handlers all
