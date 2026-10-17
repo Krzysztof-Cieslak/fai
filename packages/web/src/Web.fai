@@ -243,11 +243,34 @@ let replaceHeader headers field =
 
 // A responder owns its new body's type/length and explicitly supplied headers.
 // Other middleware headers, including repeated Set-Cookie fields, survive.
+keepResponseHeader : (String * String) -> Bool
+let keepResponseHeader field =
+  match field with
+  | (name, _) ->
+    let lower = String.toLower name
+    let length =
+      // Check the converted spelling, preserving Unicode case-mapping semantics.
+      String.length lower
+    if length = 12 then
+      lower <> "content-type"
+    else if length = 14 then lower <> "content-length" else true
+
+atMostOne : List 'a -> Bool
+let atMostOne fields =
+  match fields with
+  | [] -> true
+  | [_] -> true
+  | _ -> false
+
 finishResponse : Http.Response 'e -> HttpHandler 'e
 let finishResponse response ctx =
-  let accumulated =
-    Headers.remove "Content-Length" (Headers.remove "Content-Type" ctx.response.headers)
-  let headers = List.foldl replaceHeader accumulated (Headers.toList response.headers)
+  let kept = List.filter keepResponseHeader (Headers.toList ctx.response.headers)
+  let supplied = Headers.toList response.headers
+  let headers =
+    if List.isEmpty kept && atMostOne supplied then
+      response.headers
+    else
+      List.foldl replaceHeader (Headers.fromList kept) supplied
   Halt { ctx with response = { response with headers = headers } }
 
 /// Respond with `status` and a plain-text body, ending the pipeline.
