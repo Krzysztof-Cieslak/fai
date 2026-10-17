@@ -30,8 +30,9 @@
   to cover the larger capability dictionary.
 - Transfer uniquely owned inline buffers between String and Bytes without
   copying, while preserving UTF-8 validation, substring views and shared aliases.
-- Read buffered HTTP request bodies in bounded 64 KiB batches, reducing receive
-  allocations for large payloads without changing streaming response chunk sizes.
+- Read buffered HTTP request bodies in bounded 12 KiB batches, reducing transient
+  page mappings while retaining normal large-body reclamation and streaming
+  response chunk sizes.
 - Add `Bytes.concatMany` for one-allocation chunk collection and use it when
   buffering HTTP bodies. Buffered sends join the head and body chunks once,
   preserving stream failures, checked lengths and chunk order.
