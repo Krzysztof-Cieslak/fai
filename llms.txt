@@ -1277,6 +1277,8 @@ start byte, capture flag, scalar-base byte, maximum input bytes. `names` reports
 the capture schema. `byteIndex` checks a scalar index and returns its byte offset
 plus input byte length; `slice` copies a checked UTF-8 range; `escape` quotes
 pattern metacharacters. Ordinary applications use the typed package wrappers.
+Checked slicing borrows its source internally, so repeated extractions avoid
+temporary reference-count traffic while every result remains an independent copy.
 
 ### FileSystem and File — native file I/O
 

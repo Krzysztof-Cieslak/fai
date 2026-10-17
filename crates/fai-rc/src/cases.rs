@@ -77,6 +77,30 @@ fn byte_reader_loop_borrows_its_unchanging_buffer() {
     assert_eq!(crate::tests::borrow_sig(source, "sum"), vec![false, true, false]);
 }
 
+#[test]
+fn checked_text_slices_borrow_the_source() {
+    let source = "module M\nlet cut text start finish = RegexEngine.slice text start finish\n";
+    sound(source, "cut");
+    assert!(crate::tests::borrow_sig(source, "cut")[0]);
+}
+
+#[test]
+fn repeated_checked_text_slices_do_not_duplicate_the_source() {
+    let source =
+        "module M\nlet cut text = (RegexEngine.slice text 0 1, RegexEngine.slice text 1 2)\n";
+    sound(source, "cut");
+    assert_eq!(crate::tests::borrow_sig(source, "cut"), vec![true]);
+    let output = rc_checked(source, "cut");
+    assert!(!output.contains("(dup %0)"), "{output}");
+}
+
+#[test]
+fn partially_applied_checked_text_slices_retain_the_source() {
+    let source = "module M\nlet cut text = RegexEngine.slice text 0\n";
+    sound(source, "cut");
+    assert_eq!(crate::tests::borrow_sig(source, "cut"), vec![false]);
+}
+
 /// Asserts `name` is sound and updates a record in place (`recordUpdate`).
 #[track_caller]
 fn updates_in_place(src: &str, name: &str) {

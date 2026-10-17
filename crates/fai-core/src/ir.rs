@@ -878,6 +878,7 @@ impl Prim {
                 | Prim::Trim
                 | Prim::StringSplit
                 | Prim::StringJoin
+                | Prim::RegexSlice
                 | Prim::BytesLength
                 | Prim::BytesGet
                 | Prim::BytesIsUtf8
@@ -916,6 +917,7 @@ impl Prim {
             Prim::DataPeek => Some("fai_data_peek"),
             Prim::ArrayTake => Some("fai_array_take"),
             Prim::StringJoin => Some("fai_string_join_borrowed"),
+            Prim::RegexSlice => Some("fai_regex_slice_borrowed"),
             Prim::ArraySplit => Some("fai_array_split_borrowed"),
             Prim::ArrayJoin => Some("fai_array_join_borrowed"),
             _ => None,
