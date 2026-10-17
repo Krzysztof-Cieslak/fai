@@ -1,6 +1,8 @@
 //! The network I/O reactor: readiness-driven non-blocking sockets over [`mio`].
 //!
-//! A single **reactor thread** runs `mio::Poll`, translating OS readiness events
+//! A dedicated reactor thread runs `mio::Poll` for multi-worker execution; a
+//! single scheduler worker drives the same poll while idle, avoiding a thread
+//! handoff per readiness event. Both paths translate OS readiness events
 //! (epoll/kqueue/IOCP) into task wakeups. Worker threads register their own
 //! sockets (the `Registry` is `Send + Sync`) and perform the actual read/write
 //! syscalls themselves; the reactor only says "this socket is now readable /
@@ -18,8 +20,7 @@
 //! is observed. The readiness lock spans the syscall and waiter registration, so
 //! another operation cannot consume that edge in between them.
 //!
-//! The reactor starts lazily on the first socket registration, so a program that
-//! does no networking never spawns it.
+//! The reactor starts lazily on the first socket registration or timer.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -97,7 +98,7 @@ struct Timers {
     next_seq: u64,
 }
 
-/// The global reactor: a `mio::Poll` on its own thread plus a cloned `Registry`
+/// The global reactor: a poll driver plus a cloned `Registry`
 /// (used by workers to register their sockets), a `Waker` (to interrupt a poll when
 /// a sooner timer arrives), the token→source table, and the pending timers.
 struct Reactor {
@@ -106,29 +107,62 @@ struct Reactor {
     sources: Mutex<HashMap<usize, Arc<IoSource>>>,
     next_token: AtomicUsize,
     timers: Mutex<Timers>,
+    worker_poll: Option<Mutex<WorkerPoll>>,
+}
+
+struct WorkerPoll {
+    poll: Poll,
+    events: Events,
 }
 
 static REACTOR: OnceLock<Reactor> = OnceLock::new();
 
-/// Returns the global reactor, starting its thread on first use (the first socket
-/// registration *or* the first timer, so a program that only sleeps still gets it).
+/// Returns the global reactor, selecting its driver on first use. Registration
+/// outside a single-worker scheduler retains the dedicated-thread driver.
 fn reactor() -> &'static Reactor {
     REACTOR.get_or_init(|| {
         let poll = Poll::new().expect("create the network reactor poll");
         let registry = poll.registry().try_clone().expect("clone the reactor registry");
         let waker = Waker::new(poll.registry(), WAKER_TOKEN).expect("create the reactor waker");
-        std::thread::Builder::new()
-            .name("fai-reactor".to_owned())
-            .spawn(move || reactor_loop(poll))
-            .expect("spawn the network reactor thread");
+        let worker_poll = if scheduler::has_single_worker() {
+            Some(Mutex::new(WorkerPoll { poll, events: Events::with_capacity(256) }))
+        } else {
+            std::thread::Builder::new()
+                .name("fai-reactor".to_owned())
+                .spawn(move || reactor_loop(poll))
+                .expect("spawn the network reactor thread");
+            None
+        };
         Reactor {
             registry,
             waker,
             sources: Mutex::new(HashMap::new()),
             next_token: AtomicUsize::new(1),
             timers: Mutex::new(Timers { heap: BinaryHeap::new(), next_seq: 0 }),
+            worker_poll,
         }
     })
+}
+
+/// Interrupt a sole worker's poll when another thread queues runnable work.
+pub(crate) fn wake_worker_poll() {
+    if let Some(reactor) = REACTOR.get()
+        && reactor.worker_poll.is_some()
+    {
+        let _ = reactor.waker.wake();
+    }
+}
+
+/// A single worker can poll directly instead of exchanging OS-thread wakeups
+/// with a dedicated reactor. It calls this only after exhausting runnable work.
+pub(crate) fn poll_on_idle() -> bool {
+    let Some(reactor) = REACTOR.get() else { return false };
+    let Some(driver) = &reactor.worker_poll else { return false };
+    let mut driver = driver.lock().expect("worker reactor poll");
+    let WorkerPoll { poll, events } = &mut *driver;
+    let _ = poll.poll(events, next_timeout());
+    dispatch_events(events);
+    true
 }
 
 /// The duration until the earliest pending timer's deadline (zero if one is already
@@ -235,21 +269,25 @@ fn reactor_loop(mut poll: Poll) -> ! {
         {
             // Not actionable here; loop to fire any due timers and poll again.
         }
-        fire_expired_timers();
-        for event in events.iter() {
-            let token = event.token().0;
-            if token == WAKER_TOKEN.0 {
-                // A wake to recompute the poll timeout (a new/sooner timer); no source.
-                continue;
-            }
-            let source = reactor().sources.lock().expect("reactor sources").get(&token).cloned();
-            let Some(source) = source else { continue };
-            if event.is_readable() || event.is_read_closed() || event.is_error() {
-                wake_direction(&source.read);
-            }
-            if event.is_writable() || event.is_write_closed() || event.is_error() {
-                wake_direction(&source.write);
-            }
+        dispatch_events(&events);
+    }
+}
+
+fn dispatch_events(events: &Events) {
+    fire_expired_timers();
+    for event in events.iter() {
+        let token = event.token().0;
+        if token == WAKER_TOKEN.0 {
+            // A wake to recompute the poll timeout (a new/sooner timer); no source.
+            continue;
+        }
+        let source = reactor().sources.lock().expect("reactor sources").get(&token).cloned();
+        let Some(source) = source else { continue };
+        if event.is_readable() || event.is_read_closed() || event.is_error() {
+            wake_direction(&source.read);
+        }
+        if event.is_writable() || event.is_write_closed() || event.is_error() {
+            wake_direction(&source.write);
         }
     }
 }
@@ -949,6 +987,90 @@ mod tests {
 
     use super::*;
     use crate::scheduler::block_on;
+
+    #[track_caller]
+    fn run_worker_driver_case(case: &str) {
+        use wait_timeout::ChildExt;
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "reactor::tests::worker_driver_child", "--nocapture"])
+            .env("FAI_WORKERS", "1")
+            .env("FAI_WORKER_DRIVER_CASE", case)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let status = child.wait_timeout(Duration::from_secs(20)).unwrap();
+        if status.is_none() {
+            child.kill().unwrap();
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(status.is_some() && output.status.success(), "{case}: {output:?}");
+    }
+
+    #[test]
+    fn sole_worker_drives_network_readiness() {
+        run_worker_driver_case("network");
+    }
+
+    #[test]
+    fn sole_worker_drives_timer_deadlines() {
+        run_worker_driver_case("timer");
+    }
+
+    #[test]
+    fn external_work_wakes_a_polling_worker() {
+        run_worker_driver_case("external");
+    }
+
+    #[test]
+    fn external_cancellation_wakes_a_polling_worker() {
+        run_worker_driver_case("cancel");
+    }
+
+    #[test]
+    fn worker_driver_child() {
+        let Ok(case) = std::env::var("FAI_WORKER_DRIVER_CASE") else { return };
+        block_on(Box::new(|| {
+            assert!(reactor().worker_poll.is_some());
+            imm(0)
+        }));
+        match case.as_str() {
+            "network" => reactor_wakes_a_task_on_connection_and_readability(),
+            "timer" => sleep_until_wakes_after_its_deadline(),
+            "external" => {
+                let result = block_on(Box::new(|| {
+                    let channel = scheduler::channel(1);
+                    let sender = Arc::clone(&channel);
+                    let peer = std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(20));
+                        scheduler::chan_send(&sender, imm(19));
+                    });
+                    let result = scheduler::chan_recv(&channel).unwrap();
+                    peer.join().unwrap();
+                    result
+                }));
+                assert_eq!(of_imm(result), 19);
+            }
+            "cancel" => {
+                let result = block_on(Box::new(|| {
+                    let task = scheduler::spawn(Box::new(|| {
+                        sleep_until(Instant::now() + Duration::from_secs(600));
+                        imm(i64::from(scheduler::is_cancelled()))
+                    }));
+                    let cancelled = Arc::clone(&task);
+                    let peer = std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(20));
+                        scheduler::cancel_handle(&cancelled);
+                    });
+                    let result = scheduler::await_handle(&task);
+                    peer.join().unwrap();
+                    result
+                }));
+                assert_eq!(of_imm(result), 1);
+            }
+            _ => panic!("unknown worker driver case"),
+        }
+    }
 
     #[track_caller]
     fn port_case(value: i64, expected: Result<u16, &'static str>) {

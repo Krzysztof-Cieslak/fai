@@ -5241,6 +5241,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     invalid decimal ports; bracketed host spelling is preserved for rendering.
     HTTP removes IPv6 authority brackets at the socket/TLS handoff, shared by
     one-shot and pooled connections, while retaining them in the Host header.
+  - A single-worker scheduler drives network readiness and timers at its idle
+    point. External scheduling interrupts the poll with its waker. A reactor
+    initialized outside that mode keeps its dedicated thread; socket readiness
+    locks and task ownership rules are unchanged.
   - **Persistent server connections.** HTTP/1.1 servers process requests in wire
     order on one connection task. Fully decoded request chunks do not capture the
     transport; bytes beyond a length-delimited body or chunked trailers are carried
