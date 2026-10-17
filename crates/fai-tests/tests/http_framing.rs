@@ -722,8 +722,8 @@ fn large_chunks_are_yielded_in_bounded_pieces() {
 
 #[test]
 fn buffered_request_reads_bound_the_batch_and_final_remainder() {
-    let first = "x".repeat(12288);
-    let last = "y".repeat(2712);
+    let first = "x".repeat(15360);
+    let last = "y".repeat(4640);
     check(
         &format!(
             r#"let input = testChannel env [Bytes.fromString {first:?}, Bytes.fromString {last:?}]
@@ -732,12 +732,12 @@ let receive n =
   let _ = env.concurrency.send requested n
   testRead env input
 let transport = {{ Transport with close u = (), recv n = receive n, send b = Ok () }}
-let result = readRequestSized transport Bytes.empty 15000 []
+let result = readRequestSized transport Bytes.empty 20000 []
 let _ = env.concurrency.close requested
 let first = env.concurrency.recv requested
 let second = env.concurrency.recv requested
 match result with
-| Ok (parts, leftover) -> List.sum (List.map Bytes.length parts) = 15000 && Bytes.isEmpty leftover && first = Some 12288 && second = Some 2712
+| Ok (parts, leftover) -> List.sum (List.map Bytes.length parts) = 20000 && Bytes.isEmpty leftover && first = Some 15360 && second = Some 4640
 | Err _ -> false"#
         ),
         true,
@@ -747,7 +747,7 @@ match result with
 #[test]
 fn enormous_advertised_request_lengths_do_not_enlarge_the_read_batch() {
     check(
-        r#"let transport = { Transport with close u = (), recv n = if n = 12288 then Ok Bytes.empty else Err "wrong batch", send b = Ok () }
+        r#"let transport = { Transport with close u = (), recv n = if n = 15360 then Ok Bytes.empty else Err "wrong batch", send b = Ok () }
 readRequestSized transport Bytes.empty 9223372036854775807 [] = Err "connection closed before end of body""#,
         false,
     );

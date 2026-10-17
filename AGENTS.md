@@ -1974,7 +1974,7 @@ unsupported or ambiguous framing returns `Err`. Chunked bodies validate data
 CRLFs and consume all trailers through the final empty line before pool reuse.
 Framing lines/trailers are bounded, large chunks are streamed in bounded pieces,
 and buffered surplus travels with the pooled connection.
-Buffered Content-Length request bodies use reads of at most 12 KiB, further
+Buffered Content-Length request bodies use reads of at most 15 KiB, further
 bounded by their remaining length. Transient receive buffers stay below the
 page-mapped allocation class; final large bodies retain normal reclamation.
 No per-connection receive buffer is retained.
