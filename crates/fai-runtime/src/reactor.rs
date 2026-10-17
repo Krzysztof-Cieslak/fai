@@ -753,7 +753,7 @@ pub extern "C" fn fai_net_recv(conn: Value, max: Value) -> Value {
     let result = {
         let obj = net_of(conn);
         match &**obj {
-            NetObject::Conn { sock, src } => recv_loop(sock, src, cap),
+            NetObject::Conn { sock, src } => recv_value(sock, src, cap),
             NetObject::Listener { .. } | NetObject::Udp { .. } => {
                 Err("recv: handle is not a connection".to_owned())
             }
@@ -762,23 +762,58 @@ pub extern "C" fn fai_net_recv(conn: Value, max: Value) -> Value {
     crate::fai_drop(conn);
     crate::fai_drop(max);
     match result {
-        Ok(buf) => ok_result(crate::make_bytes(&buf)),
+        Ok(bytes) => ok_result(bytes),
         Err(e) => err_result(&e),
     }
 }
 
+fn recv_value(
+    sock: &Mutex<TcpStream>,
+    src: &Arc<IoSource>,
+    capacity: usize,
+) -> Result<Value, String> {
+    if capacity <= 256 {
+        recv_stack::<256>(sock, src, capacity)
+    } else if capacity <= 4096 {
+        recv_stack::<4096>(sock, src, capacity)
+    } else {
+        recv_loop(sock, src, capacity).map(|bytes| crate::make_bytes(&bytes))
+    }
+}
+
+// Keep the bounded frame on the small-read path. The coroutine owns this stack
+// across suspension, and only an independent Bytes copy leaves the function.
+#[inline(never)]
+fn recv_stack<const N: usize>(
+    sock: &Mutex<TcpStream>,
+    src: &Arc<IoSource>,
+    capacity: usize,
+) -> Result<Value, String> {
+    debug_assert!(capacity <= N);
+    let mut buffer = [0u8; N];
+    let count = recv_into(sock, src, &mut buffer[..capacity])?;
+    Ok(crate::make_bytes(&buffer[..count]))
+}
+
 fn recv_loop(sock: &Mutex<TcpStream>, src: &Arc<IoSource>, cap: usize) -> Result<Vec<u8>, String> {
-    let mut buf = vec![0u8; cap];
+    let mut buffer = vec![0u8; cap];
+    let count = recv_into(sock, src, &mut buffer)?;
+    buffer.truncate(count);
+    Ok(buffer)
+}
+
+fn recv_into(
+    sock: &Mutex<TcpStream>,
+    src: &Arc<IoSource>,
+    buffer: &mut [u8],
+) -> Result<usize, String> {
     loop {
         if scheduler::is_cancelled() {
             return Err(scheduler::CANCELLED_MESSAGE.to_owned());
         }
-        let res = try_io(&src.read, || sock.lock().expect("connection lock").read(&mut buf));
+        let res = try_io(&src.read, || sock.lock().expect("connection lock").read(buffer));
         match res {
-            Ok(n) => {
-                buf.truncate(n);
-                return Ok(buf);
-            }
+            Ok(n) => return Ok(n),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e.to_string()),
@@ -1391,6 +1426,103 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         stream.set_nonblocking(true).unwrap();
         (TcpStream::from_std(stream), peer)
+    }
+
+    #[track_caller]
+    fn receive_snapshot(capacity: usize) {
+        let _guard = crate::tests::lock();
+        let baseline = crate::live_count();
+        let (mut stream, mut peer) = connected_pair();
+        let source = register(&mut stream).unwrap();
+        block_on(Box::new(move || {
+            let stream = Mutex::new(stream);
+            peer.write_all(b"longer payload").unwrap();
+            let first = recv_value(&stream, &source, capacity).unwrap();
+            peer.write_all(b"ok").unwrap();
+            let second = recv_value(&stream, &source, capacity).unwrap();
+            // SAFETY: both reads returned owned live Bytes values.
+            unsafe {
+                assert_eq!(crate::bytes_bytes(first), b"longer payload");
+                assert_eq!(crate::bytes_bytes(second), b"ok");
+            }
+            crate::fai_drop(first);
+            crate::fai_drop(second);
+            deregister(&source, &mut *stream.lock().unwrap());
+            imm(0)
+        }));
+        assert_eq!(crate::live_count(), baseline);
+    }
+
+    #[test]
+    fn receive_at_small_stack_limit_returns_independent_bytes() {
+        receive_snapshot(256);
+    }
+
+    #[test]
+    fn receive_above_small_stack_limit_returns_independent_bytes() {
+        receive_snapshot(257);
+    }
+
+    #[test]
+    fn receive_at_large_stack_limit_returns_independent_bytes() {
+        receive_snapshot(4096);
+    }
+
+    #[test]
+    fn receive_above_stack_limit_returns_independent_bytes() {
+        receive_snapshot(4097);
+    }
+
+    #[test]
+    fn stack_receive_buffer_survives_suspension() {
+        let _guard = crate::tests::lock();
+        let baseline = crate::live_count();
+        let (mut stream, mut peer) = connected_pair();
+        let source = register(&mut stream).unwrap();
+        let socket = Arc::new(Mutex::new(stream));
+        let task = {
+            let source = Arc::clone(&source);
+            let socket = Arc::clone(&socket);
+            scheduler::spawn(Box::new(move || {
+                let bytes = recv_value(&socket, &source, 4096).unwrap();
+                // SAFETY: the completed read owns this Bytes value.
+                assert_eq!(unsafe { crate::bytes_bytes(bytes) }, b"resumed");
+                crate::fai_drop(bytes);
+                imm(0)
+            }))
+        };
+        wait_for_registrations(&source.read, 1);
+        peer.write_all(b"resumed").unwrap();
+        block_on(Box::new(move || scheduler::await_handle(&task)));
+        deregister(&source, &mut *socket.lock().unwrap());
+        assert_eq!(crate::live_count(), baseline);
+    }
+
+    #[test]
+    fn stack_receive_respects_zero_and_small_read_limits() {
+        let _guard = crate::tests::lock();
+        let baseline = crate::live_count();
+        let (mut stream, mut peer) = connected_pair();
+        let source = register(&mut stream).unwrap();
+        peer.write_all(b"abc").unwrap();
+        block_on(Box::new(move || {
+            let socket = Mutex::new(stream);
+            let empty = recv_value(&socket, &source, 0).unwrap();
+            let first = recv_value(&socket, &source, 1).unwrap();
+            let rest = recv_value(&socket, &source, 2).unwrap();
+            // SAFETY: all three results are live owned Bytes values.
+            unsafe {
+                assert!(crate::bytes_bytes(empty).is_empty());
+                assert_eq!(crate::bytes_bytes(first), b"a");
+                assert_eq!(crate::bytes_bytes(rest), b"bc");
+            }
+            crate::fai_drop(empty);
+            crate::fai_drop(first);
+            crate::fai_drop(rest);
+            deregister(&source, &mut *socket.lock().unwrap());
+            imm(0)
+        }));
+        assert_eq!(crate::live_count(), baseline);
     }
 
     #[test]

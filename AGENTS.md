@@ -2018,6 +2018,8 @@ snapshot, type golden, and/or e2e) in the same change.
 
 Socket I/O attempts hold their direction's readiness lock through a failed
 nonblocking probe and waiter registration, then release it before parking.
+TCP reads up to 4 KiB use bounded coroutine-stack scratch storage. The stack
+remains owned across suspension; only an independent Bytes value is returned.
 When the scheduler has one worker at reactor initialization, that worker polls
 network readiness and timers while idle. Off-thread scheduling wakes the poll;
 multi-worker execution retains the dedicated reactor thread.

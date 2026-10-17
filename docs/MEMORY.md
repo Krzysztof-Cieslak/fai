@@ -5241,6 +5241,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     invalid decimal ports; bracketed host spelling is preserved for rendering.
     HTTP removes IPv6 authority brackets at the socket/TLS handoff, shared by
     one-shot and pooled connections, while retaining them in the Host header.
+  - TCP reads up to 4 KiB use bounded scratch storage in their coroutine frame,
+    with a smaller frame for reads up to 256 bytes. Larger reads keep the heap
+    path; returned Bytes never borrow scratch storage or expose unused bytes.
   - A single-worker scheduler drives network readiness and timers at its idle
     point. External scheduling interrupts the poll with its waker. A reactor
     initialized outside that mode keeps its dedicated thread; socket readiness

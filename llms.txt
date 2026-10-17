@@ -1110,6 +1110,8 @@ The full tour (TCP + UDP) is `samples/NetDemo.fai`.
 A single scheduler worker drives network readiness and timers while idle;
 multi-worker execution uses a dedicated reactor thread. This is transparent to
 the direct-style `Net` and `Clock` APIs, including cancellation.
+Small TCP receives use bounded coroutine-stack scratch buffers and return
+independent Bytes values, including across suspension and concurrent reads.
 Bounded task batches also poll nonblocking, preserving I/O and timer progress
 when other tasks keep the runnable queue nonempty.
 
