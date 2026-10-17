@@ -2008,7 +2008,7 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    duplicate order, and first-error precedence.
    Buffered sends render computed Content-Length directly, preserving validation
    and field order without a temporary replacement header collection.
-   Buffered Content-Length requests use reads of at most 12 KiB,
+   Buffered Content-Length requests use reads of at most 15 KiB,
    bounded by the remaining body length, with no retained per-connection buffer.
    Partial header and framing-line reads resume searching at the prior suffix.
    Request protocol metadata is collected during validation and interpreted only after

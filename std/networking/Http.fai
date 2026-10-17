@@ -1823,7 +1823,7 @@ let readRequestSized t buf remaining chunks =
   else if Bytes.isEmpty buf then
     // Keep transient receive buffers below the page-mapped allocation class.
     // The final collected body still uses its ordinary checked allocation.
-    match t.recv (minInt remaining 12288) with
+    match t.recv (minInt remaining 15360) with
     | Err e -> Err e
     | Ok got ->
       if Bytes.isEmpty got then

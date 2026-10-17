@@ -5292,7 +5292,7 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     lowercase output and decimal integer formatting avoid native temporary
     Strings. Empty Bytes share immortal storage, and native drop plans retain
     the immortal-state guard for byte buffers.
-  - Buffered Content-Length request bodies read at most 12 KiB per receive, bounded
+  - Buffered Content-Length request bodies read at most 15 KiB per receive, bounded
     by their remaining length. Keeping transient buffers below the page-mapped
     allocation class reduces mapping churn while final large bodies retain their
     normal reclamation. No per-connection buffer is retained and streaming response
