@@ -80,45 +80,32 @@ example: floorMod (0 - 1) 7 = 6
 example: floorMod 7 (0 - 3) = 0 - 2
 forall a: floorMod a 1 = 0
 
-// The decimal value of a one-character string, or `None` for a non-digit.
-digitValue : String -> Option Int
-let digitValue ch =
-  match ch with
-  | "0" -> Some 0
-  | "1" -> Some 1
-  | "2" -> Some 2
-  | "3" -> Some 3
-  | "4" -> Some 4
-  | "5" -> Some 5
-  | "6" -> Some 6
-  | "7" -> Some 7
-  | "8" -> Some 8
-  | "9" -> Some 9
-  | _ -> None
-
-// Folds the decimal digits of `s` over the half-open index range `[i, n)` into
-// `acc`, or `None` on the first non-digit character.
-parseDigitsFrom : Int -> Int -> Int -> String -> Option Int
-let parseDigitsFrom i n acc s =
+// ASCII decimal accumulation keeps wrapping semantics for every input length.
+// Applying the sign per digit also handles minInt without a separate negation.
+parseDigitsFrom : Int -> Int -> Int -> Int -> Bytes -> Option Int
+let parseDigitsFrom i n acc sign bytes =
   if i >= n then
     Some acc
   else
-    match digitValue (String.substring i 1 s) with
-    | None -> None
-    | Some d -> parseDigitsFrom (i + 1) n (acc * 10 + d) s
+    let digit = Bytes.unsafeGet i bytes - 48
+    if digit < 0 || digit > 9 then
+      None
+    else
+      parseDigitsFrom (i + 1) n (acc * 10 + digit * sign) sign bytes
 
 /// Parse a base-10 integer, with an optional leading `-`. `None` if `s` is empty,
 /// is a lone `-`, or contains any non-digit character. Out-of-range values wrap to
 /// the 64-bit pattern, as the arithmetic operators do.
 public fromString : String -> Option Int
 let fromString s =
-  let n = String.length s
+  let bytes = Bytes.fromString s
+  let n = Bytes.length bytes
   if n = 0 then
     None
-  else if String.substring 0 1 s = "-" then
-    if n = 1 then None else Option.map (fun v -> 0 - v) (parseDigitsFrom 1 n 0 s)
+  else if Bytes.unsafeGet 0 bytes = 45 then
+    if n = 1 then None else parseDigitsFrom 1 n 0 (0 - 1) bytes
   else
-    parseDigitsFrom 0 n 0 s
+    parseDigitsFrom 0 n 0 1 bytes
 example: fromString "42" = Some 42
 example: fromString "-7" = Some (0 - 7)
 example: fromString "" = None

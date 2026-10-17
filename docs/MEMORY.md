@@ -5267,6 +5267,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   - String/Bytes conversion transfers unique inline storage and copies shared
     values or substring views. Byte-to-text validation remains explicit, and a
     transferred String receives the ASCII descriptor only when its bytes qualify.
+  - `String.splitOnce` searches once and returns the prefix/suffix without a full
+    split list. Coordinates remain Unicode-scalar based; an empty separator
+    matches at the start. HTTP/URL helpers use it for nonempty delimiters.
+    `Int.fromString` scans ASCII bytes, preserving optional-minus syntax and
+    wrapping arithmetic without per-digit substrings or string comparisons.
   - Buffered Content-Length request bodies read at most 64 KiB per receive, bounded
     by their remaining length. This reduces large-body allocation/syscall work
     without retaining a per-connection buffer or enlarging streaming response reads.

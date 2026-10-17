@@ -197,6 +197,7 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::ToLower
         | Prim::Trim
         | Prim::StringContains
+        | Prim::StringFind
         | Prim::StringSplit
         | Prim::StringJoin
         | Prim::StringSubstring

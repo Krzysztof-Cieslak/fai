@@ -87,6 +87,9 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "stringContains" => {
             Scheme::mono(Ty::arrows([Ty::Con(Con::String), Ty::Con(Con::String)], Ty::bool()))
         }
+        "stringFind" => {
+            Scheme::mono(Ty::arrows([Ty::Con(Con::String), Ty::Con(Con::String)], Ty::int()))
+        }
         "stringConcat" => Scheme::mono(Ty::arrows(
             [Ty::Con(Con::String), Ty::Con(Con::String)],
             Ty::Con(Con::String),

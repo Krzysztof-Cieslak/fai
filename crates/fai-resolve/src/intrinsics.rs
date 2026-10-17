@@ -45,6 +45,7 @@ pub const INTRINSICS: &[&str] = &[
     "toLower",
     "trim",
     "stringContains",
+    "stringFind",
     "stringConcat",
     "split",
     "join",

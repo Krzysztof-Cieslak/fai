@@ -686,6 +686,8 @@ pub enum Prim {
     Trim,
     /// `stringContains`
     StringContains,
+    /// First Unicode-scalar index of a substring, or -1 when absent.
+    StringFind,
     /// `split`
     StringSplit,
     /// `join`
@@ -845,6 +847,7 @@ impl Prim {
                 | Prim::Hash
                 | Prim::StringLength
                 | Prim::StringContains
+                | Prim::StringFind
                 | Prim::ToUpper
                 | Prim::ToLower
                 | Prim::Trim
@@ -874,6 +877,7 @@ impl Prim {
             Prim::Hash => Some("fai_hash_borrowed"),
             Prim::StringLength => Some("fai_string_length_borrowed"),
             Prim::StringContains => Some("fai_string_contains_borrowed"),
+            Prim::StringFind => Some("fai_string_find_borrowed"),
             Prim::ToUpper => Some("fai_to_upper_borrowed"),
             Prim::ToLower => Some("fai_to_lower_borrowed"),
             Prim::Trim => Some("fai_trim_borrowed"),
@@ -943,6 +947,7 @@ impl Prim {
             Prim::ToLower => "fai_to_lower",
             Prim::Trim => "fai_trim",
             Prim::StringContains => "fai_string_contains",
+            Prim::StringFind => "fai_string_find",
             Prim::StringSplit => "fai_string_split",
             Prim::StringJoin => "fai_string_join",
             Prim::StringSubstring => "fai_string_substring",
@@ -1083,6 +1088,7 @@ impl Prim {
             "toLower" => Prim::ToLower,
             "trim" => Prim::Trim,
             "stringContains" => Prim::StringContains,
+            "stringFind" => Prim::StringFind,
             "stringConcat" => Prim::StrConcat,
             "split" => Prim::StringSplit,
             "join" => Prim::StringJoin,
