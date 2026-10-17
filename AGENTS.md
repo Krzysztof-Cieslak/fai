@@ -1917,6 +1917,9 @@ reads. There is no implicit idle timeout; applications own the serving lifetime.
 
 Header validation uses fixed ASCII token predicates and carries immutable byte
 lengths through scans. Outgoing response heads are validated before body framing.
+Request fields are scanned once for validation and whitespace boundaries, then
+materialized from the validated UTF-8 head. Duplicate order and first-error
+precedence remain intact; the scan carries byte offsets in a constant-stack loop.
 
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;

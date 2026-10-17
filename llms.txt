@@ -1976,7 +1976,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   boundaries or part metadata return `Err`; names and filenames are quoted safely.
    Outgoing heads reject control characters, invalid tokens, and request-target
    whitespace before sending any bytes. HTTP header scans carry byte lengths
-   and use fixed ASCII token predicates without temporary membership lists. Server:
+   and use fixed ASCII token predicates without temporary membership lists.
+   Request fields are validated and trimmed in one byte scan, preserving UTF-8,
+   duplicate order, and first-error precedence. Server:
   `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection, serving ordered requests until either peer sends `Connection: close`.

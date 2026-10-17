@@ -5249,6 +5249,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     a continuously runnable queue from starving sockets or expired timers.
   - URL decoding returns an unescaped component directly. Shared strings remain
     immutable, and escaped/malformed input retains the existing byte decoder.
+  - Request header fields use one byte scan for token/value validation and ASCII
+    whitespace boundaries. Final strings use the existing byte-addressed String
+    slicing primitive after whole-head UTF-8 validation. Accumulated fields are
+    reversed once, preserving duplicate order and first-error precedence.
   - HTTP validation retains the exact ASCII token and field-value rules while
     avoiding per-byte membership lists and repeated buffer-length reads. A
     validated outgoing response head enters body framing without revalidation.

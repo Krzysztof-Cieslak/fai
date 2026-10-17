@@ -38,6 +38,18 @@ let testStrictRead env channel =
 
 testStrictTransport : Runtime -> Channel Bytes -> Transport { Concurrency }
 let testStrictTransport env channel = { Transport with close u = env.concurrency.close channel, recv max = testStrictRead env channel, send bytes = Ok () }
+
+referenceRequestHead : String -> Result (Method * Url * Headers * String) String
+let referenceRequestHead text =
+  match String.split "\r\n" text with
+  | [] -> Err "empty request"
+  | requestLine :: headerLines ->
+    match parseRequestLine requestLine with
+    | Err error -> Err error
+    | Ok (method, url, version) ->
+      match parseHeaderLines headerLines Headers.empty with
+      | Err error -> Err error
+      | Ok headers -> Ok (method, url, headers, version)
 "#;
 
 #[track_caller]
@@ -235,6 +247,12 @@ mod proptests {
         #![proptest_config(ProptestConfig::with_cases(8))]
 
         #[test]
+        fn byte_head_parser_matches_text_parser(value in ".{0,80}") {
+            let text = format!("GET /path?x=1 HTTP/1.1\r\nX-Value: {value}\r\n\r\n");
+            check(&format!("let text = {text:?}\nparseRequestHeadBytes (Bytes.fromString text) text = referenceRequestHead text"), false);
+        }
+
+        #[test]
         fn persistent_request_parsing_is_independent_of_fragment_boundaries(split in 0usize..127) {
             let wire = "POST /one HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n0\r\nX-End: yes\r\n\r\nGET /two HTTP/1.1\r\n\r\n";
             let split = 1 + split % (wire.len() - 1);
@@ -301,6 +319,59 @@ fn header_value_scanner_accepts_exactly_field_value_bytes() {
 fn header_scanners_honor_offsets_and_empty_suffixes() {
     check(
         "let bytes = Bytes.fromString \" a-b\"\nnot (validTokenFrom bytes 0) && validTokenFrom bytes 1 && validTokenFrom bytes 4 && validTokenFrom bytes 5 && validTokenFrom Bytes.empty 0 && not (validHeaderValue (Bytes.fromList [0, 9, 255]) 0) && validHeaderValue (Bytes.fromList [0, 9, 255]) 1 && validHeaderValue Bytes.empty 0",
+        false,
+    );
+}
+
+#[test]
+fn byte_head_parser_preserves_field_validation_over_the_byte_domain() {
+    check(
+        r#"let agrees text = parseRequestHeadBytes (Bytes.fromString text) text = referenceRequestHead text
+let checkCode code =
+  let c = Char.toString (Option.withDefault 'a' (Char.fromCode code))
+  agrees ("GET / HTTP/1.1\r\nX" ++ c ++ ": value\r\n\r\n") && agrees ("GET / HTTP/1.1\r\nX: value" ++ c ++ "\r\n\r\n")
+List.all checkCode (List.range 0 256)"#,
+        false,
+    );
+}
+
+#[test]
+fn byte_head_parser_preserves_unicode_whitespace_and_duplicate_order() {
+    check(
+        r#"let text = "POST /café?q=😀 HTTP/1.1\r\nX: \t café 😀\t \r\nx:\r\nX: \t \r\nX: a:b\r\n\r\n"
+parseRequestHeadBytes (Bytes.fromString text) text = referenceRequestHead text"#,
+        false,
+    );
+}
+
+#[test]
+fn byte_head_parser_preserves_missing_colon_error_precedence() {
+    check(
+        r#"let text = "GET / HTTP/1.1\r\nbad\u{0}\r\n: invalid\r\n\r\n"
+parseRequestHeadBytes (Bytes.fromString text) text = Err "header field is missing a colon""#,
+        false,
+    );
+}
+
+#[test]
+fn byte_head_parser_handles_many_fields_in_constant_stack() {
+    let text = format!("GET / HTTP/1.1\r\n{}\r\n", "X: value\r\n".repeat(4000));
+    check(
+        &format!(
+            "let text = {text:?}\nmatch parseRequestHeadBytes (Bytes.fromString text) text with\n| Ok (_, _, headers, _) -> List.length (Headers.toList headers) = 4000\n| Err _ -> false"
+        ),
+        false,
+    );
+}
+
+#[test]
+fn invalid_utf8_still_precedes_field_errors() {
+    check(
+        r#"let wire = Bytes.concat (Bytes.fromString "GET / HTTP/1.1\r\nBad\r\nX: ") (Bytes.fromList [255, 13, 10, 13, 10])
+let t = { Transport with close u = (), recv n = Err "unexpected read", send b = Ok () }
+match parseRequestAfter t wire with
+| Err error -> error = "request headers are not valid UTF-8"
+| Ok _ -> false"#,
         false,
     );
 }

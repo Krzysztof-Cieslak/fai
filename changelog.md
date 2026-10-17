@@ -7,6 +7,8 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Parse HTTP request fields in one validation/whitespace scan, materializing the
+  final names and values without split/rejoin buffers and preserving field order.
 - Drive network readiness and timers directly from an idle single scheduler
   worker, avoiding reactor-thread handoffs. Multi-worker execution retains its
   dedicated reactor; cancellation and off-thread work still wake idle workers.
