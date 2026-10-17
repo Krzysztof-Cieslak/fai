@@ -5252,6 +5252,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     a continuously runnable queue from starving sockets or expired timers.
   - URL decoding returns an unescaped component directly. Shared strings remain
     immutable, and escaped/malformed input retains the existing byte decoder.
+  - Bytes concatenation checks its complete output allocation and copies both
+    inputs directly into that final buffer, without an intermediate native vector.
+    Aliases and binary content retain their existing semantics.
   - Request header fields use one byte scan for token/value validation and ASCII
     whitespace boundaries. Final strings use the existing byte-addressed String
     slicing primitive after whole-head UTF-8 validation. Accumulated fields are

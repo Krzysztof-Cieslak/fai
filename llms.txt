@@ -1698,6 +1698,9 @@ unchanged.
 
 ### Bytes — `Bytes` (an immutable binary byte buffer)
 
+Concatenation checks the complete allocation size and copies directly into one
+final buffer. Inputs remain independent immutable values.
+
 A contiguous buffer of raw bytes, **distinct from the UTF-8 `String`** (the two
 never compare equal). Its elements are bytes read and written as `Int`s (0–255).
 It is the payload type for the `Net` capability. Build it from a list or a string;
