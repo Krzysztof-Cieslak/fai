@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Changed
+- Construct the immutable initial 404 response once per server handler and reuse
+  it for unhandled requests, preserving response isolation and body semantics.
 - Compile routing into flat node/edge arrays and an exact-path index at startup,
   preserving static-path precedence and normalized-path fallbacks.
 - Store route methods as startup metadata and dispatch candidates directly,
