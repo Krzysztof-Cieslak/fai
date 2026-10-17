@@ -218,6 +218,10 @@ alternative: `/user/new/edit` does not hide `/user/{id}` for `/user/new`.
 A real static endpoint wins path selection; if its method gates or handlers all
 `Skip`, the configured fallback runs rather than a different capture pattern.
 
+The server adapter prepares its immutable initial 404 response once when the
+handler is built. Each request still has independent context/response values;
+updating one request's headers or body cannot affect subsequent requests.
+
 ## Capabilities (the dependency-injection replacement)
 
 Handlers reach capabilities — a clock, a logger, a database connection — by

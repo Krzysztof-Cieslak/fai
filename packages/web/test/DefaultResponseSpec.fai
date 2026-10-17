@@ -1,0 +1,47 @@
+module DefaultResponseSpec
+
+handler : Web.HttpHandler 'e
+let handler ctx =
+  if Web.path ctx = "/changed" then
+    Web.chain [Web.setHeader "X-Changed" "yes", Web.text "changed"] ctx
+  else if Web.path ctx = "/skip" then Web.Skip else Web.continue ctx
+
+fetch : Runtime -> Int -> String -> Result (Int * Option String * String) String / { Net, Tls }
+let fetch runtime port path =
+  match Http.get runtime ("http://127.0.0.1:" ++ Int.toString port ++ path) with
+  | Err error -> Err error
+  | Ok response ->
+    Result.map (fun body ->
+      (response.status, Headers.get "X-Changed" response.headers, body)) (Http.bodyText response.body)
+
+exercise : Runtime -> Listener -> Nursery -> Test.Check / { Concurrency, Net, Tls }
+let exercise runtime listener nursery =
+  let server =
+    runtime.concurrency.spawn nursery (fun _ -> Web.serveListener runtime listener handler)
+  let port = runtime.net.localPort listener
+  let changed = fetch runtime port "/changed"
+  let continued = fetch runtime port "/default"
+  let skipped = fetch runtime port "/skip"
+  let again = fetch runtime port "/default"
+  let stopped = runtime.concurrency.cancel server
+  let expected = Ok (404, None, "Not Found")
+  let render =
+    (Test.result (Test.tuple3 Test.int (Test.option Test.string) Test.string) Test.string).show
+  Expect.all [
+    Expect.equal render (Ok (200, Some "yes", "changed")) changed,
+    Expect.equal render expected continued,
+    Expect.equal render expected skipped,
+    Expect.equal render expected again
+  ]
+
+checkDefaults : Test.Context -> Test.Check / { Concurrency, Net, Tls }
+let checkDefaults context =
+  let runtime = context.runtime
+  match runtime.net.listen 0 with
+  | Err error -> Expect.equal identity "listener opened" error
+  | Ok listener -> runtime.concurrency.scope (exercise runtime listener)
+
+tests : Test.Suite Test.Context { Concurrency, Net, Tls }
+let tests = Test.describe "default response ownership" [
+  Test.test "modified, continued and skipped requests keep independent response values" checkDefaults
+]

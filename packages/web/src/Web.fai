@@ -421,9 +421,15 @@ let outcomeResponse outcome =
 // Run an application handler over a parsed request, producing the response the
 // server sends: a `Skip` (nothing handled it) becomes a 404, and a `Fail` becomes
 // an `Err` (which the server maps to a 500).
+// The partially applied request handler captures one immutable initial response.
 toHandler : HttpHandler 'e -> Http.Request 'e -> Result (Http.ServerResponse 'e) String / 'e
-let toHandler app req =
-  let ctx = { params = [], request = req, response = textResponse 404 "Not Found" }
+let toHandler app =
+  let initial = textResponse 404 "Not Found"
+  handleWithInitial app initial
+
+handleWithInitial : HttpHandler 'e -> Http.Response 'e -> Http.Request 'e -> Result (Http.ServerResponse 'e) String / 'e
+let handleWithInitial app initial req =
+  let ctx = { params = [], request = req, response = initial }
   match app ctx with
   | Continue done -> Ok (Http.Ready done.response)
   | Halt done -> Ok (Http.Ready done.response)
@@ -433,7 +439,7 @@ let toHandler app req =
       reason = done.response.reason,
       status = done.response.status
     } producer)
-  | Skip -> Ok (Http.Ready (textResponse 404 "Not Found"))
+  | Skip -> Ok (Http.Ready initial)
   | Fail message -> Err message
 
 /// Serve an application on an already-bound listener. Runs until the serving task
