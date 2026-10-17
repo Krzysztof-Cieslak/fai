@@ -52,6 +52,12 @@ let byteLoops n chunk total =
     byteLoops (n - 1) chunk (total + Bytes.length buffer)
 public byteLoop : Int -> Int
 let byteLoop n = byteLoops n (Bytes.fromList (List.map (fun _ -> 255) (List.range 0 1024))) 0
+let byteSliceLoops n bytes total =
+  if n <= 0 then total else
+    let sliced = Bytes.slice (0 - 9223372036854775807 - 1) 9223372036854775807 bytes
+    byteSliceLoops (n - 1) bytes (total + Bytes.length sliced)
+public byteSliceLoop : Int -> Int
+let byteSliceLoop n = byteSliceLoops n (Bytes.fromList (List.map (fun _ -> 255) (List.range 0 32768))) 0
 let emptyStringLoops n total =
   if n <= 0 then total else
     let text = append 8 ""
@@ -198,6 +204,11 @@ fn literal_string_loops_keep_fixed_state_storage_bounded() {
 #[test]
 fn repeated_byte_growth_releases_large_mappings() {
     bounded("byteLoop", |n| n * 32768);
+}
+
+#[test]
+fn full_range_byte_slices_keep_storage_bounded() {
+    bounded("byteSliceLoop", |n| n * 32768);
 }
 
 #[test]

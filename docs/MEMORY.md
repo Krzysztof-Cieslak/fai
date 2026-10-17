@@ -5264,6 +5264,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Allocating paths check the complete output size and copy both inputs directly
     into the final buffer, without an intermediate native vector.
     Aliases and binary content retain their existing semantics.
+  - A full-range `Bytes.slice` transfers its input after clamping both bounds.
+    Partial ranges copy; boxed indices are released on both paths, and retained
+    aliases keep their contents through subsequent concatenation.
   - Request header fields use one byte scan for token/value validation and ASCII
     whitespace boundaries. Final strings use the existing byte-addressed String
     slicing primitive after whole-head UTF-8 validation. Accumulated fields are

@@ -45,7 +45,7 @@ example: concat (fromList [1, 2]) (fromList [3, 4]) = fromList [1, 2, 3, 4]
 example: concat empty (fromList [1]) = fromList [1]
 
 /// The bytes in `[start, end)`, with both indices clamped to the buffer's bounds
-/// (a fresh buffer).
+/// (a copy unless the clamped range is the complete buffer).
 public slice : Int -> Int -> Bytes -> Bytes
 let slice start end b = Prim.bytesSlice start end b
 example: slice 1 3 (fromList [10, 20, 30, 40]) = fromList [20, 30]

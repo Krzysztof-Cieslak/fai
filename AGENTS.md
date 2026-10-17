@@ -1924,6 +1924,9 @@ Bytes concatenation checks the complete output size and appends into uniquely
 owned left buffers, growing geometrically when full. Shared buffers copy into
 a fresh result, and empty operands return the other value. Binary contents and
 immutable aliases are preserved, including during large HTTP body collection.
+`Bytes.slice` transfers its input when the clamped range covers the complete
+buffer. Partial ranges remain independent copies, and full-width index boxes
+are released on either path.
 Buffered HTTP messages render their computed Content-Length directly after the
 other fields, avoiding a temporary header collection while keeping validation.
 Request framing, expectation and connection values are collected during the

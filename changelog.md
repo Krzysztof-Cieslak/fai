@@ -7,6 +7,8 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Transfer full-range Bytes slices without copying their buffer, retaining
+  clamped indexing, immutable aliases and prompt release of large buffers.
 - Let repository documentation checks accept package Unreleased entries during
   development; prepared release candidates still require promoted release notes.
 - Append into uniquely owned byte buffers with geometric growth, avoiding
