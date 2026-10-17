@@ -515,41 +515,32 @@ let parseHeaderLine line =
 
 isTokenByte : Int -> Bool
 let isTokenByte c =
-  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || List.member c [
-    33,
-    35,
-    36,
-    37,
-    38,
-    39,
-    42,
-    43,
-    45,
-    46,
-    94,
-    95,
-    96,
-    124,
-    126
-  ]
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c = 33 || (c >= 35 && c <= 39) || c = 42 || c = 43 || c = 45 || c = 46 || (c >= 94 && c <= 96) || c = 124 || c = 126
 
 validTokenFrom : Bytes -> Int -> Bool
-let validTokenFrom bytes i =
-  if i >= Bytes.length bytes then
+let validTokenFrom bytes i = tokenBytesValid bytes i (Bytes.length bytes)
+
+// Carry the immutable length through the scan instead of re-reading it per byte.
+tokenBytesValid : Bytes -> Int -> Int -> Bool
+let tokenBytesValid bytes i length =
+  if i >= length then
     true
   else
-    isTokenByte (Bytes.unsafeGet i bytes) && validTokenFrom bytes (i + 1)
+    isTokenByte (Bytes.unsafeGet i bytes) && tokenBytesValid bytes (i + 1) length
 
 validToken : String -> Bool
 let validToken value = value <> "" && validTokenFrom (Bytes.fromString value) 0
 
 validHeaderValue : Bytes -> Int -> Bool
-let validHeaderValue bytes i =
-  if i >= Bytes.length bytes then
+let validHeaderValue bytes i = headerBytesValid bytes i (Bytes.length bytes)
+
+headerBytesValid : Bytes -> Int -> Int -> Bool
+let headerBytesValid bytes i length =
+  if i >= length then
     true
   else
     let c = Bytes.unsafeGet i bytes
-    (c = 9 || (c >= 32 && c <> 127)) && validHeaderValue bytes (i + 1)
+    (c = 9 || (c >= 32 && c <> 127)) && headerBytesValid bytes (i + 1) length
 
 owsStart : Bytes -> Int -> Int
 let owsStart bytes i =
@@ -1763,7 +1754,7 @@ let writeResponse closeConn method t resp =
   else if resp.status = 101 || (methodName method = "CONNECT" && resp.status >= 200 && resp.status < 300) then
     Err "HTTP protocol upgrades and CONNECT tunnels are not supported"
   else if responseHasBody method resp.status then
-    sendMessage closeConn t startLine resp.headers resp.body
+    sendValidMessage closeConn t startLine resp.headers resp.body
   else
     let headers = Headers.remove "Transfer-Encoding" resp.headers
     let framed =

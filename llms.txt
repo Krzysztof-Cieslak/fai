@@ -1971,8 +1971,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   `multipartBody`/`postMultipart` (a fresh `randomBoundary`). `multipartBody` returns
   `Result (Stream Bytes 'e) String`: match `Ok body` before using it. Invalid
   boundaries or part metadata return `Err`; names and filenames are quoted safely.
-  Outgoing heads reject control characters, invalid tokens, and request-target
-  whitespace before sending any bytes. Server:
+   Outgoing heads reject control characters, invalid tokens, and request-target
+   whitespace before sending any bytes. HTTP header scans carry byte lengths
+   and use fixed ASCII token predicates without temporary membership lists. Server:
   `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection, serving ordered requests until either peer sends `Connection: close`.
