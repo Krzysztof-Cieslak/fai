@@ -5282,6 +5282,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   - Buffered Content-Length request bodies read at most 64 KiB per receive, bounded
     by their remaining length. This reduces large-body allocation/syscall work
     without retaining a per-connection buffer or enlarging streaming response reads.
+    Header and framing-line reads resume delimiter search at the previous suffix,
+    retaining three bytes for a header terminator and one for CRLF. Byte offsets
+    survive buffer growth, preserving the first terminator and buffered surplus.
   - `Bytes.concatMany` checks the complete length and copies ordered chunks into
     one output allocation, transferring a sole nonempty chunk directly. HTTP
     buffering uses it after full stream consumption, preserving failure order.

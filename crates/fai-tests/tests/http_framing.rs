@@ -75,6 +75,35 @@ fn head_ignores_content_length_metadata() {
 }
 
 #[test]
+fn header_search_preserves_single_byte_fragments() {
+    check(
+        r#"let wire = Bytes.fromString ("GET / HTTP/1.1\r\nX-Long: " ++ String.join "" (List.map (fun _ -> "x") (List.range 0 1000)) ++ "\r\n\r\n")
+let pieces = List.map (fun byte -> Bytes.fromList [byte]) (Bytes.toList wire)
+let input = testChannel env pieces
+readHeaderProgress (testTransport env input) Bytes.empty = Ok (wire, Bytes.empty)"#,
+        true,
+    );
+}
+
+#[test]
+fn resumed_header_search_keeps_the_first_terminator_and_surplus() {
+    check(
+        r#"let input = testChannel env [Bytes.fromString "GET / HTTP/1.1\r\nX: a\r", Bytes.fromString "\n\r", Bytes.fromString "\nnext\r\n\r\n"]
+readHeaderProgress (testTransport env input) Bytes.empty = Ok (Bytes.fromString "GET / HTTP/1.1\r\nX: a\r\n\r\n", Bytes.fromString "next\r\n\r\n")"#,
+        true,
+    );
+}
+
+#[test]
+fn framing_line_search_preserves_split_crlf() {
+    check(
+        r#"let input = testChannel env [Bytes.fromString "a", Bytes.fromString "b", Bytes.fromString "\r", Bytes.fromString "\nrest"]
+readLine (testTransport env input) Bytes.empty = Ok (Bytes.fromString "ab", Bytes.fromString "rest")"#,
+        true,
+    );
+}
+
+#[test]
 fn custom_head_has_the_same_body_semantics() {
     empty_response("(Custom \"HEAD\")", "HTTP/1.1 200 OK\r\nContent-Length: 900\r\n\r\n");
 }

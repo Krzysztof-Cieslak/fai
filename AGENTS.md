@@ -1966,6 +1966,8 @@ Framing lines/trailers are bounded, large chunks are streamed in bounded pieces,
 and buffered surplus travels with the pooled connection.
 Buffered Content-Length request bodies use reads of at most 64 KiB, further
 bounded by their remaining length. No per-connection receive buffer is retained.
+Incomplete header and framing-line reads retain their searched byte offset.
+Only the possible cross-chunk delimiter prefix is examined again after appending.
 HEAD, 204, and 304 responses have no body regardless of length metadata. Clients
 skip bounded informational responses before the final head; protocol upgrades
 and CONNECT tunnels return an explicit error. Servers omit forbidden payloads

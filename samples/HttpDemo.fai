@@ -1,5 +1,6 @@
 module HttpDemo
 
+// Fragmented header reads retain their search position across receives.
 // Request-body reads use bounded batches; response bodies remain lazy streams.
 // get/getWith follow 307/308 with their known-empty body. General request streams
 // return those redirects instead of dropping or replaying their original content.
