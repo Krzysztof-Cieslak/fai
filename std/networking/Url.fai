@@ -522,10 +522,13 @@ let hexDigit n = String.substring n 1 "0123456789ABCDEF"
 /// original component unchanged rather than losing text.
 public decodeComponent : String -> String
 let decodeComponent s =
-  let bytes = Bytes.fromString s
-  match Bytes.toString (Bytes.fromList (decodeFrom bytes 0 (Bytes.length bytes) [])) with
-  | Some decoded -> decoded
-  | None -> s
+  if not (String.contains s "%") then
+    s
+  else
+    let bytes = Bytes.fromString s
+    match Bytes.toString (Bytes.fromList (decodeFrom bytes 0 (Bytes.length bytes) [])) with
+    | Some decoded -> decoded
+    | None -> s
 example: decodeComponent "a%20b%26c" = "a b&c"
 example: decodeComponent "café%20😀" = "café 😀"
 example: decodeComponent "%GG%2G" = "%GG%2G"
