@@ -152,6 +152,39 @@ runtime.console.writeLine (if valid then "ok" else "wrong")"#,
 }
 
 #[test]
+fn conversions_preserve_string_literals_views_and_binary_aliases() {
+    output(
+        &program(
+            r#"let original = "é😀abcdefghijklmnopqrstuvxyz0123456789"
+let bytes = Callbacks.call Bytes.fromString original
+let restored = Callbacks.call Bytes.toString bytes
+let view = String.take 34 original
+let viewedBytes = Bytes.fromString view
+let good = restored = Some original && Bytes.toString viewedBytes = Some view && String.length original = 37 && Bytes.toList (Bytes.fromList [255]) = [255]
+runtime.console.writeLine (if good then "ok" else "wrong")"#,
+        ),
+        "ok",
+    );
+}
+
+#[test]
+fn compiled_round_trip_transfers_unique_text_storage() {
+    let _guard = RUN.lock().unwrap();
+    let (db, file) = source(
+        "module Main\npublic roundTrip : String -> String\nlet roundTrip text =\n  match Bytes.toString (Bytes.fromString text) with\n  | Some restored -> restored\n  | None -> \"\"\npublic main : Runtime -> Unit\nlet main runtime = ()\n",
+    );
+    let mut program = fai_driver::jit_compile(&db, file).unwrap();
+    let f = program.function(Symbol::intern("roundTrip")).unwrap();
+    let base = (fai_runtime::live_count(), fai_runtime::live_bytes());
+    let original = fai_runtime::make_str("unique é😀");
+    let result = fai_runtime::apply(f, &[original]);
+    assert_eq!(result, original, "the compiled path must retain unique ownership");
+    assert_eq!(fai_runtime::read_string(result), "unique é😀".as_bytes());
+    fai_runtime::fai_drop(result);
+    assert_eq!((fai_runtime::live_count(), fai_runtime::live_bytes()), base);
+}
+
+#[test]
 fn row_polymorphic_readers_keep_the_uniform_argument_abi() {
     output(
         &format!(

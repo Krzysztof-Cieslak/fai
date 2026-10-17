@@ -5264,6 +5264,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Allocating paths check the complete output size and copy both inputs directly
     into the final buffer, without an intermediate native vector.
     Aliases and binary content retain their existing semantics.
+  - String/Bytes conversion transfers unique inline storage and copies shared
+    values or substring views. Byte-to-text validation remains explicit, and a
+    transferred String receives the ASCII descriptor only when its bytes qualify.
   - A full-range `Bytes.slice` transfers its input after clamping both bounds.
     Partial ranges copy; boxed indices are released on both paths, and retained
     aliases keep their contents through subsequent concatenation.

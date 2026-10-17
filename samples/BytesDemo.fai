@@ -4,6 +4,7 @@ module BytesDemo
 // `String`. Its elements are raw bytes read and written as `Int`s (0–255); its
 // operations are reached qualified, e.g. `Bytes.fromList`. `Bytes` is the payload
 // type for binary I/O.
+// String/Bytes conversions can reuse unique inline storage, preserving aliases.
 /// The bytes of a string, as a list of code units (0–255).
 public encode : String -> List Int
 let encode s = Bytes.toList (Bytes.fromString s)

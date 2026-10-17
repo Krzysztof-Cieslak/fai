@@ -4003,23 +4003,41 @@ pub extern "C" fn fai_bytes_to_list(b: Value) -> Value {
     list
 }
 
-/// `Bytes.fromString`: reinterpret a `String`'s UTF-8 bytes as `Bytes` (a fresh
-/// copy). The string is consumed.
+/// `Bytes.fromString`: transfer a unique inline String buffer, or copy shared
+/// strings and substring views. The string is consumed.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_bytes_from_string(s: Value) -> Value {
-    // SAFETY: `s` is a boxed `String`; its bytes are copied before it is dropped.
-    let result = unsafe { make_bytes(string_bytes(s)) };
+    // SAFETY: a unique inline String owns its complete buffer. Bytes has the same
+    // header/length/payload layout; changing its descriptor cannot affect an alias.
+    // Shared strings and views retain their descriptor and are copied instead.
+    let result = unsafe {
+        let p = as_obj(s);
+        if !is_string_slice(s) && rc_load(p) == 1 {
+            write_ptr(p, DESC_OFFSET, (&raw const FAI_BYTES_DESC).cast());
+            return s;
+        }
+        make_bytes(string_bytes(s))
+    };
     fai_drop(s);
     result
 }
 
-/// `Bytes.toString` (unsafe): reinterpret `Bytes` as a `String` (a fresh copy).
+/// `Bytes.toString` (unsafe): transfer a unique buffer or copy shared bytes.
 /// The caller guarantees the bytes are valid UTF-8 (the `Bytes` module guards this
 /// with [`fai_bytes_is_utf8`]). The buffer is consumed.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_bytes_to_string(b: Value) -> Value {
-    // SAFETY: `b` is a boxed `Bytes`; its bytes are copied before it is dropped.
-    let result = unsafe { make_string(bytes_bytes(b)) };
+    // SAFETY: the caller established UTF-8 validity. A unique Bytes buffer shares
+    // the inline String layout and has no aliases; its new descriptor records the
+    // actual ASCII property. Shared buffers remain unchanged and are copied.
+    let result = unsafe {
+        let p = as_obj(b);
+        if rc_load(p) == 1 {
+            set_string_ascii(p, bytes_bytes(b).is_ascii());
+            return b;
+        }
+        make_string(bytes_bytes(b))
+    };
     fai_drop(b);
     result
 }
@@ -5402,6 +5420,8 @@ mod array_tests;
 mod ascii_strings;
 #[cfg(test)]
 mod bytes_concat_tests;
+#[cfg(test)]
+mod bytes_conversion_tests;
 #[cfg(test)]
 mod bytes_read_tests;
 #[cfg(test)]

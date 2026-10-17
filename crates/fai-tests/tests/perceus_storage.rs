@@ -58,6 +58,14 @@ let byteSliceLoops n bytes total =
     byteSliceLoops (n - 1) bytes (total + Bytes.length sliced)
 public byteSliceLoop : Int -> Int
 let byteSliceLoop n = byteSliceLoops n (Bytes.fromList (List.map (fun _ -> 255) (List.range 0 32768))) 0
+let byteTextLoop n text =
+  if n <= 0 then String.length text
+  else
+    match Bytes.toString (Bytes.fromString text) with
+    | None -> 0 - 1
+    | Some restored -> byteTextLoop (n - 1) restored
+public byteTextRounds : Int -> Int
+let byteTextRounds n = byteTextLoop n (String.join "" (List.map (fun _ -> "text") (List.range 0 8192)))
 let emptyStringLoops n total =
   if n <= 0 then total else
     let text = append 8 ""
@@ -209,6 +217,11 @@ fn repeated_byte_growth_releases_large_mappings() {
 #[test]
 fn full_range_byte_slices_keep_storage_bounded() {
     bounded("byteSliceLoop", |n| n * 32768);
+}
+
+#[test]
+fn byte_text_round_trips_keep_fixed_storage() {
+    bounded("byteTextRounds", |_| 32768);
 }
 
 #[test]
