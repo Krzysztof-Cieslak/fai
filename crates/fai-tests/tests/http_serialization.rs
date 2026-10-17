@@ -139,6 +139,24 @@ sendMessage false transport "HTTP/1.1 200 OK\r\n" (Headers.fromList [("X", "kept
 }
 
 #[test]
+fn buffered_binary_chunks_are_joined_once_in_wire_order() {
+    check(
+        r#"let expected = Bytes.concat (Bytes.fromString "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n") (Bytes.fromList [0, 255, 128, 1])
+let transport = { Transport with close u = (), recv n = Ok Bytes.empty, send bytes = if bytes = expected then Ok () else Err "unexpected wire data" }
+sendMessage false transport "HTTP/1.1 200 OK\r\n" Headers.empty (Stream.fromList [Bytes.fromList [0, 255], Bytes.empty, Bytes.fromList [128, 1]]) = Ok ()"#,
+        true,
+    );
+}
+
+#[test]
+fn body_size_overflow_is_checked_before_arithmetic() {
+    check(
+        "bodySize [Bytes.fromList [1]] 9223372036854775807 = Err \"HTTP body is too large\"",
+        false,
+    );
+}
+
+#[test]
 fn sized_head_field_rendering_keeps_constant_stack() {
     check(
         r#"let headers = Headers.fromList (List.map (fun _ -> ("X", "v")) (List.range 0 4000))

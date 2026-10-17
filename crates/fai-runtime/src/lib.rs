@@ -3941,6 +3941,64 @@ pub extern "C" fn fai_bytes_concat(a: Value, b: Value) -> Value {
     }
 }
 
+/// Concatenate an owned list of byte buffers. Multiple nonempty chunks copy into
+/// one checked allocation; a sole nonempty chunk transfers through the list.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_concat_many(chunks: Value) -> Value {
+    let mut cursor = chunks;
+    let mut length = 0usize;
+    let mut nonempty = 0usize;
+    let mut first = None;
+    let mut single = None;
+    // SAFETY: every boxed list cell has a Bytes head and List tail. The original
+    // list stays owned through both walks, keeping every input buffer live.
+    unsafe {
+        while is_boxed(cursor) {
+            let cell = as_obj(cursor);
+            let offset = data_offset(cell);
+            let head = read_i64(cell, offset);
+            first.get_or_insert(head);
+            let count = read_u64(as_obj(head), STRING_LEN_OFFSET) as usize;
+            length = length.checked_add(count).unwrap_or_else(|| fai_allocation_size_panic());
+            if count != 0 {
+                nonempty = (nonempty + 1).min(2);
+                single = Some(head);
+            }
+            cursor = read_i64(cell, offset + 8);
+        }
+        let size = checked_buffer_size(STRING_BYTES_OFFSET, length, 1)
+            .unwrap_or_else(|| fai_allocation_size_panic());
+        if nonempty <= 1 {
+            let result = match single.or(first) {
+                Some(value) => fai_dup(value),
+                None => make_bytes(&[]),
+            };
+            fai_drop(chunks);
+            return result;
+        }
+        let output = alloc_obj(size, &FAI_BYTES_DESC);
+        write_u64(output, STRING_LEN_OFFSET, length as u64);
+        let mut written = 0;
+        cursor = chunks;
+        while is_boxed(cursor) {
+            let cell = as_obj(cursor);
+            let offset = data_offset(cell);
+            let head = read_i64(cell, offset);
+            let bytes = bytes_bytes(head);
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                output.add(STRING_BYTES_OFFSET + written),
+                bytes.len(),
+            );
+            written += bytes.len();
+            cursor = read_i64(cell, offset + 8);
+        }
+        debug_assert_eq!(written, length);
+        fai_drop(chunks);
+        from_obj(output)
+    }
+}
+
 /// `Bytes.slice start end b`: the bytes in `[start, end)`, clamped to the buffer.
 /// A full-width range transfers the input; other ranges copy. All operands consumed.
 #[unsafe(no_mangle)]
@@ -5418,6 +5476,8 @@ mod array_repeat_tests;
 mod array_tests;
 #[cfg(test)]
 mod ascii_strings;
+#[cfg(test)]
+mod bytes_concat_many_tests;
 #[cfg(test)]
 mod bytes_concat_tests;
 #[cfg(test)]

@@ -5270,6 +5270,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   - Buffered Content-Length request bodies read at most 64 KiB per receive, bounded
     by their remaining length. This reduces large-body allocation/syscall work
     without retaining a per-connection buffer or enlarging streaming response reads.
+  - `Bytes.concatMany` checks the complete length and copies ordered chunks into
+    one output allocation, transferring a sole nonempty chunk directly. HTTP
+    buffering uses it after full stream consumption, preserving failure order.
+    Buffered sending joins the rendered head and chunks directly after checking
+    their total length, avoiding an intermediate flat body.
   - A full-range `Bytes.slice` transfers its input after clamping both bounds.
     Partial ranges copy; boxed indices are released on both paths, and retained
     aliases keep their contents through subsequent concatenation.

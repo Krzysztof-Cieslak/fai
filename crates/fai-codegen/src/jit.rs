@@ -111,6 +111,7 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_bytes_get_borrowed", rt::fai_bytes_get_borrowed);
     sym!("fai_bytes_index_panic", rt::fai_bytes_index_panic);
     sym!("fai_bytes_concat", rt::fai_bytes_concat);
+    sym!("fai_bytes_concat_many", rt::fai_bytes_concat_many);
     sym!("fai_bytes_slice", rt::fai_bytes_slice);
     sym!("fai_bytes_from_list", rt::fai_bytes_from_list);
     sym!("fai_bytes_to_list", rt::fai_bytes_to_list);
