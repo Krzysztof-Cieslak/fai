@@ -893,6 +893,20 @@ impl Prim {
                 && matches!(operand_ty, Ty::Var(_))))
     }
 
+    /// Whether argument `index` is borrowed under the runtime convention selected
+    /// by the first operand's type. Some readers borrow their buffer but consume
+    /// scalar indices, including their possible full-width integer boxes.
+    #[must_use]
+    pub fn borrows_argument(self, index: usize, first_operand_ty: &Ty) -> bool {
+        self.borrows_operand(first_operand_ty)
+            && match self {
+                Prim::BytesGet | Prim::RegexSlice => index == 0,
+                // The other borrowed entries lend every operand, including
+                // array-reader indices under their existing native ABI.
+                _ => true,
+            }
+    }
+
     /// The runtime symbol of this primitive's non-consuming variant, for the
     /// inspect-only primitives that have one (see [`Prim::borrows_operand`]).
     #[must_use]

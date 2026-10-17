@@ -50,7 +50,7 @@ fn slice_borrowing_survives_worker_serialization() {
     let bundle = fai_driver::build_run_bundle(&db, file).bundle.unwrap();
     let cut =
         bundle.defs.iter().find(|def| def.id.module == "Cut" && def.id.name == "cut").unwrap();
-    assert!(cut.entry_borrowed[0]);
+    assert_eq!(cut.entry_borrowed, [true, false, false]);
     let bundle = fai_driver::bundle_from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
     let _guard = RUN.lock().unwrap();
     fai_runtime::capture_start();
@@ -64,6 +64,37 @@ fn shared_slices_and_owned_callbacks_agree_in_aot() {
     let (db, file) = source(MAIN);
     let directory = tempfile::tempdir().unwrap();
     let path = camino::Utf8PathBuf::from_path_buf(directory.path().join("text-slicing")).unwrap();
+    let build = fai_driver::build_native(&db, file, &path);
+    assert!(build.ok, "{:?}", build.diagnostics);
+    let result = std::process::Command::new(build.artifact.unwrap()).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(result.stdout, b"ok\n");
+}
+
+#[test]
+fn uniform_slice_indices_retain_their_owners_after_the_call() {
+    let (mut db, file) = source(
+        r#"module Main
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let source = String.join "" ["a", "b"]
+  let result = Uniform.inspect { enabled = true, extra = 7 } source (-9223372036854775807) 9223372036854775807
+  runtime.console.writeLine (if result then "ok" else "bad")
+"#,
+    );
+    db.add_source(
+        "Uniform.fai".into(),
+        r#"module Uniform
+public inspect : { enabled : Bool | 'r } -> String -> Int -> Int -> Bool
+let inspect settings text start finish =
+  let result = RegexEngine.slice text start finish
+  settings.enabled && Result.isErr result && start = -9223372036854775807 && finish = 9223372036854775807
+"#
+        .into(),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path =
+        camino::Utf8PathBuf::from_path_buf(directory.path().join("uniform-slicing")).unwrap();
     let build = fai_driver::build_native(&db, file, &path);
     assert!(build.ok, "{:?}", build.diagnostics);
     let result = std::process::Command::new(build.artifact.unwrap()).output().unwrap();
@@ -112,10 +143,7 @@ fn a_slice_range_edit_keeps_the_callers_ownership_code() {
     assert_eq!(fai_rc::borrow_signature(&db, file, name).0, [true]);
     db.add_source(
         "Cut.fai".into(),
-        CUT.replace(
-            "RegexEngine.slice text start finish",
-            "RegexEngine.slice text finish start",
-        ),
+        CUT.replace("RegexEngine.slice text start finish", "RegexEngine.slice text finish start"),
     );
     let after = fai_rc::rc(&db, file, name);
     assert!(std::sync::Arc::ptr_eq(&before, &after));

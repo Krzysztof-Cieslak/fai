@@ -1012,15 +1012,11 @@ impl Rc<'_> {
 // Helpers.
 // ---------------------------------------------------------------------------
 
-/// Per-operand borrow flags for a primitive. Inspect-only primitives (`=`,
-/// `compare`, the `String` readers) borrow their operands when those are boxed,
-/// reference-counted values; every other primitive consumes its operands. The
-/// decision is uniform across a call's operands (those primitives are
-/// homogeneous), keyed on the first operand's type, so it matches the variant
-/// code generation selects.
+/// Per-argument ownership under the native convention selected by codegen.
+/// A borrowed buffer does not imply borrowed scalar indices: the runtime may
+/// release their full-width integer boxes while retaining the buffer's owner.
 fn prim_borrows(op: fai_core::ir::Prim, args: &[CExpr]) -> Vec<bool> {
-    let borrow = args.first().is_some_and(|a| op.borrows_operand(&a.ty));
-    vec![borrow; args.len()]
+    args.iter().enumerate().map(|(index, _)| op.borrows_argument(index, &args[0].ty)).collect()
 }
 
 fn dup_(local: LocalId, body: CExpr) -> CExpr {

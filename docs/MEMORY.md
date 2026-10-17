@@ -261,6 +261,8 @@ retired; IDs are not reused).
   scalar indices; the owned entry releases its source for uniform callers. This
   avoids retain/release pairs in repeated extraction without changing range
   validation, error values or the result's lifetime.
+  Primitive borrow inference and ownership insertion share per-argument contracts:
+  a borrowed first operand no longer implicitly lends consumed scalar indices.
 
 - Regex replacement text is literal unless compiled as a capture template.
   Template references are validated before matching and bind to one regex schema.

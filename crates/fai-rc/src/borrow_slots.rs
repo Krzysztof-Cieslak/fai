@@ -166,18 +166,16 @@ fn inspect(
             }
             true
         }
-        K::Prim { op, args } => {
-            let borrowed = args.first().is_some_and(|arg| op.borrows_operand(&arg.ty));
-            args.iter().all(|arg| {
-                if borrowed && matches!(arg.kind, K::Local(local) if local == parent) {
-                    true
-                } else if borrowed && matches!(arg.kind, K::Local(local) if local == slot) {
-                    state.parent_alive && state.slot_live
-                } else {
-                    inspect(db, arg, slot, parent, state, budget)
-                }
-            })
-        }
+        K::Prim { op, args } => args.iter().enumerate().all(|(index, arg)| {
+            let borrowed = op.borrows_argument(index, &args[0].ty);
+            if borrowed && matches!(arg.kind, K::Local(local) if local == parent) {
+                true
+            } else if borrowed && matches!(arg.kind, K::Local(local) if local == slot) {
+                state.parent_alive && state.slot_live
+            } else {
+                inspect(db, arg, slot, parent, state, budget)
+            }
+        }),
         K::App { func, args, .. } => {
             let borrowed = if let K::Global(def) = func.kind {
                 db.source_file(def.file)

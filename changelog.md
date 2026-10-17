@@ -9,6 +9,8 @@
 ### Changed
 - Borrow the source String for checked UTF-8 byte-range slicing, avoiding
   temporary reference-count operations in repeated extraction and parser loops.
+- Track native primitive ownership per argument, allowing byte reads and checked
+  text slices to borrow their buffer while consuming boxed scalar indices.
 - Direct calls can return eligible `Result` values as a tag and owned components,
   eliminating temporary wrappers and small resource-free tuple payloads. Uniform
   first-class boundaries reconstruct ordinary values.

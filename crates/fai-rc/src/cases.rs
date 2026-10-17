@@ -81,7 +81,14 @@ fn byte_reader_loop_borrows_its_unchanging_buffer() {
 fn checked_text_slices_borrow_the_source() {
     let source = "module M\nlet cut text start finish = RegexEngine.slice text start finish\n";
     sound(source, "cut");
-    assert!(crate::tests::borrow_sig(source, "cut")[0]);
+    assert_eq!(crate::tests::borrow_sig(source, "cut"), vec![true, false, false]);
+}
+
+#[test]
+fn byte_reads_borrow_the_buffer_but_consume_the_index() {
+    let source = "module M\nlet read bytes index = Bytes.unsafeGet index bytes\n";
+    sound(source, "read");
+    assert_eq!(crate::tests::borrow_sig(source, "read"), vec![true, false]);
 }
 
 #[test]
