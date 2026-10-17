@@ -1920,6 +1920,8 @@ lengths through scans. Outgoing response heads are validated before body framing
 Request fields are scanned once for validation and whitespace boundaries, then
 materialized from the validated UTF-8 head. Duplicate order and first-error
 precedence remain intact; the scan carries byte offsets in a constant-stack loop.
+Bytes concatenation checks the complete output size and copies inputs directly
+into one final buffer, retaining independent values and immutable aliases.
 
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;

@@ -3865,14 +3865,25 @@ pub extern "C" fn fai_bytes_get(b: Value, i: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_bytes_concat(a: Value, b: Value) -> Value {
     // SAFETY: `a` and `b` are boxed `Bytes`; the slices are copied before either
-    // operand is dropped.
+    // operand is dropped. The checked destination has room for its length and
+    // both payloads, and cannot overlap either still-live input.
     let result = unsafe {
         let ba = bytes_bytes(a);
         let bb = bytes_bytes(b);
-        let mut v = Vec::with_capacity(ba.len() + bb.len());
-        v.extend_from_slice(ba);
-        v.extend_from_slice(bb);
-        make_bytes(&v)
+        let length = ba.len().checked_add(bb.len()).unwrap_or_else(|| fai_allocation_size_panic());
+        let size = checked_buffer_size(STRING_BYTES_OFFSET, length, 1)
+            .unwrap_or_else(|| fai_allocation_size_panic());
+        let output = alloc_obj(size, &FAI_BYTES_DESC);
+        write_u64(output, STRING_LEN_OFFSET, length as u64);
+        // The fresh destination has room for both slices and cannot overlap
+        // either still-owned input, including when both inputs are aliases.
+        std::ptr::copy_nonoverlapping(ba.as_ptr(), output.add(STRING_BYTES_OFFSET), ba.len());
+        std::ptr::copy_nonoverlapping(
+            bb.as_ptr(),
+            output.add(STRING_BYTES_OFFSET + ba.len()),
+            bb.len(),
+        );
+        from_obj(output)
     };
     fai_drop(a);
     fai_drop(b);
@@ -5326,6 +5337,8 @@ mod array_repeat_tests;
 mod array_tests;
 #[cfg(test)]
 mod ascii_strings;
+#[cfg(test)]
+mod bytes_concat_tests;
 #[cfg(test)]
 mod drop_work_tests;
 #[cfg(test)]

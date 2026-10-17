@@ -7,6 +7,8 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Concatenate Bytes directly into one final buffer with checked allocation size,
+  avoiding an intermediate native vector and an extra full-payload copy.
 - Parse HTTP request fields in one validation/whitespace scan, materializing the
   final names and values without split/rejoin buffers and preserving field order.
 - Use bounded coroutine-stack scratch buffers for TCP reads up to 4 KiB,
