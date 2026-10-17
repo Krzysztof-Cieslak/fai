@@ -1635,19 +1635,70 @@ let parseRequestLine line =
       | Ok url -> Ok (methodFromString methodStr, url, version)
   | other -> Err ("bad request line: " ++ line)
 
-parseRequestHead : String -> Result (Method * Url * Headers * String) String
-let parseRequestHead text =
-  match String.split "\r\n" text with
-  | [] -> Err "empty request"
-  | requestLine :: headerLines ->
+// Byte offsets refer to the already validated UTF-8 head. ASCII delimiters and
+// whitespace keep every materialized name/value range on a scalar boundary.
+parseRequestHeadBytes : Bytes -> String -> Result (Method * Url * Headers * String) String
+let parseRequestHeadBytes bytes text =
+  let length = Bytes.length bytes
+  let (lineEnd, fieldsStart) =
+    match findCrlf bytes 0 length with
+    | None -> (length, length)
+    | Some end -> (end, end + 2)
+  match RegexEngine.slice text 0 lineEnd with
+  | Err _ -> Err "invalid request line text"
+  | Ok requestLine ->
     match parseRequestLine requestLine with
-    | Err e -> Err e
-    | Ok ml ->
-      match ml with
-      | (method, url, version) ->
-        match parseHeaderLines headerLines Headers.empty with
-        | Err e -> Err e
-        | Ok headers -> Ok (method, url, headers, version)
+    | Err error -> Err error
+    | Ok (method, url, version) ->
+      match scanRequestFields bytes text length fieldsStart fieldsStart (0 - 1) (0 - 1) (0 - 1) true [] with
+      | Err error -> Err error
+      | Ok headers -> Ok (method, url, headers, version)
+
+// Scan and validate fields without splitting/rejoining each line or building
+// temporary byte buffers for trimming. A negative nameEnd means the colon has
+// not been seen; a negative valueStart means the value is still only OWS.
+scanRequestFields : Bytes -> String -> Int -> Int -> Int -> Int -> Int -> Int -> Bool -> List (String * String) -> Result Headers String
+let scanRequestFields bytes text length lineStart index nameEnd valueStart valueEnd validName fields =
+  let atEnd = index >= length
+  let c = if atEnd then 0 else Bytes.unsafeGet index bytes
+  let lineEnd = atEnd || (c = 13 && index + 1 < length && Bytes.unsafeGet (index + 1) bytes = 10)
+  if lineEnd then
+    if nameEnd < 0 then
+      if index <> lineStart then
+        Err "header field is missing a colon"
+      else if atEnd then
+        Ok (Headers.fromList (List.reverse fields))
+      else
+        scanRequestFields bytes text length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true fields
+    else
+      let first = if valueStart < 0 then nameEnd + 1 else valueStart
+      let last = if valueStart < 0 then first else valueEnd
+      match RegexEngine.slice text lineStart nameEnd with
+      | Err _ -> Err "invalid header field"
+      | Ok name ->
+        match RegexEngine.slice text first last with
+        | Err _ -> Err "invalid header field"
+        | Ok value ->
+          let nextFields = (name, value) :: fields
+          if atEnd then
+            Ok (Headers.fromList (List.reverse nextFields))
+          else
+            scanRequestFields bytes text length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true nextFields
+  else if nameEnd < 0 then
+    if c = 58 then
+      if index = lineStart || not validName then
+        Err "invalid header field"
+      else
+        scanRequestFields bytes text length lineStart (index + 1) index (0 - 1) (0 - 1) true fields
+    else
+      scanRequestFields bytes text length lineStart (index + 1) nameEnd valueStart valueEnd (validName && isTokenByte c) fields
+  else if c <> 9 && (c < 32 || c = 127) then
+    Err "invalid header field"
+  else
+    let ows = c = 9 || c = 32
+    let first = if valueStart < 0 && not ows then index else valueStart
+    let last = if ows then valueEnd else index + 1
+    scanRequestFields bytes text length lineStart (index + 1) nameEnd first last validName fields
 
 honorExpectation : Transport 'e -> String -> Headers -> BodyFraming -> Result Unit String / 'e
 let honorExpectation t version headers framing =
@@ -1708,7 +1759,7 @@ let parseRequestAfter t buffered =
     match Bytes.toString headBytes with
     | None -> Err "request headers are not valid UTF-8"
     | Some headText ->
-      match parseRequestHead headText with
+      match parseRequestHeadBytes headBytes headText with
       | Err e -> Err e
       | Ok (method, url, headers, version) ->
         match framingOf headers NoBody with
