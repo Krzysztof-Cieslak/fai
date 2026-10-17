@@ -1,0 +1,86 @@
+module RouterDispatchSpec
+
+bodyOn : Web.HttpHandler 'e -> Web.HttpContext 'e -> Result String String / 'e
+let bodyOn handler ctx =
+  match Web.outcomeResponse (handler ctx) with
+  | None -> Err "no response"
+  | Some response -> Http.bodyText response.body
+
+outer : Web.HttpHandler 'e
+let outer ctx = Web.text (Option.withDefault "clear" (Web.param "outer" ctx)) ctx
+
+staticClearsParams : Test.Context -> Test.Check
+let staticClearsParams _ =
+  let result =
+    match Web.mockContext Http.GET "/one" with
+    | Err error -> Err error
+    | Ok ctx ->
+      let app = Router.router (Web.text "fallback") [Router.get [Router.route "/one" outer]]
+      bodyOn app { ctx with params = [("outer", "keep")] }
+  Expect.equal (Test.result Test.string Test.string).show (Ok "clear") result
+
+fallbackKeepsParams : Test.Context -> Test.Check
+let fallbackKeepsParams _ =
+  let result =
+    match Web.mockContext Http.GET "/one" with
+    | Err error -> Err error
+    | Ok ctx ->
+      let app = Router.router outer [Router.post [Router.route "/{id}" (Web.text "wrong")]]
+      bodyOn app { ctx with params = [("outer", "keep")] }
+  Expect.equal (Test.result Test.string Test.string).show (Ok "keep") result
+
+record : Concurrency -> Channel String -> String -> Web.HttpHandler { Concurrency } -> Web.HttpHandler { Concurrency }
+let record concurrency events name next ctx =
+  let sent = concurrency.send events name
+  next ctx
+
+orderedCandidates : Test.Context -> Test.Check / { Concurrency }
+let orderedCandidates ctx =
+  let concurrency = ctx.runtime.concurrency
+  let events = concurrency.channel 4
+  let app = Router.router (record concurrency events "fallback" (Web.text "fallback")) [
+    Router.post [
+      Router.route "/user/{wrong}" (record concurrency events "wrong method" (Web.text "wrong"))
+    ],
+    Router.get [
+      Router.route "/user/{id}" (record concurrency events "first" (fun _ -> Web.Skip)),
+      Router.route "/user/{slug}" (record concurrency events "second" (Web.text "selected")),
+      Router.route "/user/{name}" (record concurrency events "third" (Web.text "wrong"))
+    ]
+  ]
+  let result =
+    match Web.mockContext Http.GET "/user/42" with
+    | Err error -> Err error
+    | Ok request -> bodyOn app request
+  let closed = concurrency.close events
+  let first = concurrency.recv events
+  let second = concurrency.recv events
+  let third = concurrency.recv events
+  Expect.all [
+    Expect.equal (Test.result Test.string Test.string).show (Ok "selected") result,
+    Expect.equal (Test.list (Test.option Test.string)).show [
+      Some "first",
+      Some "second",
+      None
+    ] [first, second, third]
+  ]
+
+nestedMethodOverride : Test.Context -> Test.Check
+let nestedMethodOverride _ =
+  let result =
+    match Web.mockContext Http.POST "/nested" with
+    | Err error -> Err error
+    | Ok ctx ->
+      let app = Router.router (Web.text "fallback") [
+        Router.get [Router.post [Router.route "/nested" (Web.text "inner")]]
+      ]
+      bodyOn app ctx
+  Expect.equal (Test.result Test.string Test.string).show (Ok "inner") result
+
+tests : Test.Suite Test.Context { Concurrency }
+let tests = Test.describe "compiled route dispatch" [
+  Test.test "successful static routes clear inherited parameters" staticClearsParams,
+  Test.test "method rejection preserves the original fallback context" fallbackKeepsParams,
+  Test.test "method gates and skipped candidates preserve effect order" orderedCandidates,
+  Test.test "inner method groups keep their existing override semantics" nestedMethodOverride
+]

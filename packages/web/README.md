@@ -204,6 +204,11 @@ let app =
   Each candidate receives its own parameter names. A skipped candidate's captures
   do not leak to another candidate or to the fallback, which receives the original context.
 
+Route patterns and method metadata are prepared when `router` constructs its
+handler. Requests check those methods and invoke candidates directly, without
+constructing temporary handler lists. Static matches reuse an already-empty
+parameter context; successful matches still replace inherited route parameters.
+
 Matching walks the path one segment at a time (static segments first, then a
 capture), so lookup cost is proportional to the path length.
 A static prefix without a terminal route is a path miss and allows a capture
