@@ -223,7 +223,7 @@ fn function_ir_at(
     def_name: &str,
     origin: fai_db::SourceOrigin,
 ) -> Vec<String> {
-    function_ir_options(path, src, def_name, origin, false)
+    function_ir_options(path, src, def_name, origin, false, false)
 }
 
 fn function_ir_options(
@@ -232,6 +232,7 @@ fn function_ir_options(
     def_name: &str,
     origin: fai_db::SourceOrigin,
     shadow: bool,
+    concurrent: bool,
 ) -> Vec<String> {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
@@ -286,7 +287,7 @@ fn function_ir_options(
             (*fai_rc::result_facts(&db, *f, d.name)).clone()
         })
     };
-    let bce = crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow, concurrent: false };
+    let bce = crate::Bce { entry_of: &entry_of, result_of: &result_of, shadow, concurrent };
     crate::aot::function_ir_text(&lowered, &namer, &arity_of, &signature_of, &borrows_of, &bce)
 }
 
@@ -334,6 +335,46 @@ fn permuted_int_array_reads_have_no_transient_reference_counts() {
         "the borrowed array has no reference-count writes:\n{ir}"
     );
     assert_eq!(call_count(&ir), 2, "only the two bounds faults remain:\n{ir}");
+}
+
+#[test]
+fn byte_length_is_a_native_load() {
+    let ir = entry_ir(
+        "module M\npublic length : Bytes -> Int\nlet length bytes = Bytes.length bytes\n",
+        "length",
+    );
+    assert_eq!(call_count(&ir), 0, "borrowed byte length needs no runtime calls:\n{ir}");
+    assert!(ir.contains("load.i64"), "length is a native word load:\n{ir}");
+    assert!(!ir.contains("store "), "length must not touch the reference count:\n{ir}");
+}
+
+#[test]
+fn byte_reads_use_unsigned_native_loads_without_reference_counts() {
+    let ir = entry_ir(
+        "module M\npublic at : Int -> Bytes -> Int\nlet at i bytes = Bytes.unsafeGet i bytes + Bytes.unsafeGet (i + 1) bytes\n",
+        "at",
+    );
+    assert_eq!(ir.matches("uload8.i64").count(), 2, "bytes are zero-extended:\n{ir}");
+    assert_eq!(call_count(&ir), 2, "only the two terminal bounds faults remain:\n{ir}");
+    assert!(!ir.contains("store "), "reads must not touch the reference count:\n{ir}");
+    assert!(!ir.contains("ishl"), "native indices/results need no tagging:\n{ir}");
+    assert_terminal_fault(&ir);
+}
+
+#[test]
+fn concurrent_byte_reads_keep_the_native_read_path() {
+    let ir = function_ir_options(
+        "M.fai",
+        "module M\npublic at : Int -> Bytes -> Int\nlet at i bytes = Bytes.unsafeGet i bytes\n",
+        "at",
+        fai_db::SourceOrigin::User,
+        false,
+        true,
+    )
+    .remove(0);
+    assert!(ir.contains("uload8.i64"), "immutable reads are concurrency-safe:\n{ir}");
+    assert_eq!(call_count(&ir), 1, "only the bounds fault remains:\n{ir}");
+    assert!(!ir.contains("store "), "no reference-count stores:\n{ir}");
 }
 
 #[test]
@@ -395,7 +436,7 @@ fn tagged_division_retains_only_its_real_fallback_return() {
 
 #[test]
 fn shadow_bounds_fault_is_terminal() {
-    let ir = function_ir_options("M.fai", "module M\npublic at : Array Float -> Float\nlet at xs = if Array.length xs > 0 then Array.unsafeGet 0 xs else 1.0\n", "at", fai_db::SourceOrigin::User, true).remove(0);
+    let ir = function_ir_options("M.fai", "module M\npublic at : Array Float -> Float\nlet at xs = if Array.length xs > 0 then Array.unsafeGet 0 xs else 1.0\n", "at", fai_db::SourceOrigin::User, true, false).remove(0);
     assert_terminal_fault(&ir);
 }
 

@@ -30,6 +30,7 @@ example: Bytes.toList (prefix 0 (Bytes.fromString "x")) = []
 example: prefix 100 (Bytes.fromList [0, 128, 255]) = Bytes.fromList [0, 128, 255]
 
 /// Sum unsigned byte values, borrowing one immutable buffer throughout the scan.
+/// Byte lengths and reads use native loads with bounds checking.
 public checksum : Bytes -> Int
 let checksum bytes = checksumFrom bytes 0 0
 

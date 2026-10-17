@@ -3850,6 +3850,12 @@ pub extern "C" fn fai_bytes_length_borrowed(b: Value) -> Value {
     fai_box_int(len)
 }
 
+/// The common fault for runtime and inlined byte indexing.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_index_panic() {
+    fai_panic("Bytes.unsafeGet: index out of bounds");
+}
+
 /// `Bytes.unsafeGet`: the byte at index `i` as an `Int` (0–255); aborts on an
 /// out-of-bounds index. Both operands consumed.
 #[unsafe(no_mangle)]
@@ -3868,7 +3874,7 @@ pub extern "C" fn fai_bytes_get_borrowed(b: Value, i: Value) -> Value {
     let byte = unsafe {
         let bytes = bytes_bytes(b);
         if idx < 0 || idx as usize >= bytes.len() {
-            fai_panic("Bytes.unsafeGet: index out of bounds");
+            fai_bytes_index_panic();
         }
         bytes[idx as usize] as i64
     };

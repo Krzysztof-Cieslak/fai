@@ -3781,6 +3781,9 @@ impl<M: Module> Translator<'_, M> {
         if let Some(v) = self.array_prim(op, args, result_ty) {
             return v;
         }
+        if let Some(v) = self.bytes_prim(op, args) {
+            return v;
+        }
         if op == Prim::StrConcat
             && let Some(value) = self.append_literal(args)
         {
@@ -3811,6 +3814,45 @@ impl<M: Module> Translator<'_, M> {
         } else {
             result
         }
+    }
+
+    /// Immutable byte readers need neither a runtime call nor a uniform integer
+    /// boundary. The caller retains the buffer for the complete operation; this
+    /// is also safe in concurrent code and consults no worker-local state.
+    fn bytes_prim(&mut self, op: Prim, args: &[CExpr]) -> Option<Value> {
+        if !matches!(op, Prim::BytesLength | Prim::BytesGet)
+            || !matches!(&args.first()?.ty, Ty::Con(Con::Bytes))
+        {
+            return None;
+        }
+        let base = self.expr(&args[0]);
+        let offset = i32::try_from(rt::STRING_LEN_OFFSET).expect("byte length offset");
+        if op == Prim::BytesLength {
+            let length = self.builder.ins().load(types::I64, MemFlags::trusted(), base, offset);
+            return Some(self.mark_raw(length));
+        }
+
+        let index = self.expr(&args[1]);
+        // The buffer is borrowed, but its scalar index is an owned argument. A
+        // uniform full-width index must release its box after reading the word.
+        let index = self.as_raw_int(index);
+        let length = self.builder.ins().load(types::I64, MemFlags::trusted(), base, offset);
+        let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, index, length);
+        let valid = self.builder.create_block();
+        let invalid = self.builder.create_block();
+        self.builder.set_cold_block(invalid);
+        self.builder.ins().brif(in_bounds, valid, &[], invalid, &[]);
+
+        self.builder.switch_to_block(invalid);
+        self.builder.seal_block(invalid);
+        self.runtime_fault("fai_bytes_index_panic", &[], false);
+
+        self.builder.switch_to_block(valid);
+        self.builder.seal_block(valid);
+        let address = self.builder.ins().iadd(base, index);
+        let offset = i32::try_from(rt::STRING_BYTES_OFFSET).expect("byte payload offset");
+        let byte = self.builder.ins().uload8(types::I64, MemFlags::trusted(), address, offset);
+        Some(self.mark_raw(byte))
     }
 
     /// Appends a short literal directly into a unique inline String with room.

@@ -30,8 +30,8 @@ example: get 1 (fromList [10, 20, 30]) = Some 20
 example: get 5 (fromList [1]) = None
 example: get 0 empty = None
 
-/// The byte at index `i` without a bounds check (out of bounds aborts). For loops
-/// whose index is in range by construction; prefer `get` for an untrusted index.
+/// The byte at index `i`, aborting if it is out of bounds. For loops whose index
+/// is in range by construction; prefer `get` for an untrusted index.
 public unsafeGet : Int -> Bytes -> Int
 let unsafeGet i b = Prim.bytesGet b i
 example: unsafeGet 0 (fromList [7, 8]) = 7
