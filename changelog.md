@@ -16,6 +16,8 @@
   capture-free closures, including in concurrent code.
 - Resume incomplete HTTP header and framing-line searches at their unexamined
   suffix, avoiding quadratic rescanning under highly fragmented input.
+- Inline read-only Array length and element access in concurrent programs,
+  preserving shared ownership, raw Float slots and bounds diagnostics.
 - Transfer uniquely owned inline buffers between String and Bytes without
   copying, while preserving UTF-8 validation, substring views and shared aliases.
 - Read buffered HTTP request bodies in bounded 64 KiB batches, reducing receive

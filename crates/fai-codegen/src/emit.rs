@@ -4244,9 +4244,10 @@ impl<M: Module> Translator<'_, M> {
         // thread-local pool base across the function, which a task may invalidate by
         // migrating workers at a suspension point; and an in-place array mutation
         // must consult a shared array's count atomically. Take the runtime `Array`
-        // operations instead — they allocate from the current thread's pool and copy
-        // a shared array — so this whole inline path is single-threaded-only.
-        if self.concurrent {
+        // mutating operations instead. Read-only length/element access uses no
+        // pool address or uniqueness test, and owned boxed results still acquire
+        // their reference through the concurrency-aware runtime dup.
+        if self.concurrent && !matches!(op, Prim::ArrayLength | Prim::ArrayGet | Prim::ArrayPeek) {
             return None;
         }
         // `Array.withCapacity` (and `empty`/`singleton`/the builders that bottom out

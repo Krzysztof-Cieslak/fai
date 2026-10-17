@@ -3869,6 +3869,9 @@ Editor integration:
     Native SSA values known to be permanent String literals or capture-free
     closures need no ownership operations, including under concurrency. Unknown
     merges and loop-carried values keep their ordinary reference-count behavior.
+    Read-only Array length/get/peek can inline during concurrent execution:
+    immutable slots require no pool pointer or uniqueness test, while owned boxed
+    results retain concurrency-aware reference acquisition. Mutation stays runtime.
     A missing reuse token takes the same inline small-data allocation path; a
     wrong-sized token retains runtime handling. Pool lookup stays lazy for a
     function that otherwise only reuses cells, avoiding overhead on successful
