@@ -77,10 +77,155 @@ let nestedMethodOverride _ =
       bodyOn app ctx
   Expect.equal (Test.result Test.string Test.string).show (Ok "inner") result
 
+let expectMatched pattern path =
+  let result =
+    match Web.mockContext Http.GET path with
+    | Err error -> Err error
+    | Ok ctx ->
+      bodyOn (Router.router (Web.text "fallback") [Router.route pattern (Web.text "matched")]) ctx
+  Expect.equal (Test.result Test.string Test.string).show (Ok "matched") result
+
+type Rule = { id : Int, method : Int, pattern : String, skip : Bool }
+
+let patterns = [|
+  "/",
+  "/a",
+  "/b",
+  "/{x}",
+  "/a/b",
+  "/a/{x}",
+  "/{x}/b",
+  "/{x}/{y}",
+  "/a/b/c",
+  "/a/{x}/c",
+  "/{x}/b/c",
+  "/café",
+  "/a%2Fb"
+|]
+
+let paths = [|
+  "/",
+  "/a",
+  "/b",
+  "/z",
+  "/a/b",
+  "/a/z",
+  "/z/b",
+  "/z/y",
+  "/a/b/c",
+  "/z/b/c",
+  "/a//b/",
+  "/café",
+  "/a%2Fb"
+|]
+
+let rule seed index =
+  let bits = Int.shiftRightLogical seed (index * 12)
+  {
+    id = index,
+    method = Int.and (Int.shiftRightLogical bits 4) 3 % 3,
+    pattern = Array.unsafeGet (Int.and bits 15 % Array.length patterns) patterns,
+    skip = Int.and (Int.shiftRightLogical bits 6) 1 = 1
+  }
+
+let asRoute rule =
+  let handler ctx = if rule.skip then Web.Skip else Web.text (Int.toString rule.id) ctx
+  let leaf = Router.route rule.pattern handler
+  if rule.method = 1 then
+    Router.get [leaf]
+  else if rule.method = 2 then Router.post [leaf] else leaf
+
+let segments path = List.filter (fun part -> part <> "") (String.split "/" path)
+
+// Independent reference: enumerate complete matches, choose the lexicographically
+// strongest static/capture pattern, then try that pattern's candidates in order.
+let rank pattern path weight =
+  match (pattern, path) with
+  | ([], []) -> Some 0
+  | (p :: ps, value :: rest) ->
+    if p = "{x}" || p = "{y}" then
+      rank ps rest (weight / 2)
+    else if p = value then
+      Option.map (fun tail -> weight + tail) (rank ps rest (weight / 2))
+    else
+      None
+  | _ -> None
+
+let score rule path = Option.withDefault (0 - 1) (rank (segments rule.pattern) (segments path) 4)
+
+let strongest rules path best =
+  match rules with
+  | [] -> best
+  | rule :: rest ->
+    let candidate = score rule path
+    strongest rest path (if candidate > best then candidate else best)
+
+let selected rules path method best =
+  match rules with
+  | [] -> "fallback"
+  | rule :: rest ->
+    if best >= 0 && score rule path = best && (rule.method = 0 || rule.method = method) && not rule.skip then
+      Int.toString rule.id
+    else
+      selected rest path method best
+
+let agreesWithModel seeds =
+  let (seed, requestSeed) = seeds
+  let rules = List.map (rule seed) (List.range 0 4)
+  let path = Array.unsafeGet (Int.and requestSeed 15 % Array.length paths) paths
+  let method = if Int.and (Int.shiftRightLogical requestSeed 4) 1 = 0 then 1 else 2
+  let expected = selected rules path method (strongest rules path (0 - 1))
+  let actual =
+    match Web.mockContext (if method = 1 then Http.GET else Http.POST) path with
+    | Err error -> Err error
+    | Ok ctx -> bodyOn (Router.router (Web.text "fallback") (List.map asRoute rules)) ctx
+  Expect.equal (Test.result Test.string Test.string).show (Ok expected) actual
+
+bodyFor : Web.HttpHandler 'e -> String -> Result String String / 'e
+let bodyFor app path =
+  match Web.mockContext Http.GET path with
+  | Err error -> Err error
+  | Ok ctx -> bodyOn app ctx
+
+let largeStaticTable _ =
+  let ids = List.range 0 257
+  let routes =
+    List.map (fun id -> Router.route ("/item/" ++ Int.toString id) (Web.text (Int.toString id))) ids
+  let app = Router.router (Web.text "fallback") [
+    Router.get routes,
+    Router.get [Router.route "/item/{id}" (Web.text "captured")]
+  ]
+  let hits =
+    List.all (fun id -> bodyFor app ("/item/" ++ Int.toString id) = Ok (Int.toString id)) ids
+  Expect.all [
+    Expect.equal Test.bool.show true hits,
+    Expect.equal (Test.result Test.string Test.string).show (Ok "captured") (bodyFor app "/item/not-static")
+  ]
+
+let largeDynamicTable _ =
+  let ids = List.range 0 257
+  let route id =
+    let handle ctx =
+      Web.text (Int.toString id ++ ":" ++ Option.withDefault "missing" (Web.param "id" ctx)) ctx
+    Router.route ("/group/" ++ Int.toString id ++ "/{id}") handle
+  let app = Router.router (Web.text "fallback") [Router.get (List.map route ids)]
+  let hits =
+    List.all (fun id ->
+      bodyFor app ("/group/" ++ Int.toString id ++ "/value") = Ok (Int.toString id ++ ":value")) ids
+  Expect.equal Test.bool.show true hits
+
 tests : Test.Suite Test.Context { Concurrency }
 let tests = Test.describe "compiled route dispatch" [
   Test.test "successful static routes clear inherited parameters" staticClearsParams,
   Test.test "method rejection preserves the original fallback context" fallbackKeepsParams,
   Test.test "method gates and skipped candidates preserve effect order" orderedCandidates,
-  Test.test "inner method groups keep their existing override semantics" nestedMethodOverride
+  Test.test "inner method groups keep their existing override semantics" nestedMethodOverride,
+  Test.test "root endpoints use the compiled root node" (fun _ -> expectMatched "/" "/"),
+  Test.test "repeated and trailing slashes preserve matching" (fun _ ->
+    expectMatched "a/b/" "/a//b/"),
+  Test.test "Unicode exact routes preserve their spelling" (fun _ ->
+    expectMatched "/café/😀" "/café/😀"),
+  Test.test "large exact tables retain every handler through growth" largeStaticTable,
+  Test.test "large dynamic edge tables preserve binary-search and capture results" largeDynamicTable,
+  Test.property "compiled routing agrees with complete-match precedence" (Test.tuple2 Test.int Test.int) agreesWithModel
 ]

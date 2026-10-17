@@ -1,9 +1,9 @@
 module Router
 
 // A TokenRouter-style router: build a tree of routes from a list and match an
-// incoming request against it by walking the path one segment at a time. Static
-// segments are matched first (with a fall back to a `{name}` capture), so lookup
-// is proportional to the path length rather than the number of routes.
+// incoming request against startup-compiled tables. Exact static paths have a
+// direct index; other paths walk flat node/edge arrays one segment at a time,
+// searching static edges before falling back to a `{name}` capture.
 //
 //   Router.router (Web.notFound "Not Found") [
 //     Router.get [
@@ -88,11 +88,13 @@ let parsePattern p = List.map parseSegment (splitPath p)
 // shared capture edge stores only path structure.
 type Candidate 'e = Option Http.Method * List String * Web.HttpHandler 'e
 
+// Ordered builder edges keep insertion logarithmic. They are discarded after
+// compilation into the immutable runtime arrays.
 type Node 'e =
-  | MkNode { capture : Option (Node 'e), children : List (String * Node 'e), handlers : List (Candidate 'e) }
+  | MkNode { capture : Option (Node 'e), children : Dict String (Node 'e), handlers : List (Candidate 'e) }
 
 emptyNode : Node 'e
-let emptyNode = MkNode { capture = None, children = [], handlers = [] }
+let emptyNode = MkNode { capture = None, children = Dict.empty, handlers = [] }
 
 let nodeFields node =
   match node with
@@ -105,48 +107,32 @@ let orElse primary fallback =
   | None -> fallback
 
 // The child stored under static segment `s`, or the empty node.
-childOrEmpty : List (String * Node 'e) -> String -> Node 'e
-let childOrEmpty children s =
-  match children with
-  | [] -> emptyNode
-  | pair :: rest ->
-    match pair with
-    | (k, v) -> if k = s then v else childOrEmpty rest s
-
-// The child stored under static segment `s`, if any.
-childAt : List (String * Node 'e) -> String -> Option (Node 'e)
-let childAt children s =
-  match children with
-  | [] -> None
-  | pair :: rest ->
-    match pair with
-    | (k, v) -> if k = s then Some v else childAt rest s
-
-// Replace (or append) the child stored under static segment `s`.
-setChild : List (String * Node 'e) -> String -> Node 'e -> List (String * Node 'e)
-let setChild children s node =
-  match children with
-  | [] -> [(s, node)]
-  | pair :: rest ->
-    match pair with
-    | (k, v) -> if k = s then (s, node) :: rest else pair :: setChild rest s node
+childOrEmpty : Dict String (Node 'e) -> String -> Node 'e
+let childOrEmpty children s = Dict.getOrElse (fun _ -> emptyNode) s children
 
 // Insert a handler and its method at the path given by `segs`.
 insertAt : Node 'e -> List Segment -> Option Http.Method -> List String -> Web.HttpHandler 'e -> Node 'e
 let insertAt node segs method names handler =
-  let r = nodeFields node
-  match segs with
-  | [] -> MkNode { r with
-    handlers = List.append r.handlers [(method, List.reverse names, handler)]
-  }
-  | seg :: rest ->
-    match seg with
-    | StaticSeg s ->
-      let updated = insertAt (childOrEmpty r.children s) rest method names handler
-      MkNode { r with children = setChild r.children s updated }
-    | CaptureSeg name ->
-      let existing = Option.withDefault emptyNode r.capture
-      MkNode { r with capture = Some (insertAt existing rest method (name :: names) handler) }
+  match node with
+  | MkNode { capture, children, handlers } ->
+    match segs with
+    | [] -> MkNode {
+      capture = capture,
+      children = children,
+      handlers = List.append handlers [(method, List.reverse names, handler)]
+    }
+    | seg :: rest ->
+      match seg with
+      | StaticSeg s ->
+        let updated = insertAt (childOrEmpty children s) rest method names handler
+        MkNode { capture = capture, children = Dict.insert s updated children, handlers = handlers }
+      | CaptureSeg name ->
+        let existing = Option.withDefault emptyNode capture
+        MkNode {
+          capture = Some (insertAt existing rest method (name :: names) handler),
+          children = children,
+          handlers = handlers
+        }
 
 // Flatten a route (with its inherited path prefix and method) into the tree.
 addRoute : Node 'e -> List Segment -> Option Http.Method -> Route 'e -> Node 'e
@@ -164,27 +150,109 @@ let addRoutes node prefix method routes =
   | [] -> node
   | r :: rest -> addRoutes (addRoute node prefix method r) prefix method rest
 
+// --- Startup compilation ---------------------------------------------------
+// Nodes and static edges are contiguous. Exact paths index their terminal node,
+// so method rejection keeps the same selected path instead of trying a capture.
+type CompiledNode 'e = {
+  capture : Int,
+  edgeCount : Int,
+  edgeStart : Int,
+  handlers : List (Candidate 'e)
+}
+
+type Compiled 'e = {
+  edges : Array (String * Int),
+  exact : HashDict String Int,
+  nodes : Array (CompiledNode 'e)
+}
+
+pushEdges : List (String * Int) -> Array (String * Int) -> Array (String * Int)
+let pushEdges edges output =
+  match edges with
+  | [] -> output
+  | edge :: rest -> pushEdges rest (Array.push edge output)
+
+compileChildren : List (String * Node 'e) -> String -> Bool -> List (String * Int) -> Compiled 'e -> (List (String * Int) * Compiled 'e)
+let compileChildren children prefix literal edges compiled =
+  match children with
+  | [] -> (edges, compiled)
+  | (name, child) :: rest ->
+    let path = if literal then prefix ++ "/" ++ name else ""
+    let (index, next) = compileNode child path literal compiled
+    compileChildren rest prefix literal ((name, index) :: edges) next
+
+compileNode : Node 'e -> String -> Bool -> Compiled 'e -> (Int * Compiled 'e)
+let compileNode node prefix literal compiled =
+  let fields = nodeFields node
+  match compiled with
+  | { edges, exact, nodes } ->
+    let index = Array.length nodes
+    let nextExact =
+      if literal && not (List.isEmpty fields.handlers) then
+        HashDict.insert (if prefix = "" then "/" else prefix) index exact
+      else
+        exact
+    let reserved = {
+      edges = edges,
+      exact = nextExact,
+      nodes = Array.push { capture = (0 - 1), edgeCount = 0, edgeStart = 0, handlers = [] } nodes
+    }
+    let (children, afterChildren) =
+      compileChildren (Dict.toList fields.children) prefix literal [] reserved
+    let (capture, afterCapture) =
+      match fields.capture with
+      | None -> (0 - 1, afterChildren)
+      | Some child -> compileNode child "" false afterChildren
+    finishNode index capture fields.handlers children afterCapture
+
+finishNode : Int -> Int -> List (Candidate 'e) -> List (String * Int) -> Compiled 'e -> (Int * Compiled 'e)
+let finishNode index capture handlers children compiled =
+  match compiled with
+  | { edges, exact, nodes } ->
+    let edgeStart = Array.length edges
+    let ordered =
+      // compileChildren prepends Dict.toList's ordered edges.
+      List.reverse children
+    let finished = {
+      capture = capture,
+      edgeCount = List.length ordered,
+      edgeStart = edgeStart,
+      handlers = handlers
+    }
+    (index, {
+      edges = pushEdges ordered edges,
+      exact = exact,
+      nodes = Array.unsafeSet index finished nodes
+    })
+
 // --- Matching --------------------------------------------------------------
+edgeAt : Array (String * Int) -> String -> Int -> Int -> Int
+let edgeAt edges key low high =
+  if low >= high then
+    0 - 1
+  else
+    let middle = low + (high - low) / 2
+    let (name, child) = Array.unsafeGet middle edges
+    let order = compare key name
+    if order = 0 then
+      child
+    else if order < 0 then edgeAt edges key low middle else edgeAt edges key (middle + 1) high
+
 // Walk the path segments through the tree, collecting captured values in reverse
 // order and returning the candidates at the matched node. Static edges win; a
 // failed static branch falls back to the capture edge. A prefix without terminal
 // handlers is a failed path match, not an endpoint.
-lookupNode : Node 'e -> List String -> List String -> Option (List String * List (Candidate 'e))
-let lookupNode node segs params =
-  let r = nodeFields node
+lookupNode : Compiled 'e -> Int -> List String -> List String -> Option (List String * List (Candidate 'e))
+let lookupNode compiled index segs params =
+  let r = Array.unsafeGet index compiled.nodes
   match segs with
   | [] -> if List.isEmpty r.handlers then None else Some (params, r.handlers)
   | seg :: rest ->
-    let viaStatic =
-      match childAt r.children seg with
-      | Some child -> lookupNode child rest params
-      | None -> None
+    let child = edgeAt compiled.edges seg r.edgeStart (r.edgeStart + r.edgeCount)
+    let viaStatic = if child < 0 then None else lookupNode compiled child rest params
     match viaStatic with
     | Some result -> Some result
-    | None ->
-      match r.capture with
-      | Some child -> lookupNode child rest (seg :: params)
-      | None -> None
+    | None -> if r.capture < 0 then None else lookupNode compiled r.capture rest (seg :: params)
 
 matchesMethod : Option Http.Method -> Http.Method -> Bool
 let matchesMethod expected actual =
@@ -222,9 +290,20 @@ let chooseCaptured values candidates fallback ctx =
 public router : Web.HttpHandler 'e -> List (Route 'e) -> Web.HttpHandler 'e
 let router fallback routes =
   let tree = addRoutes emptyNode [] None routes
+  let (root, compiled) = compileNode tree "" true {
+    edges = Array.empty,
+    exact = HashDict.empty,
+    nodes = Array.empty
+  }
   fun ctx ->
-    match lookupNode tree (splitPath (Web.path ctx)) [] with
-    | None -> fallback ctx
-    | Some result ->
-      match result with
-      | (params, handlers) -> chooseCaptured (List.reverse params) handlers fallback ctx
+    let path = Web.path ctx
+    let exact = HashDict.getOr (0 - 1) path compiled.exact
+    if exact >= 0 then
+      let node = Array.unsafeGet exact compiled.nodes
+      chooseCaptured [] node.handlers fallback ctx
+    else
+      match lookupNode compiled root (splitPath path) [] with
+      | None -> fallback ctx
+      | Some result ->
+        match result with
+        | (params, handlers) -> chooseCaptured (List.reverse params) handlers fallback ctx
