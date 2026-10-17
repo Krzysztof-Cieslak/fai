@@ -9,6 +9,8 @@
 ### Changed
 - Let repository documentation checks accept package Unreleased entries during
   development; prepared release candidates still require promoted release notes.
+- Collect request framing, expectation and connection metadata during the
+  validated field scan, avoiding repeated header lookups and case conversion.
 - Render computed HTTP Content-Length fields directly without constructing a
   temporary replacement header collection, preserving validation and wire order.
 - Concatenate Bytes directly into one final buffer with checked allocation size,

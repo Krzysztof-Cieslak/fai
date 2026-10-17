@@ -1985,7 +1985,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    Request fields are validated and trimmed in one byte scan, preserving UTF-8,
    duplicate order, and first-error precedence.
    Buffered sends render computed Content-Length directly, preserving validation
-   and field order without a temporary replacement header collection. Server:
+   and field order without a temporary replacement header collection. Request
+   protocol metadata is collected during validation and interpreted only after
+   the complete head passes, preserving duplicate order and error precedence. Server:
   `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection, serving ordered requests until either peer sends `Connection: close`.

@@ -644,6 +644,10 @@ framingOf : Headers -> BodyFraming -> Result BodyFraming String
 let framingOf headers fallback =
   let transfers = Headers.getAll "Transfer-Encoding" headers
   let lengths = Headers.getAll "Content-Length" headers
+  framingFrom transfers lengths fallback
+
+framingFrom : List String -> List String -> BodyFraming -> Result BodyFraming String
+let framingFrom transfers lengths fallback =
   if not (List.isEmpty transfers) then
     if not (List.isEmpty lengths) then
       Err "Transfer-Encoding and Content-Length cannot be combined"
@@ -1335,8 +1339,11 @@ let pooledEofRecv release t =
 
 // Whether a response asks the connection to close.
 hasConnectionClose : Headers -> Bool
-let hasConnectionClose headers =
-  List.member "close" (List.map String.toLower (headerParts (Headers.getAll "Connection" headers)))
+let hasConnectionClose headers = hasConnectionCloseValues (Headers.getAll "Connection" headers)
+
+hasConnectionCloseValues : List String -> Bool
+let hasConnectionCloseValues values =
+  List.member "close" (List.map String.toLower (headerParts values))
 
 // A keep-alive response (a definite length and no `Connection: close`) leaves the
 // connection reusable; an until-EOF or explicitly-closed one does not.
@@ -1652,10 +1659,43 @@ let parseRequestLine line =
       | Ok url -> Ok (methodFromString methodStr, url, version)
   | other -> Err ("bad request line: " ++ line)
 
+type HeadMetadata = {
+  connections : List String,
+  expectations : List String,
+  lengths : List String,
+  transfers : List String
+}
+
+// Names have passed ASCII token validation. Collect protocol values in wire
+// order, but defer interpreting them until the entire head has been validated.
+rememberField : Int -> String -> String -> HeadMetadata -> HeadMetadata
+let rememberField size name value metadata =
+  if size = 6 && String.toLower name = "expect" then
+    { metadata with expectations = value :: metadata.expectations }
+  else if size = 10 && String.toLower name = "connection" then
+    { metadata with connections = value :: metadata.connections }
+  else if size = 14 && String.toLower name = "content-length" then
+    { metadata with lengths = value :: metadata.lengths }
+  else if size = 17 && String.toLower name = "transfer-encoding" then
+    { metadata with transfers = value :: metadata.transfers }
+  else
+    metadata
+
+finishFields : List (String * String) -> HeadMetadata -> Result (Headers * HeadMetadata) String
+let finishFields fields metadata =
+  match metadata with
+  | { connections, expectations, lengths, transfers } ->
+    Ok (Headers.fromList (List.reverse fields), {
+      connections = List.reverse connections,
+      expectations = List.reverse expectations,
+      lengths = List.reverse lengths,
+      transfers = List.reverse transfers
+    })
+
 // Byte offsets refer to the already validated UTF-8 head. ASCII delimiters and
 // whitespace keep every materialized name/value range on a scalar boundary.
-parseRequestHeadBytes : Bytes -> String -> Result (Method * Url * Headers * String) String
-let parseRequestHeadBytes bytes text =
+parseRequestHeadMeta : Bytes -> String -> Result (Method * Url * Headers * String * HeadMetadata) String
+let parseRequestHeadMeta bytes text =
   let length = Bytes.length bytes
   let (lineEnd, fieldsStart) =
     match findCrlf bytes 0 length with
@@ -1667,15 +1707,16 @@ let parseRequestHeadBytes bytes text =
     match parseRequestLine requestLine with
     | Err error -> Err error
     | Ok (method, url, version) ->
-      match scanRequestFields bytes text length fieldsStart fieldsStart (0 - 1) (0 - 1) (0 - 1) true [] with
+      let metadata = { connections = [], expectations = [], lengths = [], transfers = [] }
+      match scanRequestFields bytes text length fieldsStart fieldsStart (0 - 1) (0 - 1) (0 - 1) true [] metadata with
       | Err error -> Err error
-      | Ok headers -> Ok (method, url, headers, version)
+      | Ok (headers, metadata) -> Ok (method, url, headers, version, metadata)
 
 // Scan and validate fields without splitting/rejoining each line or building
 // temporary byte buffers for trimming. A negative nameEnd means the colon has
 // not been seen; a negative valueStart means the value is still only OWS.
-scanRequestFields : Bytes -> String -> Int -> Int -> Int -> Int -> Int -> Int -> Bool -> List (String * String) -> Result Headers String
-let scanRequestFields bytes text length lineStart index nameEnd valueStart valueEnd validName fields =
+scanRequestFields : Bytes -> String -> Int -> Int -> Int -> Int -> Int -> Int -> Bool -> List (String * String) -> HeadMetadata -> Result (Headers * HeadMetadata) String
+let scanRequestFields bytes text length lineStart index nameEnd valueStart valueEnd validName fields metadata =
   let atEnd = index >= length
   let c = if atEnd then 0 else Bytes.unsafeGet index bytes
   let lineEnd = atEnd || (c = 13 && index + 1 < length && Bytes.unsafeGet (index + 1) bytes = 10)
@@ -1684,9 +1725,9 @@ let scanRequestFields bytes text length lineStart index nameEnd valueStart value
       if index <> lineStart then
         Err "header field is missing a colon"
       else if atEnd then
-        Ok (Headers.fromList (List.reverse fields))
+        finishFields fields metadata
       else
-        scanRequestFields bytes text length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true fields
+        scanRequestFields bytes text length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true fields metadata
     else
       let first = if valueStart < 0 then nameEnd + 1 else valueStart
       let last = if valueStart < 0 then first else valueEnd
@@ -1697,29 +1738,30 @@ let scanRequestFields bytes text length lineStart index nameEnd valueStart value
         | Err _ -> Err "invalid header field"
         | Ok value ->
           let nextFields = (name, value) :: fields
+          let nextMetadata = rememberField (nameEnd - lineStart) name value metadata
           if atEnd then
-            Ok (Headers.fromList (List.reverse nextFields))
+            finishFields nextFields nextMetadata
           else
-            scanRequestFields bytes text length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true nextFields
+            scanRequestFields bytes text length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true nextFields nextMetadata
   else if nameEnd < 0 then
     if c = 58 then
       if index = lineStart || not validName then
         Err "invalid header field"
       else
-        scanRequestFields bytes text length lineStart (index + 1) index (0 - 1) (0 - 1) true fields
+        scanRequestFields bytes text length lineStart (index + 1) index (0 - 1) (0 - 1) true fields metadata
     else
-      scanRequestFields bytes text length lineStart (index + 1) nameEnd valueStart valueEnd (validName && isTokenByte c) fields
+      scanRequestFields bytes text length lineStart (index + 1) nameEnd valueStart valueEnd (validName && isTokenByte c) fields metadata
   else if c <> 9 && (c < 32 || c = 127) then
     Err "invalid header field"
   else
     let ows = c = 9 || c = 32
     let first = if valueStart < 0 && not ows then index else valueStart
     let last = if ows then valueEnd else index + 1
-    scanRequestFields bytes text length lineStart (index + 1) nameEnd first last validName fields
+    scanRequestFields bytes text length lineStart (index + 1) nameEnd first last validName fields metadata
 
-honorExpectation : Transport 'e -> String -> Headers -> BodyFraming -> Result Unit String / 'e
-let honorExpectation t version headers framing =
-  let expectations = List.map String.toLower (headerParts (Headers.getAll "Expect" headers))
+honorExpectations : Transport 'e -> String -> List String -> BodyFraming -> Result Unit String / 'e
+let honorExpectations t version values framing =
+  let expectations = List.map String.toLower (headerParts values)
   if List.isEmpty expectations then
     Ok ()
   else if version = "HTTP/1.1" && expectations = ["100-continue"] then
@@ -1776,13 +1818,13 @@ let parseRequestAfter t buffered =
     match Bytes.toString headBytes with
     | None -> Err "request headers are not valid UTF-8"
     | Some headText ->
-      match parseRequestHeadBytes headBytes headText with
+      match parseRequestHeadMeta headBytes headText with
       | Err e -> Err e
-      | Ok (method, url, headers, version) ->
-        match framingOf headers NoBody with
+      | Ok (method, url, headers, version, { connections, expectations, lengths, transfers }) ->
+        match framingFrom transfers lengths NoBody with
         | Err e -> Err e
         | Ok framing ->
-          match honorExpectation t version headers framing with
+          match honorExpectations t version expectations framing with
           | Err e -> Err e
           | Ok _ ->
             match readRequestBody t leftover framing with
@@ -1794,7 +1836,7 @@ let parseRequestAfter t buffered =
                 method = method,
                 url = url
               }
-              Ok (Some (request, version <> "HTTP/1.1" || hasConnectionClose headers, rest))
+              Ok (Some (request, version <> "HTTP/1.1" || hasConnectionCloseValues connections, rest))
 
 // Read one request without exposing connection bookkeeping.
 parseRequest : Transport 'e -> Result (Request 'r) String / 'e

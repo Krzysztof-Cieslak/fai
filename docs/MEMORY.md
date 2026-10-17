@@ -5252,6 +5252,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     a continuously runnable queue from starving sockets or expired timers.
   - URL decoding returns an unescaped component directly. Shared strings remain
     immutable, and escaped/malformed input retains the existing byte decoder.
+  - Request field scanning also collects framing, expectation and connection
+    values, preserving their wire order. Their interpretation remains after
+    complete head validation, so field and framing error precedence is unchanged.
   - Buffered HTTP messages render their computed length directly, preserving the
     field order of replacing Content-Length while avoiding a transient header list.
     Authored framing is still validated before the body is collected.
