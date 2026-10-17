@@ -51,6 +51,16 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Direct calls may return monomorphic, resource-free `Result` values as a tag
+  and uniform payload components. This extends aggregate scalar replacement
+  across call boundaries without depending on callee bodies. Small tuple payloads
+  can be flattened within an eight-word native return budget; uniform and
+  first-class boundaries reconstruct ordinary Result/tuple cells. Resource-bearing
+  results stay boxed: splitting a tag from its payload could otherwise release a
+  resource before a later tag-only use. Generic and direct-Float payloads retain
+  their established representation. Native foreign entries keep their original
+  return transport, avoiding a redundant unpack/repack around host results.
+
 - Private workspace/example projects declare `[package] publish = false`.
   They retain ordinary checking and execution but cannot be release candidates.
   Example-specific tests belong to those projects; public libraries do not depend

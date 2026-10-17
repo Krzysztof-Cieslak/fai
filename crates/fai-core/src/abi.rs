@@ -14,7 +14,7 @@ use fai_resolve::{DefId, module_defs};
 use fai_syntax::Symbol;
 use fai_syntax::ast::ItemKind;
 
-use crate::ir::FnAbi;
+use crate::ir::{FnAbi, Repr};
 use crate::niche::niche_scheme;
 
 /// `name`'s native calling-convention shape (see [`FnAbi`]). Tracked so its
@@ -40,21 +40,110 @@ pub fn abi(db: &dyn Db, file: SourceFile, name: Symbol) -> Arc<FnAbi> {
     // A niche `Option` (and a spread float aggregate) parameter/result is carried
     // wrapper-free / exploded across a direct call.
     let niche = |ty: &fai_types::Ty| niche_scheme(db, ty);
-    Arc::new(controlled(
-        db,
-        FnAbi::from_scheme(&scheme, source_param_count(db, file, name), &niche),
-    ))
+    let arity = source_param_count(db, file, name);
+    let mut abi = FnAbi::from_scheme(&scheme, arity, &niche);
+    let parsed = fai_syntax::parse(db, file);
+    let foreign = module_defs(db, file).get(name).is_some_and(|definition| {
+        matches!(parsed.module.items[definition.binding.index()].kind, ItemKind::Foreign { .. })
+    });
+    let mut result = &scheme.ty;
+    for _ in 0..arity {
+        if let fai_types::Ty::Arrow(_, next, _) = result {
+            result = next;
+        }
+    }
+    if abi.register_abi
+        && !foreign
+        && scheme.vars.is_empty()
+        && scheme.row_vars.is_empty()
+        && let Some(widths) = tagged_result_layout(db, result)
+    {
+        abi.ret = Repr::TaggedResult(widths);
+    }
+    Arc::new(controlled(db, abi))
 }
 
 pub(crate) fn controlled(db: &dyn Db, mut abi: FnAbi) -> FnAbi {
     if fai_db::allocation_control(db) == fai_db::AllocationControl::NoScalarReplacement {
         for repr in abi.params.iter_mut().chain(std::iter::once(&mut abi.ret)) {
-            if matches!(repr, crate::ir::Repr::Spread(_)) {
+            if matches!(repr, Repr::Spread(_) | Repr::TaggedResult(_)) {
                 *repr = crate::ir::Repr::Uniform;
             }
         }
     }
     abi
+}
+
+/// The two payload types of Prelude's Result, recognized by declaration identity.
+#[must_use]
+pub fn result_payloads(db: &dyn Db, ty: &fai_types::Ty) -> Option<[fai_types::Ty; 2]> {
+    use fai_types::Ty;
+    let Ty::App(head, error) = ty else { return None };
+    let Ty::App(head, value) = head.as_ref() else { return None };
+    let Ty::Adt(adt) = head.as_ref() else { return None };
+    let prelude = fai_resolve::prelude_source(db)?;
+    (adt.file == prelude && adt.name == Symbol::intern("Result"))
+        .then(|| [(**value).clone(), (**error).clone()])
+}
+
+/// Small tuples with no resource-finalization order to preserve when split.
+#[must_use]
+pub fn result_tuple(ty: &fai_types::Ty) -> bool {
+    use fai_types::{Con, Ty};
+    matches!(ty, Ty::Tuple(fields) if (2..=7).contains(&fields.len())
+        && fields.iter().all(|t| *t != Ty::Con(Con::Float) && plain_result_value(t)))
+}
+
+// Separating a tag from its payload can release the payload before a later
+// tag-only observation. Admit only values with no observable finalization.
+fn plain_result_value(ty: &fai_types::Ty) -> bool {
+    use fai_types::{Con, RowEnd, Ty};
+    fn visit(ty: &Ty, remaining: &mut usize) -> bool {
+        if *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        match ty {
+            Ty::Unit
+            | Ty::Con(Con::Int | Con::Float | Con::Bool | Con::Char | Con::String | Con::Bytes) => {
+                true
+            }
+            Ty::App(head, value) if matches!(head.as_ref(), Ty::Con(Con::List | Con::Array)) => {
+                visit(value, remaining)
+            }
+            Ty::Tuple(fields) => fields.iter().all(|field| visit(field, remaining)),
+            Ty::Record(row) if row.tail == RowEnd::Closed => {
+                row.fields.iter().all(|(_, field)| visit(field, remaining))
+            }
+            _ => false,
+        }
+    }
+    visit(ty, &mut 256)
+}
+
+/// A bounded Result return layout. Float payloads retain their scalar-slot box.
+#[must_use]
+pub fn tagged_result_layout(db: &dyn Db, ty: &fai_types::Ty) -> Option<[u8; 2]> {
+    use fai_types::{Con, Ty};
+    if !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
+        return None;
+    }
+    let payloads = result_payloads(db, ty)?;
+    if !payloads.iter().all(plain_result_value) {
+        return None;
+    }
+    if payloads.iter().any(|t| matches!(t, Ty::Con(Con::Float) | Ty::Var(_) | Ty::Error)) {
+        return None;
+    }
+    Some(payloads.map(|ty| {
+        if result_tuple(&ty)
+            && let Ty::Tuple(fields) = ty
+        {
+            fields.len() as u8
+        } else {
+            0
+        }
+    }))
 }
 
 /// `name`'s ABI located by [`DefId`], or the default (uniform) ABI for a
@@ -106,6 +195,99 @@ mod tests {
     use super::*;
     use crate::ir::Repr;
     use fai_types::{Scheme, Ty, TyVarId};
+
+    fn source_result_shape(source: &str) -> Option<[u8; 2]> {
+        let mut db = fai_db::FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source("M.fai".into(), source.into());
+        abi(&db, db.source_file(id).unwrap(), Symbol::intern("make")).tagged_result()
+    }
+
+    #[test]
+    fn large_resource_free_types_have_bounded_eligibility_work() {
+        assert!(!plain_result_value(&Ty::Tuple(vec![Ty::int(); 256])));
+    }
+
+    #[test]
+    fn resource_bearing_results_stay_boxed() {
+        assert_eq!(
+            source_result_shape(
+                "module M\npublic make : Channel Int -> Result (Channel Int * String) String\nlet make channel = Ok (channel, \"label\")\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn resources_nested_in_collections_keep_the_result_boxed() {
+        assert_eq!(
+            source_result_shape(
+                "module M\npublic make : List Reader -> Result (List Reader) String\nlet make readers = Ok readers\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn functions_may_capture_resources_so_the_result_stays_boxed() {
+        assert_eq!(
+            source_result_shape(
+                "module M\npublic make : (Int -> Int) -> Result (Int -> Int) String\nlet make f = Ok f\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn generic_result_signatures_keep_the_uniform_result() {
+        assert_eq!(
+            source_result_shape(
+                "module M\npublic make : 'a -> Result 'a String\nlet make value = Ok value\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn direct_float_result_payloads_keep_the_scalar_slot_representation() {
+        assert_eq!(
+            source_result_shape(
+                "module M\npublic make : Float -> Result Float String\nlet make value = Ok value\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn tuples_beyond_the_return_budget_stay_intact() {
+        assert_eq!(
+            source_result_shape(
+                "module M\npublic make : Int -> Result (Int * Int * Int * Int * Int * Int * Int * Int) String\nlet make n = Ok (n, n, n, n, n, n, n, n)\n"
+            ),
+            Some([0, 0])
+        );
+    }
+
+    #[test]
+    fn result_layout_uses_the_prelude_declaration_identity() {
+        let mut db = fai_db::FaiDatabase::new();
+        fai_types::std_lib::load_std(&mut db);
+        let id = db.add_source(
+            "M.fai".into(),
+            "module M\ntype Result 'a 'b = | Left 'a | Right 'b\nlet value n = Left n\n".into(),
+        );
+        let local = Ty::App(
+            std::sync::Arc::new(Ty::App(
+                std::sync::Arc::new(Ty::Adt(fai_resolve::AdtRef {
+                    file: id,
+                    name: Symbol::intern("Result"),
+                })),
+                std::sync::Arc::new(Ty::int()),
+            )),
+            std::sync::Arc::new(Ty::Con(fai_types::Con::String)),
+        );
+        assert_eq!(tagged_result_layout(&db, &local), None);
+    }
 
     #[test]
     fn integer_and_array_results_use_only_supported_return_registers() {
