@@ -2011,6 +2011,9 @@ snapshot, type golden, and/or e2e) in the same change.
 
 Socket I/O attempts hold their direction's readiness lock through a failed
 nonblocking probe and waiter registration, then release it before parking.
+When the scheduler has one worker at reactor initialization, that worker polls
+network readiness and timers while idle. Off-thread scheduling wakes the poll;
+multi-worker execution retains the dedicated reactor thread.
 Concurrent operations cannot consume the notification in that interval. Network
 and reactor tests have bounded CI timeouts so a stalled wait fails promptly.
 

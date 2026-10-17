@@ -361,12 +361,25 @@ fn scheduler() -> &'static Scheduler {
 fn schedule(task: Arc<Task>) {
     let sched = scheduler();
     sched.injector.push(task);
+    if !IS_WORKER.with(Cell::get) {
+        crate::reactor::wake_worker_poll();
+    }
     let _guard = sched.idle.lock().expect("idle lock");
     sched.signal.notify_one();
 }
 
+thread_local! {
+    static IS_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether networking can be driven by the sole scheduler worker while idle.
+pub(crate) fn has_single_worker() -> bool {
+    SCHEDULER.get().is_some_and(|scheduler| scheduler.stealers.len() == 1)
+}
+
 /// A worker thread: run tasks until shutdown, stealing when its own queue is empty.
 fn worker_loop(local: Deque<Arc<Task>>) {
+    IS_WORKER.with(|worker| worker.set(true));
     let sched = scheduler();
     loop {
         if sched.shutdown.load(Ordering::Acquire) {
@@ -375,6 +388,9 @@ fn worker_loop(local: Deque<Arc<Task>>) {
         match find_task(sched, &local) {
             Some(task) => run_task(&task),
             None => {
+                if crate::reactor::poll_on_idle() {
+                    continue;
+                }
                 // No work: wait briefly for a signal, then re-check (the timeout
                 // backstops any missed notification, keeping the loop robust).
                 let guard = sched.idle.lock().expect("idle lock");
