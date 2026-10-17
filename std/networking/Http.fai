@@ -458,8 +458,13 @@ let headerErrorMessage failure =
 // Transport errors (including cancellation), malformed data, and partial heads
 // cannot request replay.
 readHeaderProgress : Transport 'e -> Bytes -> Result (Bytes * Bytes) (Bool * String) / 'e
-let readHeaderProgress t acc =
-  match findBoundary acc 0 (Bytes.length acc) with
+let readHeaderProgress t acc = readHeaderFrom t acc 0
+
+// A previously searched prefix can only begin a new terminator in its final
+// three bytes. Keep a byte offset, since appending may move the buffer.
+readHeaderFrom : Transport 'e -> Bytes -> Int -> Result (Bytes * Bytes) (Bool * String) / 'e
+let readHeaderFrom t acc searchStart =
+  match findBoundary acc searchStart (Bytes.length acc) with
   | Some boundary ->
     if boundary > 65536 then
       Err (false, "header block too large")
@@ -475,7 +480,9 @@ let readHeaderProgress t acc =
         if Bytes.length chunk = 0 then
           Err (Bytes.length acc = 0, "connection closed before end of headers")
         else
-          readHeaderProgress t (Bytes.concat acc chunk)
+          let previous = Bytes.length acc
+          let resumeAt = if previous > 3 then previous - 3 else 0
+          readHeaderFrom t (Bytes.concat acc chunk) resumeAt
 
 // The index just past the first `\r\n\r\n` in `b`, or `None`.
 findBoundary : Bytes -> Int -> Int -> Option Int
@@ -691,8 +698,11 @@ let findCrlf b i n =
 // Read a CRLF-terminated line, returning it (without the CRLF) and the rest of the
 // buffer, pulling from the transport as needed.
 readLine : Transport 'e -> Bytes -> Result (Bytes * Bytes) String / 'e
-let readLine t buf =
-  match findCrlf buf 0 (Bytes.length buf) with
+let readLine t buf = readLineFrom t buf 0
+
+readLineFrom : Transport 'e -> Bytes -> Int -> Result (Bytes * Bytes) String / 'e
+let readLineFrom t buf searchStart =
+  match findCrlf buf searchStart (Bytes.length buf) with
   | Some idx ->
     if idx > 8192 then
       Err "framing line too large"
@@ -708,7 +718,9 @@ let readLine t buf =
         if Bytes.length got = 0 then
           Err "connection closed mid-line"
         else
-          readLine t (Bytes.concat buf got)
+          let previous = Bytes.length buf
+          let resumeAt = if previous > 0 then previous - 1 else 0
+          readLineFrom t (Bytes.concat buf got) resumeAt
 
 // Read exactly `n` bytes, returning them and the rest of the buffer.
 readExact : Transport 'e -> Bytes -> Int -> Result (Bytes * Bytes) String / 'e
