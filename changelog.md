@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Direct calls can return eligible `Result` values as a tag and owned components,
+  eliminating temporary wrappers and small resource-free tuple payloads. Uniform
+  first-class boundaries reconstruct ordinary values.
 - Parse decimal integers directly from bytes with the existing wrapping rules.
 - Add `String.splitOnce` and use first-separator searches in HTTP and URL parsing,
   avoiding full split lists and reconstructed suffixes.

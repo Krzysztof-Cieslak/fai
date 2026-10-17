@@ -30,15 +30,8 @@ fn lock() -> MutexGuard<'static, ()> {
 /// The native calling-convention shape of `def` (which parameters/result are
 /// unboxed floats), derived from its signature — the test-harness analogue of the
 /// driver's `abi_of`. `nparams` is the runtime arity (source + evidence).
-fn abi_of_def(db: &FaiDatabase, def: DefId, nparams: usize) -> fai_core::ir::FnAbi {
-    match fai_core::representation::definition_scheme(db, def) {
-        Some(scheme) => {
-            let source = nparams.saturating_sub(fai_types::evidence_count(&scheme));
-            let niche = |ty: &fai_types::Ty| fai_core::niche_scheme(db, ty);
-            fai_core::ir::FnAbi::from_scheme(&scheme, source, &niche)
-        }
-        None => fai_core::ir::FnAbi::default(),
-    }
+fn abi_of_def(db: &FaiDatabase, def: DefId, _nparams: usize) -> fai_core::ir::FnAbi {
+    (*fai_core::abi_of(db, def)).clone()
 }
 
 /// Lowers the definitions reachable from the entry file's `main` and runs it

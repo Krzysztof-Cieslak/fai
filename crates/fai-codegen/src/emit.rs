@@ -627,7 +627,9 @@ fn build_owned_wrapper<M: Module>(
 
         // Reassemble a spread result for the uniform first-class boundary. Float
         // components occupy raw slots; an Int is tagged and uniform state moves in.
-        if let Some(n) = spread_ret {
+        if let Some(widths) = abi.tagged_result() {
+            result = box_tagged_result(module, &mut builder, widths, &results);
+        } else if let Some(n) = spread_ret {
             let size = u32::try_from(n * 8).expect("array size");
             let slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
@@ -740,6 +742,65 @@ fn wrapper_descriptor<M: Module>(
     builder.ins().symbol_value(ptr, gv)
 }
 
+/// Reconstitutes a tag-plus-payload Result at a uniform value boundary.
+fn box_tagged_result<M: Module>(
+    module: &mut M,
+    builder: &mut FunctionBuilder,
+    widths: [u8; 2],
+    components: &[Value],
+) -> Value {
+    fn cell<M: Module>(
+        module: &mut M,
+        builder: &mut FunctionBuilder,
+        tag: Value,
+        fields: &[Value],
+    ) -> Value {
+        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (fields.len() * 8) as u32,
+            3,
+        ));
+        for (index, &field) in fields.iter().enumerate() {
+            builder.ins().stack_store(field, slot, (index * 8) as i32);
+        }
+        let pointer = builder.ins().stack_addr(types::I64, slot, 0);
+        let count = builder.ins().iconst(types::I64, fields.len() as i64);
+        let mut signature = module.make_signature();
+        signature.params.extend([AbiParam::new(types::I64); 3]);
+        signature.returns.push(AbiParam::new(types::I64));
+        let id = module
+            .declare_function("fai_make_data", Linkage::Import, &signature)
+            .expect("data constructor");
+        let function = module.declare_func_in_func(id, builder.func);
+        let call = builder.ins().call(function, &[tag, count, pointer]);
+        builder.inst_results(call)[0]
+    }
+    if widths == [0, 0] {
+        return cell(module, builder, components[0], &components[1..2]);
+    }
+    let ok = builder.create_block();
+    let error = builder.create_block();
+    let done = builder.create_block();
+    builder.append_block_param(done, types::I64);
+    builder.ins().brif(components[0], error, &[], ok, &[]);
+    for (tag, block) in [ok, error].into_iter().enumerate() {
+        builder.switch_to_block(block);
+        builder.seal_block(block);
+        let payload = if widths[tag] == 0 {
+            components[1]
+        } else {
+            let zero = builder.ins().iconst(types::I64, 0);
+            cell(module, builder, zero, &components[1..=usize::from(widths[tag])])
+        };
+        let tag = builder.ins().iconst(types::I64, tag as i64);
+        let result = cell(module, builder, tag, &[payload]);
+        builder.ins().jump(done, &[result.into()]);
+    }
+    builder.switch_to_block(done);
+    builder.seal_block(done);
+    builder.block_params(done)[0]
+}
+
 /// Calls a one-argument, one-result runtime conversion `name` on `v` in the bare
 /// (no-`Translator`) wrapper builder.
 fn wrapper_convert<M: Module>(
@@ -834,6 +895,9 @@ fn repr_types(r: &Repr) -> Vec<types::Type> {
     match r {
         Repr::ScalarFloat => vec![types::F64],
         Repr::Spread(components) => components.iter().flat_map(repr_types).collect(),
+        Repr::TaggedResult(widths) => {
+            vec![types::I64; 1 + usize::from(widths[0].max(widths[1]).max(1))]
+        }
         Repr::Uniform | Repr::ScalarInt | Repr::Niche(_) => vec![types::I64],
     }
 }
@@ -1265,7 +1329,7 @@ fn build_fn<M: Module>(
         // heap cell (each tail of an `if` returns independently — no merge).
         if let Some(reprs) = abi.spread_return().filter(|_| register_entry) {
             let n = reprs.len();
-            let header = if !tr.concurrent
+            let header = if (!tr.concurrent || abi.tagged_result().is_some())
                 && core_fn.params == lowered.entry().params
                 && has_spread_self_tail(
                     &core_fn.body,
@@ -6516,6 +6580,9 @@ impl<M: Module> Translator<'_, M> {
                 // so reassemble its components into a boxed cell.
                 if args.len() == arity && (self.signature_of)(def).spread_return().is_some() {
                     let comps = self.spread_call_parts(def, args);
+                    if let Some(widths) = (self.signature_of)(def).tagged_result() {
+                        return box_tagged_result(self.module, &mut self.builder, widths, &comps);
+                    }
                     return self.box_components(&comps);
                 }
                 return if args.len() == arity {

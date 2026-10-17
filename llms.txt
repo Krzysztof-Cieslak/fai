@@ -2828,6 +2828,10 @@ Build/run it with `fai run Tasks.fai`; check the laws with `fai test Tasks.fai`.
   Returning `(Int, state)` is still an ordinary tuple operation. Supported native
   targets can pass that result in two registers, preserving state ownership and
   rebuilding a boxed tuple at first-class boundaries.
+- **Return ordinary `Result` values from helpers.** Eligible monomorphic,
+  resource-free direct returns can pass a tag and payload components without
+  temporary Result/tuple cells. First-class and resource-bearing results retain
+  their ordinary value semantics; no source-level calling convention is needed.
 - **"Mutation" is `{ r with field = ... }`** for records, `Array.set`/`push` for
   arrays — both return new values (updated in place when unique).
 - **Strings**: build with `++` (amortized efficient) or `String.join`; index by

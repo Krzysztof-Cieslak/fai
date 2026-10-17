@@ -9,6 +9,10 @@
 //! A supported `(Int, uniform state)` result likewise returns two components,
 //! carrying a raw integer and one owned uniform value. Its parameters stay boxed;
 //! normal reference counting retains and releases its state component.
+//! Eligible Result returns carry a raw tag and uniform payload words. Small
+//! resource-free tuples may occupy several words; other payloads remain intact.
+//! The uniform words use marker types internally so inactive Unit slots and
+//! active boxed values share the same conservative ownership protocol.
 //!
 //! This pass runs **after A-normal form and before reference counting**, so every
 //! value is a named local and an FFA value's identity is one local. Per function
@@ -39,7 +43,7 @@
 use std::sync::Arc;
 
 use fai_core::abi_of;
-use fai_core::ir::{CExpr, ExprKind as K, FieldIndex, FnAbi, ffa_arity};
+use fai_core::ir::{CExpr, ExprKind as K, FieldIndex, FnAbi, Lit, Prim, ffa_arity};
 use fai_db::Db;
 use fai_resolve::LocalId;
 use fai_types::{Con, Ty};
@@ -68,7 +72,14 @@ pub fn sroa_fn(
     if fai_db::allocation_control(db) == fai_db::AllocationControl::NoScalarReplacement {
         return (body, Vec::new());
     }
-    let mut cx = Sroa { db, comps: FxHashMap::default(), boxed: FxHashMap::default(), next };
+    let mut cx = Sroa {
+        db,
+        comps: FxHashMap::default(),
+        boxed: FxHashMap::default(),
+        tagged: FxHashMap::default(),
+        result_layout: abi.tagged_result(),
+        next,
+    };
     let mut spread_params: Vec<Option<Vec<LocalId>>> = vec![None; params.len()];
     for (p, &param) in params.iter().enumerate() {
         if let Some(reprs) = abi.spread_param(p) {
@@ -91,7 +102,18 @@ struct Sroa<'a> {
     /// Cache-one materialization within the current straight-line scope: a
     /// decomposed FFA local → the boxed local it was reassembled into.
     boxed: FxHashMap<LocalId, LocalId>,
+    /// Logical Result locals whose tag and payload now live in components.
+    tagged: FxHashMap<LocalId, Tagged>,
+    /// The current entry's Result return convention, absent in uniform lambdas.
+    result_layout: Option<[u8; 2]>,
     next: &'a mut usize,
+}
+
+#[derive(Clone)]
+struct Tagged {
+    widths: [u8; 2],
+    ty: Ty,
+    components: Vec<CExpr>,
 }
 
 impl Sroa<'_> {
@@ -109,6 +131,15 @@ impl Sroa<'_> {
         match kind {
             K::Let { local, value, body } => {
                 let mut binds = Vec::new();
+                if matches!(value.kind, K::MakeData { tag: 0 | 1, ref args, reuse: None, .. } if args.len() == 1)
+                    && let Some(widths) = fai_core::abi::tagged_result_layout(self.db, &value.ty)
+                {
+                    let ty = value.ty.clone();
+                    let components = self.tagged_components(*value, widths, &mut binds);
+                    self.tagged.insert(local, Tagged { widths, ty, components });
+                    let body = self.rewrite(*body, want);
+                    return wrap(binds, body);
+                }
                 let value = self.rewrite_op(*value, &mut binds);
                 self.classify(local, value, &mut binds);
                 let body = self.rewrite(*body, want);
@@ -153,7 +184,7 @@ impl Sroa<'_> {
     fn classify(&mut self, local: LocalId, value: CExpr, binds: &mut Vec<Bind>) {
         // An FFA construction: track its component atoms, drop the cell.
         if let K::MakeData { args, reuse: None, .. } = &value.kind
-            && ffa_arity(&value.ty).is_some()
+            && (ffa_arity(&value.ty).is_some() || fai_core::abi::result_tuple(&value.ty))
         {
             let components = args.clone();
             self.comps.insert(local, components);
@@ -162,11 +193,28 @@ impl Sroa<'_> {
         // A saturated spread-returning call: bind its result components.
         if let Some(n) = self.spread_call_arity(&value) {
             let locals: Vec<LocalId> = (0..n).map(|_| self.fresh()).collect();
+            if let Some(widths) =
+                self.callee_abi(&app_func(&value)).and_then(|abi| abi.tagged_result())
+            {
+                let ty = value.ty.clone();
+                let components = tagged_locals(&locals);
+                self.tagged.insert(local, Tagged { widths, ty, components });
+                let mut value = value;
+                value.ty = tagged_transport(n);
+                binds.push(Bind::Many(locals, value));
+                return;
+            }
             self.comps.insert(local, typed_components(&locals, &value.ty));
             binds.push(Bind::Many(locals.clone(), value));
             return;
         }
         // An alias of a decomposed FFA: share its components.
+        if let K::Local(v) = &value.kind
+            && let Some(tagged) = self.tagged.get(v).cloned()
+        {
+            self.tagged.insert(local, tagged);
+            return;
+        }
         if let K::Local(v) = &value.kind
             && let Some(cs) = self.comps.get(v)
         {
@@ -193,6 +241,27 @@ impl Sroa<'_> {
                 CExpr::new(K::If { cond, then, els }, ty)
             }
             K::DataField { base, index, scalar, niche } => {
+                if let (K::Local(v), FieldIndex::Const(0)) = (&base.kind, index)
+                    && let Some(tagged) = self.tagged.get(v)
+                    && let Some(payloads) = fai_core::abi::result_payloads(self.db, &tagged.ty)
+                    && let Some(arm) = payloads.iter().position(|payload| *payload == ty)
+                {
+                    let width = tagged.widths[arm];
+                    return if width == 0 {
+                        tagged.components[1].clone()
+                    } else {
+                        CExpr::new(
+                            K::MakeData {
+                                tag: 0,
+                                args: tagged.components[1..=usize::from(width)].to_vec(),
+                                reuse: None,
+                                scalars: 0,
+                                niche: None,
+                            },
+                            ty,
+                        )
+                    };
+                }
                 if let (K::Local(v), FieldIndex::Const(i)) = (&base.kind, index)
                     && let Some(cs) = self.comps.get(v)
                 {
@@ -229,6 +298,11 @@ impl Sroa<'_> {
                 CExpr::new(K::Foreign { symbol, args, marshalled }, ty)
             }
             K::DataTag { base, niche } => {
+                if let K::Local(v) = base.kind
+                    && let Some(tagged) = self.tagged.get(&v)
+                {
+                    return tagged.components[0].clone();
+                }
                 let base = Box::new(self.rewrite_atom(*base, binds));
                 CExpr::new(K::DataTag { base, niche }, ty)
             }
@@ -238,7 +312,7 @@ impl Sroa<'_> {
                 // box each tracked one in place (recording the substitution).
                 let captures = captures
                     .into_iter()
-                    .map(|c| match self.comps.contains_key(&c) {
+                    .map(|c| match self.comps.contains_key(&c) || self.tagged.contains_key(&c) {
                         true => self.materialize(c, binds),
                         false => c,
                     })
@@ -253,7 +327,7 @@ impl Sroa<'_> {
     /// is reassembled (cache-one); anything else is unchanged.
     fn rewrite_atom(&mut self, a: CExpr, binds: &mut Vec<Bind>) -> CExpr {
         if let K::Local(v) = &a.kind
-            && self.comps.contains_key(v)
+            && (self.comps.contains_key(v) || self.tagged.contains_key(v))
         {
             let b = self.materialize(*v, binds);
             return CExpr::new(K::Local(b), a.ty);
@@ -274,7 +348,11 @@ impl Sroa<'_> {
         match want {
             Some(n) => {
                 let ty = e.ty.clone();
-                let components = self.as_components(e, n, binds);
+                let components = if let Some(widths) = self.result_layout {
+                    self.tagged_components(e, widths, binds)
+                } else {
+                    self.as_components(e, n, binds)
+                };
                 CExpr::new(K::Spread { components }, ty)
             }
             // A boxed (non-spread) result: an aggregate wider than the target's
@@ -284,7 +362,7 @@ impl Sroa<'_> {
             // to a boxed value through the ordinary operation rewrite.
             None => {
                 if let K::Local(v) = &e.kind
-                    && self.comps.contains_key(v)
+                    && (self.comps.contains_key(v) || self.tagged.contains_key(v))
                 {
                     let b = self.materialize(*v, binds);
                     return CExpr::new(K::Local(b), e.ty);
@@ -299,7 +377,9 @@ impl Sroa<'_> {
     fn as_components(&mut self, e: CExpr, n: usize, binds: &mut Vec<Bind>) -> Vec<CExpr> {
         // A construction: its arguments are the components.
         if let K::MakeData { args, reuse: None, .. } = &e.kind
-            && (ffa_arity(&e.ty).is_some() || fai_core::ir::integer_state_pair(&e.ty))
+            && (ffa_arity(&e.ty).is_some()
+                || fai_core::ir::integer_state_pair(&e.ty)
+                || fai_core::abi::result_tuple(&e.ty))
         {
             if fai_core::ir::integer_state_pair(&e.ty) {
                 return args.iter().cloned().map(|arg| self.rewrite_atom(arg, binds)).collect();
@@ -357,6 +437,55 @@ impl Sroa<'_> {
         if let Some(&b) = self.boxed.get(&v) {
             return b;
         }
+        if let Some(tagged) = self.tagged.get(&v).cloned() {
+            let payloads =
+                fai_core::abi::result_payloads(self.db, &tagged.ty).expect("Result payloads");
+            let branch = |arm: usize| {
+                let width = tagged.widths[arm];
+                let payload = if width == 0 {
+                    tagged.components[1].clone()
+                } else {
+                    CExpr::new(
+                        K::MakeData {
+                            tag: 0,
+                            args: tagged.components[1..=usize::from(width)].to_vec(),
+                            reuse: None,
+                            scalars: 0,
+                            niche: None,
+                        },
+                        payloads[arm].clone(),
+                    )
+                };
+                CExpr::new(
+                    K::MakeData {
+                        tag: arm as u32,
+                        args: vec![payload],
+                        reuse: None,
+                        scalars: 0,
+                        niche: None,
+                    },
+                    tagged.ty.clone(),
+                )
+            };
+            let test = CExpr::new(
+                K::Prim {
+                    op: Prim::Eq,
+                    args: vec![
+                        tagged.components[0].clone(),
+                        CExpr::new(K::Lit(Lit::Int(0)), Ty::int()),
+                    ],
+                },
+                Ty::Con(Con::Bool),
+            );
+            let cell = CExpr::new(
+                K::If { cond: Box::new(test), then: Box::new(branch(0)), els: Box::new(branch(1)) },
+                tagged.ty,
+            );
+            let b = self.fresh();
+            binds.push(Bind::Let(b, cell));
+            self.boxed.insert(v, b);
+            return b;
+        }
         let components = self.comps[&v].clone();
         let fields: Vec<_> = components.iter().map(|component| component.ty.clone()).collect();
         let scalars = fai_core::ir::scalar_field_mask(fields.iter());
@@ -396,6 +525,136 @@ impl Sroa<'_> {
     fn callee_abi(&self, func: &CExpr) -> Option<Arc<FnAbi>> {
         if let K::Global(def) = &func.kind { Some(abi_of(self.db, *def)) } else { None }
     }
+
+    fn uniform(&mut self, value: CExpr, binds: &mut Vec<Bind>) -> CExpr {
+        // A separate local crosses the uniform boundary without changing the
+        // scalar/niche classification of the original operand.
+        let value = self.rewrite_atom(value, binds);
+        let local = self.fresh();
+        binds.push(Bind::Let(local, value));
+        CExpr::new(K::Local(local), Ty::Error)
+    }
+
+    fn tagged_components(
+        &mut self,
+        e: CExpr,
+        widths: [u8; 2],
+        binds: &mut Vec<Bind>,
+    ) -> Vec<CExpr> {
+        let n = 1 + usize::from(widths[0].max(widths[1]).max(1));
+        if let K::Local(local) = e.kind
+            && let Some(tagged) = self.tagged.get(&local)
+        {
+            debug_assert_eq!(tagged.widths, widths);
+            return tagged.components.clone();
+        }
+        if let K::MakeData { tag, ref args, reuse: None, .. } = e.kind
+            && tag < 2
+            && args.len() == 1
+        {
+            let width = widths[tag as usize];
+            let payload = args[0].clone();
+            let fields = if width == 0 {
+                vec![payload]
+            } else {
+                self.as_components(payload, usize::from(width), binds)
+            };
+            let mut result = vec![CExpr::new(K::Lit(Lit::Int(i64::from(tag))), Ty::int())];
+            result.extend(fields.into_iter().map(|field| self.uniform(field, binds)));
+            result.resize_with(n, || CExpr::new(K::Lit(Lit::Unit), Ty::Error));
+            return result;
+        }
+        if self.callee_abi(&app_func(&e)).is_some_and(|abi| abi.tagged_result() == Some(widths))
+            && self.spread_call_arity(&e) == Some(n)
+        {
+            let locals: Vec<_> = (0..n).map(|_| self.fresh()).collect();
+            let mut call = self.rewrite_op(e, binds);
+            call.ty = tagged_transport(n);
+            binds.push(Bind::Many(locals.clone(), call));
+            return tagged_locals(&locals);
+        }
+        // A boxed producer keeps its normal call boundary. Acquire its payload
+        // once, then read tuple slots only under the corresponding tag test.
+        let ty = e.ty.clone();
+        let e = self.rewrite_op(e, binds);
+        let base = self.bind(e, binds);
+        let base = CExpr::new(K::Local(base), ty);
+        let tag = self.fresh();
+        binds.push(Bind::Let(
+            tag,
+            CExpr::new(K::DataTag { base: Box::new(base.clone()), niche: None }, Ty::int()),
+        ));
+        let payload = self.fresh();
+        binds.push(Bind::Let(
+            payload,
+            CExpr::new(
+                K::DataField {
+                    base: Box::new(base),
+                    index: FieldIndex::Const(0),
+                    scalar: false,
+                    niche: None,
+                },
+                Ty::Error,
+            ),
+        ));
+        let tag = CExpr::new(K::Local(tag), Ty::int());
+        let payload = CExpr::new(K::Local(payload), Ty::Error);
+        let mut result = vec![tag.clone()];
+        for index in 0..n - 1 {
+            let field = |arm: usize| {
+                if widths[arm] == 0 {
+                    if index == 0 {
+                        payload.clone()
+                    } else {
+                        CExpr::new(K::Lit(Lit::Unit), Ty::Error)
+                    }
+                } else if index < usize::from(widths[arm]) {
+                    CExpr::new(
+                        K::DataField {
+                            base: Box::new(payload.clone()),
+                            index: FieldIndex::Const(index as u32),
+                            scalar: false,
+                            niche: None,
+                        },
+                        Ty::Error,
+                    )
+                } else {
+                    CExpr::new(K::Lit(Lit::Unit), Ty::Error)
+                }
+            };
+            let test = CExpr::new(
+                K::Prim {
+                    op: Prim::Eq,
+                    args: vec![tag.clone(), CExpr::new(K::Lit(Lit::Int(0)), Ty::int())],
+                },
+                Ty::Con(Con::Bool),
+            );
+            let value = CExpr::new(
+                K::If { cond: Box::new(test), then: Box::new(field(0)), els: Box::new(field(1)) },
+                Ty::Error,
+            );
+            let local = self.fresh();
+            binds.push(Bind::Let(local, value));
+            result.push(CExpr::new(K::Local(local), Ty::Error));
+        }
+        result
+    }
+}
+
+// LetMany describes physical results to the local-type collectors. The callee's
+// logical Result type remains in its signature and in the tracked Tagged value.
+fn tagged_transport(n: usize) -> Ty {
+    Ty::Tuple(std::iter::once(Ty::int()).chain(std::iter::repeat_n(Ty::Error, n - 1)).collect())
+}
+
+fn tagged_locals(locals: &[LocalId]) -> Vec<CExpr> {
+    locals
+        .iter()
+        .enumerate()
+        .map(|(index, &local)| {
+            CExpr::new(K::Local(local), if index == 0 { Ty::int() } else { Ty::Error })
+        })
+        .collect()
 }
 
 fn app_func(call: &CExpr) -> CExpr {

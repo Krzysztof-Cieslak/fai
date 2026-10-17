@@ -87,6 +87,7 @@ fn abi_tag(abi: &FnAbi) -> String {
             Repr::Niche(NicheKind::A) => "a".to_owned(),
             Repr::Niche(NicheKind::B) => "b".to_owned(),
             Repr::Spread(c) => format!("S{}>", c.iter().map(repr).collect::<String>()),
+            Repr::TaggedResult(widths) => format!("R{},{}>", widths[0], widths[1]),
         }
     }
     let params: String = abi.params.iter().map(repr).collect();

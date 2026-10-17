@@ -224,6 +224,9 @@ pub enum Repr {
     /// a uniform entry (reached via `apply_n`) keeps the boxed cell, bridged by
     /// the wrapper. See [`ffa_arity`] and [`crate::sroa`].
     Spread(Vec<Repr>),
+    /// A Result tag followed by uniform payload words. A zero width denotes one
+    /// intact payload; a nonzero width denotes a flattened tuple payload.
+    TaggedResult([u8; 2]),
 }
 
 impl FnAbi {
@@ -371,6 +374,28 @@ impl FnAbi {
     pub fn spread_return(&self) -> Option<&[Repr]> {
         match &self.ret {
             Repr::Spread(c) => Some(c),
+            Repr::TaggedResult(widths) => {
+                const COMPONENTS: [Repr; 8] = [
+                    Repr::ScalarInt,
+                    Repr::Uniform,
+                    Repr::Uniform,
+                    Repr::Uniform,
+                    Repr::Uniform,
+                    Repr::Uniform,
+                    Repr::Uniform,
+                    Repr::Uniform,
+                ];
+                Some(&COMPONENTS[..1 + usize::from(widths[0].max(widths[1]).max(1))])
+            }
+            _ => None,
+        }
+    }
+
+    /// Tuple widths for the tag-plus-payload Result return convention.
+    #[must_use]
+    pub fn tagged_result(&self) -> Option<[u8; 2]> {
+        match self.ret {
+            Repr::TaggedResult(widths) => Some(widths),
             _ => None,
         }
     }
