@@ -2018,6 +2018,8 @@ nonblocking probe and waiter registration, then release it before parking.
 When the scheduler has one worker at reactor initialization, that worker polls
 network readiness and timers while idle. Off-thread scheduling wakes the poll;
 multi-worker execution retains the dedicated reactor thread.
+The single worker also polls nonblocking after bounded task batches, so a queue
+that stays runnable cannot starve ready sockets or expired timers.
 Concurrent operations cannot consume the notification in that interval. Network
 and reactor tests have bounded CI timeouts so a stalled wait fails promptly.
 

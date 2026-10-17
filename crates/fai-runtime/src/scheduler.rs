@@ -381,13 +381,27 @@ pub(crate) fn has_single_worker() -> bool {
 fn worker_loop(local: Deque<Arc<Task>>) {
     IS_WORKER.with(|worker| worker.set(true));
     let sched = scheduler();
+    let single_worker = sched.stealers.len() == 1;
+    let mut resumed = 0;
     loop {
         if sched.shutdown.load(Ordering::Acquire) {
             return;
         }
         match find_task(sched, &local) {
-            Some(task) => run_task(&task),
+            Some(task) => {
+                run_task(&task);
+                if single_worker {
+                    resumed += 1;
+                    if resumed == 64 {
+                        // A runnable queue need not become empty. Give ready I/O
+                        // and expired timers a turn without waiting for idle.
+                        crate::reactor::poll_ready();
+                        resumed = 0;
+                    }
+                }
+            }
             None => {
+                resumed = 0;
                 if crate::reactor::poll_on_idle() {
                     continue;
                 }

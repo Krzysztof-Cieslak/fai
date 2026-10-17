@@ -5245,6 +5245,8 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     point. External scheduling interrupts the poll with its waker. A reactor
     initialized outside that mode keeps its dedicated thread; socket readiness
     locks and task ownership rules are unchanged.
+    A bounded batch of task resumes also triggers a nonblocking poll, preventing
+    a continuously runnable queue from starving sockets or expired timers.
   - URL decoding returns an unescaped component directly. Shared strings remain
     immutable, and escaped/malformed input retains the existing byte decoder.
   - HTTP validation retains the exact ASCII token and field-value rules while
