@@ -1924,6 +1924,9 @@ Bytes concatenation checks the complete output size and copies inputs directly
 into one final buffer, retaining independent values and immutable aliases.
 Buffered HTTP messages render their computed Content-Length directly after the
 other fields, avoiding a temporary header collection while keeping validation.
+Request framing, expectation and connection values are collected during the
+same validated field scan. Interpretation still follows whole-head validation,
+with repeated-field order and error precedence preserved.
 
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;

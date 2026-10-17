@@ -50,6 +50,12 @@ let referenceRequestHead text =
       match parseHeaderLines headerLines Headers.empty with
       | Err error -> Err error
       | Ok headers -> Ok (method, url, headers, version)
+
+parseRequestHeadBytes : Bytes -> String -> Result (Method * Url * Headers * String) String
+let parseRequestHeadBytes bytes text =
+  match parseRequestHeadMeta bytes text with
+  | Err error -> Err error
+  | Ok (method, url, headers, version, _) -> Ok (method, url, headers, version)
 "#;
 
 #[track_caller]
@@ -372,6 +378,40 @@ let t = { Transport with close u = (), recv n = Err "unexpected read", send b = 
 match parseRequestAfter t wire with
 | Err error -> error = "request headers are not valid UTF-8"
 | Ok _ -> false"#,
+        false,
+    );
+}
+
+#[test]
+fn collected_protocol_fields_match_ordered_header_lookups() {
+    check(
+        r#"let text = "GET / HTTP/1.1\r\nHost: local\r\nExpect: 100-continue\r\nEXPECT: other\r\nContent-Length: 2\r\ncontent-length: 02\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\nCONNECTION: close\r\nXonnection: ignored\r\n\r\n"
+match parseRequestHeadMeta (Bytes.fromString text) text with
+| Err _ -> false
+| Ok (_, _, headers, _, metadata) -> metadata.connections = Headers.getAll "Connection" headers && metadata.expectations = Headers.getAll "Expect" headers && metadata.lengths = Headers.getAll "Content-Length" headers && metadata.transfers = Headers.getAll "Transfer-Encoding" headers"#,
+        false,
+    );
+}
+
+#[test]
+fn protocol_collection_keeps_framing_error_precedence() {
+    check(
+        r#"let text = "POST / HTTP/1.1\r\nContent-Length: -1\r\ncontent-length: 9223372036854775808\r\nExpect: unsupported\r\n\r\n"
+let t = { Transport with close u = (), recv n = Err "body read", send b = Err "transport touched" }
+match parseRequestAfter t (Bytes.fromString text) with
+| Err error -> error = "invalid Content-Length"
+| Ok _ -> false"#,
+        false,
+    );
+}
+
+#[test]
+fn protocol_collection_keeps_trimmed_values_and_original_fields() {
+    check(
+        r#"let text = "GET / HTTP/1.1\r\nCoNnEcTiOn:\t keep-alive, close \t\r\ncontent-length:  0\t\r\nX: café\r\n\r\n"
+match parseRequestHeadMeta (Bytes.fromString text) text with
+| Err _ -> false
+| Ok (_, _, headers, _, metadata) -> metadata.connections = ["keep-alive, close"] && metadata.lengths = ["0"] && metadata.expectations = [] && metadata.transfers = [] && Headers.toList headers = [("CoNnEcTiOn", "keep-alive, close"), ("content-length", "0"), ("X", "café")]"#,
         false,
     );
 }
