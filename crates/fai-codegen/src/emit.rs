@@ -7426,6 +7426,9 @@ impl<M: Module> Translator<'_, M> {
     /// Direct-calls a saturated spread-returning callee, yielding its N typed
     /// result components.
     fn spread_call(&mut self, call: &CExpr) -> Vec<Value> {
+        if let ExprKind::Prim { op, args } = &call.kind {
+            return self.native_result_call(*op, args);
+        }
         let ExprKind::App { func, args, .. } = &call.kind else {
             unreachable!("spread_call on a non-App")
         };
@@ -7433,6 +7436,29 @@ impl<M: Module> Translator<'_, M> {
             unreachable!("spread_call on an indirect call")
         };
         self.spread_call_parts(def, args)
+    }
+
+    /// The native ABI uses an explicit payload pointer so it is independent of
+    /// platform aggregate-return conventions. The call always initializes the
+    /// slot and transfers its one owned payload to the component local.
+    fn native_result_call(&mut self, op: Prim, args: &[CExpr]) -> Vec<Value> {
+        let borrowed = args.first().is_some_and(|arg| op.borrows_operand(&arg.ty));
+        let symbol = op.native_result_symbol(borrowed).expect("native Result ABI");
+        let mut values: Vec<_> = args.iter().map(|arg| self.expr_boxed(arg)).collect();
+        let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            8,
+            3,
+        ));
+        let ptr = self.ptr();
+        let pointer = self.builder.ins().stack_addr(ptr, slot, 0);
+        values.push(pointer);
+        let function = self.runtime(symbol, values.len(), true);
+        let call = self.builder.ins().call(function, &values);
+        let tag = self.builder.inst_results(call)[0];
+        self.mark_raw(tag);
+        let payload = self.builder.ins().stack_load(types::I64, slot, 0);
+        vec![tag, payload]
     }
 
     /// Marshals `args` and direct-calls spread-returning `def`, yielding its N `f64`

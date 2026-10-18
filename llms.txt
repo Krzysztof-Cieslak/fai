@@ -1283,6 +1283,8 @@ plus input byte length; `slice` copies a checked UTF-8 range; `escape` quotes
 pattern metacharacters. Ordinary applications use the typed package wrappers.
 Checked slicing borrows its source internally, so repeated extractions avoid
 temporary reference-count traffic while every result remains an independent copy.
+Immediate inspection can also avoid the native Result wrapper allocation; the
+public Result value and its errors retain their normal semantics.
 
 ### FileSystem and File — native file I/O
 

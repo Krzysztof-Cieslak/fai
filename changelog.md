@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Pass opted-in native `Result` outputs as a tag and owned payload, avoiding
+  temporary wrappers during immediate inspection. Checked UTF-8 slicing uses
+  this convention while stored and first-class results keep their usual form.
 - Lower immediately tested, single-use Boolean decisions through shared branch
   targets, avoiding intermediate tagged results while preserving short-circuit
   effects, traps and ownership releases.

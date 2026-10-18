@@ -193,9 +193,7 @@ impl Sroa<'_> {
         // A saturated spread-returning call: bind its result components.
         if let Some(n) = self.spread_call_arity(&value) {
             let locals: Vec<LocalId> = (0..n).map(|_| self.fresh()).collect();
-            if let Some(widths) =
-                self.callee_abi(&app_func(&value)).and_then(|abi| abi.tagged_result())
-            {
+            if let Some(widths) = self.result_call_layout(&value) {
                 let ty = value.ty.clone();
                 let components = tagged_locals(&locals);
                 self.tagged.insert(local, Tagged { widths, ty, components });
@@ -512,6 +510,9 @@ impl Sroa<'_> {
     /// The component count if `call` is a **saturated** direct call whose callee
     /// returns a spread aggregate, else `None`.
     fn spread_call_arity(&self, call: &CExpr) -> Option<usize> {
+        if matches!(call.kind, K::Prim { .. }) && self.result_call_layout(call).is_some() {
+            return Some(2);
+        }
         if let K::App { args, .. } = &call.kind {
             let abi = self.callee_abi(&app_func(call))?;
             if args.len() == abi.params.len() {
@@ -519,6 +520,19 @@ impl Sroa<'_> {
             }
         }
         None
+    }
+
+    /// Native entries opt in with a resource-free, tag-plus-one-payload contract.
+    /// The logical type must still be the actual Prelude Result declaration.
+    fn result_call_layout(&self, call: &CExpr) -> Option<[u8; 2]> {
+        if let K::Prim { op, args } = &call.kind {
+            let borrowed = args.first().is_some_and(|arg| op.borrows_operand(&arg.ty));
+            return (args.len() == op.arity()
+                && op.native_result_symbol(borrowed).is_some()
+                && fai_core::abi::result_payloads(self.db, &call.ty).is_some())
+            .then_some([0, 0]);
+        }
+        self.callee_abi(&app_func(call)).and_then(|abi| abi.tagged_result())
     }
 
     /// The callee ABI of a direct call to a top-level definition, else `None`.
@@ -564,9 +578,7 @@ impl Sroa<'_> {
             result.resize_with(n, || CExpr::new(K::Lit(Lit::Unit), Ty::Error));
             return result;
         }
-        if self.callee_abi(&app_func(&e)).is_some_and(|abi| abi.tagged_result() == Some(widths))
-            && self.spread_call_arity(&e) == Some(n)
-        {
+        if self.result_call_layout(&e) == Some(widths) && self.spread_call_arity(&e) == Some(n) {
             let locals: Vec<_> = (0..n).map(|_| self.fresh()).collect();
             let mut call = self.rewrite_op(e, binds);
             call.ty = tagged_transport(n);

@@ -692,19 +692,24 @@ impl Rc<'_> {
                 let unused: Vec<_> =
                     locals.iter().copied().filter(|local| !fvb.contains(local)).collect();
                 let body2 = dropify(unused, body2);
-                let K::App { func, args, reuse, alloc } = value.kind else {
-                    // Defensive: a spread value that is not a direct call cannot be
-                    // a multi-result bind; count it as an ordinary value.
-                    let value2 = self.owned(CExpr::new(value.kind, value.ty), &live_after);
-                    return CExpr::new(
-                        K::LetMany { locals, value: Box::new(value2), body: Box::new(body2) },
-                        ty,
-                    );
-                };
-                let nargs = args.len();
-                let borrows = match &func.kind {
-                    K::Global(def) => (self.call_borrows)(*def, nargs),
-                    _ => vec![false; nargs],
+                let (args, borrows) = match &value.kind {
+                    K::App { func, args, .. } => {
+                        let borrows = match &func.kind {
+                            K::Global(def) => (self.call_borrows)(*def, args.len()),
+                            _ => vec![false; args.len()],
+                        };
+                        (args, borrows)
+                    }
+                    K::Prim { op, args } if op.native_result_symbol(false).is_some() => {
+                        (args, prim_borrows(*op, args))
+                    }
+                    _ => {
+                        let value2 = self.owned(*value, &live_after);
+                        return CExpr::new(
+                            K::LetMany { locals, value: Box::new(value2), body: Box::new(body2) },
+                            ty,
+                        );
+                    }
                 };
                 let is_borrow = |i: usize| borrows.get(i).copied().unwrap_or(false);
                 let consumed: Locals = args
@@ -737,12 +742,8 @@ impl Rc<'_> {
                         }
                     }
                 }
-                let call = CExpr::new(K::App { func, args, reuse, alloc }, value.ty);
                 let inner = dropify(dead, body2);
-                let mut out = CExpr::new(
-                    K::LetMany { locals, value: Box::new(call), body: Box::new(inner) },
-                    ty,
-                );
+                let mut out = CExpr::new(K::LetMany { locals, value, body: Box::new(inner) }, ty);
                 for x in dups.into_iter().rev() {
                     out = dup_(x, out);
                 }

@@ -938,6 +938,22 @@ impl Prim {
         }
     }
 
+    /// An opt-in native Result ABI: return a raw tag and write one owned uniform
+    /// payload through a final pointer argument. Only primitives whose success
+    /// and error payloads have no observable finalization may use this contract.
+    /// Argument ownership is unchanged; nested payload aggregates stay intact.
+    #[must_use]
+    pub fn native_result_symbol(self, borrowed: bool) -> Option<&'static str> {
+        match self {
+            Prim::RegexSlice => Some(if borrowed {
+                "fai_regex_slice_parts_borrowed"
+            } else {
+                "fai_regex_slice_parts"
+            }),
+            _ => None,
+        }
+    }
+
     /// The runtime symbol implementing this primitive.
     #[must_use]
     pub fn runtime_symbol(self) -> &'static str {
@@ -1326,9 +1342,9 @@ pub enum ExprKind {
         components: Vec<CExpr>,
     },
     /// Binds several slots at once from a multi-result `value`: the destructuring
-    /// of a [`Repr::Spread`]-result call. `value` is the call (an [`ExprKind::App`]
-    /// whose callee returns an FFA); `locals` receive its components in canonical
-    /// field order, then `body` is evaluated. Produced by the SROA pass.
+    /// of a [`Repr::Spread`]-result call or an opted-in native Result primitive.
+    /// `locals` receive the components in their transport order, then `body` is
+    /// evaluated. Produced by the SROA pass.
     LetMany {
         /// The slots bound to the multi-result value's components, in order.
         locals: Vec<LocalId>,

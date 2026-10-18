@@ -108,6 +108,15 @@ fn partially_applied_checked_text_slices_retain_the_source() {
     assert_eq!(crate::tests::borrow_sig(source, "cut"), vec![false]);
 }
 
+#[test]
+fn matched_native_results_bind_tag_and_payload_without_a_cell() {
+    let source = "module M\nlet inspect text start finish = match RegexEngine.slice text start finish with | Ok piece -> String.length piece | Err _ -> -1\n";
+    sound(source, "inspect");
+    let output = rc_checked(source, "inspect");
+    assert!(output.contains("letmany"), "{output}");
+    assert!(output.contains("regexSlice"), "{output}");
+}
+
 /// Asserts `name` is sound and updates a record in place (`recordUpdate`).
 #[track_caller]
 fn updates_in_place(src: &str, name: &str) {

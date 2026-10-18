@@ -250,11 +250,16 @@ fn data(tag: i64, fields: &[Value]) -> Value {
 }
 
 fn result<T>(result: Result<T>, encode: impl FnOnce(T) -> Value) -> Value {
+    let (tag, payload) = result_parts(result, encode);
+    data(tag, &[payload])
+}
+
+fn result_parts<T>(result: Result<T>, encode: impl FnOnce(T) -> Value) -> (i64, Value) {
     match result {
-        Ok(value) => data(0, &[encode(value)]),
-        Err(e) => data(
+        Ok(value) => (0, encode(value)),
+        Err(e) => (
             1,
-            &[data(
+            data(
                 0,
                 &[
                     crate::fai_box_int(e.code),
@@ -262,7 +267,7 @@ fn result<T>(result: Result<T>, encode: impl FnOnce(T) -> Value) -> Value {
                     crate::fai_box_int(e.start),
                     crate::fai_box_int(e.end),
                 ],
-            )],
+            ),
         ),
     }
 }
@@ -500,6 +505,49 @@ pub extern "C" fn fai_regex_slice(text: Value, start: Value, end: Value) -> Valu
 /// The independent result does not retain the source on either success or failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_regex_slice_borrowed(text: Value, start: Value, end: Value) -> Value {
+    result(slice_value(text, start, end), |value| value)
+}
+
+/// Copy a checked range, returning its raw Result tag and writing its owned
+/// payload without allocating a Result cell. All three value arguments are owned.
+///
+/// # Safety
+/// `payload` must point to one writable, aligned Value slot. Its previous contents
+/// are not released; the caller owns the value written there on either tag.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fai_regex_slice_parts(
+    text: Value,
+    start: Value,
+    end: Value,
+    payload: *mut Value,
+) -> i64 {
+    // SAFETY: the caller provides the output slot required by the borrowed entry.
+    let tag = unsafe { fai_regex_slice_parts_borrowed(text, start, end, payload) };
+    crate::fai_drop(text);
+    tag
+}
+
+/// Copy a checked range, borrowing its source and consuming both indices.
+/// Returns a raw Result tag and writes one owned payload; both payload variants
+/// are resource-free, and success retains independent bytes.
+///
+/// # Safety
+/// `payload` must point to one writable, aligned Value slot. Its previous contents
+/// are not released; the caller owns the value written there on either tag.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fai_regex_slice_parts_borrowed(
+    text: Value,
+    start: Value,
+    end: Value,
+    payload: *mut Value,
+) -> i64 {
+    let (tag, value) = result_parts(slice_value(text, start, end), |value| value);
+    // SAFETY: the caller provides a writable slot; ownership transfers to it.
+    unsafe { payload.write(value) };
+    tag
+}
+
+fn slice_value(text: Value, start: Value, end: Value) -> Result<Value> {
     let (a, b) = (crate::unbox_int(start), crate::unbox_int(end));
     // SAFETY: input has static String type; str::get checks both UTF-8 boundaries.
     let input = unsafe { crate::string_str(text) };
@@ -513,7 +561,7 @@ pub extern "C" fn fai_regex_slice_borrowed(text: Value, start: Value, end: Value
     };
     crate::fai_drop(start);
     crate::fai_drop(end);
-    result(outcome, |v| v)
+    outcome
 }
 
 /// Escape pattern metacharacters in Unicode text.
