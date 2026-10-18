@@ -4921,7 +4921,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   capabilities — DNS, file I/O — the blocking pool already covers). A per-direction
   readiness latch closes the lost-wake race (a readiness edge that arrives between a
   failed syscall and the park is recorded, so the task retries rather than parking
-  forever). Each direction retains all pending operations with distinct per-park
+  forever). The direction lock spans the syscall and waiter registration. A
+  `WouldBlock` result invalidates a previously delivered latch before registering,
+  avoiding a redundant immediate retry; a new delivery cannot acquire the lock
+  until registration is complete. Successful probes and other errors preserve
+  the latch. Each direction retains all pending operations with distinct per-park
   registrations; readiness wakes the whole group to retry its syscalls. A resumed
   operation removes its own registration on cancellation or a spurious wake and
   never clears a newer latched edge. Read and write queues are independent, and
