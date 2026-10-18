@@ -1971,6 +1971,14 @@ and slice operations keep owned arguments so they can transfer or reuse storage.
 Byte lengths and element reads compile to native loads with raw integer indices
 and results, including in concurrent programs. Bounds failures keep the runtime
 byte-index diagnostic; uniform and first-class boundaries retain normal boxing.
+`Bytes.find needle bytes` returns the first byte offset of a complete pattern.
+`Bytes.findIn start end needle bytes` restricts it to the clamped `[start, end)`
+range and still returns an absolute offset. An empty pattern matches the start;
+a reversed clamped range returns None. Search borrows its buffers and uses a portable
+native byte-pattern engine. HTTP delimiter searches use its String-pattern
+entry to borrow literal UTF-8 bytes without constructing a temporary buffer.
+Validated request header names are filtered by their ASCII initial before any
+lowercase metadata comparison; original spelling, order and errors are preserved.
 String/Bytes conversion transfers a unique inline buffer by changing its kind.
 Shared values and substring views copy; byte-to-text conversion still validates
 UTF-8 and records the resulting String's ASCII property.

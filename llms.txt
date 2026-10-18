@@ -1727,6 +1727,11 @@ can forward that borrowing, while builders and slices keep ownership for reuse.
 Byte length and indexed reads use native loads in both ordinary and concurrent
 code. Indexed reads preserve bounds checks, with raw integers inside native
 functions and normal boxing at generic or first-class boundaries.
+`Bytes.find needle bytes` searches a binary pattern without copying its inputs.
+`Bytes.findIn start end needle bytes` searches within clamped byte bounds and
+returns an absolute offset. Empty patterns match the clamped start; reversed clamped
+ranges return `None`. HTTP also uses this native search for its delimiters and
+filters irrelevant header names before lowercase metadata comparison.
 Conversions between String and Bytes can transfer uniquely owned inline storage.
 Shared values and substring views copy; UTF-8 validation remains required for text.
 
@@ -1742,6 +1747,8 @@ length      : Bytes -> Int
 isEmpty     : Bytes -> Bool
 get         : Int -> Bytes -> Option Int               // byte 0–255, or None if out of bounds
 unsafeGet   : Int -> Bytes -> Int                      // out of bounds aborts
+find        : Bytes -> Bytes -> Option Int             // first complete pattern; empty matches at zero
+findIn      : Int -> Int -> Bytes -> Bytes -> Option Int // clamped [start,end), absolute byte offset
 concat      : Bytes -> Bytes -> Bytes
 concatMany  : List Bytes -> Bytes                      // one final allocation; a sole chunk can transfer
 slice       : Int -> Int -> Bytes -> Bytes             // [start, end), clamped

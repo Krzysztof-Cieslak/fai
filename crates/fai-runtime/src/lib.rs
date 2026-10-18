@@ -3885,6 +3885,11 @@ pub extern "C" fn fai_list_reverse_prefix(count: Value, mut list: Value) -> Valu
 // `Bytes` has no borrowing-slice form, so it is always a single inline buffer.
 // Its elements are bytes exposed to Fai as `Int`s (0–255).
 
+mod byte_search;
+pub use byte_search::{
+    fai_bytes_find, fai_bytes_find_borrowed, fai_bytes_find_utf8, fai_bytes_find_utf8_borrowed,
+};
+
 /// Allocates a tight `Bytes` object from `bytes` (rc = 1).
 fn make_bytes(bytes: &[u8]) -> Value {
     if bytes.is_empty() {

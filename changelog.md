@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Search byte patterns natively with `Bytes.find` and bounded `Bytes.findIn`.
+  HTTP delimiter searches use the same borrowing search engine, and request
+  metadata parsing rejects unrelated header names before lowercasing them.
 - Pass opted-in native `Result` outputs as a tag and owned payload, avoiding
   temporary wrappers during immediate inspection. Checked UTF-8 slicing uses
   this convention while stored and first-class results keep their usual form.

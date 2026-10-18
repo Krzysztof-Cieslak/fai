@@ -142,6 +142,14 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         // start/end byte indices with the buffer last.
         "bytesLength" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::int())),
         "bytesGet" => Scheme::mono(Ty::arrows([Ty::Con(Con::Bytes), Ty::int()], Ty::int())),
+        "bytesFind" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::Bytes), Ty::Con(Con::Bytes), Ty::int(), Ty::int()],
+            Ty::int(),
+        )),
+        "bytesFindUtf8" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::Bytes), Ty::Con(Con::String), Ty::int(), Ty::int()],
+            Ty::int(),
+        )),
         "bytesConcat" => Scheme::mono(Ty::arrows(
             [Ty::Con(Con::Bytes), Ty::Con(Con::Bytes)],
             Ty::Con(Con::Bytes),

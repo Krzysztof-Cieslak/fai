@@ -37,6 +37,7 @@ unicode-segmentation.workspace = true
 unicode-width.workspace = true
 regex-automata.workspace = true
 regex-syntax.workspace = true
+memchr.workspace = true
 miniz_oxide.workspace = true
 crc32fast.workspace = true
 serde.workspace = true

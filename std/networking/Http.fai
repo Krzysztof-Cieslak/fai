@@ -506,7 +506,18 @@ let readHeaderFrom t acc searchStart =
 // The index just past the first `\r\n\r\n` in `b`, or `None`.
 findBoundary : Bytes -> Int -> Int -> Option Int
 let findBoundary b i n =
-  if i + 4 > n then None else if isHeaderEnd b i then Some (i + 4) else findBoundary b (i + 1) n
+  if i >= 0 && i <= n && n <= Bytes.length b && i <= 9223372036854775803 then
+    let found = Prim.bytesFindUtf8 b "\r\n\r\n" i n
+    if found < 0 then None else Some (found + 4)
+  else
+    findBoundaryChecked b i n
+
+// Preserve checked indexing and wrapping arithmetic for an unproven range.
+findBoundaryChecked : Bytes -> Int -> Int -> Option Int
+let findBoundaryChecked b i n =
+  if i + 4 > n then
+    None
+  else if isHeaderEnd b i then Some (i + 4) else findBoundaryChecked b (i + 1) n
 
 isHeaderEnd : Bytes -> Int -> Bool
 let isHeaderEnd b i =
@@ -707,12 +718,20 @@ example: framingOf (Headers.fromList [
 // The index of the next `\r\n` in `b` at or after `i`, or `None`.
 findCrlf : Bytes -> Int -> Int -> Option Int
 let findCrlf b i n =
+  if i >= 0 && i <= n && n <= Bytes.length b && i <= 9223372036854775805 then
+    let found = Prim.bytesFindUtf8 b "\r\n" i n
+    if found < 0 then None else Some found
+  else
+    findCrlfChecked b i n
+
+findCrlfChecked : Bytes -> Int -> Int -> Option Int
+let findCrlfChecked b i n =
   if i + 2 > n then
     None
   else if Bytes.unsafeGet i b = 13 && Bytes.unsafeGet (i + 1) b = 10 then
     Some i
   else
-    findCrlf b (i + 1) n
+    findCrlfChecked b (i + 1) n
 
 // Read a CRLF-terminated line, returning it (without the CRLF) and the rest of the
 // buffer, pulling from the transport as needed.
@@ -1708,15 +1727,17 @@ type HeadMetadata = {
 
 // Names have passed ASCII token validation. Collect protocol values in wire
 // order, but defer interpreting them until the entire head has been validated.
-rememberField : Int -> String -> String -> HeadMetadata -> HeadMetadata
-let rememberField size name value metadata =
-  if size = 6 && String.toLower name = "expect" then
+// The first byte rejects unrelated names before allocating their lowercase form.
+rememberField : Int -> Int -> String -> String -> HeadMetadata -> HeadMetadata
+let rememberField size first name value metadata =
+  let initial = Int.or first 32
+  if size = 6 && initial = 101 && String.toLower name = "expect" then
     { metadata with expectations = value :: metadata.expectations }
-  else if size = 10 && String.toLower name = "connection" then
+  else if size = 10 && initial = 99 && String.toLower name = "connection" then
     { metadata with connections = value :: metadata.connections }
-  else if size = 14 && String.toLower name = "content-length" then
+  else if size = 14 && initial = 99 && String.toLower name = "content-length" then
     { metadata with lengths = value :: metadata.lengths }
-  else if size = 17 && String.toLower name = "transfer-encoding" then
+  else if size = 17 && initial = 116 && String.toLower name = "transfer-encoding" then
     { metadata with transfers = value :: metadata.transfers }
   else
     metadata
@@ -1778,7 +1799,8 @@ let scanRequestFields bytes text length lineStart index nameEnd valueStart value
         | Err _ -> Err "invalid header field"
         | Ok value ->
           let nextFields = (name, value) :: fields
-          let nextMetadata = rememberField (nameEnd - lineStart) name value metadata
+          let nextMetadata =
+            rememberField (nameEnd - lineStart) (Bytes.unsafeGet lineStart bytes) name value metadata
           if atEnd then
             finishFields nextFields nextMetadata
           else

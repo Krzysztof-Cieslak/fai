@@ -1113,6 +1113,7 @@ dependencies = [
  "flate2",
  "libc",
  "libsqlite3-sys",
+ "memchr",
  "miniz_oxide",
  "mio",
  "proptest",
