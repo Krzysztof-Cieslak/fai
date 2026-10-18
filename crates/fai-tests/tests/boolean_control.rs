@@ -9,6 +9,11 @@ const SOURCE: &str = r#"module Main
 public choose : Int -> Bool
 let choose x = (x >= 3 && x <= 5) || x = 9 || x = 12
 let safe values index = index >= 0 && index < Array.length values && Array.unsafeGet index values = 7
+let collect n previous out =
+  if n = 0 then out
+  else
+    let selected = if n % 2 = 0 then previous else not previous
+    collect (n - 1) selected (selected :: out)
 say : Runtime -> String -> Bool -> Bool / { Console }
 let say r message value =
   let _ = r.console.writeLine message
@@ -22,7 +27,11 @@ let main r =
   let selected = (say r "a" false || say r "b" true) || say r "skipped" false
   let source = String.join "" ["retained", " text"]
   let stored = String.length source > 0 || String.contains "unused" source
-  r.console.writeLine (if count = 5 && valid && selected && stored && stored && source = "retained text" then "ok" else "bad")
+  let shared = if count = 5 then valid else false
+  let uniform = if count < 0 then true else Callback.keep selected
+  let slotsOk = [shared, not shared, uniform] = [true, false, true]
+  let loopOk = collect 5 false [] = [true, false, false, true, true]
+  r.console.writeLine (if count = 5 && valid && selected && stored && stored && slotsOk && loopOk && source = "retained text" then "ok" else "bad")
 "#;
 
 fn source() -> (FaiDatabase, SourceFile) {
@@ -30,7 +39,7 @@ fn source() -> (FaiDatabase, SourceFile) {
     fai_types::std_lib::load_std(&mut db);
     db.add_source(
         "Callback.fai".into(),
-        "module Callback\npublic apply : (Int -> Bool) -> Int -> Bool\nlet apply f x = f x\n"
+        "module Callback\npublic apply : (Int -> Bool) -> Int -> Bool\nlet apply f x = f x\npublic keep : Bool -> Bool\nlet keep value = value\n"
             .into(),
     );
     let id = db.add_source("Main.fai".into(), SOURCE.into());
