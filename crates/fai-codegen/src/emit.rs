@@ -2942,7 +2942,10 @@ impl<M: Module> Translator<'_, M> {
             }
             Lit::Bool(b) => {
                 let v = if *b { 3 } else { 1 };
-                self.builder.ins().iconst(types::I64, v)
+                let tagged = self.builder.ins().iconst(types::I64, v);
+                let predicate = self.builder.ins().iconst(types::I8, i64::from(*b));
+                self.bool_predicates.insert(tagged, predicate);
+                tagged
             }
             Lit::Float(bits) => {
                 // A monomorphic `Float` literal is an unboxed `f64`; it is boxed
@@ -7794,6 +7797,9 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn conditional(&mut self, cond: &CExpr, then: &CExpr, els: &CExpr) -> Value {
+        // Merge known Boolean arms as predicates. Reapply the uniform tag once
+        // afterward, retaining the predicate for any local Boolean consumers.
+        let merge_bool = then.ty == Ty::bool() && els.ty == Ty::bool();
         let mut budget = 12;
         if crate::scalar_select::integer_arm(then, &|local| self.is_int_local(local), &mut budget)
             && crate::scalar_select::integer_arm(
@@ -7835,7 +7841,15 @@ impl<M: Module> Translator<'_, M> {
         let tv = self.expr(then);
         let merge_b = self.builder.create_block();
         let merge_ty = self.builder.func.dfg.value_type(tv);
-        self.builder.append_block_param(merge_b, merge_ty);
+        let then_predicate = merge_bool
+            .then(|| {
+                let value = self.builder.func.dfg.resolve_aliases(tv);
+                self.bool_predicates.get(&value).copied()
+            })
+            .flatten();
+        // A bridge defers the representation choice until the other arm is
+        // known, without converting a uniform result from an opaque call.
+        let then_bridge = then_predicate.map(|_| self.builder.create_block());
         // The merge representation follows the then-branch value (a desugared
         // `match`'s `<error>` fall-through is always in the else position, so the
         // then value is reliable): `f64` for an unboxed float, a raw untagged word
@@ -7846,7 +7860,12 @@ impl<M: Module> Translator<'_, M> {
         // necessarily a representation — one may be a niche value and the other a
         // standard one from a generic source).
         let merge_niche = self.niche_of(tv);
-        self.builder.ins().jump(merge_b, &[tv.into()]);
+        if let Some(bridge) = then_bridge {
+            self.builder.ins().jump(bridge, &[]);
+        } else {
+            self.builder.append_block_param(merge_b, merge_ty);
+            self.builder.ins().jump(merge_b, &[tv.into()]);
+        }
 
         self.builder.switch_to_block(else_b);
         self.builder.seal_block(else_b);
@@ -7855,6 +7874,17 @@ impl<M: Module> Translator<'_, M> {
         self.bounds.refine(cond, false);
         self.refine_tag(cond, false);
         let ev = self.expr(els);
+        let else_predicate = {
+            let value = self.builder.func.dfg.resolve_aliases(ev);
+            self.bool_predicates.get(&value).copied()
+        };
+        let predicates = then_predicate.zip(else_predicate);
+        if then_bridge.is_some() {
+            self.builder.append_block_param(
+                merge_b,
+                if predicates.is_some() { types::I8 } else { merge_ty },
+            );
+        }
         // Reconcile the else value to the merge's representation: to the then
         // branch's niche scheme (converting a standard value), or to standard if the
         // then branch is standard but the else is niche.
@@ -7865,8 +7895,19 @@ impl<M: Module> Translator<'_, M> {
         };
         // Reconcile tagged versus raw integers too: equal Cranelift types do not
         // imply equal representations. The error fallthrough is never observed.
-        let ev = self.coerce_repr(ev, merge_ty, merge_raw);
+        let ev = if let Some((_, predicate)) = predicates {
+            predicate
+        } else {
+            self.coerce_repr(ev, merge_ty, merge_raw)
+        };
         self.builder.ins().jump(merge_b, &[ev.into()]);
+
+        if let Some(bridge) = then_bridge {
+            self.builder.switch_to_block(bridge);
+            self.builder.seal_block(bridge);
+            let value = predicates.map_or(tv, |(predicate, _)| predicate);
+            self.builder.ins().jump(merge_b, &[value.into()]);
+        }
 
         self.builder.switch_to_block(merge_b);
         self.builder.seal_block(merge_b);
@@ -7874,6 +7915,9 @@ impl<M: Module> Translator<'_, M> {
         self.bounds = saved_bounds;
         self.known_tags = saved_tags;
         let result = self.builder.block_params(merge_b)[0];
+        if predicates.is_some() {
+            return self.tag_bool(result);
+        }
         if merge_raw {
             self.mark_raw(result);
         }

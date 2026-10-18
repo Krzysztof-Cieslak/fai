@@ -7,6 +7,8 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Preserve native Boolean predicates across known branch results, avoiding
+  repeated tagging and testing when a Boolean is reused locally.
 - Inline cached allocation lookups while keeping slab refill outside the hot path.
 - Discard socket readiness that predates a locked `WouldBlock` probe before registering
   its waiter, avoiding a redundant retry while retaining lost-wakeup protection.

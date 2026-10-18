@@ -1760,6 +1760,37 @@ let main r =
 }
 
 #[test]
+fn shared_boolean_merge_keeps_uniform_boundaries() {
+    let source = r#"module M
+public classify : Int -> (Bool * Bool * Int)
+let classify x =
+  let selected = if x < 0 then x = (0 - 3) else x < 3
+  (selected, not selected, if selected then 10 else 20)
+public main : Runtime -> Unit / { Console }
+let main r =
+  let results = List.map classify [(0 - 3), (0 - 1), 0, 2, 3]
+  let expected = [(true, false, 10), (false, true, 20), (true, false, 10), (true, false, 10), (false, true, 20)]
+  r.console.writeLine (if results = expected then "ok" else "bad")
+"#;
+    assert_eq!(run(source), (0, "ok\n".into()));
+}
+
+#[test]
+fn boolean_merge_rebinds_loop_carried_values() {
+    let source = r#"module M
+let collect n previous out =
+  if n = 0 then out
+  else
+    let selected = if n % 2 = 0 then previous else not previous
+    collect (n - 1) selected (selected :: out)
+public main : Runtime -> Unit / { Console }
+let main r =
+  r.console.writeLine (if collect 5 false [] = [true, false, false, true, true] then "ok" else "bad")
+"#;
+    assert_eq!(run(source), (0, "ok\n".into()));
+}
+
+#[test]
 fn short_circuit_skips_division_and_bounds_traps() {
     let source = r#"module M
 public decide : Int -> Bool
