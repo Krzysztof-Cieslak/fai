@@ -2590,6 +2590,9 @@ Editor integration:
     A fresh slab first issues eight cells; continued demand refills in batches of
     up to 64. Cold size classes therefore touch fewer unused cells without losing
     the amortized refill behavior of hot classes.
+    The runtime inlines the cached free-list pop into allocation callers and
+    keeps refill out of line, avoiding the refill frame and register saves on
+    cache hits.
     Objects of at least 16 KiB use independent OS page mappings so final drop
     returns their pages instead of retaining them in host-allocator arenas. A
     fixed prefix aligns the common array/string payload to 64 bytes. Smaller
