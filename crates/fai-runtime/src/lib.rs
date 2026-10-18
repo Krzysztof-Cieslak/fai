@@ -1166,6 +1166,7 @@ impl Pool {
         }
     }
 
+    #[inline]
     fn take(&self, class: usize) -> *mut u8 {
         let head = self.heads[class].get();
         if head.is_null() {
@@ -1180,6 +1181,8 @@ impl Pool {
     /// Refills an empty class from its unfinished slab. First use issues only
     /// eight cells; sustained demand uses batches of 64 without touching the
     /// entire mapping in advance.
+    #[cold]
+    #[inline(never)]
     fn refill(&self, class: usize) -> *mut u8 {
         debug_assert!(self.heads[class].get().is_null());
         let size = class * SIZE_STEP;

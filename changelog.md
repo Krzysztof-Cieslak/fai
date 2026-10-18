@@ -7,6 +7,7 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Inline cached allocation lookups while keeping slab refill outside the hot path.
 - Discard socket readiness that predates a locked `WouldBlock` probe before registering
   its waiter, avoiding a redundant retry while retaining lost-wakeup protection.
 - Search byte patterns natively with `Bytes.find` and bounded `Bytes.findIn`.
