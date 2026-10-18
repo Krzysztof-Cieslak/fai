@@ -5478,7 +5478,8 @@ pub use path::{fai_path_components, fai_path_operation};
 pub use regex_engine::{
     fai_regex_byte_index, fai_regex_compile, fai_regex_escape, fai_regex_find_bytes,
     fai_regex_find_text, fai_regex_names, fai_regex_slice, fai_regex_slice_borrowed,
-    fai_regex_test_bytes, fai_regex_test_text,
+    fai_regex_slice_parts, fai_regex_slice_parts_borrowed, fai_regex_test_bytes,
+    fai_regex_test_text,
 };
 
 mod crypto;

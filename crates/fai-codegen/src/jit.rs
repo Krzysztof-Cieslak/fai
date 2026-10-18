@@ -262,6 +262,8 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_regex_byte_index", rt::fai_regex_byte_index);
     sym!("fai_regex_slice", rt::fai_regex_slice);
     sym!("fai_regex_slice_borrowed", rt::fai_regex_slice_borrowed);
+    sym!("fai_regex_slice_parts", rt::fai_regex_slice_parts);
+    sym!("fai_regex_slice_parts_borrowed", rt::fai_regex_slice_parts_borrowed);
     sym!("fai_regex_escape", rt::fai_regex_escape);
     sym!("fai_compression_create", rt::fai_compression_create);
     sym!("fai_compression_step", rt::fai_compression_step);

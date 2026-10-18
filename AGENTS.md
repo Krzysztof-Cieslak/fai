@@ -511,6 +511,10 @@ Unused words are initialized to Unit and released through ordinary ownership.
 First-class boundaries reconstruct the normal values. Resource-bearing results
 stay boxed so later tag-only observations retain the original resource lifetime.
 The signature-derived layout preserves the cross-module body-edit firewall.
+Opted-in native primitives can likewise return a raw Result tag and write one
+owned uniform payload to a caller-provided slot. Their payload contract must be
+resource-free. Checked UTF-8 slicing uses this boundary without a Result cell;
+ordinary value boundaries reconstruct the usual representation.
 Native executable linking removes unused code/data sections with the platform
 linker's dead-section elimination; referenced foreign symbols and native
 initialization sections remain live.

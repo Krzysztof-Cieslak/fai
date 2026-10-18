@@ -270,6 +270,14 @@ retired; IDs are not reused).
   Primitive borrow inference and ownership insertion share per-argument contracts:
   a borrowed first operand no longer implicitly lends consumed scalar indices.
 
+- Native Result decomposition is opt-in through the primitive ABI catalog. A
+  portable C entry returns the raw tag and writes one owned payload to an aligned
+  caller slot; only primitives whose payloads have no observable finalization may
+  opt in. Scalar replacement tracks the components through inspection and
+  reconstructs ordinary values at storage and first-class boundaries. Checked
+  UTF-8 slicing is the first consumer; its validation and payloads are shared with
+  the boxed native entry points.
+
 - Regex replacement text is literal unless compiled as a capture template.
   Template references are validated before matching and bind to one regex schema.
   Callback replacement processes original-input matches once in order, forwards
