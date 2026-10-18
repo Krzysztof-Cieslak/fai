@@ -261,6 +261,10 @@ retired; IDs are not reused).
   or captured values and intervening operations; the decision tree evaluates
   effects, traps and ownership operations in their original conditional order.
   Materialized results retain the normal tagged Bool ABI.
+  When both arms of a Boolean value already have native predicates, a join
+  preserves that predicate for local reuse and rebuilds the uniform tag once.
+  Unknown call results retain their value merge, avoiding unnecessary conversion;
+  first-class calls, stored values and loop-carried values retain their normal ABI.
 
 - Checked UTF-8 range extraction borrows its source String and copies the selected
   bytes into an independent result. Its native borrowed entry still consumes both

@@ -719,6 +719,9 @@ unknown representations and larger alternatives retain ordinary branches.
 Immediately tested, single-use Boolean bindings can pass control directly through
 their decision tree. Shared values keep the normal tagged Bool representation;
 effects, traps and ownership releases retain their original conditional order.
+Known Boolean predicates also survive branch joins for reuse by local tests.
+Their uniform tag is rebuilt once at the join; opaque call results retain the
+ordinary value merge, and stored or first-class values keep their usual encoding.
 The same bounded selection applies to two self-loop back-edges whose differing
 arguments are raw Ints. Other carried owners must be the same evaluated local;
 all state is rebound together, and conditional releases retain their branches.
