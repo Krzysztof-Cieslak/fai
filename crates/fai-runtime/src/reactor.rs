@@ -370,9 +370,12 @@ fn wait(dir: &Mutex<Readiness>) {
 /// Keeps a failed nonblocking syscall and its waiter registration atomic with
 /// respect to readiness delivery and other operations on the same direction.
 fn try_io<T>(dir: &Mutex<Readiness>, attempt: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-    let readiness = dir.lock().expect("reactor readiness");
+    let mut readiness = dir.lock().expect("reactor readiness");
     let result = attempt();
     if result.as_ref().is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock) {
+        // A delivered edge predates this failed probe and is now stale. A new
+        // delivery cannot acquire the lock until the waiter is registered.
+        readiness.ready = false;
         wait_locked(dir, readiness);
     }
     result
@@ -1516,6 +1519,42 @@ mod tests {
         assert_eq!(try_io(&source.read, || Ok(7)).unwrap(), 7);
         assert!(source.read.lock().unwrap().ready);
         assert_eq!(pending_waiters(&source.read), 0);
+    }
+
+    fn stale_edge_registers_before_retry(read: bool) {
+        let source = unregistered_source();
+        let direction = if read { &source.read } else { &source.write };
+        wake_direction(direction);
+        let (attempted, receive) = std::sync::mpsc::channel();
+        let wake_source = Arc::clone(&source);
+        let waker = std::thread::spawn(move || {
+            receive.recv().unwrap();
+            let direction = if read { &wake_source.read } else { &wake_source.write };
+            let registered = direction.lock().unwrap().waiters.len();
+            wake_direction(direction);
+            registered
+        });
+        let task_source = Arc::clone(&source);
+        block_on(Box::new(move || {
+            let direction = if read { &task_source.read } else { &task_source.write };
+            let result: io::Result<()> = try_io(direction, || {
+                attempted.send(()).unwrap();
+                Err(io::ErrorKind::WouldBlock.into())
+            });
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+            imm(0)
+        }));
+        assert_eq!(waker.join().unwrap(), 1);
+    }
+
+    #[test]
+    fn stale_read_edge_registers_before_retry() {
+        stale_edge_registers_before_retry(true);
+    }
+
+    #[test]
+    fn stale_write_edge_registers_before_retry() {
+        stale_edge_registers_before_retry(false);
     }
 
     #[test]

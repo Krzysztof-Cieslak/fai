@@ -7,6 +7,8 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Discard socket readiness that predates a failed locked probe before registering
+  its waiter, avoiding a redundant retry while retaining lost-wakeup protection.
 - Search byte patterns natively with `Bytes.find` and bounded `Bytes.findIn`.
   HTTP delimiter searches use the same borrowing search engine, and request
   metadata parsing rejects unrelated header names before lowercasing them.
