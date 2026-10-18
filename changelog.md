@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Lower immediately tested, single-use Boolean decisions through shared branch
+  targets, avoiding intermediate tagged results while preserving short-circuit
+  effects, traps and ownership releases.
 - Borrow the source String for checked UTF-8 byte-range slicing, avoiding
   temporary reference-count operations in repeated extraction and parser loops.
 - Track native primitive ownership per argument, allowing byte reads and checked

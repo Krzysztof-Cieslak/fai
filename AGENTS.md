@@ -712,6 +712,9 @@ other remainder observations retain signed truncation and zero divisors still tr
 Small total raw-Int value alternatives can compile to a native conditional move.
 The condition is evaluated once; calls, effects, possible traps, data projections,
 unknown representations and larger alternatives retain ordinary branches.
+Immediately tested, single-use Boolean bindings can pass control directly through
+their decision tree. Shared values keep the normal tagged Bool representation;
+effects, traps and ownership releases retain their original conditional order.
 The same bounded selection applies to two self-loop back-edges whose differing
 arguments are raw Ints. Other carried owners must be the same evaluated local;
 all state is rebound together, and conditional releases retain their branches.

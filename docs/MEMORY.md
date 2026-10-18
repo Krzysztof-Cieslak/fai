@@ -256,6 +256,12 @@ retired; IDs are not reused).
   invariant rather than revalidating the full input at every cursor step. Tests
   cover native cache lifetime, cross-module cutoff, effects and JIT/AOT behavior.
 
+- Native Boolean control flow may forward an immediately tested, single-use
+  binding into shared true/false branch targets. A bounded analysis rejects shared
+  or captured values and intervening operations; the decision tree evaluates
+  effects, traps and ownership operations in their original conditional order.
+  Materialized results retain the normal tagged Bool ABI.
+
 - Checked UTF-8 range extraction borrows its source String and copies the selected
   bytes into an independent result. Its native borrowed entry still consumes both
   scalar indices; the owned entry releases its source for uniform callers. This

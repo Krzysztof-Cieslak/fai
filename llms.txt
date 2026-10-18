@@ -430,6 +430,10 @@ Built-in operators:
 Numbers default to `Int`. `compare : 'a -> 'a -> Int` gives a three-way structural
 comparison (negative / `0` / positive) over any non-function type.
 
+Boolean decision chains can compile directly to branches when intermediate
+results are used only by the next test. Short-circuit evaluation still preserves
+operand order, skipped effects and traps; stored Booleans retain their usual value.
+
 **User-defined operators** are symbolic identifiers; their precedence and
 associativity follow the leading character (F#-style), with no fixity
 declarations. Define one by naming it in parentheses; use it infix. Operators are
