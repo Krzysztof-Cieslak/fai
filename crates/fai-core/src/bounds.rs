@@ -1,5 +1,5 @@
 //! The bounds-check-elimination fact engine: a small difference-bound abstract
-//! domain over integer locals and array-length terms, shared by the
+//! domain over integer locals and array/byte-buffer length terms, shared by the
 //! reference-count crate's interprocedural fact inference and code generation.
 //!
 //! A fact is a difference constraint `a <= b + c` over [`Term`]s (the constant
@@ -49,6 +49,8 @@ pub enum Term {
     Int(LocalId),
     /// The length of an array-valued local.
     Len(LocalId),
+    /// The byte length of a Bytes local, whose allocation uses one byte per element.
+    BytesLen(LocalId),
 }
 
 /// A difference-bound constraint set over [`Term`]s: a weighted directed graph
@@ -60,6 +62,9 @@ pub struct Bounds {
     /// Locals bound to a comparison primitive, so a later use as an `if` condition
     /// can refine the branch. Maps the boolean local to the comparison it computes.
     conds: FxHashMap<LocalId, Cond>,
+    /// Bounded short-circuit conditions, retained so a later branch can recover
+    /// facts from the uniquely selected path through `&&`, `||`, or `not`.
+    compound_conds: FxHashMap<LocalId, CExpr>,
     /// Locals bound to a saturated call whose callee has result facts, kept so a
     /// later tuple projection of the result can instantiate the per-field facts.
     /// Maps the result local to (the callee's result signature, the call's argument
@@ -300,10 +305,19 @@ impl Bounds {
     /// integer literal) after A-normal form.
     #[must_use]
     pub fn index_in_bounds(&self, array: LocalId, index: &CExpr) -> bool {
+        self.index_below_length(Term::Len(array), index)
+    }
+
+    /// Whether an index is within the same byte buffer's known length.
+    #[must_use]
+    pub fn bytes_index_in_bounds(&self, bytes: LocalId, index: &CExpr) -> bool {
+        self.index_below_length(Term::BytesLen(bytes), index)
+    }
+
+    fn index_below_length(&self, len: Term, index: &CExpr) -> bool {
         if self.poisoned {
             return false;
         }
-        let len = Term::Len(array);
         match &index.kind {
             K::Local(i) => {
                 let t = Term::Int(*i);
@@ -326,10 +340,21 @@ impl Bounds {
     /// inserted (`Dup`/`Drop`/`Reset`/`FreeReuse`) are peeled to reach the operation.
     pub fn transfer_let(&mut self, local: LocalId, value: &CExpr) {
         let value = peel_rc(value);
+        if matches!(value.kind, K::If { .. } | K::Prim { op: Prim::Not, .. })
+            && value.ty == fai_types::Ty::bool()
+            && self.compound_conds.len() < TERM_CAP
+            && bounded_condition(value, &mut 64)
+        {
+            self.compound_conds.insert(local, value.clone());
+        }
         match &value.kind {
             K::Lit(Lit::Int(n)) => self.set_const(Term::Int(local), *n),
             // An alias is the same value.
             K::Local(x) => {
+                if value.ty == fai_types::Ty::Con(fai_types::Con::Bytes) {
+                    self.add_eq(Term::BytesLen(local), Term::BytesLen(*x), 0);
+                    return;
+                }
                 // Could be an int or array alias; relate both interpretations
                 // (harmless if one term never participates).
                 self.add_eq(Term::Int(local), Term::Int(*x), 0);
@@ -353,10 +378,12 @@ impl Bounds {
             Prim::IntSub => self.transfer_addsub(local, args, true),
             Prim::IntAnd => self.transfer_mask(local, args),
             Prim::IntRem => self.transfer_rem(local, args),
-            Prim::ArrayLength => {
+            Prim::ArrayLength | Prim::BytesLength => {
                 if let Some(K::Local(a)) = args.first().map(|e| &e.kind) {
                     // local == len(a), and a length is non-negative.
-                    self.add_eq(Term::Int(local), Term::Len(*a), 0);
+                    let length =
+                        if op == Prim::BytesLength { Term::BytesLen(*a) } else { Term::Len(*a) };
+                    self.add_eq(Term::Int(local), length, 0);
                     self.set_ge(Term::Int(local), 0);
                 }
             }
@@ -404,7 +431,7 @@ impl Bounds {
             }
             _ => {}
         }
-        if matches!(op, Prim::ArrayGet | Prim::ArrayPeek | Prim::ArraySet)
+        if matches!(op, Prim::ArrayGet | Prim::ArrayPeek | Prim::ArraySet | Prim::BytesGet)
             && let Some(K::Local(array)) = args.first().map(|arg| &arg.kind)
             && let Some((index, offset)) = args.get(1).and_then(atom_term_off)
         {
@@ -412,7 +439,9 @@ impl Bounds {
             // These facts are added after evaluation, never before its own check.
             self.add_edge(Term::Zero, index, offset);
             if let Some(upper) = offset.checked_neg().and_then(|value| value.checked_sub(1)) {
-                self.add_edge(index, Term::Len(*array), upper);
+                let length =
+                    if op == Prim::BytesGet { Term::BytesLen(*array) } else { Term::Len(*array) };
+                self.add_edge(index, length, upper);
             }
         }
         // Every array length is non-negative.
@@ -485,8 +514,60 @@ impl Bounds {
     /// `cond` (an atom). A condition local recorded as a comparison contributes the
     /// branch's directional fact; anything else contributes nothing.
     pub fn refine(&mut self, cond: &CExpr, taken: bool) {
-        let K::Local(c) = &cond.kind else { return };
-        let Some(cond) = self.conds.get(c).copied() else { return };
+        self.refine_condition(cond, taken, &mut 64);
+    }
+
+    fn refine_condition(&mut self, expr: &CExpr, taken: bool, fuel: &mut usize) {
+        if *fuel == 0 {
+            return;
+        }
+        *fuel -= 1;
+        match &peel_rc(expr).kind {
+            K::Local(local) => {
+                if let Some(cond) = self.conds.get(local).copied() {
+                    self.refine_comparison(cond, taken);
+                } else if let Some(expr) = self.compound_conds.get(local).cloned() {
+                    self.refine_condition(&expr, taken, fuel);
+                }
+            }
+            K::Let { local, value, body } => {
+                self.transfer_let(*local, value);
+                self.refine_condition(body, taken, fuel);
+            }
+            K::If { cond, then, els } => {
+                // If the other arm cannot yield the observed Boolean, this arm
+                // and its guard necessarily ran. Ambiguous alternatives add no
+                // facts: in particular, a false conjunction does not prove both
+                // operands false, nor does a true disjunction prove both true.
+                if matches!(peel_rc(els).kind, K::Lit(Lit::Bool(v)) if v != taken) {
+                    self.refine_condition(cond, true, fuel);
+                    self.refine_condition(then, taken, fuel);
+                } else if matches!(peel_rc(then).kind, K::Lit(Lit::Bool(v)) if v != taken) {
+                    self.refine_condition(cond, false, fuel);
+                    self.refine_condition(els, taken, fuel);
+                }
+            }
+            K::Prim { op: Prim::Not, args } if args.len() == 1 => {
+                self.refine_condition(&args[0], !taken, fuel);
+            }
+            K::Prim { op, args }
+                if matches!(
+                    op,
+                    Prim::IntLt | Prim::IntLe | Prim::IntGt | Prim::IntGe | Prim::Eq
+                ) =>
+            {
+                if let (Some(lhs), Some(rhs)) = (args.first(), args.get(1))
+                    && let (Some((lhs, lhs_off)), Some((rhs, rhs_off))) =
+                        (atom_term_off(lhs), atom_term_off(rhs))
+                {
+                    self.refine_comparison(Cond { op: *op, lhs, lhs_off, rhs, rhs_off }, taken);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn refine_comparison(&mut self, cond: Cond, taken: bool) {
         if cond.op == Prim::Eq {
             // Equality's branches: `x == y` on the true side; on the false side a
             // disequality, useful only to bump a known bound past a constant (e.g.
@@ -623,8 +704,15 @@ impl Bounds {
                 K::Local(local) => Some(Term::Len(local)),
                 _ => None,
             }),
+            RTerm::BytesLenParam(index) => {
+                args.get(index as usize).and_then(|arg| match arg.kind {
+                    K::Local(local) => Some(Term::BytesLen(local)),
+                    _ => None,
+                })
+            }
             RTerm::ResultVal(index) => locals.get(index as usize).copied().map(Term::Int),
             RTerm::ResultLen(index) => locals.get(index as usize).copied().map(Term::Len),
+            RTerm::ResultBytesLen(index) => locals.get(index as usize).copied().map(Term::BytesLen),
         };
         for &(a, b, distance) in &sig.edges {
             if let (Some(a), Some(b)) = (term(a), term(b)) {
@@ -656,6 +744,28 @@ fn machine_interval(term: Term) -> (i128, i128) {
         Term::Zero => (0, 0),
         Term::Int(_) => (i128::from(i64::MIN), i128::from(i64::MAX)),
         Term::Len(_) => (0, ARRAY_LEN_MAX),
+        // Bytes do not share the smaller eight-byte-slot array ceiling.
+        Term::BytesLen(_) => (0, i128::from(i64::MAX)),
+    }
+}
+
+fn bounded_condition(expr: &CExpr, fuel: &mut usize) -> bool {
+    if *fuel == 0 {
+        return false;
+    }
+    *fuel -= 1;
+    match &peel_rc(expr).kind {
+        K::Let { value, body, .. } => {
+            bounded_condition(value, fuel) && bounded_condition(body, fuel)
+        }
+        K::If { cond, then, els } => {
+            bounded_condition(cond, fuel)
+                && bounded_condition(then, fuel)
+                && bounded_condition(els, fuel)
+        }
+        K::Prim { args, .. } => args.iter().all(|arg| bounded_condition(arg, fuel)),
+        K::Local(_) | K::Lit(_) => true,
+        _ => false,
     }
 }
 
@@ -722,6 +832,8 @@ pub enum PTerm {
     Param(u32),
     /// The length of array parameter `i`.
     LenParam(u32),
+    /// The length of Bytes parameter `i`.
+    BytesLenParam(u32),
 }
 
 /// A definition's **entry-fact** signature: difference constraints `a <= b + c`
@@ -748,6 +860,7 @@ fn pterm_to_term(p: PTerm, params: &[LocalId]) -> Option<Term> {
         PTerm::Zero => Some(Term::Zero),
         PTerm::Param(i) => params.get(i as usize).map(|l| Term::Int(*l)),
         PTerm::LenParam(i) => params.get(i as usize).map(|l| Term::Len(*l)),
+        PTerm::BytesLenParam(i) => params.get(i as usize).map(|l| Term::BytesLen(*l)),
     }
 }
 
@@ -770,13 +883,17 @@ pub enum RTerm {
     ResultVal(u32),
     /// The length of result component `field`.
     ResultLen(u32),
+    /// The length of Bytes parameter `i`.
+    BytesLenParam(u32),
+    /// The byte length of result component `field`.
+    ResultBytesLen(u32),
 }
 
 impl RTerm {
     /// Whether this names a specific tuple field of the result (not the whole
     /// result and not a parameter).
     fn is_field(self) -> bool {
-        matches!(self, RTerm::ResultVal(k) | RTerm::ResultLen(k) if k != WHOLE)
+        matches!(self, RTerm::ResultVal(k) | RTerm::ResultLen(k) | RTerm::ResultBytesLen(k) if k != WHOLE)
     }
 }
 
@@ -805,9 +922,11 @@ fn rterm_to_term(t: RTerm, local: LocalId, args: &[Option<LocalId>]) -> Option<T
         RTerm::Zero => Some(Term::Zero),
         RTerm::Param(i) => args.get(i as usize).copied().flatten().map(Term::Int),
         RTerm::LenParam(i) => args.get(i as usize).copied().flatten().map(Term::Len),
+        RTerm::BytesLenParam(i) => args.get(i as usize).copied().flatten().map(Term::BytesLen),
         RTerm::ResultVal(WHOLE) => Some(Term::Int(local)),
         RTerm::ResultLen(WHOLE) => Some(Term::Len(local)),
-        RTerm::ResultVal(_) | RTerm::ResultLen(_) => None,
+        RTerm::ResultBytesLen(WHOLE) => Some(Term::BytesLen(local)),
+        RTerm::ResultVal(_) | RTerm::ResultLen(_) | RTerm::ResultBytesLen(_) => None,
     }
 }
 
@@ -823,30 +942,36 @@ fn rterm_field_to_term(
         RTerm::Zero => Some(Term::Zero),
         RTerm::Param(i) => args.get(i as usize).copied().flatten().map(Term::Int),
         RTerm::LenParam(i) => args.get(i as usize).copied().flatten().map(Term::Len),
+        RTerm::BytesLenParam(i) => args.get(i as usize).copied().flatten().map(Term::BytesLen),
         RTerm::ResultVal(f) if f == k => Some(Term::Int(field_local)),
         RTerm::ResultLen(f) if f == k => Some(Term::Len(field_local)),
-        RTerm::ResultVal(_) | RTerm::ResultLen(_) => None,
+        RTerm::ResultBytesLen(f) if f == k => Some(Term::BytesLen(field_local)),
+        RTerm::ResultVal(_) | RTerm::ResultLen(_) | RTerm::ResultBytesLen(_) => None,
     }
 }
+
+#[cfg(test)]
+#[path = "bounds_bytes_tests.rs"]
+mod bytes_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use fai_types::{Con, Ty};
 
-    fn local(n: usize) -> LocalId {
+    pub(super) fn local(n: usize) -> LocalId {
         LocalId::from_index(n)
     }
 
-    fn int_lit(n: i64) -> CExpr {
+    pub(super) fn int_lit(n: i64) -> CExpr {
         CExpr::new(K::Lit(Lit::Int(n)), Ty::Con(Con::Int))
     }
 
-    fn local_expr(n: usize) -> CExpr {
+    pub(super) fn local_expr(n: usize) -> CExpr {
         CExpr::new(K::Local(local(n)), Ty::Con(Con::Int))
     }
 
-    fn prim(op: Prim, args: Vec<CExpr>) -> CExpr {
+    pub(super) fn prim(op: Prim, args: Vec<CExpr>) -> CExpr {
         CExpr::new(K::Prim { op, args }, Ty::Con(Con::Int))
     }
 

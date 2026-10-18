@@ -139,7 +139,7 @@ fn module_bounds_facts(db: &dyn Db, file: SourceFile) -> Arc<ModuleFacts> {
                 )
                 .collect();
             param_kinds.resize(params.len(), ParamKind::Other);
-            mark_array_params(&lowered.entry().body, &params, &mut param_kinds);
+            mark_buffer_params(&lowered.entry().body, &params, &mut param_kinds);
             let result_ty = lowered.entry().body.ty.clone();
             data.insert(name, DefData { params, bodies, result_ty, param_kinds, evidence: 0 });
             order.push(name);
@@ -194,14 +194,14 @@ fn module_bounds_facts(db: &dyn Db, file: SourceFile) -> Arc<ModuleFacts> {
     })
 }
 
-fn mark_array_params(body: &CExpr, params: &[LocalId], kinds: &mut [ParamKind]) {
+fn mark_buffer_params(body: &CExpr, params: &[LocalId], kinds: &mut [ParamKind]) {
     if let K::Local(local) = body.kind
-        && is_array(&body.ty)
+        && (is_array(&body.ty) || is_bytes(&body.ty))
         && let Some(position) = params.iter().position(|param| *param == local)
     {
-        kinds[position] = ParamKind::Array;
+        kinds[position] = if is_bytes(&body.ty) { ParamKind::Bytes } else { ParamKind::Array };
     }
-    crate::reuse_sig::e_children(body, &mut |child| mark_array_params(child, params, kinds));
+    crate::reuse_sig::e_children(body, &mut |child| mark_buffer_params(child, params, kinds));
 }
 
 /// The optimistic start for a cross-module fixpoint cycle: no facts. The cycle
@@ -244,7 +244,7 @@ struct DefData {
     bodies: Vec<CExpr>,
     /// The result type (a tuple's fields are result components, else the whole).
     result_ty: Ty,
-    /// Each parameter's kind (int / array / neither), by position.
+    /// Each parameter's kind (int / array / bytes / neither), by position.
     param_kinds: Vec<ParamKind>,
     /// The leading offset-evidence-parameter count; a row-polymorphic definition
     /// (`evidence > 0`) gets no result facts (its positional indexing is shifted and
@@ -252,12 +252,13 @@ struct DefData {
     evidence: usize,
 }
 
-/// Whether a parameter is a monomorphic `Int`, an `Array`, or neither (for choosing
+/// Whether a parameter is a monomorphic `Int`, an `Array`, `Bytes`, or neither (for choosing
 /// its difference-graph term).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParamKind {
     Int,
     Array,
+    Bytes,
     Other,
 }
 
@@ -424,6 +425,16 @@ fn extract_result(
     // applied to a synthetic result local) and the result component terms within it.
     let mut owned;
     let (graph, comps): (&Bounds, Vec<(RTerm, Term)>) = match &v.kind {
+        // A primitive returned directly has no ANF binder. Apply the same
+        // transfer as a bound value so length-returning helpers retain facts.
+        K::Prim { .. }
+            if is_int(&d.result_ty) || is_array(&d.result_ty) || is_bytes(&d.result_ty) =>
+        {
+            let syn = synthetic_result_local();
+            owned = b.clone();
+            owned.transfer_let(syn, v);
+            (&owned, vec![(result_rterm(WHOLE, &d.result_ty), local_term(syn, &d.result_ty))])
+        }
         // A direct tail call: apply the callee's result facts to a synthetic result
         // local, then read its component terms. Only the whole result is read this
         // way (a tuple-returning tail call would need field projection).
@@ -470,6 +481,9 @@ fn extract_result(
         match kind {
             ParamKind::Int => params.push((RTerm::Param(idx), Term::Int(d.params[i]))),
             ParamKind::Array => params.push((RTerm::LenParam(idx), Term::Len(d.params[i]))),
+            ParamKind::Bytes => {
+                params.push((RTerm::BytesLenParam(idx), Term::BytesLen(d.params[i])))
+            }
             ParamKind::Other => {}
         }
     }
@@ -479,7 +493,9 @@ fn extract_result(
         for (rp, pt) in &params {
             // A length-vs-length relation is a preservation equality, owned by
             // `length_preservation`; skip it here to keep a single source of truth.
-            if matches!(rc, RTerm::ResultLen(_)) && matches!(rp, RTerm::LenParam(_)) {
+            if matches!(rc, RTerm::ResultLen(_) | RTerm::ResultBytesLen(_))
+                && matches!(rp, RTerm::LenParam(_) | RTerm::BytesLenParam(_))
+            {
                 continue;
             }
             if let Some(w) = graph.bound(*rt, *pt)
@@ -500,12 +516,24 @@ fn extract_result(
 /// The in-body term for a local interpreted as a result component of type `ty` (its
 /// array length, or its integer value).
 fn local_term(l: LocalId, ty: &Ty) -> Term {
-    if is_array(ty) { Term::Len(l) } else { Term::Int(l) }
+    if is_array(ty) {
+        Term::Len(l)
+    } else if is_bytes(ty) {
+        Term::BytesLen(l)
+    } else {
+        Term::Int(l)
+    }
 }
 
 /// The `RTerm` for a result component's value or length, by the component's type.
 fn result_rterm(field: u32, ty: &Ty) -> RTerm {
-    if is_array(ty) { RTerm::ResultLen(field) } else { RTerm::ResultVal(field) }
+    if is_array(ty) {
+        RTerm::ResultLen(field)
+    } else if is_bytes(ty) {
+        RTerm::ResultBytesLen(field)
+    } else {
+        RTerm::ResultVal(field)
+    }
 }
 
 /// The in-body term for a result-component atom (a local's int value or array
@@ -513,7 +541,7 @@ fn result_rterm(field: u32, ty: &Ty) -> RTerm {
 /// returns `None`, since a literal result is recorded against `Zero` separately).
 fn component_term(e: &CExpr, ty: &Ty) -> Option<Term> {
     match &peel(e).kind {
-        K::Local(l) => Some(if is_array(ty) { Term::Len(*l) } else { Term::Int(*l) }),
+        K::Local(l) => Some(local_term(*l, ty)),
         _ => None,
     }
 }
@@ -704,14 +732,24 @@ fn result_sig_for(
 /// The length-preservation equality edges of `name` in `file`, as `ResultSig`
 /// edges (`ResultLen(component) == LenParam(param)`).
 fn lenpres_edges(db: &dyn Db, file: SourceFile, name: Symbol) -> Vec<(RTerm, RTerm, i64)> {
-    length_preservation(db, file, name)
+    let preservation = length_preservation(db, file, name);
+    let Some(max_param) = preservation.pairs().iter().map(|&(_, k)| k).max() else {
+        return Vec::new();
+    };
+    let Some(scheme) = declared_or_inferred_scheme(db, DefId::new(file.source(db), name)) else {
+        return Vec::new();
+    };
+    let (params, _) = decompose(&scheme, max_param as usize + 1);
+    preservation
         .pairs()
         .iter()
         .flat_map(|&(c, k)| {
-            [
-                (RTerm::ResultLen(c), RTerm::LenParam(k), 0),
-                (RTerm::LenParam(k), RTerm::ResultLen(c), 0),
-            ]
+            let (result, param) = if params.get(k as usize).is_some_and(|ty| is_bytes(ty)) {
+                (RTerm::ResultBytesLen(c), RTerm::BytesLenParam(k))
+            } else {
+                (RTerm::ResultLen(c), RTerm::LenParam(k))
+            };
+            [(result, param, 0), (param, result, 0)]
         })
         .collect()
 }
@@ -750,6 +788,7 @@ fn signature_shape(db: &dyn Db, def: DefId, nparams: usize) -> (Ty, Vec<ParamKin
         .map(|i| match params.get(i) {
             Some(t) if is_int(t) => ParamKind::Int,
             Some(t) if is_array(t) => ParamKind::Array,
+            Some(t) if is_bytes(t) => ParamKind::Bytes,
             _ => ParamKind::Other,
         })
         .collect();
@@ -861,6 +900,9 @@ fn extract_call(b: &Bounds, args: &[CExpr]) -> SigMap {
             }
             K::Local(l) if is_array(&arg.ty) => {
                 terms.push(ArgTerm::Var(PTerm::LenParam(idx), Term::Len(*l)));
+            }
+            K::Local(l) if is_bytes(&arg.ty) => {
+                terms.push(ArgTerm::Var(PTerm::BytesLenParam(idx), Term::BytesLen(*l)));
             }
             // A literal `0` is the `Zero` term, so it relates to *other* argument
             // terms (capturing e.g. `len(acc) == i` when `i` starts at `0` and the
@@ -1001,6 +1043,10 @@ fn to_result_sig(map: ResMap) -> ResultSig {
 /// Whether `ty` is a monomorphic `Int`.
 fn is_int(ty: &Ty) -> bool {
     matches!(ty, Ty::Con(Con::Int))
+}
+
+fn is_bytes(ty: &Ty) -> bool {
+    matches!(ty, Ty::Con(Con::Bytes))
 }
 
 /// Whether `ty`'s head is `Array`.

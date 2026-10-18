@@ -5135,6 +5135,9 @@ fn array_push_grow_inlines_the_buffer_alloc_and_copy() {
 }
 
 // --- Bounds-check elimination: redundant inline checks removed ---------------
+
+#[path = "bytes_bounds_tests.rs"]
+mod bytes_bounds;
 //
 // An inline `Array` access whose index a difference-bound analysis proves within
 // `0..len` skips its `icmp ult` bounds check (and the unreachable abort branch). A

@@ -138,8 +138,8 @@ fn lenpres_recover(
     value
 }
 
-/// Every length-compatible candidate pair: each array-typed result component paired
-/// with each array-typed parameter. The greatest fixpoint only demotes, so this
+/// Every length-compatible candidate pair: each array or Bytes result component
+/// paired with parameters of the same buffer kind. The greatest fixpoint only demotes, so this
 /// superset is the lattice top. Empty for a row-polymorphic definition (its leading
 /// offset-evidence parameters would misalign positional indexing, and it is only
 /// ever called curried).
@@ -151,12 +151,6 @@ fn candidate_pairs(db: &dyn Db, def: DefId, entry: &CoreFn) -> Vec<(u32, u32)> {
     let nparams = entry.params.len();
     let (params, result) = decompose(&scheme, nparams);
 
-    let array_params: Vec<u32> =
-        params.iter().enumerate().filter(|(_, t)| is_array(t)).map(|(i, _)| i as u32).collect();
-    if array_params.is_empty() {
-        return Vec::new();
-    }
-
     let components: Vec<(u32, &Ty)> = match result {
         Ty::Tuple(elems) => elems.iter().enumerate().map(|(i, t)| (i as u32, t)).collect(),
         other => vec![(WHOLE, other)],
@@ -164,9 +158,11 @@ fn candidate_pairs(db: &dyn Db, def: DefId, entry: &CoreFn) -> Vec<(u32, u32)> {
 
     let mut out = Vec::new();
     for (c, ct) in components {
-        if is_array(ct) {
-            for &k in &array_params {
-                out.push((c, k));
+        for (k, param) in params.iter().enumerate() {
+            if (is_array(ct) && is_array(param))
+                || (matches!(ct, Ty::Con(Con::Bytes)) && matches!(param, Ty::Con(Con::Bytes)))
+            {
+                out.push((c, k as u32));
             }
         }
     }

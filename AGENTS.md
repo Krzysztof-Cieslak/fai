@@ -1971,6 +1971,10 @@ and slice operations keep owned arguments so they can transfer or reuse storage.
 Byte lengths and element reads compile to native loads with raw integer indices
 and results, including in concurrent programs. Bounds failures keep the runtime
 byte-index diagnostic; uniform and first-class boundaries retain normal boxing.
+Byte-buffer access also uses bounds inference: dominating guards, successful
+reads and helper-call facts can remove a redundant check for the same buffer.
+Byte lengths retain their own allocation ceiling, distinct from array lengths;
+unknown, negative and potentially wrapping indices keep their checks.
 String/Bytes conversion transfers a unique inline buffer by changing its kind.
 Shared values and substring views copy; byte-to-text conversion still validates
 UTF-8 and records the resulting String's ASCII property.

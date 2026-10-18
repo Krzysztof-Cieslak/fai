@@ -3939,19 +3939,24 @@ impl<M: Module> Translator<'_, M> {
         // The buffer is borrowed, but its scalar index is an owned argument. A
         // uniform full-width index must release its box after reading the word.
         let index = self.as_raw_int(index);
-        let length = self.builder.ins().load(types::I64, MemFlags::trusted(), base, offset);
-        let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, index, length);
-        let valid = self.builder.create_block();
-        let invalid = self.builder.create_block();
-        self.builder.set_cold_block(invalid);
-        self.builder.ins().brif(in_bounds, valid, &[], invalid, &[]);
+        let proven = matches!(args[0].kind, ExprKind::Local(local)
+            if self.bounds.bytes_index_in_bounds(local, &args[1]));
+        if !proven || self.bce_shadow {
+            let length = self.builder.ins().load(types::I64, MemFlags::trusted(), base, offset);
+            let in_bounds = self.builder.ins().icmp(IntCC::UnsignedLessThan, index, length);
+            let valid = self.builder.create_block();
+            let invalid = self.builder.create_block();
+            self.builder.set_cold_block(invalid);
+            self.builder.ins().brif(in_bounds, valid, &[], invalid, &[]);
 
-        self.builder.switch_to_block(invalid);
-        self.builder.seal_block(invalid);
-        self.runtime_fault("fai_bytes_index_panic", &[], false);
+            self.builder.switch_to_block(invalid);
+            self.builder.seal_block(invalid);
+            let panic = if proven { "fai_bce_unsound_panic" } else { "fai_bytes_index_panic" };
+            self.runtime_fault(panic, &[], false);
 
-        self.builder.switch_to_block(valid);
-        self.builder.seal_block(valid);
+            self.builder.switch_to_block(valid);
+            self.builder.seal_block(valid);
+        }
         let address = self.builder.ins().iadd(base, index);
         let offset = i32::try_from(rt::STRING_BYTES_OFFSET).expect("byte payload offset");
         let byte = self.builder.ins().uload8(types::I64, MemFlags::trusted(), address, offset);

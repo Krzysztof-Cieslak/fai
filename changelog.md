@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Eliminate redundant byte-buffer bounds checks when guards, successful accesses,
+  or helper-call facts prove the index valid. Full-width indices and unproven
+  accesses retain their checked behavior.
 - Pass opted-in native `Result` outputs as a tag and owned payload, avoiding
   temporary wrappers during immediate inspection. Checked UTF-8 slicing uses
   this convention while stored and first-class results keep their usual form.

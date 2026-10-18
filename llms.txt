@@ -1725,8 +1725,9 @@ ranges. Retained aliases stay immutable in both cases.
 Length, indexing and UTF-8 validation borrow their input buffers. Reader helpers
 can forward that borrowing, while builders and slices keep ownership for reuse.
 Byte length and indexed reads use native loads in both ordinary and concurrent
-code. Indexed reads preserve bounds checks, with raw integers inside native
-functions and normal boxing at generic or first-class boundaries.
+code. Indexed reads retain bounds checks unless control flow proves the index
+valid for that same buffer, with raw integers inside native functions and normal
+boxing at generic or first-class boundaries.
 Conversions between String and Bytes can transfer uniquely owned inline storage.
 Shared values and substring views copy; UTF-8 validation remains required for text.
 

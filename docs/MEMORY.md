@@ -270,6 +270,12 @@ retired; IDs are not reused).
   Primitive borrow inference and ownership insertion share per-argument contracts:
   a borrowed first operand no longer implicitly lends consumed scalar indices.
 
+- Byte-buffer bounds inference uses distinct length terms and portable entry/
+  result facts. It shares the difference-bound engine with arrays without using
+  their eight-byte-slot length ceiling. Checked reads establish facts only in
+  their continuation; aliases and proven length-preserving calls retain them.
+  Negative or possibly wrapping indices and replaced buffers need fresh proofs.
+
 - Native Result decomposition is opt-in through the primitive ABI catalog. A
   portable C entry returns the raw tag and writes one owned payload to an aligned
   caller slot; only primitives whose payloads have no observable finalization may
