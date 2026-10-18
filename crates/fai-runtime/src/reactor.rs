@@ -18,7 +18,9 @@
 //! lost-wake race — the reactor records readiness even when no task is waiting
 //! yet, so a readiness edge that arrives between the failed syscall and the park
 //! is observed. The readiness lock spans the syscall and waiter registration, so
-//! another operation cannot consume that edge in between them.
+//! another operation cannot consume that edge in between them. After a locked
+//! `WouldBlock` probe, a previously delivered edge is stale and is discarded before
+//! registering the waiter; a new delivery cannot acquire the lock until then.
 //!
 //! The reactor starts lazily on the first socket registration or timer.
 
@@ -43,7 +45,7 @@ const WAKER_TOKEN: Token = Token(0);
 #[derive(Default)]
 struct Readiness {
     /// A readiness edge has arrived since it was last consumed. Set by the reactor,
-    /// cleared by the waiter; lets a wake that races ahead of the park be observed.
+    /// cleared by a locked WouldBlock probe or a waiter. A wake ahead of the park is observed.
     ready: bool,
     /// Every operation currently waiting for this direction.
     waiters: Vec<IoWaiter>,
@@ -1521,6 +1523,7 @@ mod tests {
         assert_eq!(pending_waiters(&source.read), 0);
     }
 
+    #[track_caller]
     fn stale_edge_registers_before_retry(read: bool) {
         let source = unregistered_source();
         let direction = if read { &source.read } else { &source.write };
@@ -1560,11 +1563,13 @@ mod tests {
     #[test]
     fn failed_io_releases_readiness_without_parking() {
         let source = unregistered_source();
+        wake_direction(&source.read);
         let error: io::Result<()> =
             try_io(&source.read, || Err(io::ErrorKind::ConnectionReset.into()));
         assert_eq!(error.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
         assert!(source.read.try_lock().is_ok());
         assert_eq!(pending_waiters(&source.read), 0);
+        assert!(source.read.lock().unwrap().ready, "only WouldBlock invalidates readiness");
     }
 
     #[track_caller]
@@ -1622,6 +1627,29 @@ mod tests {
         scheduler::cancel_handle(&handle);
         completed.recv().unwrap();
         assert_eq!(pending_waiters(&source.read), 0);
+        block_on(Box::new(move || scheduler::await_handle(&handle)));
+    }
+
+    #[test]
+    fn cancelled_waiter_after_a_stale_probe_unregisters_without_an_event() {
+        let source = unregistered_source();
+        wake_direction(&source.read);
+        let (done, completed) = std::sync::mpsc::channel();
+        let handle = {
+            let source = Arc::clone(&source);
+            scheduler::spawn(Box::new(move || {
+                let result: io::Result<()> =
+                    try_io(&source.read, || Err(io::ErrorKind::WouldBlock.into()));
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+                done.send(()).unwrap();
+                imm(0)
+            }))
+        };
+        wait_for_registrations(&source.read, 1);
+        scheduler::cancel_handle(&handle);
+        completed.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(pending_waiters(&source.read), 0);
+        assert!(!source.read.lock().unwrap().ready);
         block_on(Box::new(move || scheduler::await_handle(&handle)));
     }
 

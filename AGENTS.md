@@ -2091,6 +2091,10 @@ snapshot, type golden, and/or e2e) in the same change.
 
 Socket I/O attempts hold their direction's readiness lock through a failed
 nonblocking probe and waiter registration, then release it before parking.
+A `WouldBlock` probe invalidates any readiness delivered before that attempt;
+discarding that stale latch avoids an immediate redundant retry. New readiness
+cannot acquire the lock until the waiter is registered. Successful probes and
+other errors preserve the latch, and cancellation removes its own registration.
 TCP reads up to 4 KiB use bounded coroutine-stack scratch storage. The stack
 remains owned across suspension; only an independent Bytes value is returned.
 Larger TCP reads own their final byte buffer during suspension, publishing only
