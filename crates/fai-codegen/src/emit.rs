@@ -1070,6 +1070,9 @@ fn build_fn<M: Module>(
             raw_int_values: FxHashSet::default(),
             immortal_values: FxHashSet::default(),
             bool_predicates: FxHashMap::default(),
+            single_use_booleans: crate::boolean::single_uses(&core_fn.body),
+            pending_booleans: FxHashMap::default(),
+            boolean_copy_budget: crate::boolean::COPY_BUDGET,
             tag_sources: FxHashMap::default(),
             tag_tests: FxHashMap::default(),
             known_tags: FxHashMap::default(),
@@ -1352,10 +1355,12 @@ fn build_fn<M: Module>(
             if let Some(header) = header {
                 tr.builder.seal_block(header);
             }
+            debug_assert!(tr.pending_booleans.is_empty());
             tr.builder.finalize();
             return ctx;
         }
         let result = tr.expr(&core_fn.body);
+        debug_assert!(tr.pending_booleans.is_empty());
         // The entry returns: an `f64` register for a register float entry; a raw
         // untagged `i64` for a register int entry; raw float bits for a uniform float
         // entry; otherwise the uniform (boxed/tagged) word (which tags a raw int).
@@ -1561,6 +1566,10 @@ struct Translator<'a, M: Module> {
     /// Tagged Bool results with a dominating raw predicate. Representation stays
     /// uniform at value boundaries; a direct branch can reuse the original test.
     bool_predicates: FxHashMap<Value, Value>,
+    /// Single-use values may be forwarded only into an immediately following test.
+    single_use_booleans: FxHashSet<LocalId>,
+    pending_booleans: FxHashMap<LocalId, CExpr>,
+    boolean_copy_budget: usize,
     /// SSA tag temporaries and the data local they inspect.
     tag_sources: FxHashMap<LocalId, LocalId>,
     tag_tests: FxHashMap<LocalId, (LocalId, u32)>,
@@ -2798,7 +2807,15 @@ impl<M: Module> Translator<'_, M> {
     fn expr(&mut self, e: &CExpr) -> Value {
         match &e.kind {
             ExprKind::Lit(lit) => self.literal(lit, &e.ty),
-            ExprKind::Local(local) => self.use_var(*local),
+            ExprKind::Local(local) => {
+                if let Some(value) = self.pending_booleans.remove(local) {
+                    let result = self.expr(&value);
+                    self.bce_transfer(*local, &value);
+                    result
+                } else {
+                    self.use_var(*local)
+                }
+            }
             ExprKind::Global(def) => self.global_value(*def, &e.ty),
             ExprKind::Prim { op, args } => self.prim(*op, args, &e.ty),
             ExprKind::Foreign { symbol, args, marshalled } => {
@@ -2811,6 +2828,9 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Let { local, value, body } => {
                 if let Some(next) = self.fold_callback_comparison(*local, value, body) {
                     return self.expr(next);
+                }
+                if self.forward_boolean(*local, value, body) {
+                    return self.expr(body);
                 }
                 let v = self.expr(value);
                 self.define_var(*local, v);
@@ -5519,6 +5539,95 @@ impl<M: Module> Translator<'_, M> {
         self.builder.ins().icmp_imm(IntCC::NotEqual, value, 1)
     }
 
+    /// Forward only across the binding itself, never past another operation. The
+    /// scalar Bool has no ownership payload; its producing expression keeps all
+    /// effects, traps and reference-count operations in their original order.
+    fn forward_boolean(&mut self, local: LocalId, value: &CExpr, body: &CExpr) -> bool {
+        if value.ty != Ty::bool()
+            || !self.single_use_booleans.contains(&local)
+            || !crate::boolean::immediate_test(body, local)
+            || !crate::boolean::take_budget(value, &mut self.boolean_copy_budget)
+        {
+            return false;
+        }
+        self.pending_booleans.insert(local, value.clone());
+        true
+    }
+
+    /// Emit a Boolean expression directly to shared true/false destinations.
+    /// Each branch retains its own fact scope and its original ownership actions.
+    fn boolean_branch(&mut self, expression: &CExpr, yes: Block, no: Block) {
+        match &expression.kind {
+            ExprKind::Lit(Lit::Bool(value)) => {
+                self.builder.ins().jump(if *value { yes } else { no }, &[]);
+            }
+            ExprKind::Local(local) if self.pending_booleans.contains_key(local) => {
+                let value = self.pending_booleans.remove(local).expect("pending Boolean");
+                self.boolean_branch(&value, yes, no);
+                self.bce_transfer(*local, &value);
+            }
+            ExprKind::Prim { op: Prim::Not, args } if args.len() == 1 => {
+                self.boolean_branch(&args[0], no, yes);
+            }
+            ExprKind::If { cond, then, els } => {
+                let then_block = self.builder.create_block();
+                let else_block = self.builder.create_block();
+                self.boolean_branch(cond, then_block, else_block);
+                let saved_bounds = self.bounds.clone();
+                let saved_tags = self.known_tags.clone();
+
+                self.builder.switch_to_block(then_block);
+                self.builder.seal_block(then_block);
+                self.bounds.refine(cond, true);
+                self.refine_tag(cond, true);
+                self.boolean_branch(then, yes, no);
+
+                self.builder.switch_to_block(else_block);
+                self.builder.seal_block(else_block);
+                self.bounds = saved_bounds.clone();
+                self.known_tags = saved_tags.clone();
+                self.bounds.refine(cond, false);
+                self.refine_tag(cond, false);
+                self.boolean_branch(els, yes, no);
+
+                self.bounds = saved_bounds;
+                self.known_tags = saved_tags;
+            }
+            ExprKind::Let { local, value, body } => {
+                if !self.forward_boolean(*local, value, body) {
+                    let value_result = self.expr(value);
+                    self.define_var(*local, value_result);
+                    self.bce_transfer(*local, value);
+                }
+                self.boolean_branch(body, yes, no);
+            }
+            ExprKind::Dup { local, body } => {
+                self.dup_local(*local);
+                self.boolean_branch(body, yes, no);
+            }
+            ExprKind::Drop { local, body } => {
+                self.drop_local(*local);
+                self.boolean_branch(body, yes, no);
+            }
+            ExprKind::Reset { value, token, body } => {
+                let value = self.reset_data(value);
+                self.define_var(*token, value);
+                self.boolean_branch(body, yes, no);
+            }
+            ExprKind::FreeReuse { token, body } => {
+                let token = self.use_var(*token);
+                let free = self.runtime("fai_free_reuse", 1, false);
+                self.builder.ins().call(free, &[token]);
+                self.boolean_branch(body, yes, no);
+            }
+            _ => {
+                let value = self.expr(expression);
+                let predicate = self.truth_value(value);
+                self.builder.ins().brif(predicate, yes, &[], no, &[]);
+            }
+        }
+    }
+
     /// The out-of-line runtime call for a primitive's fallback path (a boxed
     /// operand, or a result that overflowed the immediate). It consumes the
     /// operands exactly as the fast path's drops-omitted-on-immediates would.
@@ -7128,11 +7237,9 @@ impl<M: Module> Translator<'_, M> {
                 self.builder.ins().return_(&vals);
             }
             ExprKind::If { cond, then, els } => {
-                let cv = self.expr(cond);
-                let is_true = self.truth_value(cv);
                 let then_b = self.builder.create_block();
                 let else_b = self.builder.create_block();
-                self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
+                self.boolean_branch(cond, then_b, else_b);
                 let saved_bounds = self.bounds.clone();
                 let saved_tags = self.known_tags.clone();
                 self.builder.switch_to_block(then_b);
@@ -7152,6 +7259,10 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::Let { local, value, body } => {
                 if let Some(next) = self.fold_callback_comparison(*local, value, body) {
                     self.spread_return_body(next, n);
+                    return;
+                }
+                if self.forward_boolean(*local, value, body) {
+                    self.spread_return_body(body, n);
                     return;
                 }
                 let v = self.expr(value);
@@ -7653,9 +7764,6 @@ impl<M: Module> Translator<'_, M> {
     }
 
     fn conditional(&mut self, cond: &CExpr, then: &CExpr, els: &CExpr) -> Value {
-        let cv = self.expr(cond);
-        let is_true = self.truth_value(cv);
-
         let mut budget = 12;
         if crate::scalar_select::integer_arm(then, &|local| self.is_int_local(local), &mut budget)
             && crate::scalar_select::integer_arm(
@@ -7664,6 +7772,8 @@ impl<M: Module> Translator<'_, M> {
                 &mut budget,
             )
         {
+            let cv = self.expr(cond);
+            let is_true = self.truth_value(cv);
             let saved_bounds = self.bounds.clone();
             let saved_tags = self.known_tags.clone();
             let left = self.expr(then);
@@ -7677,7 +7787,7 @@ impl<M: Module> Translator<'_, M> {
 
         let then_b = self.builder.create_block();
         let else_b = self.builder.create_block();
-        self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
+        self.boolean_branch(cond, then_b, else_b);
 
         // The merge block's parameter type follows the branches' actual
         // representation (`f64` for an unboxed float, else the uniform word). This
@@ -8126,14 +8236,12 @@ impl<M: Module> Translator<'_, M> {
     fn expr_tail(&mut self, e: &CExpr) {
         match &e.kind {
             ExprKind::If { cond, then, els } => {
-                let cv = self.expr(cond);
-                let is_true = self.truth_value(cv);
-                if self.select_recur(is_true, then, els) {
+                if self.select_recur(cond, then, els) {
                     return;
                 }
                 let then_b = self.builder.create_block();
                 let else_b = self.builder.create_block();
-                self.builder.ins().brif(is_true, then_b, &[], else_b, &[]);
+                self.boolean_branch(cond, then_b, else_b);
                 let saved_bounds = self.bounds.clone();
                 let saved_tags = self.known_tags.clone();
                 self.builder.switch_to_block(then_b);
@@ -8156,6 +8264,10 @@ impl<M: Module> Translator<'_, M> {
                     return;
                 }
                 if self.version_float_map(*local, value, body) {
+                    return;
+                }
+                if self.forward_boolean(*local, value, body) {
+                    self.expr_tail(body);
                     return;
                 }
                 let v = self.expr(value);
@@ -8217,7 +8329,7 @@ impl<M: Module> Translator<'_, M> {
 
     /// Chooses bounded, total integer next-state values without branching. Any
     /// non-scalar owner must be the same already-evaluated local in both arms.
-    fn select_recur(&mut self, condition: Value, then: &CExpr, els: &CExpr) -> bool {
+    fn select_recur(&mut self, condition: &CExpr, then: &CExpr, els: &CExpr) -> bool {
         let Some(context) = &self.loop_ctx else { return false };
         if context.params.len() > 8 {
             return false;
@@ -8256,6 +8368,8 @@ impl<M: Module> Translator<'_, M> {
                 return false;
             }
         }
+        let value = self.expr(condition);
+        let condition = self.truth_value(value);
         let saved_bounds = self.bounds.clone();
         for arm in [&left, &right] {
             self.bounds = saved_bounds.clone();

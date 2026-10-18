@@ -1675,6 +1675,130 @@ fn short_circuit_and_or() {
 }
 
 #[test]
+fn short_circuit_chain_branches_on_comparisons_without_tagged_retests() {
+    let source =
+        "module M\npublic choose : Int -> Bool\nlet choose x = x = 1 || x = 2 || x = 3 || x = 4\n";
+    let ir = entry_ir(source, "choose");
+    assert!(!ir.contains("icmp_imm ne"), "intermediate Bool results are retested:\n{ir}");
+}
+
+#[test]
+fn short_circuit_conjunction_preserves_order_and_skips_effects() {
+    let source = r#"module M
+say : Runtime -> String -> Bool -> Bool / { Console }
+let say r message value =
+  let _ = r.console.writeLine message
+  value
+public main : Runtime -> Unit / { Console }
+let main r =
+  let result = (say r "first" true && say r "second" false) && say r "skipped" true
+  r.console.writeLine (if result then "yes" else "no")
+"#;
+    assert_eq!(run(source), (0, "first\nsecond\nno\n".into()));
+}
+
+#[test]
+fn short_circuit_disjunction_preserves_order_and_skips_effects() {
+    let source = r#"module M
+say : Runtime -> String -> Bool -> Bool / { Console }
+let say r message value =
+  let _ = r.console.writeLine message
+  value
+public main : Runtime -> Unit / { Console }
+let main r =
+  let result = (say r "first" false || say r "second" true) || say r "skipped" false
+  r.console.writeLine (if result then "yes" else "no")
+"#;
+    assert_eq!(run(source), (0, "first\nsecond\nyes\n".into()));
+}
+
+#[test]
+fn short_circuit_mixed_decisions_evaluate_each_selected_operand_once() {
+    let source = r#"module M
+say : Runtime -> String -> Bool -> Bool / { Console }
+let say r message value =
+  let _ = r.console.writeLine message
+  value
+public main : Runtime -> Unit / { Console }
+let main r =
+  let result = ((say r "a" true && say r "b" false) || (say r "c" false || say r "d" true)) && not (say r "e" false)
+  r.console.writeLine (if result then "yes" else "no")
+"#;
+    assert_eq!(run(source), (0, "a\nb\nc\nd\ne\nyes\n".into()));
+}
+
+#[test]
+fn short_circuit_values_do_not_move_past_strict_bindings() {
+    let source = r#"module M
+say : Runtime -> String -> Bool -> Bool / { Console }
+let say r message value =
+  let _ = r.console.writeLine message
+  value
+public main : Runtime -> Unit / { Console }
+let main r =
+  let result = say r "saved" true || say r "skipped" false
+  let _ = r.console.writeLine "between"
+  r.console.writeLine (if result then "yes" else "no")
+"#;
+    assert_eq!(run(source), (0, "saved\nbetween\nyes\n".into()));
+}
+
+#[test]
+fn short_circuit_shared_values_remain_single_evaluation() {
+    let source = r#"module M
+say : Runtime -> String -> Bool -> Bool / { Console }
+let say r message value =
+  let _ = r.console.writeLine message
+  value
+public main : Runtime -> Unit / { Console }
+let main r =
+  let result = say r "once" false || say r "twice" true
+  let stored = [result, not result, result]
+  r.console.writeLine (if stored = [true, false, true] then "yes" else "no")
+"#;
+    assert_eq!(run(source), (0, "once\ntwice\nyes\n".into()));
+}
+
+#[test]
+fn short_circuit_skips_division_and_bounds_traps() {
+    let source = r#"module M
+public decide : Int -> Bool
+let decide x = (x = 0 || 10 / x > 1) || Bytes.unsafeGet x Bytes.empty = 0
+public main : Runtime -> Unit / { Console }
+let main r =
+  let x = Option.withDefault 1 (Int.fromString "0")
+  r.console.writeLine (if decide x then "yes" else "no")
+"#;
+    assert_eq!(run(source), (0, "yes\n".into()));
+}
+
+#[test]
+fn short_circuit_releases_owned_operands_on_early_exits() {
+    let source = r#"module M
+let inspect text = String.length text > 0 || String.contains "x" text || String.length text = 0
+public main : Runtime -> Unit / { Console }
+let main r =
+  let text = String.join "" ["dynamic", " text"]
+  let result = inspect text && (text = "dynamic text" || String.length text = 0)
+  r.console.writeLine (if result then "yes" else "no")
+"#;
+    assert_eq!(run(source), (0, "yes\n".into()));
+}
+
+#[test]
+fn short_circuit_decisions_preserve_float_total_order() {
+    let source = r#"module M
+let outside x = not (x >= 0.0 && x <= 1.0) || x = -0.0
+public main : Runtime -> Unit / { Console }
+let main r =
+  let values = [-0.0, 0.0, 0.5, Float.fromBits 0x7ff8000000000001, Float.fromBits 0x7ff0000000000000]
+  let results = List.map outside values
+  r.console.writeLine (if results = [true, false, false, true, true] then "yes" else "no")
+"#;
+    assert_eq!(run(source), (0, "yes\n".into()));
+}
+
+#[test]
 fn unary_negation() {
     let (code, out) = run(&main_printing("Int.toString (0 - (-5))"));
     assert_eq!(code, 0);

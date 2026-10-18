@@ -16,6 +16,7 @@ mod affine_predicates;
 mod aot;
 mod array_layout;
 mod array_loop;
+mod boolean;
 mod callback_plan;
 mod data_cursor;
 mod emit;
