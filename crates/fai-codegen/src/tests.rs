@@ -1799,6 +1799,23 @@ let main r =
 }
 
 #[test]
+fn short_circuit_nested_callback_preserves_selected_calls() {
+    let source = r#"module M
+let count cmp n acc =
+  if n = 0 then acc else
+    let selected = n > 1 && cmp 7 9 <= 0
+    count cmp (n - 1) (if selected then acc + 1 else acc)
+public main : Runtime -> Unit / { Console }
+let main r =
+  let cmp a b =
+    let _ = r.console.writeLine "compare"
+    a - b
+  r.console.writeLine (Int.toString (count cmp 3 0))
+"#;
+    assert_eq!(run(source), (0, "compare\ncompare\n2\n".into()));
+}
+
+#[test]
 fn unary_negation() {
     let (code, out) = run(&main_printing("Int.toString (0 - (-5))"));
     assert_eq!(code, 0);
