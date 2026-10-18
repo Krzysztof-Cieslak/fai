@@ -775,6 +775,8 @@ inside aggregates and hash containers.
 Small runtime allocations are backed by demand-filled slabs beneath the existing
 thread-local size-class lists. Only issued batches touch pages: each fresh slab
 starts with eight cells, then uses batches of up to 64 as demand continues.
+Cached allocation lookups inline into runtime callers; slab refill stays out of
+line so a cache hit avoids the refill path's call frame and register saves.
 Slab ownership outlives allocating threads when cells cross task boundaries; the
 last cell or unfinished cursor releases the mapping. Object layouts and Perceus ownership are
 unchanged by this allocator policy.

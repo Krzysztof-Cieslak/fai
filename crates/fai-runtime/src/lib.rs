@@ -1180,7 +1180,8 @@ impl Pool {
 
     /// Refills an empty class from its unfinished slab. First use issues only
     /// eight cells; sustained demand uses batches of 64 without touching the
-    /// entire mapping in advance.
+    /// entire mapping in advance. Kept out of line so cached allocations avoid
+    /// the refill path's call frame and register saves.
     #[cold]
     #[inline(never)]
     fn refill(&self, class: usize) -> *mut u8 {
