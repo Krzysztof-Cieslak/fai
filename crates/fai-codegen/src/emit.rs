@@ -5594,6 +5594,10 @@ impl<M: Module> Translator<'_, M> {
                 self.known_tags = saved_tags;
             }
             ExprKind::Let { local, value, body } => {
+                if let Some(next) = self.fold_callback_comparison(*local, value, body) {
+                    self.boolean_branch(next, yes, no);
+                    return;
+                }
                 if !self.forward_boolean(*local, value, body) {
                     let value_result = self.expr(value);
                     self.define_var(*local, value_result);
