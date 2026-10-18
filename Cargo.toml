@@ -89,6 +89,7 @@ unicode-width = "0.2"
 regex = "1.13.1"
 regex-automata = "0.4.16"
 regex-syntax = "0.8.11"
+memchr = "2.8"
 # String interning for identifiers (the non-salsa `Symbol`).
 lasso = { version = "0.7", features = ["multi-threaded"] }
 # UTF-8 paths (clean JSON, no lossy conversion). `serde1` for wire params.

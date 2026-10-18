@@ -66,6 +66,8 @@ pub const INTRINSICS: &[&str] = &[
     // Binary byte-buffer primitives (the standard library's `Bytes` module wraps
     // these; bytes are read/written as `Int` 0–255).
     "bytesLength",
+    "bytesFind",
+    "bytesFindUtf8",
     "bytesGet",
     "bytesConcat",
     "bytesConcatMany",

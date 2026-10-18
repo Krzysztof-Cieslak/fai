@@ -109,6 +109,10 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_array_join_borrowed", rt::fai_array_join_borrowed);
     sym!("fai_bytes_length", rt::fai_bytes_length);
     sym!("fai_bytes_length_borrowed", rt::fai_bytes_length_borrowed);
+    sym!("fai_bytes_find", rt::fai_bytes_find);
+    sym!("fai_bytes_find_borrowed", rt::fai_bytes_find_borrowed);
+    sym!("fai_bytes_find_utf8", rt::fai_bytes_find_utf8);
+    sym!("fai_bytes_find_utf8_borrowed", rt::fai_bytes_find_utf8_borrowed);
     sym!("fai_bytes_get", rt::fai_bytes_get);
     sym!("fai_bytes_get_borrowed", rt::fai_bytes_get_borrowed);
     sym!("fai_bytes_index_panic", rt::fai_bytes_index_panic);

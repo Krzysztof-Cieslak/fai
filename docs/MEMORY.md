@@ -270,6 +270,15 @@ retired; IDs are not reused).
   Primitive borrow inference and ownership insertion share per-argument contracts:
   a borrowed first operand no longer implicitly lends consumed scalar indices.
 
+- Byte-pattern search borrows the input and pattern while consuming both scalar
+  bounds. `Bytes.find` searches the whole buffer; `Bytes.findIn` clamps a half-open
+  range and returns an absolute byte offset. Empty patterns match the clamped
+  start, except that reversed clamped ranges have no match. A standard-library-private
+  String-pattern entry shares the same engine, avoiding conversion allocations
+  for literal protocol delimiters. HTTP retains checked fallback scans for
+  unproven internal ranges and filters validated ASCII header initials before
+  lowercasing names for protocol metadata.
+
 - Native Result decomposition is opt-in through the primitive ABI catalog. A
   portable C entry returns the raw tag and writes one owned payload to an aligned
   caller slot; only primitives whose payloads have no observable finalization may

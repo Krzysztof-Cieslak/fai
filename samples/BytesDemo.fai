@@ -47,6 +47,10 @@ let checksumFrom bytes index total =
     checksumFrom bytes (index + 1) (total + Bytes.unsafeGet index bytes)
 example: checksum (Bytes.fromList [0, 128, 255]) = 383
 example: checksum Bytes.empty = 0
+// Search returns an absolute byte offset and supports arbitrary binary patterns.
+example: Bytes.find (Bytes.fromList [0, 255]) (Bytes.fromList [7, 0, 255]) = Some 1
+example: Bytes.findIn 2 5 (Bytes.fromList [0, 255]) (Bytes.fromList [0, 255, 7, 0, 255]) = Some 3
+example: Bytes.find Bytes.empty Bytes.empty = Some 0
 example: Bytes.toList (Bytes.concatMany [
   Bytes.fromList [0, 255],
   Bytes.empty,

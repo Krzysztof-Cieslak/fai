@@ -42,6 +42,21 @@ fn byte_length_and_access_borrow_the_buffer() {
 }
 
 #[test]
+fn byte_search_borrows_both_buffers_and_consumes_bounds() {
+    let source =
+        "module M\nlet search start finish needle bytes = Bytes.findIn start finish needle bytes\n";
+    sound(source, "search");
+    assert_eq!(crate::tests::borrow_sig(source, "search"), vec![false, false, true, true]);
+}
+
+#[test]
+fn partially_applied_byte_search_owns_its_pattern() {
+    let source = "module M\nlet search needle = Bytes.find needle\n";
+    sound(source, "search");
+    assert_eq!(crate::tests::borrow_sig(source, "search"), vec![false]);
+}
+
+#[test]
 fn byte_utf8_validation_borrows_the_buffer() {
     let source = "module M\nlet valid bytes = Bytes.isValidUtf8 bytes\n";
     sound(source, "valid");

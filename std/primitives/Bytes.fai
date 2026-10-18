@@ -36,6 +36,25 @@ public unsafeGet : Int -> Bytes -> Int
 let unsafeGet i b = Prim.bytesGet b i
 example: unsafeGet 0 (fromList [7, 8]) = 7
 
+/// Find the first complete occurrence of `needle`, returning its byte offset.
+/// An empty needle matches at zero. Inputs remain immutable.
+public find : Bytes -> Bytes -> Option Int
+let find needle bytes = findIn 0 (length bytes) needle bytes
+example: find (fromList [0, 255]) (fromList [7, 0, 255, 8]) = Some 1
+example: find empty empty = Some 0
+
+/// Search only within `[start, end)`, clamping both bounds to the buffer.
+/// Returns an absolute byte offset. An empty needle matches at the clamped start;
+/// a clamped end before the clamped start returns None, even for an empty needle.
+public findIn : Int -> Int -> Bytes -> Bytes -> Option Int
+let findIn start end needle bytes =
+  let index = Prim.bytesFind bytes needle start end
+  if index < 0 then None else Some index
+example: findIn 2 5 (fromList [1, 2]) (fromList [1, 2, 0, 1, 2]) = Some 3
+example: findIn 0 1 (fromList [1, 2]) (fromList [1, 2]) = None
+example: findIn 2 1 empty (fromList [0, 1, 2]) = None
+example: findIn 9 8 empty (fromList [0, 1, 2]) = Some 3
+
 /// `a` followed by `b`. A uniquely owned left buffer can append in place; growth
 /// doubles its capacity. Shared inputs retain their original contents. An empty
 /// operand returns the other buffer directly.

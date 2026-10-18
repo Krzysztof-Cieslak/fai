@@ -104,6 +104,35 @@ readLine (testTransport env input) Bytes.empty = Ok (Bytes.fromString "ab", Byte
 }
 
 #[test]
+fn native_header_search_matches_checked_search_over_every_subrange() {
+    check(
+        r#"let bytes = Bytes.fromList [0, 255, 13, 10, 13, 10, 7, 13, 10, 13, 10]
+let bounds = List.range 0 (Bytes.length bytes + 1)
+List.all (fun start -> List.all (fun finish -> findBoundary bytes start finish = findBoundaryChecked bytes start finish) bounds) bounds"#,
+        false,
+    );
+}
+
+#[test]
+fn native_line_search_matches_checked_search_over_every_subrange() {
+    check(
+        r#"let bytes = Bytes.fromList [0, 255, 13, 10, 13, 7, 13, 10]
+let bounds = List.range 0 (Bytes.length bytes + 1)
+List.all (fun start -> List.all (fun finish -> findCrlf bytes start finish = findCrlfChecked bytes start finish) bounds) bounds"#,
+        false,
+    );
+}
+
+#[test]
+fn invalid_search_bounds_keep_the_checked_first_match_behavior() {
+    check(
+        r#"let bytes = Bytes.fromString "\r\n\r\n"
+findBoundary bytes 0 100 = Some 4 && findCrlf bytes 0 100 = Some 0 && findBoundary bytes 0 (-1) = None && findCrlf bytes 0 (-1) = None"#,
+        false,
+    );
+}
+
+#[test]
 fn custom_head_has_the_same_body_semantics() {
     empty_response("(Custom \"HEAD\")", "HTTP/1.1 200 OK\r\nContent-Length: 900\r\n\r\n");
 }
@@ -418,6 +447,26 @@ fn collected_protocol_fields_match_ordered_header_lookups() {
 match parseRequestHeadMeta (Bytes.fromString text) text with
 | Err _ -> false
 | Ok (_, _, headers, _, metadata) -> metadata.connections = Headers.getAll "Connection" headers && metadata.expectations = Headers.getAll "Expect" headers && metadata.lengths = Headers.getAll "Content-Length" headers && metadata.transfers = Headers.getAll "Transfer-Encoding" headers"#,
+        false,
+    );
+}
+
+#[test]
+fn rejected_metadata_names_still_preserve_headers_and_unicode_values() {
+    check(
+        r#"let text = "GET / HTTP/1.1\r\nXxpect: café\r\nxonnection: first\r\nXontent-Length: second\r\nxransfer-encoding: third\r\nCoNnEcTiOn: close\r\nEXPECT: 100-continue\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n"
+match parseRequestHeadMeta (Bytes.fromString text) text with
+| Err _ -> false
+| Ok (_, _, headers, _, metadata) -> List.length (Headers.toList headers) = 8 && Headers.get "Xxpect" headers = Some "café" && metadata.connections = ["close"] && metadata.expectations = ["100-continue"] && metadata.lengths = ["0"] && metadata.transfers = ["chunked"]"#,
+        false,
+    );
+}
+
+#[test]
+fn rejected_metadata_names_do_not_bypass_field_validation() {
+    check(
+        r#"let text = "GET / HTTP/1.1\r\nXonnection: bad\u{0}value\r\n\r\n"
+parseRequestHeadBytes (Bytes.fromString text) text = Err "invalid header field""#,
         false,
     );
 }
