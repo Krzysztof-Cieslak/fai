@@ -1148,6 +1148,10 @@ connections as well; there is no implicit idle timeout.
 Ordinary response headers are validated and classified once during each send;
 the result is reused only within that response. No cross-request cache or
 special preparation API is needed.
+Received headers support cheap selective reads with `Headers.get`/`getAll`;
+`Headers.toList` materializes all fields in their original order. Their storage
+is immutable and owned: retaining headers or passing them to another task is
+safe, and parsed headers compare and hash like the same constructed field list.
 
 HTTP servers can own scoped producers with `Http.produced` and managed listeners:
 the producer receives a lifetime-checked chunk writer after headers are sent.
@@ -1994,6 +1998,10 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   nonempty URI references, with nonempty authority hosts and ports in 0..65535.
 - **`Headers`** (opaque) — case-insensitive, order- and duplicate-preserving:
   `empty`/`fromList`/`toList`/`get`/`getAll`/`add`/`set`/`remove`/`contains`.
+  Received headers retain validated text ranges; `get`/`getAll` materialize
+  matching values and `toList` materializes every field. Equality, ordering and
+  hashing use the ordered, case-preserved field contents regardless of storage.
+  The reserved `TextPairs` module is an internal storage implementation.
 - **`Tls`** capability — a sans-I/O engine (rustls/ring): `client`/`clientWithRoots`/
   `server`, `feedIncoming`/`takeOutgoing`/`readPlaintext`/`writePlaintext`/`state`.
   `writePlaintext : TlsSession -> Bytes -> Result Int String / { Tls }` returns

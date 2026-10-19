@@ -108,6 +108,32 @@ fn chars_contracts_pass() {
 }
 
 #[test]
+fn opaque_headers_generate_logical_fields_and_preserve_value_semantics() {
+    let outcome = run(&[(
+        "H.fai",
+        "module H\nforall h: Headers.fromList (Headers.toList h) = h\nforall hs: List.map (fun h -> Headers.fromList (Headers.toList h)) hs = hs\n",
+    )]);
+    assert!(outcome.ok, "{:?}", outcome.diagnostics);
+}
+
+#[test]
+fn custom_header_generators_override_the_native_storage_generator() {
+    let outcome = run(&[(
+        "H.fai",
+        r#"module H
+chosen : Test.Arbitrary Headers
+let chosen = {
+  gen = fun size seed -> (Headers.fromList [("X", "chosen")], seed),
+  show = fun h -> "chosen",
+  shrink = fun h -> []
+}
+forall h: Headers.get "X" h = Some "chosen"
+"#,
+    )]);
+    assert!(outcome.ok, "{:?}", outcome.diagnostics);
+}
+
+#[test]
 fn patterns_contracts_pass() {
     sample_contracts_pass("Patterns.fai");
 }

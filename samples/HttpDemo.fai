@@ -20,6 +20,8 @@ module HttpDemo
 // Buffered sends render their computed byte length after the other header fields.
 // Request protocol metadata is collected with field validation in wire order.
 // Each response validates and classifies its own fields once during sending.
+// Received headers support selective lookup and bulk `Headers.toList` enumeration;
+// either access retains immutable value semantics across requests and tasks.
 // Body collection can grow uniquely owned byte buffers without repeated prefix copies.
 // Either peer can send Connection: close; cancellation also ends idle reads.
 // HEAD, 204, and 304 responses are bodyless; a server skips their body stream.

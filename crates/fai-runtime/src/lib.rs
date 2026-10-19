@@ -284,6 +284,8 @@ pub const KIND_PROCESS: u64 = 20;
 pub const KIND_REGEX: u64 = 21;
 /// Pure immutable compression snapshot with bounded native state.
 pub const KIND_COMPRESSION: u64 = 22;
+/// Immutable ordered String pairs, backed by a list or validated UTF-8 ranges.
+pub const KIND_TEXT_PAIRS: u64 = 23;
 
 /// Byte offset of the raw `Arc` pointer inside a task, channel, or nursery handle
 /// cell.
@@ -409,6 +411,8 @@ pub static FAI_REGEX_DESC: Descriptor = descriptor(KIND_REGEX, "Regex");
 /// Descriptor for compression snapshots, released at final drop.
 #[unsafe(no_mangle)]
 pub static FAI_COMPRESSION_DESC: Descriptor = descriptor(KIND_COMPRESSION, "Compression");
+/// Descriptor for text-pair storage, whose two slots own ordinary Fai children.
+pub static FAI_TEXT_PAIRS_DESC: Descriptor = descriptor(KIND_TEXT_PAIRS, "TextPairs");
 
 /// Descriptor for boxed (overflowed) `Int` objects (leaf).
 #[unsafe(no_mangle)]
@@ -1610,7 +1614,7 @@ unsafe fn release_other(p: *mut u8, work: &mut DropWork) {
             KIND_INT | KIND_FLOAT | KIND_STRING | KIND_BYTES => {
                 free_storage(p, read_u64(p, SIZE_OFFSET) as usize);
             }
-            KIND_DATA | KIND_CLOSURE | KIND_PAP | KIND_STRING_SLICE => {
+            KIND_DATA | KIND_CLOSURE | KIND_PAP | KIND_STRING_SLICE | KIND_TEXT_PAIRS => {
                 scan_push(p, work);
                 free_storage(p, read_u64(p, SIZE_OFFSET) as usize);
             }
@@ -1804,6 +1808,13 @@ unsafe fn scan_push(p: *mut u8, work: &mut DropWork) -> u64 {
                     if is_boxed(elem) {
                         work.push(elem);
                     }
+                }
+            }
+        } else if kind == KIND_TEXT_PAIRS {
+            for offset in [text_pairs::SOURCE_OFFSET, text_pairs::RANGES_OFFSET] {
+                let child = read_i64(p, offset);
+                if is_boxed(child) {
+                    work.push(child);
                 }
             }
         } else if kind == KIND_STRING_SLICE {
@@ -4496,6 +4507,7 @@ fn values_equal(a: Value, b: Value) -> bool {
                     KIND_NONE => true,
                     KIND_REGEX => regex_engine::compare(a, b).is_eq(),
                     KIND_COMPRESSION => compression::compare(a, b).is_eq(),
+                    KIND_TEXT_PAIRS => text_pairs::compare(a, b).is_eq(),
                     kind if is_resource_kind(kind) => resource_identity(a) == resource_identity(b),
                     _ => false,
                 }
@@ -4614,6 +4626,9 @@ fn values_compare(a: Value, b: Value) -> std::cmp::Ordering {
     }
     if kind == KIND_COMPRESSION {
         return compression::compare(a, b);
+    }
+    if kind == KIND_TEXT_PAIRS {
+        return text_pairs::compare(a, b);
     }
     if kind == KIND_FLOAT {
         return unbox_float(a).total_cmp(&unbox_float(b));
@@ -4828,6 +4843,7 @@ fn values_hash(v: Value) -> u64 {
         KIND_NONE => mix64(0),
         KIND_REGEX => regex_engine::hash(v),
         KIND_COMPRESSION => compression::hash(v),
+        KIND_TEXT_PAIRS => text_pairs::hash(v),
         kind if is_resource_kind(kind) => mix64(resource_identity(v) ^ kind.rotate_left(32)),
         _ => mix64(0),
     }
@@ -5482,6 +5498,7 @@ pub mod compression;
 mod io;
 mod path;
 pub mod regex_engine;
+mod text_pairs;
 pub use compression::{fai_compression_create, fai_compression_step};
 pub use path::{fai_path_components, fai_path_operation};
 pub use regex_engine::{
@@ -5489,6 +5506,11 @@ pub use regex_engine::{
     fai_regex_find_text, fai_regex_names, fai_regex_slice, fai_regex_slice_borrowed,
     fai_regex_slice_parts, fai_regex_slice_parts_borrowed, fai_regex_test_bytes,
     fai_regex_test_text,
+};
+pub use text_pairs::{
+    fai_text_pairs_from_list, fai_text_pairs_from_ranges, fai_text_pairs_get,
+    fai_text_pairs_get_all, fai_text_pairs_get_all_borrowed, fai_text_pairs_get_borrowed,
+    fai_text_pairs_is_empty, fai_text_pairs_is_empty_borrowed, fai_text_pairs_to_list,
 };
 
 mod crypto;

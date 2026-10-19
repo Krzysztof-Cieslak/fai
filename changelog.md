@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Keep received HTTP headers in immutable text views, with selective lookup and
+  bulk enumeration. Parsed and constructed headers retain the same equality,
+  ordering, hashing, duplicate order and immutable-update behavior.
 - Analyze ordinary HTTP response headers once per response, reusing validated
   classifications for connection policy, framing and rendering while preserving
   field order, errors and body evaluation.

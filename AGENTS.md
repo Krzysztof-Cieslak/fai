@@ -1996,6 +1996,16 @@ Ordinary server response heads are also validated and classified once per send.
 That response-local analysis drives connection policy, framing and rendering,
 preserving duplicate order and HEAD/bodyless handling. It is released with the
 send and is never cached across requests.
+Received headers retain one validated UTF-8 head and an ordered array of field
+ranges. Selective lookup materializes matching values; bulk enumeration copies
+all fields directly. The standard-library-private `TextPairs` storage primitive
+also accepts existing String-pair lists. Its equality, ordering and hashing
+observe only the ordered pairs, so parsed and constructed `Headers` remain
+interchangeable, including as generic map/set keys. Both storage forms own their
+children through ordinary reference counting; retained headers survive later
+requests and task transfer. `TextPairs` is an internal reserved standard module.
+Contract generation builds its logical String pairs through the storage factory,
+so `forall` over Headers and user generator overrides remain supported.
 
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;

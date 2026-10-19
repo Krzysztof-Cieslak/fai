@@ -832,6 +832,18 @@ pub enum Prim {
     CompressionCreate,
     /// Advance a compression snapshot with bounded input and output.
     CompressionStep,
+    /// Own an ordered list of String pairs with storage-independent value semantics.
+    TextPairsFromList,
+    /// Own a String and checked field ranges as ordered text pairs.
+    TextPairsFromRanges,
+    /// Materialize text pairs, transferring an existing list when possible.
+    TextPairsToList,
+    /// Find the first value by a lowercased name.
+    TextPairsGet,
+    /// Find all values by a lowercased name, retaining order.
+    TextPairsGetAll,
+    /// Inspect whether an ordered text-pair collection is empty.
+    TextPairsIsEmpty,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -883,6 +895,9 @@ impl Prim {
                 | Prim::StringSplit
                 | Prim::StringJoin
                 | Prim::RegexSlice
+                | Prim::TextPairsGet
+                | Prim::TextPairsGetAll
+                | Prim::TextPairsIsEmpty
                 | Prim::BytesLength
                 | Prim::BytesGet
                 | Prim::BytesFind
@@ -941,6 +956,9 @@ impl Prim {
             Prim::ArrayTake => Some("fai_array_take"),
             Prim::StringJoin => Some("fai_string_join_borrowed"),
             Prim::RegexSlice => Some("fai_regex_slice_borrowed"),
+            Prim::TextPairsGet => Some("fai_text_pairs_get_borrowed"),
+            Prim::TextPairsGetAll => Some("fai_text_pairs_get_all_borrowed"),
+            Prim::TextPairsIsEmpty => Some("fai_text_pairs_is_empty_borrowed"),
             Prim::ArraySplit => Some("fai_array_split_borrowed"),
             Prim::ArrayJoin => Some("fai_array_join_borrowed"),
             _ => None,
@@ -1061,6 +1079,12 @@ impl Prim {
             Prim::RegexEscape => "fai_regex_escape",
             Prim::CompressionCreate => "fai_compression_create",
             Prim::CompressionStep => "fai_compression_step",
+            Prim::TextPairsFromList => "fai_text_pairs_from_list",
+            Prim::TextPairsFromRanges => "fai_text_pairs_from_ranges",
+            Prim::TextPairsToList => "fai_text_pairs_to_list",
+            Prim::TextPairsGet => "fai_text_pairs_get",
+            Prim::TextPairsGetAll => "fai_text_pairs_get_all",
+            Prim::TextPairsIsEmpty => "fai_text_pairs_is_empty",
             Prim::BytesSlice => "fai_bytes_slice",
             Prim::BytesFromList => "fai_bytes_from_list",
             Prim::BytesToList => "fai_bytes_to_list",
@@ -1111,6 +1135,9 @@ impl Prim {
             | Prim::RegexNames
             | Prim::RegexEscape
             | Prim::CompressionCreate
+            | Prim::TextPairsFromList
+            | Prim::TextPairsToList
+            | Prim::TextPairsIsEmpty
             | Prim::CryptoScramPassword => 1,
             Prim::RecordUpdate
             | Prim::ArraySet
@@ -1202,6 +1229,12 @@ impl Prim {
             "regexEscape" => Prim::RegexEscape,
             "compressionCreate" => Prim::CompressionCreate,
             "compressionStep" => Prim::CompressionStep,
+            "textPairsFromList" => Prim::TextPairsFromList,
+            "textPairsFromRanges" => Prim::TextPairsFromRanges,
+            "textPairsToList" => Prim::TextPairsToList,
+            "textPairsGet" => Prim::TextPairsGet,
+            "textPairsGetAll" => Prim::TextPairsGetAll,
+            "textPairsIsEmpty" => Prim::TextPairsIsEmpty,
             "bytesSlice" => Prim::BytesSlice,
             "bytesFromList" => Prim::BytesFromList,
             "bytesToList" => Prim::BytesToList,

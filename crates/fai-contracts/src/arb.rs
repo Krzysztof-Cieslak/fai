@@ -193,6 +193,9 @@ impl<'a> ArbBuilder<'a> {
             Ty::Adt(adt) if Some(*adt) == self.builtins.result && args.len() == 2 => {
                 Ok(app(self.test("result")?, vec![self.arb_for(args[0])?, self.arb_for(args[1])?]))
             }
+            Ty::Adt(adt) if Some(*adt) == self.builtins.text_pairs && args.is_empty() => {
+                Ok(global(self.std("TextPairs", "arbitrary")?))
+            }
             Ty::Adt(adt) => Ok(global(self.ensure_adt(ty, *adt, &args)?)),
             _ => self.unsupported(ty),
         }
@@ -671,11 +674,12 @@ struct Ctor {
 /// recursion (a type whose monomorphic field types never repeat).
 const MAX_REACH: usize = 1000;
 
-/// Standard wrapper generators apply only to the resolved Prelude types.
+/// Standard generators apply only to resolved wrappers and native value types.
 #[derive(Clone, Copy, Default)]
 struct BuiltinAdts {
     option: Option<AdtRef>,
     result: Option<AdtRef>,
+    text_pairs: Option<AdtRef>,
 }
 
 impl BuiltinAdts {
@@ -684,11 +688,13 @@ impl BuiltinAdts {
         Self {
             option: source.map(|source| AdtRef::new(source, Symbol::intern("Option"))),
             result: source.map(|source| AdtRef::new(source, Symbol::intern("Result"))),
+            text_pairs: module_file(db, ModuleName(Symbol::intern("TextPairs")))
+                .map(|file| AdtRef::new(file.source(db), Symbol::intern("Table"))),
         }
     }
 
     fn contains(self, adt: AdtRef) -> bool {
-        Some(adt) == self.option || Some(adt) == self.result
+        Some(adt) == self.option || Some(adt) == self.result || Some(adt) == self.text_pairs
     }
 }
 
@@ -826,6 +832,7 @@ fn rank_of(
             match head {
                 Ty::Con(Con::List | Con::Array) => Some(0),
                 Ty::Adt(adt) if Some(*adt) == builtins.option => Some(0),
+                Ty::Adt(adt) if Some(*adt) == builtins.text_pairs => Some(0),
                 Ty::Adt(adt) if Some(*adt) == builtins.result => {
                     args.first().and_then(|ok| rank_of(ranks, custom, ok, builtins))
                 }
