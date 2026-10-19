@@ -1992,6 +1992,10 @@ other fields, avoiding a temporary header collection while keeping validation.
 Request framing, expectation and connection values are collected during the
 same validated field scan. Interpretation still follows whole-head validation,
 with repeated-field order and error precedence preserved.
+Ordinary server response heads are also validated and classified once per send.
+That response-local analysis drives connection policy, framing and rendering,
+preserving duplicate order and HEAD/bodyless handling. It is released with the
+send and is never cached across requests.
 
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;

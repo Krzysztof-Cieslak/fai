@@ -1948,6 +1948,137 @@ let writeResponseWith sender closeConn method t resp =
       else
         framed))
 
+// The classified fields and protocol values belong to one response send only.
+// Field order is retained in reverse so rendering can prepend without another
+// reversal. Classification uses names only after their ASCII token validation.
+type ScopedField =
+  | OrdinaryField String String
+  | LengthField String String
+  | TransferField String String
+  | ConnectionField String String
+
+type ScopedHead = {
+  connections : List String,
+  fields : List ScopedField,
+  lengths : List String,
+  transfers : List String
+}
+
+scopedFieldKind : Int -> Int -> String -> Int
+let scopedFieldKind size first name =
+  let initial = Int.or first 32
+  if size = 10 && initial = 99 && String.toLower name = "connection" then
+    3
+  else if size = 14 && initial = 99 && String.toLower name = "content-length" then
+    1
+  else if size = 17 && initial = 116 && String.toLower name = "transfer-encoding" then 2 else 0
+
+analyzeScopedFields : List (String * String) -> List ScopedField -> List String -> List String -> List String -> Result ScopedHead String
+let analyzeScopedFields input fields connections lengths transfers =
+  match input with
+  | [] -> Ok {
+    connections = List.reverse connections,
+    fields = fields,
+    lengths = List.reverse lengths,
+    transfers = List.reverse transfers
+  }
+  | (name, value) :: rest ->
+    let bytes = Bytes.fromString name
+    let size = Bytes.length bytes
+    if size = 0 || not (tokenBytesValid bytes 0 size) || not (validHeaderValue (Bytes.fromString value) 0) then
+      Err "invalid outgoing HTTP status line or header"
+    else
+      let kind = scopedFieldKind size (Bytes.unsafeGet 0 bytes) name
+      if kind = 1 then
+        analyzeScopedFields rest (LengthField name value :: fields) connections (value :: lengths) transfers
+      else if kind = 2 then
+        analyzeScopedFields rest (TransferField name value :: fields) connections lengths (value :: transfers)
+      else if kind = 3 then
+        analyzeScopedFields rest (ConnectionField name value :: fields) (value :: connections) lengths transfers
+      else
+        analyzeScopedFields rest (OrdinaryField name value :: fields) connections lengths transfers
+
+scopedStartValid : String -> Bool
+let scopedStartValid start =
+  let n = String.length start
+  n >= 2 && String.drop (n - 2) start = "\r\n" && validHeaderValue (Bytes.fromString (String.take (n - 2) start)) 0
+
+scopedFieldLines : List ScopedField -> Bool -> Bool -> Bool -> List String -> List String
+let scopedFieldLines fields removeLength removeTransfer removeConnection lines =
+  match fields with
+  | [] -> lines
+  | field :: rest ->
+    match field with
+    | OrdinaryField name value ->
+      scopedFieldLines rest removeLength removeTransfer removeConnection (renderField (name, value) :: lines)
+    | LengthField name value ->
+      scopedFieldLines rest removeLength removeTransfer removeConnection (if removeLength then
+        lines
+      else
+        renderField (name, value) :: lines)
+    | TransferField name value ->
+      scopedFieldLines rest removeLength removeTransfer removeConnection (if removeTransfer then
+        lines
+      else
+        renderField (name, value) :: lines)
+    | ConnectionField name value ->
+      scopedFieldLines rest removeLength removeTransfer removeConnection (if removeConnection then
+        lines
+      else
+        renderField (name, value) :: lines)
+
+renderScopedHead : String -> List ScopedField -> Bool -> Bool -> Bool -> Option Int -> Bytes
+let renderScopedHead start fields closeConn removeLength removeTransfer computedLength =
+  let tail =
+    match computedLength with
+    | None -> []
+    | Some length -> ["Content-Length: " ++ Int.toString length ++ "\r\n"]
+  let ending = if closeConn then "Connection: close\r\n" :: tail else tail
+  Bytes.fromString (start ++ String.join "" (scopedFieldLines fields removeLength removeTransfer closeConn ending) ++ "\r\n")
+
+sendScopedResponse : ChunkSender -> Bool -> Method -> Transport { Net, Tls } -> Response 'e -> Result Bool String / { Net, Tls | 'e }
+let sendScopedResponse sender requestedClose method transport response =
+  match response with
+  | { body, headers, reason, status } ->
+    let start = "HTTP/1.1 " ++ Int.toString status ++ " " ++ reason ++ "\r\n"
+    if status < 100 || status > 999 || not (scopedStartValid start) then
+      Err "invalid outgoing HTTP status line or header"
+    else
+      match analyzeScopedFields (Headers.toList headers) [] [] [] [] with
+      | Err error -> Err error
+      | Ok { connections, fields, lengths, transfers } ->
+        if status = 101 || (methodName method = "CONNECT" && status >= 200 && status < 300) then
+          Err "HTTP protocol upgrades and CONNECT tunnels are not supported"
+        else
+          let closeConn = requestedClose || hasConnectionCloseValues connections || status < 200
+          let hasBody = responseHasBody method status
+          let removeLength = not hasBody && (status = 204 || (status >= 100 && status < 200))
+          let usedTransfers = if hasBody then transfers else []
+          let usedLengths = if removeLength then [] else lengths
+          match framingFrom usedTransfers usedLengths NoBody with
+          | Err error -> Err error
+          | Ok framing ->
+            let sent =
+              if not hasBody then
+                transport.send (renderScopedHead start fields closeConn removeLength true None)
+              else
+                match framing with
+                | Chunked ->
+                  match transport.send (renderScopedHead start fields closeConn false false None) with
+                  | Err error -> Err error
+                  | Ok _ -> sendChunkedBody transport body
+                | _ ->
+                  match Stream.toList body with
+                  | Err error -> Err error
+                  | Ok chunks ->
+                    match bodySize chunks 0 with
+                    | Err error -> Err error
+                    | Ok size ->
+                      sender.send (renderScopedHead start fields closeConn true false (Some size) :: chunks)
+            match sent with
+            | Err error -> Err error
+            | Ok _ -> Ok closeConn
+
 sendResponse : Method -> Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
 let sendResponse method t resp =
   let result = writeResponse true method t resp
@@ -2091,9 +2222,7 @@ let sendPlanned requestedClose c method transport response =
 sendPlannedWith : ChunkSender -> Bool -> Concurrency -> Method -> Transport { Net, Tls } -> ServerResponse 'e -> Result Bool String / { Concurrency, Net, Tls | 'e }
 let sendPlannedWith sender requestedClose c method transport response =
   match response with
-  | Ready response ->
-    let closeConn = requestedClose || hasConnectionClose response.headers || response.status < 200
-    Result.map (fun _ -> closeConn) (writeResponseWith sender closeConn method transport response)
+  | Ready response -> sendScopedResponse sender requestedClose method transport response
   | Produced head produce ->
     let closeConn = requestedClose || hasConnectionClose head.headers || head.status < 200
     Result.map (fun _ -> closeConn) (sendProduced closeConn c method transport head produce)

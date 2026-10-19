@@ -5369,6 +5369,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   - HTTP validation retains the exact ASCII token and field-value rules while
     avoiding per-byte membership lists and repeated buffer-length reads. A
     validated outgoing response head enters body framing without revalidation.
+    Ordinary server responses classify their validated fields once per send,
+    retaining protocol values in wire order. Connection policy, framing and
+    rendering share that response-local result; no analysis is reused across
+    requests. HEAD/bodyless field removal precedes framing interpretation as
+    before, and buffered or chunked body evaluation retains its original order.
   - **Persistent server connections.** HTTP/1.1 servers process requests in wire
     order on one connection task. Fully decoded request chunks do not capture the
     transport; bytes beyond a length-delimited body or chunked trailers are carried

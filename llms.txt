@@ -1145,6 +1145,9 @@ Request-body chunk boundaries are unspecified; use `Http.bodyBytes`/`bodyText`
 to combine them when needed.
 HTTP/1.0 closes after its response. Cancel the serving task to terminate idle
 connections as well; there is no implicit idle timeout.
+Ordinary response headers are validated and classified once during each send;
+the result is reused only within that response. No cross-request cache or
+special preparation API is needed.
 
 HTTP servers can own scoped producers with `Http.produced` and managed listeners:
 the producer receives a lifetime-checked chunk writer after headers are sent.
@@ -2027,7 +2030,10 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    bounded by the remaining body length, with no retained per-connection buffer.
    Partial header and framing-line reads resume searching at the prior suffix.
    Request protocol metadata is collected during validation and interpreted only after
-   the complete head passes, preserving duplicate order and error precedence. Server:
+   the complete head passes, preserving duplicate order and error precedence.
+   Ordinary server responses likewise share a response-local header analysis
+   between connection policy, framing and rendering; it never persists across
+   requests. Server:
   `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection, serving ordered requests until either peer sends `Connection: close`.

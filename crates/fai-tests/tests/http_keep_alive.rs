@@ -241,6 +241,44 @@ fn sequential_requests_reuse_one_connection() {
     });
 }
 
+const CHANGING_HEADS: &str = r#"
+handle : Runtime -> Http.Request {} -> Result (Http.Response {}) String
+let handle r request =
+  let path = Url.path request.url
+  if path = "/first" then
+    Ok { status = 201, reason = "Created", headers = Headers.fromList [("X-State", "first"), ("Content-Length", "999")], body = Http.stringBody "one" }
+  else if path = "/empty" then
+    Ok { status = 204, reason = "No Content", headers = Headers.fromList [("X-State", "empty"), ("Content-Length", "bad"), ("Transfer-Encoding", "chunked")], body = Stream.failed "body must not run" }
+  else
+    Ok { status = 200, reason = "OK", headers = Headers.fromList [("X-State", "last"), ("X-State", "again"), ("content-length", "0006")], body = Http.stringBody "é😀" }
+"#;
+
+fn changing_heads_peer(socket: &mut BufReader<TcpStream>) {
+    send(socket, b"GET /first HTTP/1.1\r\nHost: localhost\r\n\r\nGET /empty HTTP/1.1\r\nHost: localhost\r\n\r\nGET /last HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    let first = response(socket, false);
+    assert_eq!(first.status, 201);
+    assert_eq!(first.headers, "x-state: first\r\ncontent-length: 3\r\n");
+    assert_eq!(first.body, b"one");
+    let empty = response(socket, true);
+    assert_eq!(empty.status, 204);
+    assert_eq!(empty.headers, "x-state: empty\r\n");
+    assert!(empty.body.is_empty());
+    let last = response(socket, false);
+    assert_eq!(last.status, 200);
+    assert_eq!(last.headers, "x-state: last\r\nx-state: again\r\ncontent-length: 6\r\n");
+    assert_eq!(last.body, "é😀".as_bytes());
+}
+
+#[test]
+fn changing_response_heads_are_scoped_to_each_request() {
+    server(CHANGING_HEADS, false, changing_heads_peer);
+}
+
+#[test]
+fn native_changing_response_heads_are_scoped_to_each_request() {
+    server_config(CHANGING_HEADS, "  let app = handle r", false, None, true, changing_heads_peer);
+}
+
 #[test]
 fn pipelined_requests_preserve_order_and_buffered_bytes() {
     server(HANDLER, false, |socket| {

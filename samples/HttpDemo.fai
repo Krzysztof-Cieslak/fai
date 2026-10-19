@@ -19,6 +19,7 @@ module HttpDemo
 // Request field scanning preserves Unicode values and duplicate field order.
 // Buffered sends render their computed byte length after the other header fields.
 // Request protocol metadata is collected with field validation in wire order.
+// Each response validates and classifies its own fields once during sending.
 // Body collection can grow uniquely owned byte buffers without repeated prefix copies.
 // Either peer can send Connection: close; cancellation also ends idle reads.
 // HEAD, 204, and 304 responses are bodyless; a server skips their body stream.
@@ -33,7 +34,10 @@ example: Url.decodeComponent "%GG" = "%GG"
 
 // The request handler: echo the requested path back as plain text. A handler
 // returns `Ok response`; an `Err` becomes a 500.
-let handle req = Ok (Http.textResponse 200 ("you requested " ++ Url.path req.url))
+let handle req =
+  let path = Url.path req.url
+  let response = Http.textResponse 200 ("you requested " ++ path)
+  Ok { response with headers = Headers.add "X-Request-Path" path response.headers }
 
 // Make one request to the loopback server and render the result.
 fetch : Runtime -> Int -> String / { Net, Tls }
