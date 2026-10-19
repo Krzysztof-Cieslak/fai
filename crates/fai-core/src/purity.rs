@@ -233,6 +233,12 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::RegexEscape
         | Prim::CompressionCreate
         | Prim::CompressionStep
+        | Prim::TextPairsFromList
+        | Prim::TextPairsFromRanges
+        | Prim::TextPairsToList
+        | Prim::TextPairsGet
+        | Prim::TextPairsGetAll
+        | Prim::TextPairsIsEmpty
         | Prim::BytesSlice
         | Prim::BytesFromList
         | Prim::BytesToList

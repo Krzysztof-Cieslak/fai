@@ -1,0 +1,35 @@
+module TextPairs
+
+// Ordered text pairs can own existing fields or borrow validated UTF-8 ranges.
+// The native representation compares logical contents, never storage details.
+internal opaque type Table =
+  | Storage Int
+
+internal fromList : List (String * String) -> Table
+let fromList fields = Prim.textPairsFromList fields
+
+internal fromRanges : String -> Array Int -> Result Table String
+let fromRanges text ranges = Prim.textPairsFromRanges text ranges
+
+internal toList : Table -> List (String * String)
+let toList table = Prim.textPairsToList table
+
+internal get : String -> Table -> Option String
+let get lower table = Prim.textPairsGet table lower
+
+internal getAll : String -> Table -> List String
+let getAll lower table = Prim.textPairsGetAll table lower
+
+internal isEmpty : Table -> Bool
+let isEmpty table = Prim.textPairsIsEmpty table
+
+// Generate the logical fields, never the native cell's implementation shape.
+internal arbitrary : Test.Arbitrary Table
+let arbitrary =
+  let fields = Test.list (Test.tuple2 Test.string Test.string)
+  let generate size seed =
+    let (items, next) = fields.gen size seed
+    (fromList items, next)
+  let shrink table = List.map fromList (fields.shrink (toList table))
+  let show table = fields.show (toList table)
+  { gen = generate, show = show, shrink = shrink }

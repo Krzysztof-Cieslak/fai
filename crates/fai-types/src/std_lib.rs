@@ -202,6 +202,34 @@ pub(crate) fn contextual_builtin_scheme(db: &dyn fai_db::Db, name: Symbol) -> Op
     use fai_resolve::{AdtRef, ModuleName, module_file};
     use std::sync::Arc;
     let key = name.as_str();
+    if matches!(
+        key,
+        "textPairsFromList"
+            | "textPairsFromRanges"
+            | "textPairsToList"
+            | "textPairsGet"
+            | "textPairsGetAll"
+            | "textPairsIsEmpty"
+    ) {
+        let engine = module_file(db, ModuleName(Symbol::intern("TextPairs")))?;
+        let prelude = module_file(db, ModuleName(Symbol::intern("Prelude")))?;
+        let table = Ty::Adt(AdtRef::new(engine.source(db), Symbol::intern("Table")));
+        let named = |name| Ty::Adt(AdtRef::new(prelude.source(db), Symbol::intern(name)));
+        let apply = |head, arg| Ty::App(Arc::new(head), Arc::new(arg));
+        let string = Ty::Con(Con::String);
+        let fields = Ty::list(Ty::Tuple(vec![string.clone(), string.clone()]));
+        return Some(Scheme::mono(match key {
+            "textPairsFromList" => Ty::arrow(fields, table),
+            "textPairsFromRanges" => Ty::arrows(
+                [string.clone(), Ty::array(Ty::int())],
+                apply(apply(named("Result"), table), string),
+            ),
+            "textPairsToList" => Ty::arrow(table, fields),
+            "textPairsGet" => Ty::arrows([table, string.clone()], apply(named("Option"), string)),
+            "textPairsGetAll" => Ty::arrows([table, string.clone()], Ty::list(string)),
+            _ => Ty::arrow(table, Ty::bool()),
+        }));
+    }
     if matches!(key, "compressionCreate" | "compressionStep") {
         let engine = module_file(db, ModuleName(Symbol::intern("CompressionEngine")))?;
         let prelude = module_file(db, ModuleName(Symbol::intern("Prelude")))?;

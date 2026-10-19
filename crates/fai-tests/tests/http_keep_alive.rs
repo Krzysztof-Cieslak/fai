@@ -279,6 +279,34 @@ fn native_changing_response_heads_are_scoped_to_each_request() {
     server_config(CHANGING_HEADS, "  let app = handle r", false, None, true, changing_heads_peer);
 }
 
+const SHARED_HEADERS: &str = r#"
+handle : Runtime -> Http.Request {} -> Result (Http.Response { Concurrency }) String / { Concurrency }
+let handle r request =
+  let headers = request.headers
+  let inspect nursery =
+    let task = r.concurrency.spawn nursery (fun _ -> Headers.getAll "x" headers)
+    let values = r.concurrency.await task
+    String.join ":" values ++ "|" ++ String.join ":" (Headers.getAll "X" headers)
+  Ok (Http.textResponse 200 (r.concurrency.scope inspect))
+"#;
+
+fn shared_headers_peer(socket: &mut BufReader<TcpStream>) {
+    send(socket, b"GET / HTTP/1.1\r\nHost: x\r\nX: one\r\nx: two\r\n\r\n");
+    assert_eq!(response(socket, false).body, b"one:two|one:two");
+    send(socket, b"GET / HTTP/1.1\r\nHost: x\r\nX: three\r\nx: four\r\n\r\n");
+    assert_eq!(response(socket, false).body, b"three:four|three:four");
+}
+
+#[test]
+fn parsed_headers_survive_task_transfer_and_later_requests() {
+    server(SHARED_HEADERS, false, shared_headers_peer);
+}
+
+#[test]
+fn native_parsed_headers_survive_task_transfer_and_later_requests() {
+    server_config(SHARED_HEADERS, "  let app = handle r", false, None, true, shared_headers_peer);
+}
+
 #[test]
 fn pipelined_requests_preserve_order_and_buffered_bytes() {
     server(HANDLER, false, |socket| {

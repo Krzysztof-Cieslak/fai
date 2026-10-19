@@ -5374,6 +5374,15 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     rendering share that response-local result; no analysis is reused across
     requests. HEAD/bodyless field removal precedes framing interpretation as
     before, and buffered or chunked body evaluation retains its original order.
+    Received headers retain validated UTF-8 text and field ranges rather than
+    eagerly copying every name/value. A standard-library-private ordered
+    text-pair primitive can own either those ranges or existing pair lists;
+    its structural operations compare logical pair contents in order, independent
+    of source text, whitespace, offsets and storage form. This preserves header
+    equality/order/hash inside generic aggregates and associative containers.
+    Selective lookup copies only matching values and bulk enumeration copies
+    all ranges directly. The native primitive handles storage and text operations;
+    HTTP scanning, validation, metadata interpretation and framing remain in Fai.
   - **Persistent server connections.** HTTP/1.1 servers process requests in wire
     order on one connection task. Fully decoded request chunks do not capture the
     transport; bytes beyond a length-delimited body or chunked trailers are carried

@@ -97,6 +97,12 @@ pub const INTRINSICS: &[&str] = &[
     "regexEscape",
     "compressionCreate",
     "compressionStep",
+    "textPairsFromList",
+    "textPairsFromRanges",
+    "textPairsToList",
+    "textPairsGet",
+    "textPairsGetAll",
+    "textPairsIsEmpty",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

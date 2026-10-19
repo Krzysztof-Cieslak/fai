@@ -271,6 +271,15 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_regex_escape", rt::fai_regex_escape);
     sym!("fai_compression_create", rt::fai_compression_create);
     sym!("fai_compression_step", rt::fai_compression_step);
+    sym!("fai_text_pairs_from_list", rt::fai_text_pairs_from_list);
+    sym!("fai_text_pairs_from_ranges", rt::fai_text_pairs_from_ranges);
+    sym!("fai_text_pairs_to_list", rt::fai_text_pairs_to_list);
+    sym!("fai_text_pairs_get", rt::fai_text_pairs_get);
+    sym!("fai_text_pairs_get_borrowed", rt::fai_text_pairs_get_borrowed);
+    sym!("fai_text_pairs_get_all", rt::fai_text_pairs_get_all);
+    sym!("fai_text_pairs_get_all_borrowed", rt::fai_text_pairs_get_all_borrowed);
+    sym!("fai_text_pairs_is_empty", rt::fai_text_pairs_is_empty);
+    sym!("fai_text_pairs_is_empty_borrowed", rt::fai_text_pairs_is_empty_borrowed);
     sym!("fai_cleanup", rt::fai_cleanup);
     sym!("fai_net_peer", rt::fai_net_peer);
     sym!("fai_tls_server_endpoint", rt::fai_tls_server_endpoint);

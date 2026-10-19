@@ -1728,25 +1728,49 @@ type HeadMetadata = {
 // Names have passed ASCII token validation. Collect protocol values in wire
 // order, but defer interpreting them until the entire head has been validated.
 // The first byte rejects unrelated names before allocating their lowercase form.
-rememberField : Int -> Int -> String -> String -> HeadMetadata -> HeadMetadata
-let rememberField size first name value metadata =
-  let initial = Int.or first 32
-  if size = 6 && initial = 101 && String.toLower name = "expect" then
-    { metadata with expectations = value :: metadata.expectations }
-  else if size = 10 && initial = 99 && String.toLower name = "connection" then
-    { metadata with connections = value :: metadata.connections }
-  else if size = 14 && initial = 99 && String.toLower name = "content-length" then
-    { metadata with lengths = value :: metadata.lengths }
-  else if size = 17 && initial = 116 && String.toLower name = "transfer-encoding" then
-    { metadata with transfers = value :: metadata.transfers }
+fieldBytesEqual : Bytes -> Int -> Bytes -> Int -> Int -> Bool
+let fieldBytesEqual bytes start expected size index =
+  if index >= size then
+    true
   else
-    metadata
+    Int.or (Bytes.unsafeGet (start + index) bytes) 32 = Bytes.unsafeGet index expected && fieldBytesEqual bytes start expected size (index + 1)
 
-finishFields : List (String * String) -> HeadMetadata -> Result (Headers * HeadMetadata) String
+fieldRangeKind : Bytes -> Int -> Int -> Int
+let fieldRangeKind bytes start finish =
+  let size = finish - start
+  let initial = Int.or (Bytes.unsafeGet start bytes) 32
+  if size = 6 && initial = 101 && fieldBytesEqual bytes start (Bytes.fromString "expect") size 0 then
+    1
+  else if size = 10 && initial = 99 && fieldBytesEqual bytes start (Bytes.fromString "connection") size 0 then
+    2
+  else if size = 14 && initial = 99 && fieldBytesEqual bytes start (Bytes.fromString "content-length") size 0 then
+    3
+  else if size = 17 && initial = 116 && fieldBytesEqual bytes start (Bytes.fromString "transfer-encoding") size 0 then
+    4
+  else
+    0
+
+rememberField : Bytes -> Int -> Int -> Int -> Int -> HeadMetadata -> HeadMetadata
+let rememberField bytes start finish valueStart valueEnd metadata =
+  let kind = fieldRangeKind bytes start finish
+  if kind = 0 then
+    metadata
+  else
+    let value = Option.withDefault "" (Bytes.toString (Bytes.slice valueStart valueEnd bytes))
+    if kind = 1 then
+      { metadata with expectations = value :: metadata.expectations }
+    else if kind = 2 then
+      { metadata with connections = value :: metadata.connections }
+    else if kind = 3 then
+      { metadata with lengths = value :: metadata.lengths }
+    else
+      { metadata with transfers = value :: metadata.transfers }
+
+finishFields : Array Int -> HeadMetadata -> Result (Array Int * HeadMetadata) String
 let finishFields fields metadata =
   match metadata with
   | { connections, expectations, lengths, transfers } ->
-    Ok (Headers.fromList (List.reverse fields), {
+    Ok (fields, {
       connections = List.reverse connections,
       expectations = List.reverse expectations,
       lengths = List.reverse lengths,
@@ -1769,15 +1793,18 @@ let parseRequestHeadMeta bytes text =
     | Err error -> Err error
     | Ok (method, url, version) ->
       let metadata = { connections = [], expectations = [], lengths = [], transfers = [] }
-      match scanRequestFields bytes text length fieldsStart fieldsStart (0 - 1) (0 - 1) (0 - 1) true [] metadata with
+      match scanRequestFields bytes length fieldsStart fieldsStart (0 - 1) (0 - 1) (0 - 1) true (Array.withCapacity 16) metadata with
       | Err error -> Err error
-      | Ok (headers, metadata) -> Ok (method, url, headers, version, metadata)
+      | Ok (ranges, metadata) ->
+        match Headers.fromRanges text ranges with
+        | Err error -> Err error
+        | Ok headers -> Ok (method, url, headers, version, metadata)
 
 // Scan and validate fields without splitting/rejoining each line or building
 // temporary byte buffers for trimming. A negative nameEnd means the colon has
 // not been seen; a negative valueStart means the value is still only OWS.
-scanRequestFields : Bytes -> String -> Int -> Int -> Int -> Int -> Int -> Int -> Bool -> List (String * String) -> HeadMetadata -> Result (Headers * HeadMetadata) String
-let scanRequestFields bytes text length lineStart index nameEnd valueStart valueEnd validName fields metadata =
+scanRequestFields : Bytes -> Int -> Int -> Int -> Int -> Int -> Int -> Bool -> Array Int -> HeadMetadata -> Result (Array Int * HeadMetadata) String
+let scanRequestFields bytes length lineStart index nameEnd valueStart valueEnd validName fields metadata =
   let atEnd = index >= length
   let c = if atEnd then 0 else Bytes.unsafeGet index bytes
   let lineEnd = atEnd || (c = 13 && index + 1 < length && Bytes.unsafeGet (index + 1) bytes = 10)
@@ -1788,38 +1815,32 @@ let scanRequestFields bytes text length lineStart index nameEnd valueStart value
       else if atEnd then
         finishFields fields metadata
       else
-        scanRequestFields bytes text length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true fields metadata
+        scanRequestFields bytes length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true fields metadata
     else
       let first = if valueStart < 0 then nameEnd + 1 else valueStart
       let last = if valueStart < 0 then first else valueEnd
-      match RegexEngine.slice text lineStart nameEnd with
-      | Err _ -> Err "invalid header field"
-      | Ok name ->
-        match RegexEngine.slice text first last with
-        | Err _ -> Err "invalid header field"
-        | Ok value ->
-          let nextFields = (name, value) :: fields
-          let nextMetadata =
-            rememberField (nameEnd - lineStart) (Bytes.unsafeGet lineStart bytes) name value metadata
-          if atEnd then
-            finishFields nextFields nextMetadata
-          else
-            scanRequestFields bytes text length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true nextFields nextMetadata
+      let nextFields =
+        Array.push last (Array.push first (Array.push nameEnd (Array.push lineStart fields)))
+      let nextMetadata = rememberField bytes lineStart nameEnd first last metadata
+      if atEnd then
+        finishFields nextFields nextMetadata
+      else
+        scanRequestFields bytes length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true nextFields nextMetadata
   else if nameEnd < 0 then
     if c = 58 then
       if index = lineStart || not validName then
         Err "invalid header field"
       else
-        scanRequestFields bytes text length lineStart (index + 1) index (0 - 1) (0 - 1) true fields metadata
+        scanRequestFields bytes length lineStart (index + 1) index (0 - 1) (0 - 1) true fields metadata
     else
-      scanRequestFields bytes text length lineStart (index + 1) nameEnd valueStart valueEnd (validName && isTokenByte c) fields metadata
+      scanRequestFields bytes length lineStart (index + 1) nameEnd valueStart valueEnd (validName && isTokenByte c) fields metadata
   else if c <> 9 && (c < 32 || c = 127) then
     Err "invalid header field"
   else
     let ows = c = 9 || c = 32
     let first = if valueStart < 0 && not ows then index else valueStart
     let last = if ows then valueEnd else index + 1
-    scanRequestFields bytes text length lineStart (index + 1) nameEnd first last validName fields metadata
+    scanRequestFields bytes length lineStart (index + 1) nameEnd first last validName fields metadata
 
 honorExpectations : Transport 'e -> String -> List String -> BodyFraming -> Result Unit String / 'e
 let honorExpectations t version values framing =
