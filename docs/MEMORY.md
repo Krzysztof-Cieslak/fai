@@ -5347,6 +5347,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     private buffer on failure. `Net.sendMany` retains ordered chunks across bounded
     vectored writes; managed plain HTTP uses it after buffering the complete body.
     TLS and arbitrary Transport values retain the contiguous send fallback.
+    Unix vectored writes use per-call SIGPIPE suppression so a disconnected
+    peer becomes an ordinary send error, including in native executables with
+    default signal handling. Existing process signal handlers are untouched.
   - `Bytes.concatMany` checks the complete length and copies ordered chunks into
     one output allocation, transferring a sole nonempty chunk directly. HTTP
     buffering uses it after full stream consumption, preserving failure order.

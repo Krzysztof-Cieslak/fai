@@ -96,6 +96,9 @@
   use `Http.bodyBytes` or `Http.bodyText` when a combined payload is required.
 
 ### Fixed
+- Disconnected peers during vectored TCP sends now return an error instead of
+  raising `SIGPIPE`, including native executables with default Unix signal
+  handling. Custom process signal handlers are preserved.
 - Keep timers and network events progressing under a continuously runnable
   single-worker queue by polling nonblocking between bounded task batches.
 - Use full HTTPS package URLs in onboarding examples so they work with the
