@@ -757,7 +757,9 @@ pub extern "C" fn fai_net_send_many(conn: Value, chunks: Value) -> Value {
         let object = net_of(conn);
         match &**object {
             NetObject::Conn { sock, src } => send_many_chunks(chunks, |batch| {
-                try_io(&src.write, || sock.lock().expect("connection lock").write_vectored(batch))
+                try_io(&src.write, || {
+                    send_vectored(&mut sock.lock().expect("connection lock"), batch)
+                })
             }),
             NetObject::Listener { .. } | NetObject::Udp { .. } => {
                 Err("send: handle is not a connection".to_owned())
@@ -770,6 +772,37 @@ pub extern "C" fn fai_net_send_many(conn: Value, chunks: Value) -> Value {
         Ok(()) => ok_result(crate::FAI_UNIT),
         Err(error) => err_result(&error),
     }
+}
+
+// Suppress SIGPIPE per operation: native executables may retain the default
+// signal disposition, and a disconnected peer must be an ordinary send error.
+#[cfg(unix)]
+fn send_vectored(socket: &mut TcpStream, buffers: &[io::IoSlice<'_>]) -> io::Result<usize> {
+    use std::os::fd::AsRawFd;
+
+    debug_assert!(buffers.len() <= 16);
+    let message = libc::msghdr {
+        msg_name: std::ptr::null_mut(),
+        msg_namelen: 0,
+        msg_iov: buffers.as_ptr().cast_mut().cast(),
+        msg_iovlen: buffers.len() as _,
+        msg_control: std::ptr::null_mut(),
+        msg_controllen: 0,
+        msg_flags: 0,
+    };
+    socket.try_io(|| {
+        // SAFETY: IoSlice is ABI-compatible with iovec on Unix. The kernel only
+        // reads the vector and its buffers during this nonblocking call; their
+        // owners and the locked socket remain live. The bounded batch fits the
+        // platform's iovec count. No address or ancillary data is supplied.
+        let result = unsafe { libc::sendmsg(socket.as_raw_fd(), &message, libc::MSG_NOSIGNAL) };
+        if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result as usize) }
+    })
+}
+
+#[cfg(not(unix))]
+fn send_vectored(socket: &mut TcpStream, buffers: &[io::IoSlice<'_>]) -> io::Result<usize> {
+    socket.write_vectored(buffers)
 }
 
 // The list remains borrowed for the whole call. Each boxed cell has a Bytes head
@@ -1172,6 +1205,10 @@ pub extern "C" fn fai_udp_close(sock: Value) -> Value {
 #[path = "connect_tests.rs"]
 mod connect_tests;
 
+#[cfg(all(test, unix))]
+#[path = "send_signal_tests.rs"]
+mod send_signal_tests;
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
@@ -1181,6 +1218,21 @@ mod tests {
 
     use super::*;
     use crate::scheduler::block_on;
+
+    #[test]
+    fn socket_vectored_send_preserves_order_and_empty_slices() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let sender = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        sender.set_nonblocking(true).unwrap();
+        let mut sender = TcpStream::from_std(sender);
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let buffers = [io::IoSlice::new(b"ab"), io::IoSlice::new(b""), io::IoSlice::new(b"cdef")];
+        assert_eq!(send_vectored(&mut sender, &buffers).unwrap(), 6);
+        let mut received = [0; 6];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(&received, b"abcdef");
+    }
 
     #[test]
     fn gather_write_handles_partial_progress_and_empty_chunks() {

@@ -1072,6 +1072,8 @@ scheduler exactly as a concurrent one does.
   Custom `Net` instances implement it too; a contiguous fallback can call the
   existing sender with `Bytes.concatMany chunks`. Partial writes and cancellation
   retain all buffer owners until the operation finishes.
+  On Unix, a broken vectored send returns `Err` without raising `SIGPIPE` or
+  changing the process's signal handlers.
   `connect` tries all DNS addresses in resolver order, closing failed candidates
   before advancing. Cancellation stops the sequence; if none connect, the last
   error is returned. Numeric IP addresses bypass DNS.

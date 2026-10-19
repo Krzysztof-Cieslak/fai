@@ -2122,6 +2122,9 @@ the initialized prefix and compacting reads below one quarter of its capacity.
 through partial writes. Managed plain-HTTP buffered responses use it after the
 body has completed. Custom Net instances supply the new method, optionally by
 concatenating chunks and forwarding to their existing send operation.
+Unix vectored sends suppress SIGPIPE per operation. A disconnected peer returns
+an ordinary error under default or custom signal handling; the runtime does not
+change the process-wide signal disposition.
 When the scheduler has one worker at reactor initialization, that worker polls
 network readiness and timers while idle. Off-thread scheduling wakes the poll;
 multi-worker execution retains the dedicated reactor thread.
