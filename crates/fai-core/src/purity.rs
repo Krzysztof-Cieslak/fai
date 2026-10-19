@@ -211,6 +211,7 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::BytesLength
         | Prim::BytesFind
         | Prim::BytesFindUtf8
+        | Prim::BytesSpan
         | Prim::BytesConcat
         | Prim::BytesConcatMany
         | Prim::CryptoSha256

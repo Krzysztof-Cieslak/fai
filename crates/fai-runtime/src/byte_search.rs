@@ -19,6 +19,53 @@ fn search(haystack: &[u8], needle: &[u8], start: Value, end: Value) -> Value {
     fai_box_int(find(haystack, needle, first, last))
 }
 
+fn span(bytes: &[u8], start: i64, end: i64, words: [u64; 4]) -> i64 {
+    let start = start.clamp(0, bytes.len() as i64) as usize;
+    let end = end.clamp(0, bytes.len() as i64) as usize;
+    if end < start {
+        return start as i64;
+    }
+    let count = bytes[start..end]
+        .iter()
+        .take_while(|&&byte| words[usize::from(byte >> 6)] & (1 << (byte & 63)) != 0)
+        .count();
+    (start + count) as i64
+}
+
+/// Return the end of a byte-class prefix, consuming all operands. Bounds are
+/// clamped to the buffer; an empty/reversed range returns its clamped start.
+/// Class word `byte / 64`, bit `byte % 64`, determines membership.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_span(bytes: Value, start: Value, end: Value, class: Value) -> Value {
+    let result = fai_bytes_span_borrowed(bytes, start, end, class);
+    fai_drop(bytes);
+    fai_drop(class);
+    result
+}
+
+/// Borrow the byte buffer and four-word class; consume the scalar bounds.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_bytes_span_borrowed(
+    bytes: Value,
+    start: Value,
+    end: Value,
+    class: Value,
+) -> Value {
+    let (first, last) = (unbox_int(start), unbox_int(end));
+    fai_drop(start);
+    fai_drop(end);
+    // SAFETY: class is a typed four-Int tuple and both buffers remain borrowed
+    // through this call. The class words are copied before scanning the bytes.
+    let result = unsafe {
+        let object = crate::as_obj(class);
+        let offset = crate::data_offset(object);
+        let words =
+            std::array::from_fn(|i| unbox_int(crate::read_i64(object, offset + i * 8)) as u64);
+        span(bytes_bytes(bytes), first, last, words)
+    };
+    fai_box_int(result)
+}
+
 /// Find the first complete pattern in a clamped byte range, returning an absolute
 /// byte offset or -1. Both buffers and both scalar bounds are consumed.
 #[unsafe(no_mangle)]
@@ -76,6 +123,135 @@ mod tests {
     use super::*;
     use crate::tests::lock;
     use crate::{live_bytes, live_count, make_bytes, make_int, make_str, read_int};
+
+    #[test]
+    fn byte_class_scan_stops_at_the_first_rejected_byte() {
+        let words = [0, 1 << (b'a' - 64), 0, 0];
+        assert_eq!(span(b"xaaab", 1, 5, words), 4);
+    }
+
+    #[test]
+    fn byte_class_scan_clamps_full_width_bounds() {
+        assert_eq!(span(&[0, 128, 255], i64::MIN, i64::MAX, [u64::MAX; 4]), 3);
+    }
+
+    #[test]
+    fn byte_class_scan_keeps_an_empty_reversed_prefix() {
+        assert_eq!(span(b"abc", 2, 0, [u64::MAX; 4]), 2);
+    }
+
+    #[test]
+    fn byte_class_scan_preserves_borrowed_owners() {
+        let _guard = lock();
+        let base = (live_count(), live_bytes());
+        let bytes = make_bytes(&[0, 128, 255]);
+        let fields = [make_int(-1); 4];
+        // SAFETY: all four immediate values transfer into the tuple.
+        let class = unsafe { crate::fai_make_data(0, 4, fields.as_ptr()) };
+        let result = fai_bytes_span_borrowed(bytes, make_int(i64::MIN), make_int(i64::MAX), class);
+        assert_eq!(read_int(result), 3);
+        fai_drop(result);
+        fai_drop(class);
+        fai_drop(bytes);
+        assert_eq!((live_count(), live_bytes()), base);
+    }
+
+    #[test]
+    fn byte_class_scan_accepts_empty_input() {
+        assert_eq!(span(&[], i64::MIN, i64::MAX, [u64::MAX; 4]), 0);
+    }
+
+    #[test]
+    fn byte_class_scan_rejects_the_first_byte() {
+        assert_eq!(span(b"abc", 0, 3, [0; 4]), 0);
+    }
+
+    #[test]
+    fn byte_class_scan_stops_at_the_exclusive_end() {
+        assert_eq!(span(b"aaa!", 0, 3, [0, 1 << (b'a' - 64), 0, 0]), 3);
+    }
+
+    #[test]
+    fn byte_class_scan_checks_all_word_boundaries() {
+        let boundaries = [0, 63, 64, 127, 128, 191, 192, 255];
+        assert_eq!(span(&boundaries, 0, 8, [0x8000000000000001; 4]), 8);
+    }
+
+    #[test]
+    fn owned_byte_class_scan_releases_boxed_class_words_and_bounds() {
+        let _guard = lock();
+        let base = (live_count(), live_bytes());
+        let fields = [make_int(i64::MIN), make_int(i64::MAX), make_int(0), make_int(0)];
+        // SAFETY: the four owned Int fields transfer into the class tuple.
+        let class = unsafe { crate::fai_make_data(0, 4, fields.as_ptr()) };
+        let result = fai_bytes_span(
+            make_bytes(&[63, 64, 126, 127]),
+            make_int(i64::MIN),
+            make_int(i64::MAX),
+            class,
+        );
+        assert_eq!(read_int(result), 3);
+        fai_drop(result);
+        assert_eq!((live_count(), live_bytes()), base);
+    }
+
+    #[test]
+    fn byte_class_scan_can_share_a_boxed_class_between_threads() {
+        let _guard = lock();
+        let base = (live_count(), live_bytes());
+        let fields = [make_int(i64::MIN), make_int(i64::MAX), make_int(0), make_int(0)];
+        // SAFETY: every owned field is initialized and transferred into the tuple.
+        let class = crate::fai_mark_shared(unsafe { crate::fai_make_data(0, 4, fields.as_ptr()) });
+        let bytes = crate::fai_mark_shared(make_bytes(&[63, 64, 126, 127]));
+        let other_class = crate::fai_dup(class);
+        let other_bytes = crate::fai_dup(bytes);
+        let worker = std::thread::spawn(move || {
+            let result = fai_bytes_span(other_bytes, make_int(1), make_int(4), other_class);
+            assert_eq!(read_int(result), 3);
+            fai_drop(result);
+        });
+        let result = fai_bytes_span(bytes, make_int(0), make_int(2), class);
+        assert_eq!(read_int(result), 2);
+        fai_drop(result);
+        worker.join().unwrap();
+        assert_eq!((live_count(), live_bytes()), base);
+    }
+
+    #[test]
+    fn repeated_byte_class_scans_keep_live_and_backing_storage_bounded() {
+        let _guard = lock();
+        let baseline = (live_count(), live_bytes(), crate::allocation_stats::current());
+        let observe = |rounds| {
+            let result = std::thread::spawn(move || {
+                crate::reset_allocations();
+                for _ in 0..rounds {
+                    let fields =
+                        [make_int(i64::MAX), make_int(i64::MIN), make_int(-1), make_int(-1)];
+                    // SAFETY: the owned Int words transfer into a four-field tuple.
+                    let class = unsafe { crate::fai_make_data(0, 4, fields.as_ptr()) };
+                    let result = fai_bytes_span(
+                        make_bytes(&[42; 8192]),
+                        make_int(i64::MIN),
+                        make_int(i64::MAX),
+                        class,
+                    );
+                    assert_eq!(read_int(result), 8192);
+                    fai_drop(result);
+                }
+                assert_eq!((live_count(), live_bytes()), (baseline.0, baseline.1));
+                (
+                    crate::peak_live_bytes(),
+                    crate::allocation_stats::peak_bytes(),
+                    crate::allocation_stats::current(),
+                )
+            })
+            .join()
+            .unwrap();
+            assert_eq!(crate::allocation_stats::current(), baseline.2);
+            result
+        };
+        assert_eq!(observe(12), observe(1200));
+    }
 
     #[test]
     fn binary_patterns_include_nul_and_high_bytes() {
@@ -248,10 +424,29 @@ mod tests {
 
 #[cfg(test)]
 mod proptests {
-    use super::find;
+    use super::{find, span};
     use proptest::prelude::*;
 
     proptest! {
+        #[test]
+        fn byte_class_scan_agrees_with_set_membership(
+            bytes in proptest::collection::vec(any::<u8>(), 0..256),
+            allowed in proptest::collection::btree_set(any::<u8>(), 0..256),
+            start in -16i64..272, end in -16i64..272,
+        ) {
+            let mut words = [0u64; 4];
+            for &byte in &allowed {
+                words[usize::from(byte / 64)] |= 1 << (byte % 64);
+            }
+            let first = start.clamp(0, bytes.len() as i64) as usize;
+            let last = end.clamp(0, bytes.len() as i64) as usize;
+            let mut expected = first;
+            while expected < last && allowed.contains(&bytes[expected]) {
+                expected += 1;
+            }
+            prop_assert_eq!(span(&bytes, start, end, words), expected as i64);
+        }
+
         #[test]
         fn native_search_agrees_with_window_scan(
             bytes in proptest::collection::vec(any::<u8>(), 0..512),

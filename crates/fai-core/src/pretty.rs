@@ -106,6 +106,7 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::BytesLength => "bytesLength",
         Prim::BytesFind => "bytesFind",
         Prim::BytesFindUtf8 => "bytesFindUtf8",
+        Prim::BytesSpan => "bytesSpan",
         Prim::BytesGet => "bytesGet",
         Prim::BytesConcat => "bytesConcat",
         Prim::BytesConcatMany => "bytesConcatMany",

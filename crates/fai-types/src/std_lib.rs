@@ -150,6 +150,10 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
             [Ty::Con(Con::Bytes), Ty::Con(Con::String), Ty::int(), Ty::int()],
             Ty::int(),
         )),
+        "bytesSpan" => Scheme::mono(Ty::arrows(
+            [Ty::Con(Con::Bytes), Ty::int(), Ty::int(), Ty::Tuple(vec![Ty::int(); 4])],
+            Ty::int(),
+        )),
         "bytesConcat" => Scheme::mono(Ty::arrows(
             [Ty::Con(Con::Bytes), Ty::Con(Con::Bytes)],
             Ty::Con(Con::Bytes),
