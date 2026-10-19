@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Analyze ordinary HTTP response headers once per response, reusing validated
+  classifications for connection policy, framing and rendering while preserving
+  field order, errors and body evaluation.
 - Preserve native Boolean predicates across known branch results, avoiding
   repeated tagging and testing when a Boolean is reused locally.
 - Inline cached allocation lookups while keeping slab refill outside the hot path.

@@ -166,6 +166,171 @@ Bytes.length (renderSizedHead "HTTP/1.1 200 OK\r\n" headers 0) = 24038"#,
 }
 
 #[track_caller]
+fn scoped_response_case(body: &str) {
+    check(
+        &format!(
+            "let transport = {{ Transport with close u = (), recv n = Ok Bytes.empty, send b = Err \"transport touched\" }}\nlet sender = bufferedChunkSender transport\n{body}"
+        ),
+        true,
+    );
+}
+
+#[track_caller]
+fn scoped_response_bytes(expected: &str, body: &str) {
+    check(
+        &format!(
+            "let expected = Bytes.fromString {expected:?}\nlet transport = {{ Transport with close u = (), recv n = Ok Bytes.empty, send b = if b = expected then Ok () else Err \"unexpected wire data\" }}\nlet sender = bufferedChunkSender transport\n{body}"
+        ),
+        true,
+    );
+}
+
+#[test]
+fn scoped_response_preserves_duplicates_and_replaces_close_and_length_in_order() {
+    scoped_response_bytes(
+        "HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nX-Note: café\t世界\r\nSet-Cookie: b=2\r\nConnection: close\r\nContent-Length: 6\r\n\r\né😀",
+        r#"let headers = Headers.fromList [("Content-Length", "002"), ("Set-Cookie", "a=1"), ("Connection", "keep-alive"), ("X-Note", "café\t世界"), ("content-length", "2"), ("connection", "CLOSE"), ("Set-Cookie", "b=2")]
+sendScopedResponse sender false GET transport { status = 200, reason = "OK", headers = headers, body = stringBody "é😀" } = Ok true"#,
+    );
+}
+
+#[test]
+fn scoped_response_rejects_conflicting_lengths_before_body_evaluation() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false GET transport { status = 200, reason = "OK", headers = Headers.fromList [("Content-Length", "2"), ("content-length", "3")], body = Stream.failed "body forced" } = Err "conflicting Content-Length fields""#,
+    );
+}
+
+#[test]
+fn scoped_response_rejects_invalid_fields_before_framing_errors() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false GET transport { status = 200, reason = "OK", headers = Headers.fromList [("Content-Length", "2"), ("Transfer-Encoding", "chunked"), ("X", "bad\nvalue")], body = Stream.failed "body forced" } = Err "invalid outgoing HTTP status line or header""#,
+    );
+}
+
+#[test]
+fn scoped_response_validates_fields_before_rejecting_an_upgrade() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false GET transport { status = 101, reason = "Switching", headers = Headers.fromList [("Bad Name", "value")], body = Stream.failed "body forced" } = Err "invalid outgoing HTTP status line or header""#,
+    );
+}
+
+#[test]
+fn scoped_head_removes_transfer_coding_before_interpreting_framing() {
+    scoped_response_bytes(
+        "HTTP/1.1 200 OK\r\nContent-Length: 0007\r\n\r\n",
+        r#"sendScopedResponse sender false HEAD transport { status = 200, reason = "OK", headers = Headers.fromList [("Transfer-Encoding", "unsupported"), ("Content-Length", "0007")], body = Stream.failed "body forced" } = Ok false"#,
+    );
+}
+
+#[test]
+fn scoped_no_content_removes_invalid_length_without_forcing_the_body() {
+    scoped_response_bytes(
+        "HTTP/1.1 204 No Content\r\nX: kept\r\n\r\n",
+        r#"sendScopedResponse sender false GET transport { status = 204, reason = "No Content", headers = Headers.fromList [("Content-Length", "bad"), ("Transfer-Encoding", "chunked"), ("X", "kept")], body = Stream.failed "body forced" } = Ok false"#,
+    );
+}
+
+#[test]
+fn scoped_not_modified_preserves_authored_length_without_forcing_the_body() {
+    scoped_response_bytes(
+        "HTTP/1.1 304 Not Modified\r\nContent-Length: 0007\r\n\r\n",
+        r#"sendScopedResponse sender false GET transport { status = 304, reason = "Not Modified", headers = Headers.fromList [("Content-Length", "0007")], body = Stream.failed "body forced" } = Ok false"#,
+    );
+}
+
+#[test]
+fn scoped_chunked_send_failure_precedes_body_failure() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false GET transport { status = 200, reason = "OK", headers = Headers.fromList [("Transfer-Encoding", "chunked")], body = Stream.failed "body forced" } = Err "transport touched""#,
+    );
+}
+
+#[test]
+fn scoped_buffered_body_failure_precedes_sending() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false GET transport { status = 200, reason = "OK", headers = Headers.empty, body = Stream.failed "body forced" } = Err "body forced""#,
+    );
+}
+
+#[test]
+fn scoped_successful_connect_is_rejected_before_sending() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false (Custom "CONNECT") transport { status = 200, reason = "OK", headers = Headers.empty, body = Stream.failed "body forced" } = Err "HTTP protocol upgrades and CONNECT tunnels are not supported""#,
+    );
+}
+
+#[test]
+fn scoped_unsuccessful_connect_remains_an_ordinary_response() {
+    scoped_response_bytes(
+        "HTTP/1.1 404 Missing\r\nContent-Length: 1\r\n\r\nx",
+        r#"sendScopedResponse sender false (Custom "CONNECT") transport { status = 404, reason = "Missing", headers = Headers.empty, body = stringBody "x" } = Ok false"#,
+    );
+}
+
+#[test]
+fn scoped_metadata_keeps_repeated_values_in_wire_order() {
+    check(
+        r#"match analyzeScopedFields [("Connection", "keep-alive"), ("Content-Length", "02"), ("CONNECTION", "close"), ("content-length", "2"), ("Transfer-Encoding", "gzip"), ("transfer-encoding", "chunked")] [] [] [] [] with
+| Err _ -> false
+| Ok head -> head.connections = ["keep-alive", "close"] && head.lengths = ["02", "2"] && head.transfers = ["gzip", "chunked"]"#,
+        false,
+    );
+}
+
+#[test]
+fn scoped_large_head_preserves_the_input_alias_and_constant_stack() {
+    check(
+        r#"let headers = Headers.fromList (List.map (fun _ -> ("X", "v")) (List.range 0 5000))
+match analyzeScopedFields (Headers.toList headers) [] [] [] [] with
+| Err _ -> false
+| Ok head -> Bytes.length (renderScopedHead "HTTP/1.1 200 OK\r\n" head.fields false true false (Some 0)) = 30038 && List.length (Headers.toList headers) = 5000"#,
+        false,
+    );
+}
+
+mod proptests {
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+        #[test]
+        fn scoped_classification_matches_header_operations(
+            fields in prop::collection::vec((0u8..4, "[A-Za-z][A-Za-z0-9-]{0,10}", "[A-Za-z0-9 \t]{0,16}", any::<bool>()), 0..16),
+            close in any::<bool>(),
+            mode in 0u8..4,
+        ) {
+            let literal = fields.iter().map(|(kind, name, value, unicode)| {
+                let name = match kind {
+                    1 => "CoNnEcTiOn",
+                    2 => "Content-Length",
+                    3 => "TRANSFER-ENCODING",
+                    _ => name.as_str(),
+                };
+                let value = if *unicode { format!("{value}é世界") } else { value.clone() };
+                format!("({name:?}, {value:?})")
+            }).collect::<Vec<_>>().join(", ");
+            let remove_length = mode == 0 || mode == 3;
+            let remove_transfer = mode >= 2;
+            let length = if mode == 0 { "Some 42" } else { "None" };
+            let render = if mode == 0 {
+                "renderSizedHead start expected 42"
+            } else {
+                "renderHead start expected"
+            };
+            super::check(&format!(r#"let headers = Headers.fromList [{literal}]
+let start = "HTTP/1.1 200 OK\r\n"
+let expected = if {remove_transfer} then Headers.remove "Transfer-Encoding" headers else headers
+let expected = if {remove_length} then Headers.remove "Content-Length" expected else expected
+let expected = if {close} then Headers.set "Connection" "close" expected else expected
+match analyzeScopedFields (Headers.toList headers) [] [] [] [] with
+| Err _ -> false
+| Ok head -> head.connections = Headers.getAll "Connection" headers && head.lengths = Headers.getAll "Content-Length" headers && head.transfers = Headers.getAll "Transfer-Encoding" headers && renderScopedHead start head.fields {close} {remove_length} {remove_transfer} ({length}) = {render}"#), false);
+        }
+    }
+}
+
+#[track_caller]
 fn rejected_part(part: &str) {
     check(
         &format!(
