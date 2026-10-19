@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Scan incoming HTTP field values with a native byte-class span operation,
+  reducing work on long values while preserving validation, whitespace trimming,
+  field order and error precedence.
 - Keep received HTTP headers in immutable text views, with selective lookup and
   bulk enumeration. Parsed and constructed headers retain the same equality,
   ordering, hashing, duplicate order and immutable-update behavior.

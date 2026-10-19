@@ -844,6 +844,8 @@ pub enum Prim {
     TextPairsGetAll,
     /// Inspect whether an ordered text-pair collection is empty.
     TextPairsIsEmpty,
+    /// Scan a prefix belonging to a 256-bit byte class supplied as four Int words.
+    BytesSpan,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -902,6 +904,7 @@ impl Prim {
                 | Prim::BytesGet
                 | Prim::BytesFind
                 | Prim::BytesFindUtf8
+                | Prim::BytesSpan
                 | Prim::BytesIsUtf8
                 | Prim::ArrayLength
                 | Prim::ArrayGet
@@ -923,6 +926,7 @@ impl Prim {
             && match self {
                 Prim::BytesGet | Prim::RegexSlice => index == 0,
                 Prim::BytesFind | Prim::BytesFindUtf8 => index < 2,
+                Prim::BytesSpan => index == 0 || index == 3,
                 // The other borrowed entries lend every operand, including
                 // array-reader indices under their existing native ABI.
                 _ => true,
@@ -948,6 +952,7 @@ impl Prim {
             Prim::BytesGet => Some("fai_bytes_get_borrowed"),
             Prim::BytesFind => Some("fai_bytes_find_borrowed"),
             Prim::BytesFindUtf8 => Some("fai_bytes_find_utf8_borrowed"),
+            Prim::BytesSpan => Some("fai_bytes_span_borrowed"),
             Prim::BytesIsUtf8 => Some("fai_bytes_is_utf8_borrowed"),
             Prim::ArrayLength => Some("fai_array_length_borrowed"),
             Prim::ArrayGet => Some("fai_array_get_borrowed"),
@@ -1057,6 +1062,7 @@ impl Prim {
             Prim::BytesGet => "fai_bytes_get",
             Prim::BytesFind => "fai_bytes_find",
             Prim::BytesFindUtf8 => "fai_bytes_find_utf8",
+            Prim::BytesSpan => "fai_bytes_span",
             Prim::BytesConcat => "fai_bytes_concat",
             Prim::BytesConcatMany => "fai_bytes_concat_many",
             Prim::CryptoSha256 => "fai_crypto_sha256",
@@ -1098,7 +1104,7 @@ impl Prim {
     #[must_use]
     pub fn arity(self) -> usize {
         match self {
-            Prim::BytesFind | Prim::BytesFindUtf8 => 4,
+            Prim::BytesFind | Prim::BytesFindUtf8 | Prim::BytesSpan => 4,
             Prim::IntToString
             | Prim::IntBox
             | Prim::FloatNeg
@@ -1207,6 +1213,7 @@ impl Prim {
             "bytesGet" => Prim::BytesGet,
             "bytesFind" => Prim::BytesFind,
             "bytesFindUtf8" => Prim::BytesFindUtf8,
+            "bytesSpan" => Prim::BytesSpan,
             "bytesConcat" => Prim::BytesConcat,
             "bytesConcatMany" => Prim::BytesConcatMany,
             "cryptoSha256" => Prim::CryptoSha256,

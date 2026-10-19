@@ -23,6 +23,7 @@ module HttpDemo
 // A disconnected client returns a send error even with default Unix SIGPIPE handling.
 // Received headers support selective lookup and bulk `Headers.toList` enumeration;
 // either access retains immutable value semantics across requests and tasks.
+// Field values use bounded native scans; invalid controls still fail before the body.
 // Body collection can grow uniquely owned byte buffers without repeated prefix copies.
 // Either peer can send Connection: close; cancellation also ends idle reads.
 // HEAD, 204, and 304 responses are bodyless; a server skips their body stream.

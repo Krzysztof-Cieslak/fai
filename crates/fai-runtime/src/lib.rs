@@ -3903,6 +3903,7 @@ pub extern "C" fn fai_list_reverse_prefix(count: Value, mut list: Value) -> Valu
 mod byte_search;
 pub use byte_search::{
     fai_bytes_find, fai_bytes_find_borrowed, fai_bytes_find_utf8, fai_bytes_find_utf8_borrowed,
+    fai_bytes_span, fai_bytes_span_borrowed,
 };
 
 /// Allocates a tight `Bytes` object from `bytes` (rc = 1).

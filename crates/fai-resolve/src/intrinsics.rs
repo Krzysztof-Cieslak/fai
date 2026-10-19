@@ -68,6 +68,7 @@ pub const INTRINSICS: &[&str] = &[
     "bytesLength",
     "bytesFind",
     "bytesFindUtf8",
+    "bytesSpan",
     "bytesGet",
     "bytesConcat",
     "bytesConcatMany",

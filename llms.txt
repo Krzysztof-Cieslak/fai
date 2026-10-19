@@ -1154,6 +1154,9 @@ Received headers support cheap selective reads with `Headers.get`/`getAll`;
 `Headers.toList` materializes all fields in their original order. Their storage
 is immutable and owned: retaining headers or passing them to another task is
 safe, and parsed headers compare and hash like the same constructed field list.
+Field-value scanning uses a bounded native byte-class operation; malformed
+controls still fail before framing or body consumption, with unchanged UTF-8
+and whitespace rules.
 
 HTTP servers can own scoped producers with `Http.produced` and managed listeners:
 the producer receives a lifetime-checked chunk writer after headers are sent.
@@ -2032,8 +2035,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    Outgoing heads reject control characters, invalid tokens, and request-target
    whitespace before sending any bytes. HTTP header scans carry byte lengths
    and use fixed ASCII token predicates without temporary membership lists.
-   Request fields are validated and trimmed in one byte scan, preserving UTF-8,
+   Request fields use byte-oriented validation and trimming, preserving UTF-8,
    duplicate order, and first-error precedence.
+   Field values use native byte-class spans while names retain their token scan.
    Buffered sends render computed Content-Length directly, preserving validation
    and field order without a temporary replacement header collection.
    Buffered Content-Length requests use reads of at most 15 KiB,

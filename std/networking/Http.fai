@@ -1792,55 +1792,53 @@ let parseRequestHeadMeta bytes text =
     match parseRequestLine requestLine with
     | Err error -> Err error
     | Ok (method, url, version) ->
+      // HTAB, bytes 32..126 and all non-ASCII bytes. Whole-head UTF-8 validation
+      // precedes this scan; CR/LF and the other controls stop the value span.
+      let valueClass = (0xffffffff00000200, 0x7fffffffffffffff, -1, -1)
       let metadata = { connections = [], expectations = [], lengths = [], transfers = [] }
-      match scanRequestFields bytes length fieldsStart fieldsStart (0 - 1) (0 - 1) (0 - 1) true (Array.withCapacity 16) metadata with
+      match scanRequestFields bytes length fieldsStart fieldsStart true valueClass (Array.withCapacity 16) metadata with
       | Err error -> Err error
       | Ok (ranges, metadata) ->
         match Headers.fromRanges text ranges with
         | Err error -> Err error
         | Ok headers -> Ok (method, url, headers, version, metadata)
 
-// Scan and validate fields without splitting/rejoining each line or building
-// temporary byte buffers for trimming. A negative nameEnd means the colon has
-// not been seen; a negative valueStart means the value is still only OWS.
-scanRequestFields : Bytes -> Int -> Int -> Int -> Int -> Int -> Int -> Bool -> Array Int -> HeadMetadata -> Result (Array Int * HeadMetadata) String
-let scanRequestFields bytes length lineStart index nameEnd valueStart valueEnd validName fields metadata =
+// Scan names byte by byte so a missing colon keeps its original error precedence.
+// A value span stops at the first control byte; only CRLF or end-of-input is a
+// valid stopping point. Trimming retains byte ranges on UTF-8 boundaries.
+scanRequestFields : Bytes -> Int -> Int -> Int -> Bool -> (Int * Int * Int * Int) -> Array Int -> HeadMetadata -> Result (Array Int * HeadMetadata) String
+let scanRequestFields bytes length lineStart index validName valueClass fields metadata =
   let atEnd = index >= length
   let c = if atEnd then 0 else Bytes.unsafeGet index bytes
   let lineEnd = atEnd || (c = 13 && index + 1 < length && Bytes.unsafeGet (index + 1) bytes = 10)
   if lineEnd then
-    if nameEnd < 0 then
-      if index <> lineStart then
-        Err "header field is missing a colon"
-      else if atEnd then
-        finishFields fields metadata
-      else
-        scanRequestFields bytes length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true fields metadata
+    if index <> lineStart then
+      Err "header field is missing a colon"
+    else if atEnd then
+      finishFields fields metadata
     else
-      let first = if valueStart < 0 then nameEnd + 1 else valueStart
-      let last = if valueStart < 0 then first else valueEnd
-      let nextFields =
-        Array.push last (Array.push first (Array.push nameEnd (Array.push lineStart fields)))
-      let nextMetadata = rememberField bytes lineStart nameEnd first last metadata
-      if atEnd then
-        finishFields nextFields nextMetadata
-      else
-        scanRequestFields bytes length (index + 2) (index + 2) (0 - 1) (0 - 1) (0 - 1) true nextFields nextMetadata
-  else if nameEnd < 0 then
-    if c = 58 then
-      if index = lineStart || not validName then
+      scanRequestFields bytes length (index + 2) (index + 2) true valueClass fields metadata
+  else if c = 58 then
+    if index = lineStart || not validName then
+      Err "invalid header field"
+    else
+      let end = Prim.bytesSpan bytes (index + 1) length valueClass
+      let endValid =
+        end >= length || (Bytes.unsafeGet end bytes = 13 && end + 1 < length && Bytes.unsafeGet (end + 1) bytes = 10)
+      if not endValid then
         Err "invalid header field"
       else
-        scanRequestFields bytes length lineStart (index + 1) index (0 - 1) (0 - 1) true fields metadata
-    else
-      scanRequestFields bytes length lineStart (index + 1) nameEnd valueStart valueEnd (validName && isTokenByte c) fields metadata
-  else if c <> 9 && (c < 32 || c = 127) then
-    Err "invalid header field"
+        let first = owsStart bytes (index + 1)
+        let last = owsEnd bytes first end
+        let nextFields =
+          Array.push last (Array.push first (Array.push index (Array.push lineStart fields)))
+        let nextMetadata = rememberField bytes lineStart index first last metadata
+        if end >= length then
+          finishFields nextFields nextMetadata
+        else
+          scanRequestFields bytes length (end + 2) (end + 2) true valueClass nextFields nextMetadata
   else
-    let ows = c = 9 || c = 32
-    let first = if valueStart < 0 && not ows then index else valueStart
-    let last = if ows then valueEnd else index + 1
-    scanRequestFields bytes length lineStart (index + 1) nameEnd first last validName fields metadata
+    scanRequestFields bytes length lineStart (index + 1) (validName && isTokenByte c) valueClass fields metadata
 
 honorExpectations : Transport 'e -> String -> List String -> BodyFraming -> Result Unit String / 'e
 let honorExpectations t version values framing =

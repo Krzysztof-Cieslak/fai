@@ -5365,8 +5365,8 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     code. An unsigned bounds check rejects negative and oversized raw indices;
     uniform scalar arguments are consumed at conversion and results keep the
     ordinary raw-Int/boxed boundary rules.
-  - Request header fields use one byte scan for token/value validation and ASCII
-    whitespace boundaries. Final strings use the existing byte-addressed String
+  - Request header fields use byte-oriented token/value validation and ASCII
+    whitespace trimming. Final strings use the existing byte-addressed String
     slicing primitive after whole-head UTF-8 validation. Accumulated fields are
     reversed once, preserving duplicate order and first-error precedence.
   - HTTP validation retains the exact ASCII token and field-value rules while
@@ -5386,6 +5386,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Selective lookup copies only matching values and bulk enumeration copies
     all ranges directly. The native primitive handles storage and text operations;
     HTTP scanning, validation, metadata interpretation and framing remain in Fai.
+    The field-value loop uses a generic bounded byte-class span. Names keep their
+    token scan, and Fai checks the span's stopping byte for CRLF/end-of-input before
+    trimming optional whitespace and recording offsets. Class preparation remains
+    per request. The primitive borrows its buffer/class and consumes scalar bounds;
+    validation order and public APIs remain unchanged.
   - **Persistent server connections.** HTTP/1.1 servers process requests in wire
     order on one connection task. Fully decoded request chunks do not capture the
     transport; bytes beyond a length-delimited body or chunked trailers are carried

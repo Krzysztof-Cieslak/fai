@@ -317,6 +317,16 @@ mod proptests {
         }
 
         #[test]
+        fn value_spans_match_text_parsing_for_long_unicode_and_control_values(
+            chars in prop::collection::vec(any::<char>(), 0..2048),
+        ) {
+            let value: String = chars.into_iter().collect();
+            let text = format!("GET / HTTP/1.1\r\nX: \t{value}\t \r\nY: later\r\n\r\n");
+            let literal: String = text.chars().flat_map(char::escape_default).collect();
+            check(&format!("let text = \"{literal}\"\nparseRequestHeadBytes (Bytes.fromString text) text = referenceRequestHead text"), false);
+        }
+
+        #[test]
         fn persistent_request_parsing_is_independent_of_fragment_boundaries(split in 0usize..127) {
             let wire = "POST /one HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n0\r\nX-End: yes\r\n\r\nGET /two HTTP/1.1\r\n\r\n";
             let split = 1 + split % (wire.len() - 1);
@@ -375,6 +385,58 @@ fn header_token_scanner_accepts_exactly_http_tchar_bytes() {
 fn header_value_scanner_accepts_exactly_field_value_bytes() {
     check(
         "List.filter (fun c -> validHeaderValue (Bytes.fromList [c]) 0) (List.range 0 256) = 9 :: List.append (List.range 32 127) (List.range 128 256)",
+        false,
+    );
+}
+
+#[test]
+fn native_value_class_matches_field_validation_over_all_bytes() {
+    check(
+        r#"let words = (0xffffffff00000200, 0x7fffffffffffffff, -1, -1)
+List.all (fun c -> (Prim.bytesSpan (Bytes.fromList [c]) 0 1 words = 1) = validHeaderValue (Bytes.fromList [c]) 0) (List.range 0 256)"#,
+        false,
+    );
+}
+
+#[test]
+fn value_span_rejects_a_bare_carriage_return_after_a_long_prefix() {
+    check(
+        r#"let prefix = String.joinArray "" (Array.repeat 4096 "x")
+let text = "GET / HTTP/1.1\r\nX: " ++ prefix ++ "\rY: later\r\n"
+parseRequestHeadBytes (Bytes.fromString text) text = Err "invalid header field""#,
+        false,
+    );
+}
+
+#[test]
+fn value_span_rejects_a_bare_newline_after_a_long_prefix() {
+    check(
+        r#"let prefix = String.joinArray "" (Array.repeat 4096 "x")
+let text = "GET / HTTP/1.1\r\nX: " ++ prefix ++ "\nY: later\r\n"
+parseRequestHeadBytes (Bytes.fromString text) text = Err "invalid header field""#,
+        false,
+    );
+}
+
+#[test]
+fn value_span_preserves_long_unicode_values_and_trims_only_optional_whitespace() {
+    check(
+        r#"let value = String.joinArray "" (Array.repeat 1024 "é😀 ") ++ " "
+let text = "GET / HTTP/1.1\r\nX: \t" ++ value ++ "\t \r\nX: second\r\n"
+match parseRequestHeadBytes (Bytes.fromString text) text with
+| Err _ -> false
+| Ok (_, _, headers, _) -> Headers.getAll "X" headers = [value, "second"]"#,
+        false,
+    );
+}
+
+#[test]
+fn value_span_keeps_an_all_whitespace_value_empty_at_end_of_input() {
+    check(
+        r#"let text = "GET / HTTP/1.1\r\nX: \t  "
+match parseRequestHeadBytes (Bytes.fromString text) text with
+| Err _ -> false
+| Ok (_, _, headers, _) -> Headers.toList headers = [("X", "")]"#,
         false,
     );
 }

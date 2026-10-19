@@ -1955,7 +1955,7 @@ reads. There is no implicit idle timeout; applications own the serving lifetime.
 
 Header validation uses fixed ASCII token predicates and carries immutable byte
 lengths through scans. Outgoing response heads are validated before body framing.
-Request fields are scanned once for validation and whitespace boundaries, then
+Request fields use byte-oriented validation and whitespace trimming, then are
 materialized from the validated UTF-8 head. Duplicate order and first-error
 precedence remain intact; the scan carries byte offsets in a constant-stack loop.
 Bytes concatenation checks the complete output size and appends into uniquely
@@ -2006,6 +2006,12 @@ children through ordinary reference counting; retained headers survive later
 requests and task transfer. `TextPairs` is an internal reserved standard module.
 Contract generation builds its logical String pairs through the storage factory,
 so `forall` over Headers and user generator overrides remain supported.
+Incoming field names retain their bytewise token checks. Field values use a
+bounded native byte-class span, stopping at the first forbidden byte; only CRLF
+or end-of-input completes the field. Whole-head UTF-8 validation, optional
+whitespace trimming, duplicate order and first-error precedence are preserved.
+The generic span primitive borrows its buffer and four-word class, consumes its
+scalar bounds, and contains no HTTP-specific rules or cross-request state.
 
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;
