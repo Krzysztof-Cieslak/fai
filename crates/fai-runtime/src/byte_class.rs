@@ -9,11 +9,13 @@ fn scalar(bytes: &[u8], words: [u64; 4]) -> usize {
 /// without building lookup tables or checking processor features.
 #[inline]
 pub(super) fn prefix(bytes: &[u8], words: [u64; 4]) -> usize {
-    if bytes.len() < 128 {
+    if bytes.len() < 512 {
         return scalar(bytes, words);
     }
-    let first = scalar(&bytes[..32], words);
-    if first != 32 {
+    // A large input can still have a short matching run. Keep that run scalar
+    // before paying for tables, even when many more bytes follow its terminator.
+    let first = scalar(&bytes[..128], words);
+    if first != 128 {
         return first;
     }
     first + long_prefix(&bytes[first..], words)
