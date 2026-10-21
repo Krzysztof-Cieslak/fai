@@ -25,7 +25,9 @@ let main runtime =
 "#;
 
 const GROWTH_MAIN: &str = r#"
-let chunk byte count = Bytes.fromList (List.map (fun _ -> byte) (List.range 0 count))
+let fillChunk n byte bytes =
+  if n <= 0 then bytes else fillChunk (n - 1) byte (Bytes.concat bytes byte)
+let chunk byte count = fillChunk count (Bytes.fromList [byte]) Bytes.empty
 public main : Runtime -> Unit / { Concurrency, Console }
 let main runtime =
   let first = chunk 0 4096
