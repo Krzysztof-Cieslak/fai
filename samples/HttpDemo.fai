@@ -24,6 +24,8 @@ module HttpDemo
 // Received headers support selective lookup and bulk `Headers.toList` enumeration;
 // either access retains immutable value semantics across requests and tasks.
 // Field values use bounded native scans; invalid controls still fail before the body.
+// Long valid spans use vector scans where supported; short values stay scalar.
+// Empty protocol metadata takes direct defaults after head validation.
 // Body collection can grow uniquely owned byte buffers without repeated prefix copies.
 // Spare Bytes capacity stays below the mapping boundary while the data fits there.
 // Text responses construct their Content-Type field directly.

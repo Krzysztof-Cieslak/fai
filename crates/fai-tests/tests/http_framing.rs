@@ -75,6 +75,33 @@ fn head_ignores_content_length_metadata() {
 }
 
 #[test]
+fn absent_framing_fields_preserve_the_selected_default() {
+    check(
+        "framingFrom [] [] NoBody = Ok NoBody && framingFrom [] [] UntilEof = Ok UntilEof && framingFrom [] [] (SizedBody 9223372036854775807) = Ok (SizedBody 9223372036854775807)",
+        false,
+    );
+}
+
+#[test]
+fn absent_expectations_never_touch_the_transport() {
+    check(
+        r#"let transport = { Transport with close _ = (), recv _ = Err "unexpected read", send _ = Err "unexpected write" }
+honorExpectations transport "HTTP/1.0" [] (SizedBody 42) = Ok ()"#,
+        false,
+    );
+}
+
+#[test]
+fn an_empty_expectation_field_is_still_rejected() {
+    check(
+        r#"let expected = Bytes.fromString "HTTP/1.1 417 Expectation Failed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+let transport = { Transport with close _ = (), recv _ = Err "unexpected read", send bytes = if bytes = expected then Ok () else Err "unexpected response" }
+honorExpectations transport "HTTP/1.1" [""] NoBody = Err "unsupported HTTP expectation""#,
+        false,
+    );
+}
+
+#[test]
 fn header_search_preserves_single_byte_fragments() {
     check(
         r#"let wire = Bytes.fromString ("GET / HTTP/1.1\r\nX-Long: " ++ String.join "" (List.map (fun _ -> "x") (List.range 0 1000)) ++ "\r\n\r\n")

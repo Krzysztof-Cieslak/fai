@@ -2018,6 +2018,12 @@ or end-of-input completes the field. Whole-head UTF-8 validation, optional
 whitespace trimming, duplicate order and first-error precedence are preserved.
 The generic span primitive borrows its buffer and four-word class, consumes its
 scalar bounds, and contains no HTTP-specific rules or cross-request state.
+Long valid byte-class prefixes use bounded 16-byte vector loads on supported
+x86-64 and ARM64 processors. Two small lookup tables are built within each call;
+short prefixes and unsupported targets retain scalar scans. The first rejected
+byte and exclusive end remain exact. HTTP metadata helpers directly handle
+empty field lists after head validation, avoiding empty transformations while
+preserving nonempty field order, errors and framing defaults.
 
 **HTTP framing invariant:** lengths are bounded nonnegative decimal values, and
 repeated/comma-joined lengths must agree. Transfer codings are parsed as tokens;

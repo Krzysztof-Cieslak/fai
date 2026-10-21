@@ -25,10 +25,7 @@ fn span(bytes: &[u8], start: i64, end: i64, words: [u64; 4]) -> i64 {
     if end < start {
         return start as i64;
     }
-    let count = bytes[start..end]
-        .iter()
-        .take_while(|&&byte| words[usize::from(byte >> 6)] & (1 << (byte & 63)) != 0)
-        .count();
+    let count = crate::byte_class::prefix(&bytes[start..end], words);
     (start + count) as i64
 }
 
