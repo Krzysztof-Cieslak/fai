@@ -701,6 +701,8 @@ let framingFrom transfers lengths fallback =
       Ok Chunked
     else
       Err "unsupported or ambiguous Transfer-Encoding"
+  else if List.isEmpty lengths then
+    Ok fallback
   else
     match contentLength (headerParts lengths) None with
     | Err e -> Err e
@@ -1402,7 +1404,7 @@ let hasConnectionClose headers = hasConnectionCloseValues (Headers.getAll "Conne
 
 hasConnectionCloseValues : List String -> Bool
 let hasConnectionCloseValues values =
-  List.member "close" (List.map String.toLower (headerParts values))
+  not (List.isEmpty values) && List.member "close" (List.map String.toLower (headerParts values))
 
 // A keep-alive response (a definite length and no `Connection: close`) leaves the
 // connection reusable; an until-EOF or explicitly-closed one does not.
@@ -1769,6 +1771,7 @@ let rememberField bytes start finish valueStart valueEnd metadata =
 finishFields : Array Int -> HeadMetadata -> Result (Array Int * HeadMetadata) String
 let finishFields fields metadata =
   match metadata with
+  | { connections = [], expectations = [], lengths = [], transfers = [] } -> Ok (fields, metadata)
   | { connections, expectations, lengths, transfers } ->
     Ok (fields, {
       connections = List.reverse connections,
@@ -1842,18 +1845,21 @@ let scanRequestFields bytes length lineStart index validName valueClass fields m
 
 honorExpectations : Transport 'e -> String -> List String -> BodyFraming -> Result Unit String / 'e
 let honorExpectations t version values framing =
-  let expectations = List.map String.toLower (headerParts values)
-  if List.isEmpty expectations then
+  if List.isEmpty values then
     Ok ()
-  else if version = "HTTP/1.1" && expectations = ["100-continue"] then
-    match framing with
-    | NoBody -> Ok ()
-    | SizedBody 0 -> Ok ()
-    | _ -> t.send (Bytes.fromString "HTTP/1.1 100 Continue\r\n\r\n")
   else
-    match t.send (Bytes.fromString "HTTP/1.1 417 Expectation Failed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n") with
-    | Err e -> Err e
-    | Ok sent -> Err "unsupported HTTP expectation"
+    let expectations = List.map String.toLower (headerParts values)
+    if List.isEmpty expectations then
+      Ok ()
+    else if version = "HTTP/1.1" && expectations = ["100-continue"] then
+      match framing with
+      | NoBody -> Ok ()
+      | SizedBody 0 -> Ok ()
+      | _ -> t.send (Bytes.fromString "HTTP/1.1 100 Continue\r\n\r\n")
+    else
+      match t.send (Bytes.fromString "HTTP/1.1 417 Expectation Failed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n") with
+      | Err e -> Err e
+      | Ok sent -> Err "unsupported HTTP expectation"
 
 // Fully read the request into independent chunks, retaining any next-request
 // bytes. The public body never holds the reusable connection or reads from it.

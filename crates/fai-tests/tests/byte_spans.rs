@@ -22,7 +22,13 @@ let main runtime =
     (fun _ -> Callback.call (Bytes.testSpan bytes 1) 4 words)
   let complete = Bytes.testSpan bytes (-9223372036854775807 - 1) 9223372036854775807 (-1, -1, -1, -1)
   let uniform = Uniform.scan { enabled = true, extra = 42 } bytes (-9223372036854775807 - 1) 9223372036854775807 (-1, -1, -1, -1)
-  runtime.console.writeLine (if first = 3 && second = 3 && complete = 4 && uniform && Bytes.toList bytes = [63, 64, 126, 127] && words = (-9223372036854775807 - 1, 9223372036854775807, 0, 0) then "ok" else "bad")
+  let long = Bytes.concat (Bytes.fromString (String.joinArray "" (Array.repeat 256 "abc"))) (Bytes.fromList [0, 255])
+  let letters = (0, -1, 0, 0)
+  let (longPrefix, clipped) = Async.parallel2 runtime.concurrency
+    (fun _ -> Bytes.testSpan long (-9223372036854775807 - 1) 9223372036854775807 letters)
+    (fun _ -> Callback.call (Bytes.testSpan long 5) 700 letters)
+  let longOk = longPrefix = 768 && clipped = 700 && Bytes.length long = 770 && Bytes.unsafeGet 769 long = 255
+  runtime.console.writeLine (if first = 3 && second = 3 && complete = 4 && uniform && longOk && Bytes.toList bytes = [63, 64, 126, 127] && words = (-9223372036854775807 - 1, 9223372036854775807, 0, 0) then "ok" else "bad")
 "#;
 
 fn source() -> (FaiDatabase, SourceFile) {

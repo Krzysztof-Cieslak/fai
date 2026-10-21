@@ -5398,6 +5398,11 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     trimming optional whitespace and recording offsets. Class preparation remains
     per request. The primitive borrows its buffer/class and consumes scalar bounds;
     validation order and public APIs remain unchanged.
+    Long valid prefixes use per-call nibble lookup tables and bounded 16-byte
+    vector loads on supported x86-64/ARM64 processors. Short prefixes and other
+    targets keep scalar scanning; byte classes remain arbitrary and no request
+    data is cached. Empty protocol-metadata lists are handled directly after
+    head validation, retaining framing defaults and all nonempty error ordering.
   - **Persistent server connections.** HTTP/1.1 servers process requests in wire
     order on one connection task. Fully decoded request chunks do not capture the
     transport; bytes beyond a length-delimited body or chunked trailers are carried

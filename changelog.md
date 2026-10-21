@@ -7,6 +7,11 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Accelerate long byte-class scans with per-call vector lookup tables on
+  supported x86-64 and ARM64 processors, retaining scalar short-input and
+  fallback paths, exact bounds, and arbitrary byte classes.
+- Skip empty HTTP protocol-metadata transformations after head validation,
+  preserving framing defaults, expectation handling, and error order.
 - Keep spare `Bytes.concat` capacity below the 16 KiB independent-mapping
   boundary when the required data fits below it, then resume normal doubling
   sizes. Large buffers retain prompt final-drop release.

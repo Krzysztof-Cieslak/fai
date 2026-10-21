@@ -2041,6 +2041,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    Request fields use byte-oriented validation and trimming, preserving UTF-8,
    duplicate order, and first-error precedence.
    Field values use native byte-class spans while names retain their token scan.
+   Long valid spans use bounded vector scans where supported; short inputs stay
+   scalar, with identical rejection positions and per-call preparation. Empty
+   protocol metadata takes direct default paths only after head validation.
    Buffered sends render computed Content-Length directly, preserving validation
    and field order without a temporary replacement header collection.
    Buffered Content-Length requests use reads of at most 15 KiB,
