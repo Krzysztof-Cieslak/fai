@@ -25,6 +25,8 @@ module HttpDemo
 // either access retains immutable value semantics across requests and tasks.
 // Field values use bounded native scans; invalid controls still fail before the body.
 // Body collection can grow uniquely owned byte buffers without repeated prefix copies.
+// Spare Bytes capacity stays below the mapping boundary while the data fits there.
+// Text responses construct their Content-Type field directly.
 // Either peer can send Connection: close; cancellation also ends idle reads.
 // HEAD, 204, and 304 responses are bodyless; a server skips their body stream.
 // Informational responses are skipped before the client's final response.

@@ -1962,6 +1962,12 @@ Bytes concatenation checks the complete output size and appends into uniquely
 owned left buffers, growing geometrically when full. Shared buffers copy into
 a fresh result, and empty operands return the other value. Binary contents and
 immutable aliases are preserved, including during large HTTP body collection.
+When the required complete Bytes allocation fits below 16 KiB, spare growth
+capacity stops at the last aligned size below that mapping boundary. Subsequent
+growth resumes the normal doubling sizes. This avoids mapping spare capacity
+early while preserving prompt release of genuinely large buffers.
+`Http.textResponse` constructs its single Content-Type field directly, preserving
+header spelling, body evaluation and status/reason behavior.
 `Bytes.concatMany` collects a list of binary chunks into one checked allocation,
 or transfers a sole nonempty chunk. HTTP buffering uses it after the body stream
 has completed, preserving errors and chunk order without repeated growth copies.

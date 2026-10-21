@@ -3986,7 +3986,8 @@ pub extern "C" fn fai_bytes_get_borrowed(b: Value, i: Value) -> Value {
 }
 
 /// `Bytes.concat`: `a` followed by `b` (both consumed). Unique left buffers append
-/// in place, doubling capacity on growth; shared buffers retain value semantics.
+/// in place, growing geometrically with a stop below the mapping boundary when
+/// the live data fits there. Shared buffers retain value semantics.
 #[unsafe(no_mangle)]
 pub extern "C" fn fai_bytes_concat(a: Value, b: Value) -> Value {
     // SAFETY: Bytes are inline buffers. A unique left operand cannot alias the
@@ -4020,9 +4021,27 @@ pub extern "C" fn fai_bytes_concat(a: Value, b: Value) -> Value {
             return a;
         }
         let size = if unique {
-            let grown = grow_cap(capacity, length, MAX_ALLOCATION_SIZE - STRING_BYTES_OFFSET);
-            checked_buffer_size(STRING_BYTES_OFFSET, grown, 1)
-                .unwrap_or_else(|| fai_allocation_size_panic())
+            let small_size = large_pages::THRESHOLD - ALIGN;
+            let small_capacity = small_size - STRING_BYTES_OFFSET;
+            // Treat the boundary stop as the normal doubling rung it replaced.
+            // Otherwise its truncated capacity propagates and can force an extra
+            // doubling for a later power-of-two payload.
+            let (base, needed) = if capacity == small_capacity {
+                (large_pages::THRESHOLD, length.max(large_pages::THRESHOLD + 1))
+            } else {
+                (capacity, length)
+            };
+            let grown = grow_cap(base, needed, MAX_ALLOCATION_SIZE - STRING_BYTES_OFFSET);
+            let grown_size = checked_buffer_size(STRING_BYTES_OFFSET, grown, 1)
+                .unwrap_or_else(|| fai_allocation_size_panic());
+            if tight_size < large_pages::THRESHOLD && grown_size >= large_pages::THRESHOLD {
+                // Both layouts are aligned, so the last small size still fits
+                // the complete initialized payload without crossing the boundary.
+                debug_assert!(tight_size <= small_size);
+                small_size
+            } else {
+                grown_size
+            }
         } else {
             tight_size
         };

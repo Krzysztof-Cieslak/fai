@@ -1668,7 +1668,7 @@ example: (response 204 emptyBody).status = 204
 public textResponse : Int -> String -> Response 'e
 let textResponse status text = {
   body = stringBody text,
-  headers = Headers.set "Content-Type" "text/plain; charset=utf-8" Headers.empty,
+  headers = Headers.fromList [("Content-Type", "text/plain; charset=utf-8")],
   reason = reasonFor status,
   status = status
 }
