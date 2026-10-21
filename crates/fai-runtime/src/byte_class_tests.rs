@@ -18,46 +18,46 @@ fn empty_input_has_an_empty_prefix() {
 
 #[test]
 fn rejection_at_the_scalar_prefix_end_stops_before_vector_setup() {
-    rejected_at(160, 31);
+    rejected_at(640, 127);
 }
 
 #[test]
 fn rejection_at_the_first_vector_byte_is_exact() {
-    rejected_at(160, 32);
+    rejected_at(640, 128);
 }
 
 #[test]
 fn rejection_at_the_last_vector_lane_is_exact() {
-    rejected_at(128, 127);
+    rejected_at(512, 511);
 }
 
 #[test]
 fn rejection_in_the_scalar_tail_is_exact() {
-    rejected_at(129, 128);
+    rejected_at(513, 512);
 }
 
 #[test]
 fn a_valid_vector_prefix_and_scalar_tail_reach_the_end() {
-    assert_eq!(prefix(&[b'a'; 265], LETTER_A), 265);
+    assert_eq!(prefix(&[b'a'; 777], LETTER_A), 777);
 }
 
 #[test]
 fn unaligned_slices_keep_relative_positions() {
-    let mut bytes = [b'a'; 200];
-    bytes[151] = b'b';
-    assert_eq!(prefix(&bytes[5..190], LETTER_A), 146);
+    let mut bytes = [b'a'; 800];
+    bytes[700] = b'b';
+    assert_eq!(prefix(&bytes[5..790], LETTER_A), 695);
 }
 
 #[test]
 fn an_empty_class_rejects_a_long_input_immediately() {
-    assert_eq!(prefix(&[0; 256], [0; 4]), 0);
+    assert_eq!(prefix(&[0; 640], [0; 4]), 0);
 }
 
 #[test]
 fn all_members_of_a_mixed_class_use_the_correct_word_and_bit() {
     let words = [0x8102040810204081, 0x0182442818244281, 0xdeadbeef01234567, 0x09876543fedcba10];
     let observed: [bool; 256] =
-        std::array::from_fn(|byte| prefix(&[byte as u8; 160], words) == 160);
+        std::array::from_fn(|byte| prefix(&[byte as u8; 640], words) == 640);
     let expected = std::array::from_fn(|byte| words[byte / 64] & (1 << (byte % 64)) != 0);
     assert_eq!(observed, expected);
 }
@@ -114,22 +114,22 @@ mod guarded {
 
     #[test]
     fn short_scan_ends_before_an_inaccessible_page() {
-        check(127);
+        check(511);
     }
 
     #[test]
     fn exact_vector_end_does_not_load_the_next_page() {
-        check(128);
+        check(512);
     }
 
     #[test]
     fn single_byte_tail_does_not_load_the_next_page() {
-        check(129);
+        check(513);
     }
 
     #[test]
     fn unaligned_vector_scan_ends_before_an_inaccessible_page() {
-        check(257);
+        check(777);
     }
 }
 
@@ -141,7 +141,7 @@ mod proptests {
         #[test]
         fn long_class_prefixes_match_ordered_set_membership(
             allowed in prop::collection::btree_set(any::<u8>(), 1..=256),
-            indices in prop::collection::vec(any::<u8>(), 128..1024),
+            indices in prop::collection::vec(any::<u8>(), 512..2048),
             tail in prop::collection::vec(any::<u8>(), 0..64),
             alignment in 0usize..16,
         ) {
