@@ -7,6 +7,11 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Keep spare `Bytes.concat` capacity below the 16 KiB independent-mapping
+  boundary when the required data fits below it, then resume normal doubling
+  sizes. Large buffers retain prompt final-drop release.
+- Construct text-response headers directly, avoiding an intermediate empty
+  header collection and replacement work.
 - Scan incoming HTTP field values with a native byte-class span operation,
   reducing work on long values while preserving validation, whitespace trimming,
   field order and error precedence.

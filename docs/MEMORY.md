@@ -5322,6 +5322,13 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Allocating paths check the complete output size and copy both inputs directly
     into the final buffer, without an intermediate native vector.
     Aliases and binary content retain their existing semantics.
+    Spare Bytes growth stops below the independent-mapping boundary when the
+    required complete allocation still fits there. After that boundary stop,
+    growth resumes normal doubling sizes rather than propagating the truncated
+    capacity. Actual large allocations retain their final-drop unmapping.
+  - Text HTTP responses construct their Content-Type field directly rather than
+    creating an empty collection and replacing that field. Their body, status,
+    reason and public header behavior are unchanged.
   - String/Bytes conversion transfers unique inline storage and copies shared
     values or substring views. Byte-to-text validation remains explicit, and a
     transferred String receives the ASCII descriptor only when its bytes qualify.

@@ -24,6 +24,24 @@ let main runtime =
   runtime.console.writeLine (Int.toString (left + right + Bytes.length bytes))
 "#;
 
+const GROWTH_MAIN: &str = r#"
+let chunk byte count = Bytes.fromList (List.map (fun _ -> byte) (List.range 0 count))
+public main : Runtime -> Unit / { Concurrency, Console }
+let main runtime =
+  let first = chunk 0 4096
+  let second = chunk 255 4096
+  let joined = Callbacks.call (Bytes.concat first) second
+  let aliases = Bytes.length first = 4096 && Bytes.unsafeGet 0 first = 0 && Bytes.unsafeGet 4095 second = 255
+  let grown = Bytes.concat joined (chunk 128 127)
+  let length = Bytes.length grown
+  let boundary = Bytes.unsafeGet 8192 grown
+  let mapped = Bytes.concat grown (chunk 42 (32768 - length))
+  let (count, last) = Async.parallel2 runtime.concurrency
+    (fun _ -> Bytes.length mapped)
+    (fun _ -> Bytes.unsafeGet 32767 mapped)
+  runtime.console.writeLine (if aliases && length = 8319 && boundary = 128 && count = 32768 && last = 42 then "ok" else "bad")
+"#;
+
 fn source(text: &str) -> (FaiDatabase, SourceFile) {
     let mut db = FaiDatabase::new();
     fai_types::std_lib::load_std(&mut db);
@@ -253,6 +271,23 @@ fn native_shared_readers_match_jit_results() {
     let result = std::process::Command::new(build.artifact.unwrap()).output().unwrap();
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     assert_eq!(result.stdout, b"1024\n");
+}
+
+#[test]
+fn growth_across_the_mapping_boundary_preserves_aliases_and_task_reads() {
+    output(&format!("{READERS}{GROWTH_MAIN}"), "ok");
+}
+
+#[test]
+fn native_growth_across_the_mapping_boundary_preserves_values() {
+    let (db, file) = source(&format!("{READERS}{GROWTH_MAIN}"));
+    let directory = tempfile::tempdir().unwrap();
+    let path = camino::Utf8PathBuf::from_path_buf(directory.path().join("byte-growth")).unwrap();
+    let built = fai_driver::build_native(&db, file, &path);
+    assert!(built.ok, "{:?}", built.diagnostics);
+    let result = std::process::Command::new(built.artifact.unwrap()).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(result.stdout, b"ok\n");
 }
 
 #[test]

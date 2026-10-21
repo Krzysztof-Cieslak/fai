@@ -1729,6 +1729,9 @@ unchanged.
 Concatenation checks the complete allocation size. It appends into a uniquely
 owned left buffer, growing geometrically when full, and copies shared buffers.
 An empty operand returns the other value. Inputs remain immutable values.
+Spare growth capacity stays below the 16 KiB independent-mapping boundary while
+the required complete allocation fits there; later growth resumes normal
+doubling sizes. Genuinely large buffers still release their mappings on final drop.
 Empty buffers share immortal storage. Appending and converting preserve aliases.
 `concatMany` collects ordered chunks into one checked final allocation; a sole
 nonempty chunk can transfer directly without a copy.
@@ -2059,7 +2062,8 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    so a big download streams; consume it with `bodyBytes`/`bodyText` or the `Stream`
    combinators, and drop the response to close the connection. Build a request/sent
    body with `emptyBody`/`bytesBody`/`stringBody` (sent with Content-Length);
-   responses via `response`/`textResponse`/`errorResponse`.
+   responses via `response`/`textResponse`/`errorResponse`. `textResponse`
+   constructs its Content-Type field directly, with ordinary immutable header values.
    HEAD, 204, and 304 responses have empty bodies; the server does not evaluate a
    suppressed body stream. Clients skip informational 1xx responses before the
    final response and reject unsupported upgrades/tunnels. To **stream** a body
