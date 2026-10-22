@@ -51,6 +51,15 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- HTTP serving buffers small complete responses once pipelining is observed.
+  A scoped writer may drain them while a later handler is blocked; handler order
+  remains sequential, but socket write failures can be observed after later
+  handlers have run. Queued and in-flight messages share a finite admission bound.
+  Reads, informational replies, streaming producers, large responses and normal
+  completion flush preceding output. Cancellation may abandon pending bytes and
+  joins the writer. Response validation and rendering still happen per response;
+  no response-head cache is introduced.
+
 - Direct calls may return monomorphic, resource-free `Result` values as a tag
   and uniform payload components. This extends aggregate scalar replacement
   across call boundaries without depending on callee bodies. Small tuple payloads

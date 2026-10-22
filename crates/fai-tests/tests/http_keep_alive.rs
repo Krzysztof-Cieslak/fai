@@ -317,6 +317,83 @@ fn pipelined_requests_preserve_order_and_buffered_bytes() {
 }
 
 #[test]
+fn long_pipeline_repeatedly_releases_bounded_output_capacity() {
+    server(HANDLER, false, |socket| {
+        let requests = b"GET /one HTTP/1.1\r\nHost: localhost\r\n\r\n".repeat(40);
+        for _ in 0..100 {
+            send(socket, &requests);
+            for _ in 0..40 {
+                assert_eq!(response(socket, false).body, b"/one:");
+            }
+        }
+    });
+}
+
+fn buffered_response_before_blocked_handler(aot: bool) {
+    let gate = TcpListener::bind("127.0.0.1:0").unwrap();
+    gate.set_nonblocking(true).unwrap();
+    let port = gate.local_addr().unwrap().port();
+    let handler = format!(
+        r#"
+handle : Runtime -> Http.Request {{}} -> Result (Http.Response {{ Net }}) String / {{ Net }}
+let handle r request =
+  let path = Url.path request.url
+  let waited =
+    if path = "/blocked" then
+      match r.net.connect "127.0.0.1" {port} with
+      | Err error -> Err error
+      | Ok connection ->
+        let received = r.net.recv connection 1
+        let closed = r.net.close connection
+        Result.map (fun _ -> ()) received
+    else
+      Ok ()
+  Result.map (fun _ -> Http.textResponse 200 path) waited
+"#
+    );
+    server_config(&handler, "  let app = handle r", false, None, aot, move |socket| {
+        send(socket, b"GET /first HTTP/1.1\r\nHost: localhost\r\n\r\nGET /blocked HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        // The peer cannot release the second handler until the first reply arrives.
+        assert_eq!(response(socket, false).body, b"/first");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut connection = loop {
+            match gate.accept() {
+                Ok((connection, _)) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "second handler did not reach its gate");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("handler gate: {error}"),
+            }
+        };
+        connection.set_nonblocking(false).unwrap();
+        connection.write_all(b"x").unwrap();
+        assert_eq!(response(socket, false).body, b"/blocked");
+    });
+}
+
+#[test]
+fn pending_response_drains_while_a_later_handler_blocks() {
+    buffered_response_before_blocked_handler(false);
+}
+
+#[test]
+fn native_pending_response_drains_while_a_later_handler_blocks() {
+    buffered_response_before_blocked_handler(true);
+}
+
+#[test]
+fn pending_response_precedes_continue_for_the_next_request() {
+    server(HANDLER, false, |socket| {
+        send(socket, b"GET /one HTTP/1.1\r\nHost: localhost\r\n\r\nPOST /two HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\nExpect: 100-continue\r\n\r\n");
+        assert_eq!(response(socket, false).body, b"/one:");
+        assert_eq!(response(socket, true).status, 100);
+        send(socket, b"abc");
+        assert_eq!(response(socket, false).body, b"/two:abc");
+    });
+}
+
+#[test]
 fn content_length_body_retains_the_following_request() {
     server(HANDLER, false, |socket| {
         send(socket, b"POST /one HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nabcGET /two HTTP/1.1\r\nHost: localhost\r\n\r\n");

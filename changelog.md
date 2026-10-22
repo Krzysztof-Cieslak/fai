@@ -7,6 +7,11 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Buffer small pipelined HTTP server responses in a bounded per-connection writer.
+  Handlers remain sequential, but later handlers may run before an earlier socket
+  write completes or fails. Applications must not use handler invocation as proof
+  that the previous response was delivered. Streaming, informational replies and
+  large responses flush earlier output first; cancellation joins the writer.
 - Transfer uniquely owned incoming HTTP heads into retained header text after
   byte parsing, avoiding a whole-head copy. UTF-8 validation and error order
   are preserved; retained headers may keep normal buffer growth capacity.

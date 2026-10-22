@@ -1,5 +1,7 @@
 module HttpDemo
 
+// Small pipelined server replies may be buffered. Sequential handler invocation
+// preserves response order but does not acknowledge delivery to the peer.
 // Fragmented header reads retain their search position across receives.
 // Request-body reads use bounded 15 KiB batches; response bodies remain lazy streams.
 // get/getWith follow 307/308 with their known-empty body. General request streams
