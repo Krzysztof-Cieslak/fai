@@ -2044,6 +2044,8 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    Long valid spans use bounded vector scans where supported; short inputs stay
    scalar, with identical rejection positions and per-call preparation. Empty
    protocol metadata takes direct default paths only after head validation.
+   Internally assembled response status lines validate the supplied reason
+   directly; invalid controls still fail before the body is evaluated.
    Buffered sends render computed Content-Length directly, preserving validation
    and field order without a temporary replacement header collection.
    Buffered Content-Length requests use reads of at most 15 KiB,

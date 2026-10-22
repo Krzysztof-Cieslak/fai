@@ -195,6 +195,58 @@ sendScopedResponse sender false GET transport { status = 200, reason = "OK", hea
 }
 
 #[test]
+fn scoped_response_accepts_an_empty_reason() {
+    scoped_response_bytes(
+        "HTTP/1.1 200 \r\nContent-Length: 0\r\n\r\n",
+        r#"sendScopedResponse sender false GET transport { status = 200, reason = "", headers = Headers.empty, body = emptyBody } = Ok false"#,
+    );
+}
+
+#[test]
+fn scoped_response_preserves_unicode_and_tabbed_reasons() {
+    scoped_response_bytes(
+        "HTTP/1.1 200 café\t世界\r\nContent-Length: 1\r\n\r\nx",
+        r#"sendScopedResponse sender false GET transport { status = 200, reason = "café\t世界", headers = Headers.empty, body = stringBody "x" } = Ok false"#,
+    );
+}
+
+#[test]
+fn scoped_response_rejects_reason_injection_before_its_body() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false GET transport { status = 200, reason = "OK\r\nInjected: yes", headers = Headers.empty, body = Stream.failed "body forced" } = Err "invalid outgoing HTTP status line or header""#,
+    );
+}
+
+#[test]
+fn scoped_response_rejects_reason_controls_before_its_body() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false GET transport { status = 200, reason = "OK\u{7f}", headers = Headers.empty, body = Stream.failed "body forced" } = Err "invalid outgoing HTTP status line or header""#,
+    );
+}
+
+#[test]
+fn scoped_response_accepts_the_largest_three_digit_status() {
+    scoped_response_bytes(
+        "HTTP/1.1 999 Custom\r\nContent-Length: 0\r\n\r\n",
+        r#"sendScopedResponse sender false GET transport { status = 999, reason = "Custom", headers = Headers.empty, body = emptyBody } = Ok false"#,
+    );
+}
+
+#[test]
+fn scoped_response_rejects_a_status_below_three_digits() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false GET transport { status = 99, reason = "Custom", headers = Headers.empty, body = Stream.failed "body forced" } = Err "invalid outgoing HTTP status line or header""#,
+    );
+}
+
+#[test]
+fn scoped_response_rejects_a_full_width_status_before_its_body() {
+    scoped_response_case(
+        r#"sendScopedResponse sender false GET transport { status = 9223372036854775807, reason = "Custom", headers = Headers.empty, body = Stream.failed "body forced" } = Err "invalid outgoing HTTP status line or header""#,
+    );
+}
+
+#[test]
 fn scoped_response_rejects_conflicting_lengths_before_body_evaluation() {
     scoped_response_case(
         r#"sendScopedResponse sender false GET transport { status = 200, reason = "OK", headers = Headers.fromList [("Content-Length", "2"), ("content-length", "3")], body = Stream.failed "body forced" } = Err "conflicting Content-Length fields""#,

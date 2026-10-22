@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Validate the variable reason in internally assembled HTTP response status
+  lines directly, avoiding temporary slices while preserving wire bytes and
+  validation before body evaluation.
 - Accelerate long byte-class scans with per-call vector lookup tables on
   supported x86-64 and ARM64 processors, retaining scalar short-input and
   fallback paths, exact bounds, and arbitrary byte classes.
