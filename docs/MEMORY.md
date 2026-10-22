@@ -5329,6 +5329,9 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
   - Text HTTP responses construct their Content-Type field directly rather than
     creating an empty collection and replacing that field. Their body, status,
     reason and public header behavior are unchanged.
+    Internally assembled status lines validate their bounded status and variable
+    reason directly, retaining the same wire bytes and error ordering without
+    slicing and validating the fixed protocol text again.
   - String/Bytes conversion transfers unique inline storage and copies shared
     values or substring views. Byte-to-text validation remains explicit, and a
     transferred String receives the ASCII descriptor only when its bytes qualify.

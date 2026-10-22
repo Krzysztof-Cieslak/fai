@@ -2002,6 +2002,9 @@ Ordinary server response heads are also validated and classified once per send.
 That response-local analysis drives connection policy, framing and rendering,
 preserving duplicate order and HEAD/bodyless handling. It is released with the
 send and is never cached across requests.
+Internally assembled status lines validate the bounded numeric status and their
+variable reason directly. Fixed protocol text and the generated final CRLF need
+no temporary slices; invalid reasons still fail before body evaluation.
 Received headers retain one validated UTF-8 head and an ordered array of field
 ranges. Selective lookup materializes matching values; bulk enumeration copies
 all fields directly. The standard-library-private `TextPairs` storage primitive

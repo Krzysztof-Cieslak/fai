@@ -2023,11 +2023,6 @@ let analyzeScopedFields input fields connections lengths transfers =
       else
         analyzeScopedFields rest (OrdinaryField name value :: fields) connections lengths transfers
 
-scopedStartValid : String -> Bool
-let scopedStartValid start =
-  let n = String.length start
-  n >= 2 && String.drop (n - 2) start = "\r\n" && validHeaderValue (Bytes.fromString (String.take (n - 2) start)) 0
-
 scopedFieldLines : List ScopedField -> Bool -> Bool -> Bool -> List String -> List String
 let scopedFieldLines fields removeLength removeTransfer removeConnection lines =
   match fields with
@@ -2066,7 +2061,9 @@ let sendScopedResponse sender requestedClose method transport response =
   match response with
   | { body, headers, reason, status } ->
     let start = "HTTP/1.1 " ++ Int.toString status ++ " " ++ reason ++ "\r\n"
-    if status < 100 || status > 999 || not (scopedStartValid start) then
+    // The protocol prefix, bounded decimal status and final CRLF are fixed;
+    // only the supplied reason can introduce invalid bytes into this line.
+    if status < 100 || status > 999 || not (validHeaderValue (Bytes.fromString reason) 0) then
       Err "invalid outgoing HTTP status line or header"
     else
       match analyzeScopedFields (Headers.toList headers) [] [] [] [] with
