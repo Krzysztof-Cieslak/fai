@@ -5396,6 +5396,10 @@ Concurrency (tasks, channels, the M:N scheduler, biased reference counting):
     Selective lookup copies only matching values and bulk enumeration copies
     all ranges directly. The native primitive handles storage and text operations;
     HTTP scanning, validation, metadata interpretation and framing remain in Fai.
+    Whole-head UTF-8 validation precedes interpretation. Only the request-line
+    prefix is copied for parsing; after field scanning, the uniquely owned head
+    transfers into retained header text. Shared inputs copy as usual. Retained
+    headers may keep normal buffer growth capacity rather than a tight copy.
     The field-value loop uses a generic bounded byte-class span. Names keep their
     token scan, and Fai checks the span's stopping byte for CRLF/end-of-input before
     trimming optional whitespace and recording offsets. Class preparation remains

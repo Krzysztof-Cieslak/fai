@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Transfer uniquely owned incoming HTTP heads into retained header text after
+  byte parsing, avoiding a whole-head copy. UTF-8 validation and error order
+  are preserved; retained headers may keep normal buffer growth capacity.
 - Validate the variable reason in internally assembled HTTP response status
   lines directly, avoiding temporary slices while preserving wire bytes and
   validation before body evaluation.

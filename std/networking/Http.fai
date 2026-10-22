@@ -1780,18 +1780,20 @@ let finishFields fields metadata =
       transfers = List.reverse transfers
     })
 
-// Byte offsets refer to the already validated UTF-8 head. ASCII delimiters and
-// whitespace keep every materialized name/value range on a scalar boundary.
-parseRequestHeadMeta : Bytes -> String -> Result (Method * Url * Headers * String * HeadMetadata) String
-let parseRequestHeadMeta bytes text =
-  let length = Bytes.length bytes
-  let (lineEnd, fieldsStart) =
-    match findCrlf bytes 0 length with
-    | None -> (length, length)
-    | Some end -> (end, end + 2)
-  match RegexEngine.slice text 0 lineEnd with
-  | Err _ -> Err "invalid request line text"
-  | Ok requestLine ->
+// Validate the whole head before interpreting it. ASCII delimiters preserve
+// scalar boundaries, so the copied line and later whole-buffer conversion are
+// valid UTF-8. Finish byte parsing before transferring the head into its text.
+parseRequestHeadMeta : Bytes -> Result (Method * Url * Headers * String * HeadMetadata) String
+let parseRequestHeadMeta bytes =
+  if not (Bytes.isValidUtf8 bytes) then
+    Err "request headers are not valid UTF-8"
+  else
+    let length = Bytes.length bytes
+    let (lineEnd, fieldsStart) =
+      match findCrlf bytes 0 length with
+      | None -> (length, length)
+      | Some end -> (end, end + 2)
+    let requestLine = Prim.bytesToString (Bytes.slice 0 lineEnd bytes)
     match parseRequestLine requestLine with
     | Err error -> Err error
     | Ok (method, url, version) ->
@@ -1802,7 +1804,7 @@ let parseRequestHeadMeta bytes text =
       match scanRequestFields bytes length fieldsStart fieldsStart true valueClass (Array.withCapacity 16) metadata with
       | Err error -> Err error
       | Ok (ranges, metadata) ->
-        match Headers.fromRanges text ranges with
+        match Headers.fromRanges (Prim.bytesToString bytes) ranges with
         | Err error -> Err error
         | Ok headers -> Ok (method, url, headers, version, metadata)
 
@@ -1904,28 +1906,25 @@ let parseRequestAfter t buffered =
   | Err (true, _) -> Ok None
   | Err (false, e) -> Err e
   | Ok (headBytes, leftover) ->
-    match Bytes.toString headBytes with
-    | None -> Err "request headers are not valid UTF-8"
-    | Some headText ->
-      match parseRequestHeadMeta headBytes headText with
+    match parseRequestHeadMeta headBytes with
+    | Err e -> Err e
+    | Ok (method, url, headers, version, { connections, expectations, lengths, transfers }) ->
+      match framingFrom transfers lengths NoBody with
       | Err e -> Err e
-      | Ok (method, url, headers, version, { connections, expectations, lengths, transfers }) ->
-        match framingFrom transfers lengths NoBody with
+      | Ok framing ->
+        match honorExpectations t version expectations framing with
         | Err e -> Err e
-        | Ok framing ->
-          match honorExpectations t version expectations framing with
+        | Ok _ ->
+          match readRequestBody t leftover framing with
           | Err e -> Err e
-          | Ok _ ->
-            match readRequestBody t leftover framing with
-            | Err e -> Err e
-            | Ok (chunks, rest) ->
-              let request = {
-                body = Stream.fromList chunks,
-                headers = headers,
-                method = method,
-                url = url
-              }
-              Ok (Some (request, version <> "HTTP/1.1" || hasConnectionCloseValues connections, rest))
+          | Ok (chunks, rest) ->
+            let request = {
+              body = Stream.fromList chunks,
+              headers = headers,
+              method = method,
+              url = url
+            }
+            Ok (Some (request, version <> "HTTP/1.1" || hasConnectionCloseValues connections, rest))
 
 // Read one request without exposing connection bookkeeping.
 parseRequest : Transport 'e -> Result (Request 'r) String / 'e
