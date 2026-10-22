@@ -8,7 +8,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 const HELPERS: &str = r#"
 parsedHeaders : String -> Result Headers String
 let parsedHeaders text =
-  match parseRequestHeadMeta (Bytes.fromString text) text with
+  match parseRequestHeadMeta (Bytes.fromString text) with
   | Err error -> Err error
   | Ok (method, url, headers, version, metadata) -> Ok headers
 "#;
@@ -60,6 +60,101 @@ fn parsed_and_constructed_headers_share_equality_ordering_and_hashes() {
 #[test]
 fn native_parsed_and_constructed_headers_share_value_semantics() {
     check(VALUE_SEMANTICS, true);
+}
+
+#[test]
+fn whole_head_utf8_errors_precede_request_line_and_field_errors() {
+    check(
+        r#"let bytes = Bytes.concat (Bytes.fromString "INVALID\r\nBad Name: x\r\n") (Bytes.fromList [237, 160, 128])
+parseRequestHeadMeta bytes = Err "request headers are not valid UTF-8""#,
+        false,
+    );
+}
+
+#[test]
+fn shared_input_bytes_survive_header_parsing_and_updates() {
+    check(
+        r#"let text = "GET /café?q=😀 HTTP/1.1\r\nX: first\r\nx: é😀\r\n"
+let bytes = Bytes.fromString text
+match parseRequestHeadMeta bytes with
+| Err _ -> false
+| Ok (_, url, headers, _, _) ->
+  let updated = Headers.set "X" "changed" headers
+  Url.path url = "/café" && Headers.getAll "X" headers = ["first", "é😀"] && Headers.getAll "X" updated = ["changed"] && bytes = Bytes.fromString text"#,
+        true,
+    );
+}
+
+const RETAINED_HEADERS: &str = r#"
+let keepHeaders rounds text slots =
+  if rounds <= 0 then slots else
+    let bytes = Bytes.concat (Bytes.fromString text) (Bytes.fromString "\r\nX: final\r\n\r\n")
+    match parseRequestHeadMeta bytes with
+    | Err _ -> Array.empty
+    | Ok (_, _, headers, _, _) ->
+      keepHeaders (rounds - 1) text (Array.unsafeSet (rounds % 4) headers slots)
+
+public headerStorage : Int -> Int -> Int
+let headerStorage rounds size =
+  let text = "GET / HTTP/1.1\r\nCookie: " ++ String.joinArray "" (Array.repeat size "x")
+  let retained = keepHeaders rounds text (Array.repeat 4 Headers.empty)
+  Array.foldl (fun total headers -> total + String.length (Option.withDefault "" (Headers.get "Cookie" headers))) 0 retained
+
+public main : Runtime -> Unit
+let main _ = ()
+"#;
+
+#[track_caller]
+fn bounded_header_storage(size: i64) {
+    use fai_runtime::{self as rt, allocation_stats as storage};
+    use fai_syntax::Symbol;
+
+    let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let outer = storage::current();
+    let observe = |rounds| {
+        let result = std::thread::spawn(move || {
+            let mut db = fai_db::FaiDatabase::new();
+            fai_types::std_lib::load_std(&mut db);
+            let file = db
+                .all_source_files()
+                .into_iter()
+                .find(|file| file.path(&db).ends_with("/Http.fai"))
+                .unwrap();
+            let text = format!("{}{RETAINED_HEADERS}", file.text(&db));
+            file.set_text(&mut db).to(text);
+            let mut program = fai_driver::jit_compile(&db, file).unwrap();
+            let function = program.function(Symbol::intern("headerStorage")).unwrap();
+            let before = (rt::live_count(), rt::live_bytes());
+            rt::reset_allocations();
+            let value = rt::apply(function, &[rt::make_int(rounds), rt::make_int(size)]);
+            let actual = rt::read_int(value);
+            rt::fai_drop(value);
+            assert_eq!(actual, 4 * size);
+            assert_eq!((rt::live_count(), rt::live_bytes()), before);
+            let retained = storage::current();
+            assert_eq!(retained.mapped_bytes, outer.mapped_bytes);
+            assert_eq!(retained.system_bytes, outer.system_bytes);
+            (rt::peak_live_bytes() - before.1, storage::peak_bytes(), retained)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(storage::current(), outer);
+        result
+    };
+    let short = observe(12);
+    let long = observe(1200);
+    assert!(short.0 > 0 && short.0 < 20 * size + 100_000, "{short:?}");
+    assert_eq!(short, long, "a fixed retained-header window must use bounded storage");
+}
+
+#[test]
+fn retained_system_sized_headers_use_bounded_storage() {
+    bounded_header_storage(8192);
+}
+
+#[test]
+fn retained_mapped_headers_release_all_mappings() {
+    bounded_header_storage(32768);
 }
 
 #[test]

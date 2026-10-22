@@ -52,8 +52,8 @@ let referenceRequestHead text =
       | Ok headers -> Ok (method, url, headers, version)
 
 parseRequestHeadBytes : Bytes -> String -> Result (Method * Url * Headers * String) String
-let parseRequestHeadBytes bytes text =
-  match parseRequestHeadMeta bytes text with
+let parseRequestHeadBytes bytes _ =
+  match parseRequestHeadMeta bytes with
   | Err error -> Err error
   | Ok (method, url, headers, version, _) -> Ok (method, url, headers, version)
 "#;
@@ -533,7 +533,7 @@ match parseRequestAfter t wire with
 fn collected_protocol_fields_match_ordered_header_lookups() {
     check(
         r#"let text = "GET / HTTP/1.1\r\nHost: local\r\nExpect: 100-continue\r\nEXPECT: other\r\nContent-Length: 2\r\ncontent-length: 02\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\nCONNECTION: close\r\nXonnection: ignored\r\n\r\n"
-match parseRequestHeadMeta (Bytes.fromString text) text with
+match parseRequestHeadMeta (Bytes.fromString text) with
 | Err _ -> false
 | Ok (_, _, headers, _, metadata) -> metadata.connections = Headers.getAll "Connection" headers && metadata.expectations = Headers.getAll "Expect" headers && metadata.lengths = Headers.getAll "Content-Length" headers && metadata.transfers = Headers.getAll "Transfer-Encoding" headers"#,
         false,
@@ -544,7 +544,7 @@ match parseRequestHeadMeta (Bytes.fromString text) text with
 fn rejected_metadata_names_still_preserve_headers_and_unicode_values() {
     check(
         r#"let text = "GET / HTTP/1.1\r\nXxpect: café\r\nxonnection: first\r\nXontent-Length: second\r\nxransfer-encoding: third\r\nCoNnEcTiOn: close\r\nEXPECT: 100-continue\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n"
-match parseRequestHeadMeta (Bytes.fromString text) text with
+match parseRequestHeadMeta (Bytes.fromString text) with
 | Err _ -> false
 | Ok (_, _, headers, _, metadata) -> List.length (Headers.toList headers) = 8 && Headers.get "Xxpect" headers = Some "café" && metadata.connections = ["close"] && metadata.expectations = ["100-continue"] && metadata.lengths = ["0"] && metadata.transfers = ["chunked"]"#,
         false,
@@ -576,7 +576,7 @@ match parseRequestAfter t (Bytes.fromString text) with
 fn protocol_collection_keeps_trimmed_values_and_original_fields() {
     check(
         r#"let text = "GET / HTTP/1.1\r\nCoNnEcTiOn:\t keep-alive, close \t\r\ncontent-length:  0\t\r\nX: café\r\n\r\n"
-match parseRequestHeadMeta (Bytes.fromString text) text with
+match parseRequestHeadMeta (Bytes.fromString text) with
 | Err _ -> false
 | Ok (_, _, headers, _, metadata) -> metadata.connections = ["keep-alive, close"] && metadata.lengths = ["0"] && metadata.expectations = [] && metadata.transfers = [] && Headers.toList headers = [("CoNnEcTiOn", "keep-alive, close"), ("content-length", "0"), ("X", "café")]"#,
         false,

@@ -2021,6 +2021,10 @@ or end-of-input completes the field. Whole-head UTF-8 validation, optional
 whitespace trimming, duplicate order and first-error precedence are preserved.
 The generic span primitive borrows its buffer and four-word class, consumes its
 scalar bounds, and contains no HTTP-specific rules or cross-request state.
+Incoming heads validate UTF-8 before interpreting the request line or fields.
+After byte parsing, a uniquely owned head transfers into its retained header
+text instead of being copied; shared inputs retain ordinary value semantics.
+Saved headers may keep the buffer's normal bounded growth capacity.
 Long valid byte-class prefixes use bounded 16-byte vector loads on supported
 x86-64 and ARM64 processors. Two small lookup tables are built within each call;
 short prefixes and unsupported targets retain scalar scans. The first rejected

@@ -2046,6 +2046,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    protocol metadata takes direct default paths only after head validation.
    Internally assembled response status lines validate the supplied reason
    directly; invalid controls still fail before the body is evaluated.
+   Incoming heads validate UTF-8 before parsing and can transfer their owned
+   buffer into retained header text afterward. Saved headers may retain normal
+   buffer growth capacity; shared inputs stay immutable.
    Buffered sends render computed Content-Length directly, preserving validation
    and field order without a temporary replacement header collection.
    Buffered Content-Length requests use reads of at most 15 KiB,
