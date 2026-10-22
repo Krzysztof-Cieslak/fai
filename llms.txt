@@ -2062,6 +2062,13 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
   `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection, serving ordered requests until either peer sends `Connection: close`.
+   Small complete pipelined responses use a bounded per-connection writer.
+   Handlers run sequentially, but a later handler can start before an earlier
+   response finishes writing; its invocation does not prove prior delivery.
+   Pending output can drain while a handler waits. Reads, informational replies,
+   large responses and streaming producers flush preceding output first.
+   Socket failures may therefore be observed after later handlers have run.
+   Cancellation joins the writer and may discard pending output.
    HTTP/1.0 requests close after their response. Cancel the serving task to shut
    down, including idle connections; no implicit idle timeout is imposed.
    Request bodies are fully read before handlers run, and surplus bytes are

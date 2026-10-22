@@ -1942,8 +1942,8 @@ let respond handler req =
   | Ok r -> r
   | Err message -> errorResponse 500 message
 
-// Sending and connection ownership are separate: a response must finish before
-// the next request can run, but need not close a persistent transport.
+// An individual write finishes before returning without closing the transport.
+// Managed serving can instead enqueue a prepared complete response.
 writeResponse : Bool -> Method -> Transport { Net, Tls } -> Response 'h -> Result Unit String / { Net, Tls | 'h }
 let writeResponse closeConn method t resp =
   writeResponseWith (bufferedChunkSender t) closeConn method t resp
@@ -2055,13 +2055,65 @@ let renderScopedHead start fields closeConn removeLength removeTransfer computed
   let ending = if closeConn then "Connection: close\r\n" :: tail else tail
   Bytes.fromString (start ++ String.join "" (scopedFieldLines fields removeLength removeTransfer closeConn ending) ++ "\r\n")
 
-sendScopedResponse : ChunkSender -> Bool -> Method -> Transport { Net, Tls } -> Response 'e -> Result Bool String / { Net, Tls | 'e }
-let sendScopedResponse sender requestedClose method transport response =
+type PreparedResponse 'e =
+  | CompleteResponse Bool (List Bytes)
+  | StreamingResponse Bool Bytes (Stream Bytes 'e)
+
+prepareScopedResponse : Bool -> Method -> Response 'e -> Result (PreparedResponse 'e) String / 'e
+let prepareScopedResponse requestedClose method response =
   match response with
   | { body, headers, reason, status } ->
     let start = "HTTP/1.1 " ++ Int.toString status ++ " " ++ reason ++ "\r\n"
     // The protocol prefix, bounded decimal status and final CRLF are fixed;
     // only the supplied reason can introduce invalid bytes into this line.
+    if status < 100 || status > 999 || not (validHeaderValue (Bytes.fromString reason) 0) then
+      Err "invalid outgoing HTTP status line or header"
+    else
+      match analyzeScopedFields (Headers.toList headers) [] [] [] [] with
+      | Err error -> Err error
+      | Ok { connections, fields, lengths, transfers } ->
+        if status = 101 || (methodName method = "CONNECT" && status >= 200 && status < 300) then
+          Err "HTTP protocol upgrades and CONNECT tunnels are not supported"
+        else
+          let closeConn = requestedClose || hasConnectionCloseValues connections || status < 200
+          let hasBody = responseHasBody method status
+          let removeLength = not hasBody && (status = 204 || (status >= 100 && status < 200))
+          let usedTransfers = if hasBody then transfers else []
+          let usedLengths = if removeLength then [] else lengths
+          match framingFrom usedTransfers usedLengths NoBody with
+          | Err error -> Err error
+          | Ok framing ->
+            if not hasBody then
+              Ok (CompleteResponse closeConn [
+                renderScopedHead start fields closeConn removeLength true None
+              ])
+            else
+              match framing with
+              | Chunked ->
+                Ok (StreamingResponse closeConn (renderScopedHead start fields closeConn false false None) body)
+              | _ ->
+                match Stream.toList body with
+                | Err error -> Err error
+                | Ok chunks ->
+                  match bodySize chunks 0 with
+                  | Err error -> Err error
+                  | Ok size ->
+                    Ok (CompleteResponse closeConn (renderScopedHead start fields closeConn true false (Some size) :: chunks))
+
+sendPrepared : ChunkSender -> Transport { Net, Tls } -> PreparedResponse 'e -> Result Bool String / { Net, Tls | 'e }
+let sendPrepared sender transport response =
+  match response with
+  | CompleteResponse close chunks -> Result.map (fun _ -> close) (sender.send chunks)
+  | StreamingResponse close head body ->
+    match transport.send head with
+    | Err error -> Err error
+    | Ok _ -> Result.map (fun _ -> close) (sendChunkedBody transport body)
+
+sendScopedResponse : ChunkSender -> Bool -> Method -> Transport { Net, Tls } -> Response 'e -> Result Bool String / { Net, Tls | 'e }
+let sendScopedResponse sender requestedClose method transport response =
+  match response with
+  | { body, headers, reason, status } ->
+    let start = "HTTP/1.1 " ++ Int.toString status ++ " " ++ reason ++ "\r\n"
     if status < 100 || status > 999 || not (validHeaderValue (Bytes.fromString reason) 0) then
       Err "invalid outgoing HTTP status line or header"
     else
@@ -2135,6 +2187,9 @@ let serveListenerWith env listener tlsConfig handler =
 /// cancelled (graceful shutdown: it stops accepting and the structured scope joins
 /// in-flight connections) or the listener errors. HTTP/1.1 requests share their
 /// connection until either peer asks to close. A handler `Err` becomes a 500.
+/// Small pipelined responses are buffered: later handlers can run before earlier
+/// socket writes complete or fail. Pending output drains while a handler waits;
+/// reads and streaming responses flush preceding output first.
 public serveListener : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> (Request 'ein -> Result (Response 'h) String / 'h) -> Result Unit String / { Concurrency, Net, Tls | 'h }
 let serveListener env listener handler = serveListenerWith env listener None handler
 
@@ -2276,7 +2331,7 @@ let handleManaged env connection tlsConfig handler =
       match tlsConfig with
       | None -> plainChunkSender env.net connection
       | Some _ -> bufferedChunkSender transport
-    let result = serveRequestsWith sender env.concurrency transport Bytes.empty handler
+    let result = serveBatchDetect sender env.concurrency transport Bytes.empty handler
     transport.close ()
 
 acceptManaged : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Option (Bytes * Bytes) -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Nursery -> Result Unit String / { Concurrency, Net, Tls | 'e }
@@ -2323,3 +2378,188 @@ let serveManagedListener env listener handler = serveManagedWith env listener No
 public serveManagedListenerTls : { concurrency : Concurrency, net : Net, tls : Tls | 'r } -> Listener -> Bytes -> Bytes -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Unit String / { Concurrency, Net, Tls | 'e }
 let serveManagedListenerTls env listener cert key handler =
   serveManagedWith env listener (Some (cert, key)) handler
+
+// A credit remains held until its bytes have been sent, bounding queued and
+// in-flight responses together. The writer only receives complete small messages;
+// larger messages and streaming producers use an acknowledged flush barrier.
+type QueuedOutput = Bytes * Option (Channel (Result Unit String))
+
+type OutputQueue = {
+  credits : Channel Unit,
+  ready : Channel Unit,
+  state : Channel (Result (List QueuedOutput) String)
+}
+
+outputSeed : Concurrency -> Channel Unit -> Int -> Unit / { Concurrency }
+let outputSeed c credits n =
+  if n <= 0 then
+    ()
+  else
+    let sent = c.send credits ()
+    outputSeed c credits (n - 1)
+
+outputComplete : Concurrency -> OutputQueue -> List QueuedOutput -> Result Unit String -> Unit / { Concurrency }
+let outputComplete c queue items result =
+  match items with
+  | [] -> ()
+  | (_, ack) :: rest ->
+    let reported =
+      match ack with
+      | None -> ()
+      | Some reply -> c.send reply result
+    let released = c.send queue.credits ()
+    outputComplete c queue rest result
+
+outputWorker : Concurrency -> OutputQueue -> Transport { Net, Tls } -> Unit / { Concurrency, Net, Tls }
+let outputWorker c queue transport =
+  match c.recv queue.ready with
+  | None -> ()
+  | Some _ ->
+    match c.recv queue.state with
+    | None -> ()
+    | Some (Err _) -> ()
+    | Some (Ok reversed) ->
+      let unlocked = c.send queue.state (Ok [])
+      let items = List.reverse reversed
+      let bytes =
+        Bytes.concatMany (List.map (fun item ->
+          match item with
+          | (bytes, _) -> bytes) items)
+      let result = if Bytes.isEmpty bytes then Ok () else transport.send bytes
+      match result with
+      | Ok _ ->
+        let finished = outputComplete c queue items result
+        outputWorker c queue transport
+      | Err error ->
+        let stopped = c.close queue.credits
+        let pending = c.recv queue.state
+        let failed = c.send queue.state (Err error)
+        let finished = outputComplete c queue items result
+        let discarded =
+          match pending with
+          | Some (Ok rest) -> outputComplete c queue rest result
+          | _ -> ()
+        transport.close ()
+
+outputPut : Concurrency -> OutputQueue -> QueuedOutput -> Result Unit String / { Concurrency }
+let outputPut c queue item =
+  match c.recv queue.credits with
+  | None -> Err "buffered response writer closed"
+  | Some _ ->
+    match c.recv queue.state with
+    | None -> Err "buffered response writer closed"
+    | Some (Err error) ->
+      let unlocked = c.send queue.state (Err error)
+      Err error
+    | Some (Ok items) ->
+      let unlocked = c.send queue.state (Ok (item :: items))
+      let notified = if List.isEmpty items then c.send queue.ready () else ()
+      Ok ()
+
+outputFlush : Concurrency -> OutputQueue -> Result Unit String / { Concurrency }
+let outputFlush c queue =
+  let ack = c.channel 1
+  match outputPut c queue (Bytes.empty, Some ack) with
+  | Err error -> Err error
+  | Ok _ ->
+    match c.recv ack with
+    | None -> Err "buffered response writer cancelled"
+    | Some result -> result
+
+outputTransport : Concurrency -> OutputQueue -> Transport { Net, Tls } -> Transport { Concurrency, Net, Tls }
+let outputTransport c queue transport = { Transport with
+  close u = transport.close u,
+  recv n = match outputFlush c queue with
+  | Err e -> Err e
+  | Ok _ -> transport.recv n,
+  send bytes = match outputFlush c queue with
+  | Err e -> Err e
+  | Ok _ -> transport.send bytes
+}
+
+serveBatchLoop : ChunkSender -> Concurrency -> OutputQueue -> Transport { Net, Tls } -> Bytes -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serveBatchLoop sender c queue transport buffered handler =
+  match parseRequestAfter (outputTransport c queue transport) buffered with
+  | Err error -> Err error
+  | Ok None -> Ok ()
+  | Ok (Some (request, close, rest)) ->
+    match serveBatchOne sender c queue transport request close handler with
+    | Err error -> Err error
+    | Ok true -> Ok ()
+    | Ok false -> serveBatchLoop sender c queue transport rest handler
+
+serveBatchOne : ChunkSender -> Concurrency -> OutputQueue -> Transport { Net, Tls } -> Request 'ein -> Bool -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Bool String / { Concurrency, Net, Tls | 'e }
+let serveBatchOne sender c queue transport request close handler =
+  let response =
+    match handler request with
+    | Ok response -> response
+    | Err error -> Ready (errorResponse 500 error)
+  let result =
+    match response with
+    | Ready response ->
+      match prepareScopedResponse close request.method response with
+      | Err error -> Err error
+      | Ok prepared ->
+        match prepared with
+        | CompleteResponse false chunks ->
+          match bodySize chunks 0 with
+          | Ok size ->
+            if size <= 4096 then
+              Result.map (fun _ -> false) (outputPut c queue (Bytes.concatMany chunks, None))
+            else
+              match outputFlush c queue with
+              | Err error -> Err error
+              | Ok _ -> sendPrepared sender transport prepared
+          | Err error -> Err error
+        | _ ->
+          match outputFlush c queue with
+          | Err error -> Err error
+          | Ok _ -> sendPrepared sender transport prepared
+    | Produced _ _ ->
+      match outputFlush c queue with
+      | Err error -> Err error
+      | Ok _ -> sendPlannedWith sender close c request.method transport response
+  result
+
+serveBatchScope : ChunkSender -> Concurrency -> Transport { Net, Tls } -> Channel (Request 'ein * Bool * Bytes) -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Nursery -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serveBatchScope sender c transport initial handler nursery =
+  let queue = { credits = c.channel 16, ready = c.channel 1, state = c.channel 1 }
+  let seeded = outputSeed c queue.credits 16
+  let initialized = c.send queue.state (Ok [])
+  let worker = c.spawn nursery (fun _ -> outputWorker c queue transport)
+  let result =
+    match c.recv initial with
+    | None -> Err "buffered response writer cancelled"
+    | Some (request, close, rest) ->
+      match serveBatchOne sender c queue transport request close handler with
+      | Err error -> Err error
+      | Ok true -> Ok ()
+      | Ok false -> serveBatchLoop sender c queue transport rest handler
+  let flushed = outputFlush c queue
+  let stopped = c.close queue.ready
+  let joined = c.await worker
+  match result with
+  | Err error -> Err error
+  | Ok _ -> flushed
+
+serveBatchDetect : ChunkSender -> Concurrency -> Transport { Net, Tls } -> Bytes -> (Request 'ein -> Result (ServerResponse 'e) String / 'e) -> Result Unit String / { Concurrency, Net, Tls | 'e }
+let serveBatchDetect sender c transport buffered handler =
+  match parseRequestAfter transport buffered with
+  | Err error -> Err error
+  | Ok None -> Ok ()
+  | Ok (Some (request, close, rest)) ->
+    if not (Bytes.isEmpty rest) && not close then
+      // Transfer the first request out of the scope callback's environment.
+      // Otherwise its body and headers stay captured for the connection's life.
+      let initial = c.channel 1
+      let seeded = c.send initial (request, close, rest)
+      c.scope (serveBatchScope sender c transport initial handler)
+    else
+      let response =
+        match handler request with
+        | Ok response -> response
+        | Err error -> Ready (errorResponse 500 error)
+      match sendPlannedWith sender close c request.method transport response with
+      | Err error -> Err error
+      | Ok true -> Ok ()
+      | Ok false -> serveBatchDetect sender c transport rest handler

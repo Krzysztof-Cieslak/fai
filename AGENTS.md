@@ -1949,6 +1949,11 @@ HTTP/1.1 servers retain connections across sequential and ordered pipelined
 requests. Request bodies are fully decoded into independent chunks before the
 handler runs; surplus bytes belong to the next request. Either peer's
 `Connection: close` ends reuse, and HTTP/1.0 requests close their connection.
+Small complete pipelined responses use a bounded scoped writer. Handlers remain
+sequential, but a later handler may start before an earlier write completes or
+fails. Pending output can drain while that handler waits. Request reads,
+informational replies, large responses and streaming producers flush preceding
+output first. Cancellation may discard pending output and joins the writer.
 Response producers finish and expire their writers before another request runs.
 Cancellation and accept failure terminate the connection tasks, including idle
 reads. There is no implicit idle timeout; applications own the serving lifetime.

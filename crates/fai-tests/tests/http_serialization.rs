@@ -341,6 +341,57 @@ match analyzeScopedFields (Headers.toList headers) [] [] [] [] with
     );
 }
 
+#[test]
+fn prepared_response_preserves_duplicates_unicode_and_computed_length() {
+    check(
+        r#"let headers = Headers.fromList [("X", "café"), ("Content-Length", "2"), ("X", "世界")]
+match prepareScopedResponse false GET { status = 201, reason = "Created", headers = headers, body = stringBody "é😀" } with
+| Ok (CompleteResponse close chunks) -> not close && Bytes.toString (Bytes.concatMany chunks) = Some "HTTP/1.1 201 Created\r\nX: café\r\nX: 世界\r\nContent-Length: 6\r\n\r\né😀"
+| _ -> false"#,
+        false,
+    );
+}
+
+#[test]
+fn prepared_response_validates_fields_before_framing_and_body() {
+    check(
+        r#"match prepareScopedResponse false GET { status = 200, reason = "OK", headers = Headers.fromList [("Content-Length", "bad"), ("X", "bad\nvalue")], body = Stream.failed "body forced" } with
+| Err error -> error = "invalid outgoing HTTP status line or header"
+| _ -> false"#,
+        false,
+    );
+}
+
+#[test]
+fn prepared_no_content_suppresses_invalid_framing_and_body() {
+    check(
+        r#"match prepareScopedResponse false GET { status = 204, reason = "No Content", headers = Headers.fromList [("Content-Length", "bad"), ("Transfer-Encoding", "unsupported")], body = Stream.failed "body forced" } with
+| Ok (CompleteResponse close chunks) -> not close && Bytes.toString (Bytes.concatMany chunks) = Some "HTTP/1.1 204 No Content\r\n\r\n"
+| _ -> false"#,
+        false,
+    );
+}
+
+#[test]
+fn prepared_chunked_body_stays_lazy_until_after_its_head_is_sent() {
+    check(
+        r#"match prepareScopedResponse false GET { status = 200, reason = "OK", headers = Headers.fromList [("Transfer-Encoding", "chunked")], body = Stream.failed "body forced" } with
+| Ok (StreamingResponse close head body) -> not close && Bytes.toString head = Some "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" && Stream.toList body = Err "body forced"
+| _ -> false"#,
+        false,
+    );
+}
+
+#[test]
+fn prepared_buffered_body_fails_before_exposing_any_bytes() {
+    check(
+        r#"match prepareScopedResponse false GET { status = 200, reason = "OK", headers = Headers.empty, body = Stream.failed "body forced" } with
+| Err error -> error = "body forced"
+| _ -> false"#,
+        false,
+    );
+}
+
 mod proptests {
     use proptest::prelude::*;
 
