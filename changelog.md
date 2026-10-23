@@ -129,6 +129,8 @@
   use `Http.bodyBytes` or `Http.bodyText` when a combined payload is required.
 
 ### Fixed
+- Do not forward reuse tokens to mutual-tail-recursion members whose standalone
+  entries are replaced by combined-loop wrappers.
 - Keep split-Result tag comparisons and tuple reconstruction in A-normal form,
   preserving ownership when result components are inspected, boxed and reused.
 - Disconnected peers during vectored TCP sends now return an error instead of
