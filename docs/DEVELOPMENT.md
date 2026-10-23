@@ -23,6 +23,26 @@ TLS roots, and the JIT/AOT commands. `.github/actions/postgres` provisions the C
 service and executes the Fai examples directly whenever dependency-aware
 selection includes `postgres`; pure contracts still run through `fai test`.
 
+## Experimental ownership locality report
+
+`cargo run -p fai-tests --example locality_report -- ROOT ENTRY` prints JSON
+diagnostics for the final ownership IR of a program. Package preparation is
+locked and offline; the program is lowered but not executed. The report keeps
+fresh data constructions separate from explicit `Dup`, `Drop` and `Reset` sites.
+It includes lifted functions, generated loops and emitted reuse entries.
+
+`ProvenRoot` means the root has a known unpublished allocation lifetime at that
+site. It does not prove unique ownership, descendant locality or worker affinity.
+Calls, opaque projections, primitive contracts, branch joins, loop inputs and
+analysis limits have explicit conservative reasons. This diagnostic is not
+consumed by code generation and does not change Perceus ownership decisions.
+
+Site counts describe IR, not dynamic executions or runtime RC mutations. Some
+sites disappear through scalar/immortal lowering, and code generation may add
+representation-boundary operations. Use a separately identified execution census
+for coverage estimates; a function containing an eligible site does not make all
+of that function's runtime count operations eligible.
+
 ## Daily package development
 
 Diff's native contracts run with `fai test -C packages --package diff`; its

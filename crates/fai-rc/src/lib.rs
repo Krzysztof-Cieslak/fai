@@ -51,6 +51,10 @@ pub use bounds_sig::{entry_bounds, result_facts};
 pub use escape::{EscapeSig, escape_signature, mark_escaping_closures};
 pub use forward::rc_emit;
 pub use length::{LenPresSig, length_preservation};
+pub use locality::{
+    FunctionLocality, LocalityOperation, LocalityReason, LocalityReport, LocalitySite,
+    analyze_locality,
+};
 pub use mutual::{Group, MutualGroups, combined_lowered, member_wrapper, mutual_groups};
 pub use reuse_sig::{ReuseSig, forwards_to, reuse_class, reuse_signature};
 pub use verify::check_rc;
@@ -65,6 +69,7 @@ mod escape;
 mod forward;
 mod length;
 mod local_cells;
+mod locality;
 mod mutual;
 mod parameter_loans;
 mod purity;
