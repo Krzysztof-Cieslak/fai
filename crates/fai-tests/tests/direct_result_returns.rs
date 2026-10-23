@@ -68,6 +68,13 @@ let shared n =
   let alias = result
   let value = match result with | Ok (value, _) -> value | Err _ -> 0
   if result = alias then value else 0
+public rematerialized : Int -> Int
+let rematerialized n =
+  let result = Producer.produce n
+  let copied = Producer.pass result
+  let first = match copied with | Ok (value, text) -> value + String.length text | Err text -> String.length text
+  let second = match result with | Ok (value, text) -> value + String.length text | Err text -> String.length text
+  first + second
 public main : Runtime -> Unit / { Console }
 let main r =
   let _ = boxed 7
@@ -143,6 +150,26 @@ fn full_width_success_values_keep_wrapping_integer_semantics() {
     let baseline = (rt::live_count(), rt::live_bytes());
     let value = h.call("consume", i64::MAX);
     assert_eq!(rt::read_int(value), i64::MAX.wrapping_add(19));
+    rt::fai_drop(value);
+    assert_eq!((rt::live_count(), rt::live_bytes()), baseline);
+}
+
+#[test]
+fn rematerialized_results_retain_components_for_later_reads() {
+    let mut h = Harness::new();
+    let baseline = (rt::live_count(), rt::live_bytes());
+    let value = h.call("rematerialized", 42);
+    assert_eq!(rt::read_int(value), 88);
+    rt::fai_drop(value);
+    assert_eq!((rt::live_count(), rt::live_bytes()), baseline);
+}
+
+#[test]
+fn rematerialized_full_width_components_keep_their_owners() {
+    let mut h = Harness::new();
+    let baseline = (rt::live_count(), rt::live_bytes());
+    let value = h.call("rematerialized", i64::MAX);
+    assert_eq!(rt::read_int(value), i64::MAX.wrapping_add(19).wrapping_mul(2));
     rt::fai_drop(value);
     assert_eq!((rt::live_count(), rt::live_bytes()), baseline);
 }

@@ -438,7 +438,7 @@ impl Sroa<'_> {
         if let Some(tagged) = self.tagged.get(&v).cloned() {
             let payloads =
                 fai_core::abi::result_payloads(self.db, &tagged.ty).expect("Result payloads");
-            let branch = |arm: usize| {
+            let branch = |arm: usize, this: &mut Self| {
                 let width = tagged.widths[arm];
                 let payload = if width == 0 {
                     tagged.components[1].clone()
@@ -454,16 +454,29 @@ impl Sroa<'_> {
                         payloads[arm].clone(),
                     )
                 };
-                CExpr::new(
+                let payload_binding = (width > 0).then(|| this.fresh());
+                let argument = payload_binding.map_or_else(
+                    || payload.clone(),
+                    |local| CExpr::new(K::Local(local), payload.ty.clone()),
+                );
+                let result = CExpr::new(
                     K::MakeData {
                         tag: arm as u32,
-                        args: vec![payload],
+                        args: vec![argument],
                         reuse: None,
                         scalars: 0,
                         niche: None,
                     },
                     tagged.ty.clone(),
-                )
+                );
+                if let Some(local) = payload_binding {
+                    CExpr::new(
+                        K::Let { local, value: Box::new(payload), body: Box::new(result) },
+                        tagged.ty.clone(),
+                    )
+                } else {
+                    result
+                }
             };
             let test = CExpr::new(
                 K::Prim {
@@ -475,10 +488,11 @@ impl Sroa<'_> {
                 },
                 Ty::Con(Con::Bool),
             );
-            let cell = CExpr::new(
-                K::If { cond: Box::new(test), then: Box::new(branch(0)), els: Box::new(branch(1)) },
-                tagged.ty,
-            );
+            let test = self.bind(test, binds);
+            let test = CExpr::new(K::Local(test), Ty::Con(Con::Bool));
+            let then = Box::new(branch(0, self));
+            let els = Box::new(branch(1, self));
+            let cell = CExpr::new(K::If { cond: Box::new(test), then, els }, tagged.ty);
             let b = self.fresh();
             binds.push(Bind::Let(b, cell));
             self.boxed.insert(v, b);
@@ -641,6 +655,10 @@ impl Sroa<'_> {
                 },
                 Ty::Con(Con::Bool),
             );
+            // Ownership insertion expects conditions in A-normal form. The tag
+            // is also returned, so its comparison must receive a balanced use.
+            let test = self.bind(test, binds);
+            let test = CExpr::new(K::Local(test), Ty::Con(Con::Bool));
             let value = CExpr::new(
                 K::If { cond: Box::new(test), then: Box::new(field(0)), els: Box::new(field(1)) },
                 Ty::Error,
@@ -707,4 +725,19 @@ fn local_f64(l: LocalId) -> CExpr {
 
 fn error() -> CExpr {
     CExpr::new(K::Error, Ty::Error)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unpacking_an_indirect_result_balances_its_reused_tag() {
+        let source = "module M\nrun : (Unit -> Result Int String) -> Result Int String\nlet run produce = produce ()\n";
+        crate::tests::check_program(source, "run").unwrap();
+    }
+
+    #[test]
+    fn materialized_tuple_results_keep_components_alive_for_later_uses() {
+        let source = "module M\nrun : (Unit -> Result (Int * Int) String) -> (Result (Int * Int) String -> Unit) -> Result (Int * Int) String\nlet run produce consume =\n  let result = produce ()\n  let ignored = consume result\n  result\n";
+        crate::tests::check_program(source, "run").unwrap();
+    }
 }
