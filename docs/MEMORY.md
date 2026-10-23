@@ -51,6 +51,15 @@ retired; IDs are not reused).
 
 ## Decision log
 
+- Ordinary HTTP response heads use a pure, generic terminated text-pair encoder
+  after response-local validation and field selection. It sizes the complete
+  output with checked arithmetic and copies into one independent Bytes buffer.
+  Formatting strings, label masks and row direction are supplied by the caller;
+  the runtime contains no HTTP framing or validation policy. Classified rows can
+  encode directly in reverse order without materializing another pair list.
+  Inputs, including String views, are borrowed through the two traversals and
+  retain immutable value semantics; scalar mask/direction arguments are consumed.
+
 - HTTP serving buffers small complete responses once pipelining is observed.
   A scoped writer may drain them while a later handler is blocked; handler order
   remains sequential, but socket write failures can be observed after later

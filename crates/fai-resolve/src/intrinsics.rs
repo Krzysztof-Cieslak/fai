@@ -104,6 +104,8 @@ pub const INTRINSICS: &[&str] = &[
     "textPairsGet",
     "textPairsGetAll",
     "textPairsIsEmpty",
+    "textPairsRenderList",
+    "textPairsRenderRows",
 ];
 
 /// The synthetic module through which standard-library code reaches intrinsics.

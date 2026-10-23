@@ -331,7 +331,7 @@ let renderField field =
 // Render the start line + headers + the blank line that ends the head.
 renderHead : String -> Headers -> Bytes
 let renderHead startLine headers =
-  Bytes.fromString (startLine ++ String.join "" (List.map renderField (Headers.toList headers)) ++ "\r\n")
+  TextPairs.renderList startLine ": " "\r\n" "\r\n" (Headers.toList headers)
 
 // Render the computed length at the end, matching Headers.set's wire order,
 // without constructing a replacement collection solely for serialization.
@@ -1973,13 +1973,10 @@ let writeResponseWith sender closeConn method t resp =
         framed))
 
 // The classified fields and protocol values belong to one response send only.
-// Field order is retained in reverse so rendering can prepend without another
-// reversal. Classification uses names only after their ASCII token validation.
-type ScopedField =
-  | OrdinaryField String String
-  | LengthField String String
-  | TransferField String String
-  | ConnectionField String String
+// Field order is retained in reverse; the encoder places whole rows backwards
+// without building another list. Labels are ordinary=0, length=1, transfer=2,
+// connection=3. Classification follows the field name's ASCII token validation.
+type ScopedField = Int * String * String
 
 type ScopedHead = {
   connections : List String,
@@ -2014,46 +2011,29 @@ let analyzeScopedFields input fields connections lengths transfers =
     else
       let kind = scopedFieldKind size (Bytes.unsafeGet 0 bytes) name
       if kind = 1 then
-        analyzeScopedFields rest (LengthField name value :: fields) connections (value :: lengths) transfers
+        analyzeScopedFields rest ((1, name, value) :: fields) connections (value :: lengths) transfers
       else if kind = 2 then
-        analyzeScopedFields rest (TransferField name value :: fields) connections lengths (value :: transfers)
+        analyzeScopedFields rest ((2, name, value) :: fields) connections lengths (value :: transfers)
       else if kind = 3 then
-        analyzeScopedFields rest (ConnectionField name value :: fields) (value :: connections) lengths transfers
+        analyzeScopedFields rest ((3, name, value) :: fields) (value :: connections) lengths transfers
       else
-        analyzeScopedFields rest (OrdinaryField name value :: fields) connections lengths transfers
-
-scopedFieldLines : List ScopedField -> Bool -> Bool -> Bool -> List String -> List String
-let scopedFieldLines fields removeLength removeTransfer removeConnection lines =
-  match fields with
-  | [] -> lines
-  | field :: rest ->
-    match field with
-    | OrdinaryField name value ->
-      scopedFieldLines rest removeLength removeTransfer removeConnection (renderField (name, value) :: lines)
-    | LengthField name value ->
-      scopedFieldLines rest removeLength removeTransfer removeConnection (if removeLength then
-        lines
-      else
-        renderField (name, value) :: lines)
-    | TransferField name value ->
-      scopedFieldLines rest removeLength removeTransfer removeConnection (if removeTransfer then
-        lines
-      else
-        renderField (name, value) :: lines)
-    | ConnectionField name value ->
-      scopedFieldLines rest removeLength removeTransfer removeConnection (if removeConnection then
-        lines
-      else
-        renderField (name, value) :: lines)
+        analyzeScopedFields rest ((0, name, value) :: fields) connections lengths transfers
 
 renderScopedHead : String -> List ScopedField -> Bool -> Bool -> Bool -> Option Int -> Bytes
 let renderScopedHead start fields closeConn removeLength removeTransfer computedLength =
-  let tail =
+  let withClose = if closeConn then (0, "Connection", "close") :: fields else fields
+  let rows =
     match computedLength with
-    | None -> []
-    | Some length -> ["Content-Length: " ++ Int.toString length ++ "\r\n"]
-  let ending = if closeConn then "Connection: close\r\n" :: tail else tail
-  Bytes.fromString (start ++ String.join "" (scopedFieldLines fields removeLength removeTransfer closeConn ending) ++ "\r\n")
+    | None -> withClose
+    | Some length -> (0, "Content-Length", Int.toString length) :: withClose
+  let selected =
+    // Generated fields use the always-selected ordinary label. Only authored
+    // framing/connection fields are removed by their corresponding mask bits.
+    1 + (if removeLength then
+      0
+    else
+      2) + (if removeTransfer then 0 else 4) + (if closeConn then 0 else 8)
+  TextPairs.renderRows start ": " "\r\n" "\r\n" selected true rows
 
 type PreparedResponse 'e =
   | CompleteResponse Bool (List Bytes)

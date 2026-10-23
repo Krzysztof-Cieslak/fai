@@ -15,6 +15,270 @@ fn indexes(values: &[i64]) -> Value {
     })
 }
 
+fn render_fields(fields: &[(&str, &str)]) -> Value {
+    cons_list(&fields.iter().map(|(a, b)| data(0, &[make_str(a), make_str(b)])).collect::<Vec<_>>())
+}
+
+fn labelled_fields(fields: &[(i64, &str, &str)]) -> Value {
+    cons_list(
+        &fields
+            .iter()
+            .map(|(label, a, b)| data(0, &[make_int(*label), make_str(a), make_str(b)]))
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[test]
+fn selected_rows_reverse_whole_rows_without_reversing_fields() {
+    balanced(|| {
+        let fields =
+            labelled_fields(&[(0, "a", "é"), (1, "skip", "unused"), (2, "b", "🙂"), (0, "", "")]);
+        let output = fai_text_pairs_render_rows(
+            make_str("["),
+            make_str("="),
+            make_str(";"),
+            make_str("]"),
+            make_int(5),
+            from_bool(true),
+            fields,
+        );
+        // SAFETY: output owns the selected rows' copied byte contents.
+        assert_eq!(unsafe { bytes_bytes(output) }, "[=;b=🙂;a=é;]".as_bytes());
+        fai_drop(output);
+    });
+}
+
+#[test]
+fn selected_rows_consume_a_full_width_mask_but_borrow_their_fields() {
+    balanced(|| {
+        let empty = make_str("");
+        let fields = labelled_fields(&[(0, "skip", ""), (63, "keep", "this")]);
+        let before = (live_count(), live_bytes());
+        let mask = make_int(i64::MIN);
+        reset_allocations();
+        let output = fai_text_pairs_render_rows_borrowed(
+            empty,
+            empty,
+            empty,
+            empty,
+            mask,
+            from_bool(false),
+            fields,
+        );
+        assert_eq!(allocations(), 1);
+        // SAFETY: output owns its bytes independently of the retained fields.
+        assert_eq!(unsafe { bytes_bytes(output) }, b"keepthis");
+        fai_drop(output);
+        assert_eq!((live_count(), live_bytes()), before);
+        fai_drop(fields);
+        fai_drop(empty);
+    });
+}
+
+#[test]
+fn selected_rows_omit_out_of_range_labels_even_with_every_bit_selected() {
+    balanced(|| {
+        let fields = labelled_fields(&[
+            (-1, "negative", ""),
+            (64, "too high", ""),
+            (i64::MAX, "full width", ""),
+        ]);
+        let output = fai_text_pairs_render_rows(
+            make_str("["),
+            make_str("="),
+            make_str(";"),
+            make_str("]"),
+            make_int(-1),
+            from_bool(true),
+            fields,
+        );
+        // SAFETY: output is a live encoded Bytes buffer.
+        assert_eq!(unsafe { bytes_bytes(output) }, b"[]");
+        fai_drop(output);
+    });
+}
+
+#[test]
+fn selected_empty_rows_need_no_output_allocation() {
+    balanced(|| {
+        let empty = make_str("");
+        let fields = labelled_fields(&[(0, "", ""), (1, "", "")]);
+        reset_allocations();
+        let output = fai_text_pairs_render_rows_borrowed(
+            empty,
+            empty,
+            empty,
+            empty,
+            make_int(3),
+            from_bool(true),
+            fields,
+        );
+        assert_eq!(allocations(), 0);
+        // SAFETY: output is the shared empty Bytes buffer.
+        assert!(unsafe { bytes_bytes(output) }.is_empty());
+        fai_drop(output);
+        fai_drop(fields);
+        fai_drop(empty);
+    });
+}
+
+#[test]
+fn row_encoding_preserves_order_unicode_empty_fields_and_separators() {
+    balanced(|| {
+        let fields = render_fields(&[("é", "🙂"), ("", ""), ("é", "a\0b")]);
+        let encoded = fai_text_pairs_render_list(
+            make_str("["),
+            make_str("="),
+            make_str(";"),
+            make_str("]"),
+            fields,
+        );
+        // SAFETY: the encoder returns an owned Bytes buffer.
+        assert_eq!(unsafe { bytes_bytes(encoded) }, "[é=🙂;=;é=a\0b;]".as_bytes());
+        fai_drop(encoded);
+    });
+}
+
+#[test]
+fn row_encoding_with_no_rows_keeps_only_prefix_and_suffix() {
+    balanced(|| {
+        let encoded = fai_text_pairs_render_list(
+            make_str("left"),
+            make_str("unused"),
+            make_str("unused"),
+            make_str("right"),
+            imm_int(NIL_TAG),
+        );
+        // SAFETY: the encoder returns an owned Bytes buffer.
+        assert_eq!(unsafe { bytes_bytes(encoded) }, b"leftright");
+        fai_drop(encoded);
+    });
+}
+
+#[test]
+fn empty_row_encoding_uses_the_shared_empty_buffer() {
+    balanced(|| {
+        let empty = make_str("");
+        reset_allocations();
+        let encoded =
+            fai_text_pairs_render_list_borrowed(empty, empty, empty, empty, imm_int(NIL_TAG));
+        assert_eq!(allocations(), 0);
+        // SAFETY: encoded is a Bytes value with an empty payload.
+        assert!(unsafe { bytes_bytes(encoded) }.is_empty());
+        fai_drop(encoded);
+        fai_drop(empty);
+    });
+}
+
+#[test]
+fn row_encoding_borrows_inputs_and_allocates_only_the_final_buffer() {
+    balanced(|| {
+        let fields = render_fields(&[("one", "two"), ("three", "four")]);
+        let prefix = make_str("<");
+        let separator = make_str(":");
+        let ending = make_str("\n");
+        let suffix = make_str(">");
+        let before = (live_count(), live_bytes());
+        reset_allocations();
+        let encoded =
+            fai_text_pairs_render_list_borrowed(prefix, separator, ending, suffix, fields);
+        assert_eq!(allocations(), 1);
+        // SAFETY: the result is an independent byte buffer and inputs are retained.
+        assert_eq!(unsafe { bytes_bytes(encoded) }, b"<one:two\nthree:four\n>");
+        assert_eq!(read_string(prefix), b"<");
+        assert_eq!(read_string(suffix), b">");
+        fai_drop(encoded);
+        assert_eq!((live_count(), live_bytes()), before);
+        fai_drop(fields);
+        fai_drop(prefix);
+        fai_drop(separator);
+        fai_drop(ending);
+        fai_drop(suffix);
+    });
+}
+
+#[test]
+fn row_encoding_reads_string_views_without_retaining_their_base() {
+    balanced(|| {
+        let source = make_str("prefixé🙂suffix");
+        // SAFETY: both ranges select whole UTF-8 scalars in the owned source.
+        let (first, second) =
+            unsafe { (make_string_slice(source, 6, 2), make_string_slice(source, 8, 4)) };
+        let fields = cons_list(&[data(0, &[first, second])]);
+        let output = fai_text_pairs_render_list(
+            make_str(""),
+            make_str(":"),
+            make_str("!"),
+            make_str(""),
+            fields,
+        );
+        fai_drop(source);
+        // SAFETY: the output owns its copied bytes after all source views have died.
+        assert_eq!(unsafe { bytes_bytes(output) }, "é:🙂!".as_bytes());
+        fai_drop(output);
+    });
+}
+
+#[test]
+fn row_encoding_handles_shared_input_on_another_thread() {
+    balanced(|| {
+        let fields = render_fields(&[("a", "b"), ("a", "c")]);
+        fai_mark_shared(fields);
+        let sent = fai_dup(fields);
+        std::thread::spawn(move || {
+            let output = fai_text_pairs_render_list(
+                make_str(""),
+                make_str("="),
+                make_str(";"),
+                make_str(""),
+                sent,
+            );
+            // SAFETY: output is a live Bytes value owned by this thread.
+            assert_eq!(unsafe { bytes_bytes(output) }, b"a=b;a=c;");
+            fai_drop(output);
+        })
+        .join()
+        .unwrap();
+        let expected = render_fields(&[("a", "b"), ("a", "c")]);
+        assert!(values_equal(fields, expected));
+        fai_drop(expected);
+        fai_drop(fields);
+    });
+}
+
+#[test]
+fn row_size_checks_every_component_before_wrapping() {
+    assert_eq!(row_size(usize::MAX - 2, 1, 1, 1), None);
+}
+
+#[test]
+fn row_size_accepts_an_exact_machine_word_sum() {
+    assert_eq!(row_size(usize::MAX - 3, 1, 1, 1), Some(usize::MAX));
+}
+
+#[test]
+fn large_row_encoding_allocates_and_releases_one_final_mapping() {
+    balanced(|| {
+        let field = make_str(&"x".repeat(4096));
+        let rows: Vec<_> = (0..256).map(|_| data(0, &[fai_dup(field), fai_dup(field)])).collect();
+        let fields = cons_list(&rows);
+        let empty = make_str("");
+        let before = allocation_stats::current();
+        reset_allocations();
+        let output = fai_text_pairs_render_list_borrowed(empty, empty, empty, empty, fields);
+        assert_eq!(allocations(), 1);
+        // SAFETY: output owns the encoded byte buffer.
+        let bytes = unsafe { bytes_bytes(output) };
+        assert_eq!(bytes.len(), 256 * 2 * 4096);
+        assert!(bytes.iter().all(|&byte| byte == b'x'));
+        fai_drop(output);
+        assert_eq!(allocation_stats::current().mapped_bytes, before.mapped_bytes);
+        fai_drop(fields);
+        fai_drop(field);
+        fai_drop(empty);
+    });
+}
+
 fn view(fields: &[(String, String)], padding: &str) -> Value {
     let mut text = padding.to_owned();
     let mut offsets = Vec::new();
@@ -297,6 +561,58 @@ mod proptests {
     }
 
     proptest! {
+        #[test]
+        fn selected_row_encoding_matches_filtering_and_reversal(
+            rows in prop::collection::vec((-2i64..66, any::<String>(), any::<String>()), 0..24),
+            selected in any::<i64>(), reverse in any::<bool>(),
+            prefix in any::<String>(), separator in any::<String>(), ending in any::<String>(), suffix in any::<String>(),
+        ) {
+            balanced(|| {
+                let mut kept: Vec<_> = rows.iter().filter(|(label, _, _)| {
+                    (0..64).contains(label) && (selected as u64) & (1u64 << *label) != 0
+                }).collect();
+                if reverse { kept.reverse(); }
+                let mut expected = prefix.clone();
+                for (_, a, b) in kept {
+                    expected.push_str(a); expected.push_str(&separator);
+                    expected.push_str(b); expected.push_str(&ending);
+                }
+                expected.push_str(&suffix);
+                let refs: Vec<_> = rows.iter().map(|(label, a, b)| (*label, a.as_str(), b.as_str())).collect();
+                let output = fai_text_pairs_render_rows(
+                    make_str(&prefix), make_str(&separator), make_str(&ending), make_str(&suffix),
+                    make_int(selected), from_bool(reverse), labelled_fields(&refs),
+                );
+                // SAFETY: output is retained until after its byte contents are checked.
+                assert_eq!(unsafe { bytes_bytes(output) }, expected.as_bytes());
+                fai_drop(output);
+            });
+        }
+
+        #[test]
+        fn pair_encoding_matches_plain_concatenation(
+            fields in fields(), prefix in any::<String>(), separator in any::<String>(),
+            ending in any::<String>(), suffix in any::<String>(),
+        ) {
+            balanced(|| {
+                let mut expected = prefix.clone();
+                for (first, second) in &fields {
+                    expected.push_str(first);
+                    expected.push_str(&separator);
+                    expected.push_str(second);
+                    expected.push_str(&ending);
+                }
+                expected.push_str(&suffix);
+                let refs: Vec<_> = fields.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+                let output = fai_text_pairs_render_list(
+                    make_str(&prefix), make_str(&separator), make_str(&ending), make_str(&suffix), render_fields(&refs),
+                );
+                // SAFETY: output remains owned through comparison.
+                assert_eq!(unsafe { bytes_bytes(output) }, expected.as_bytes());
+                fai_drop(output);
+            });
+        }
+
         #[test]
         fn storage_forms_preserve_values_and_hashes(fields in fields()) {
             balanced(|| {

@@ -282,6 +282,10 @@ fn register_runtime(builder: &mut JITBuilder) {
     sym!("fai_text_pairs_get_all_borrowed", rt::fai_text_pairs_get_all_borrowed);
     sym!("fai_text_pairs_is_empty", rt::fai_text_pairs_is_empty);
     sym!("fai_text_pairs_is_empty_borrowed", rt::fai_text_pairs_is_empty_borrowed);
+    sym!("fai_text_pairs_render_list", rt::fai_text_pairs_render_list);
+    sym!("fai_text_pairs_render_list_borrowed", rt::fai_text_pairs_render_list_borrowed);
+    sym!("fai_text_pairs_render_rows", rt::fai_text_pairs_render_rows);
+    sym!("fai_text_pairs_render_rows_borrowed", rt::fai_text_pairs_render_rows_borrowed);
     sym!("fai_cleanup", rt::fai_cleanup);
     sym!("fai_net_peer", rt::fai_net_peer);
     sym!("fai_tls_server_endpoint", rt::fai_tls_server_endpoint);

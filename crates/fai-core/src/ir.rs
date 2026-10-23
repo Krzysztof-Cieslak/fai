@@ -846,6 +846,10 @@ pub enum Prim {
     TextPairsIsEmpty,
     /// Scan a prefix belonging to a 256-bit byte class supplied as four Int words.
     BytesSpan,
+    /// Encode terminated String-pair rows between a prefix and suffix.
+    TextPairsRenderList,
+    /// Encode selected labelled String-pair rows, optionally in reverse order.
+    TextPairsRenderRows,
 }
 
 /// Whether values of `ty` are boxed, reference-counted heap values, so lending
@@ -900,6 +904,8 @@ impl Prim {
                 | Prim::TextPairsGet
                 | Prim::TextPairsGetAll
                 | Prim::TextPairsIsEmpty
+                | Prim::TextPairsRenderList
+                | Prim::TextPairsRenderRows
                 | Prim::BytesLength
                 | Prim::BytesGet
                 | Prim::BytesFind
@@ -927,6 +933,7 @@ impl Prim {
                 Prim::BytesGet | Prim::RegexSlice => index == 0,
                 Prim::BytesFind | Prim::BytesFindUtf8 => index < 2,
                 Prim::BytesSpan => index == 0 || index == 3,
+                Prim::TextPairsRenderRows => index < 4 || index == 6,
                 // The other borrowed entries lend every operand, including
                 // array-reader indices under their existing native ABI.
                 _ => true,
@@ -964,6 +971,8 @@ impl Prim {
             Prim::TextPairsGet => Some("fai_text_pairs_get_borrowed"),
             Prim::TextPairsGetAll => Some("fai_text_pairs_get_all_borrowed"),
             Prim::TextPairsIsEmpty => Some("fai_text_pairs_is_empty_borrowed"),
+            Prim::TextPairsRenderList => Some("fai_text_pairs_render_list_borrowed"),
+            Prim::TextPairsRenderRows => Some("fai_text_pairs_render_rows_borrowed"),
             Prim::ArraySplit => Some("fai_array_split_borrowed"),
             Prim::ArrayJoin => Some("fai_array_join_borrowed"),
             _ => None,
@@ -1091,6 +1100,8 @@ impl Prim {
             Prim::TextPairsGet => "fai_text_pairs_get",
             Prim::TextPairsGetAll => "fai_text_pairs_get_all",
             Prim::TextPairsIsEmpty => "fai_text_pairs_is_empty",
+            Prim::TextPairsRenderList => "fai_text_pairs_render_list",
+            Prim::TextPairsRenderRows => "fai_text_pairs_render_rows",
             Prim::BytesSlice => "fai_bytes_slice",
             Prim::BytesFromList => "fai_bytes_from_list",
             Prim::BytesToList => "fai_bytes_to_list",
@@ -1105,6 +1116,8 @@ impl Prim {
     pub fn arity(self) -> usize {
         match self {
             Prim::BytesFind | Prim::BytesFindUtf8 | Prim::BytesSpan => 4,
+            Prim::TextPairsRenderList => 5,
+            Prim::TextPairsRenderRows => 7,
             Prim::IntToString
             | Prim::IntBox
             | Prim::FloatNeg
@@ -1242,6 +1255,8 @@ impl Prim {
             "textPairsGet" => Prim::TextPairsGet,
             "textPairsGetAll" => Prim::TextPairsGetAll,
             "textPairsIsEmpty" => Prim::TextPairsIsEmpty,
+            "textPairsRenderList" => Prim::TextPairsRenderList,
+            "textPairsRenderRows" => Prim::TextPairsRenderRows,
             "bytesSlice" => Prim::BytesSlice,
             "bytesFromList" => Prim::BytesFromList,
             "bytesToList" => Prim::BytesToList,

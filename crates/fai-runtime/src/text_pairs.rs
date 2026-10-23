@@ -249,5 +249,190 @@ pub extern "C" fn fai_text_pairs_is_empty(value: Value) -> Value {
     result
 }
 
+fn row_size(first: usize, separator: usize, second: usize, ending: usize) -> Option<usize> {
+    first.checked_add(separator)?.checked_add(second)?.checked_add(ending)
+}
+
+struct LabelledPairs<'a> {
+    cursor: Value,
+    selected: u64,
+    owner: std::marker::PhantomData<&'a Value>,
+}
+
+impl<'a> Iterator for LabelledPairs<'a> {
+    type Item = (&'a [u8], &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while is_boxed(self.cursor) {
+            // SAFETY: the borrowed root owns this typed List (Int * String *
+            // String), including every tuple and String reached by the cursor.
+            unsafe {
+                let cell = crate::as_obj(self.cursor);
+                let offset = crate::data_offset(cell);
+                let row = crate::as_obj(crate::read_i64(cell, offset));
+                self.cursor = crate::read_i64(cell, offset + 8);
+                let offset = crate::data_offset(row);
+                let label = crate::unbox_int(crate::read_i64(row, offset));
+                if (0..64).contains(&label) && self.selected & (1 << label) != 0 {
+                    return Some((
+                        crate::string_bytes(crate::read_i64(row, offset + 8)),
+                        crate::string_bytes(crate::read_i64(row, offset + 16)),
+                    ));
+                }
+            }
+        }
+        None
+    }
+}
+
+// SAFETY: rows must produce the same immutable fields on both traversals.
+unsafe fn encode_rows<'a, I: Iterator<Item = (&'a [u8], &'a [u8])>>(
+    prefix: &[u8],
+    separator: &[u8],
+    ending: &[u8],
+    suffix: &[u8],
+    reverse: bool,
+    rows: impl Fn() -> I,
+) -> Value {
+    let mut length = prefix
+        .len()
+        .checked_add(suffix.len())
+        .unwrap_or_else(|| crate::fai_allocation_size_panic());
+    for (first, second) in rows() {
+        let row = row_size(first.len(), separator.len(), second.len(), ending.len())
+            .unwrap_or_else(|| crate::fai_allocation_size_panic());
+        length = length.checked_add(row).unwrap_or_else(|| crate::fai_allocation_size_panic());
+    }
+    let size = crate::checked_buffer_size(crate::STRING_BYTES_OFFSET, length, 1)
+        .unwrap_or_else(|| crate::fai_allocation_size_panic());
+    if length == 0 {
+        return crate::make_bytes(&[]);
+    }
+    let output = crate::alloc_obj(size, &crate::FAI_BYTES_DESC);
+    // SAFETY: the checked size covers the header and every output byte. Both
+    // traversals borrow the same immutable inputs, so row sizes cannot change.
+    // The fresh output overlaps none of them. Reverse order fills complete rows
+    // backwards, preserving each row's internal byte order without a scratch list.
+    unsafe {
+        crate::write_u64(output, crate::STRING_LEN_OFFSET, length as u64);
+        let payload = output.add(crate::STRING_BYTES_OFFSET);
+        std::ptr::copy_nonoverlapping(prefix.as_ptr(), payload, prefix.len());
+        std::ptr::copy_nonoverlapping(
+            suffix.as_ptr(),
+            payload.add(length - suffix.len()),
+            suffix.len(),
+        );
+        let mut position = if reverse { length - suffix.len() } else { prefix.len() };
+        for (first, second) in rows() {
+            let size = first.len() + separator.len() + second.len() + ending.len();
+            let start = if reverse { position - size } else { position };
+            let mut cursor = start;
+            for part in [first, separator, second, ending] {
+                std::ptr::copy_nonoverlapping(part.as_ptr(), payload.add(cursor), part.len());
+                cursor += part.len();
+            }
+            position = if reverse { start } else { cursor };
+        }
+        debug_assert_eq!(position, if reverse { prefix.len() } else { length - suffix.len() });
+        crate::from_obj(output)
+    }
+}
+
+/// Encode ordered String pairs as prefix, terminated rows, and suffix. Each row
+/// is its first field, separator, second field and ending. All operands are
+/// borrowed; nonempty output owns one checked Bytes allocation without row
+/// buffers, while empty output uses the shared empty Bytes value.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_text_pairs_render_list_borrowed(
+    prefix: Value,
+    separator: Value,
+    ending: Value,
+    suffix: Value,
+    fields: Value,
+) -> Value {
+    // SAFETY: the typed Strings and List (String * String) remain borrowed for
+    // both traversals. String readers also support immutable substring views.
+    unsafe {
+        encode_rows(
+            crate::string_bytes(prefix),
+            crate::string_bytes(separator),
+            crate::string_bytes(ending),
+            crate::string_bytes(suffix),
+            false,
+            || {
+                Pairs::List(fields, std::marker::PhantomData)
+                    .map(|(first, second)| (first.text.as_bytes(), second.text.as_bytes()))
+            },
+        )
+    }
+}
+
+/// Encode ordered String pairs, consuming all five operands after copying them.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_text_pairs_render_list(
+    prefix: Value,
+    separator: Value,
+    ending: Value,
+    suffix: Value,
+    fields: Value,
+) -> Value {
+    let output = fai_text_pairs_render_list_borrowed(prefix, separator, ending, suffix, fields);
+    for value in [prefix, separator, ending, suffix, fields] {
+        fai_drop(value);
+    }
+    output
+}
+
+/// Encode selected labelled rows in forward or reverse order. Label `n` is
+/// selected by mask bit `n`; labels outside 0..64 are omitted. Strings and rows
+/// are borrowed, while the mask and direction operands are consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_text_pairs_render_rows_borrowed(
+    prefix: Value,
+    separator: Value,
+    ending: Value,
+    suffix: Value,
+    selected: Value,
+    reverse: Value,
+    fields: Value,
+) -> Value {
+    let mask = crate::unbox_int(selected) as u64;
+    let backwards = reverse == crate::from_bool(true);
+    fai_drop(selected);
+    fai_drop(reverse);
+    // SAFETY: all Strings and the typed labelled-row list remain borrowed for
+    // both traversals. Only copied byte contents escape in the independent result.
+    unsafe {
+        encode_rows(
+            crate::string_bytes(prefix),
+            crate::string_bytes(separator),
+            crate::string_bytes(ending),
+            crate::string_bytes(suffix),
+            backwards,
+            || LabelledPairs { cursor: fields, selected: mask, owner: std::marker::PhantomData },
+        )
+    }
+}
+
+/// Encode selected labelled rows, consuming all operands.
+#[unsafe(no_mangle)]
+pub extern "C" fn fai_text_pairs_render_rows(
+    prefix: Value,
+    separator: Value,
+    ending: Value,
+    suffix: Value,
+    selected: Value,
+    reverse: Value,
+    fields: Value,
+) -> Value {
+    let output = fai_text_pairs_render_rows_borrowed(
+        prefix, separator, ending, suffix, selected, reverse, fields,
+    );
+    for value in [prefix, separator, ending, suffix, fields] {
+        fai_drop(value);
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests;

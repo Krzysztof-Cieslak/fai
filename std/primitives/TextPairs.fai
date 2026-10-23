@@ -23,6 +23,18 @@ let getAll lower table = Prim.textPairsGetAll table lower
 internal isEmpty : Table -> Bool
 let isEmpty table = Prim.textPairsIsEmpty table
 
+// Encode terminated rows directly between the supplied prefix and suffix.
+// Validation and escaping belong to the caller's format.
+internal renderList : String -> String -> String -> String -> List (String * String) -> Bytes
+let renderList prefix separator ending suffix fields =
+  Prim.textPairsRenderList prefix separator ending suffix fields
+
+// Select labels 0..63 by mask bit, omitting all other labels. Reverse changes
+// row order only; each row retains its ordinary first/separator/second/ending order.
+internal renderRows : String -> String -> String -> String -> Int -> Bool -> List (Int * String * String) -> Bytes
+let renderRows prefix separator ending suffix selected reverse fields =
+  Prim.textPairsRenderRows prefix separator ending suffix selected reverse fields
+
 // Generate the logical fields, never the native cell's implementation shape.
 internal arbitrary : Test.Arbitrary Table
 let arbitrary =

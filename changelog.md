@@ -7,6 +7,9 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Encode ordinary HTTP response heads directly from ordered text pairs into one
+  checked byte buffer, avoiding intermediate field-line Strings while preserving
+  validation, duplicate order, framing and immutable input values.
 - Buffer small pipelined HTTP server responses in a bounded per-connection writer.
   Handlers remain sequential, but later handlers may run before an earlier socket
   write completes or fails. Applications must not use handler invocation as proof
