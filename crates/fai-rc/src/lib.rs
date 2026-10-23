@@ -52,8 +52,8 @@ pub use escape::{EscapeSig, escape_signature, mark_escaping_closures};
 pub use forward::rc_emit;
 pub use length::{LenPresSig, length_preservation};
 pub use locality::{
-    FunctionLocality, LocalityOperation, LocalityReason, LocalityReport, LocalitySite,
-    analyze_locality,
+    CallableLocality, FunctionLocality, LocalityOperation, LocalityReason, LocalityReport,
+    LocalitySite, ProgramLocality, ReturnProvenance, analyze_locality, analyze_program_locality,
 };
 pub use mutual::{Group, MutualGroups, combined_lowered, member_wrapper, mutual_groups};
 pub use reuse_sig::{ReuseSig, forwards_to, reuse_class, reuse_signature};

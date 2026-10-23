@@ -33,6 +33,16 @@ It includes lifted functions, generated loops and emitted reuse entries.
 
 `ProvenRoot` means the root has a known unpublished allocation lifetime at that
 site. It does not prove unique ownership, descendant locality or worker affinity.
+The whole-program report also infers bounded helper summaries: which inputs may
+reach publication and whether a result is fresh, an input alias or an input field.
+Known representation-preserving fields retain their origins. Each call gets new
+identities for its fresh results, while aliases preserve the caller's identities.
+Summaries start conservative and use only sound prior summaries; the report
+includes its propagation-round count and convergence status. Recursive inputs,
+unknown callbacks and representation-changing boundaries remain conservative.
+Captures and ordinary parameters remain unknown at function entry, independently
+of observed callers. The JSON includes both the original local-only reason and
+the whole-program reason at each site.
 Calls, opaque projections, primitive contracts, branch joins, loop inputs and
 analysis limits have explicit conservative reasons. This diagnostic is not
 consumed by code generation and does not change Perceus ownership decisions.

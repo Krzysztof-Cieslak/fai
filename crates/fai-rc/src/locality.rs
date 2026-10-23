@@ -10,6 +10,9 @@ use fai_core::ir::{CExpr, ClosureAlloc, CoreFn, ExprKind as K, Lit, LoweredDef, 
 use fai_resolve::LocalId;
 use rustc_hash::FxHashMap;
 
+mod program;
+pub use program::{CallableLocality, ProgramLocality, ReturnProvenance, analyze_program_locality};
+
 const NODE_BUDGET: usize = 8192;
 const ORIGIN_BUDGET: usize = 128;
 const DEPTH_BUDGET: usize = 128;

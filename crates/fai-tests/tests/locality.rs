@@ -1,7 +1,7 @@
 //! Diagnostic locality reports preserve ownership IR and survive worker transport.
 
 use fai_db::{Db, FaiDatabase};
-use fai_rc::analyze_locality;
+use fai_rc::{analyze_locality, analyze_program_locality};
 use fai_syntax::Symbol;
 
 const SOURCE: &str = "module M\ntype Cell = | Cell Int Int\nlet visit n cell =\n  match cell with\n  | Cell a b -> if n <= 0 then Cell b a else visit (n - 1) (Cell b a)\npublic main : Runtime -> Unit / { Console }\nlet main runtime =\n  let Cell a b = visit 4 (Cell 2 3)\n  runtime.console.writeLine (Int.toString (a + b))\n";
@@ -34,6 +34,33 @@ fn worker_roundtrip_preserves_diagnostic_sites() {
     let before: Vec<_> = rebuilt.defs.iter().map(analyze_locality).collect();
     let after: Vec<_> = transported.defs.iter().map(analyze_locality).collect();
     assert_eq!(before, after);
+    assert_eq!(
+        analyze_program_locality(&rebuilt.defs),
+        analyze_program_locality(&transported.defs)
+    );
+}
+
+#[test]
+fn helper_summary_edits_match_clean_whole_program_analysis() {
+    const HELPER: &str =
+        "module Helper\npublic wrap : String -> String * String\nlet wrap value = (value, value)\n";
+    const MAIN: &str = "module Main\npublic main : Runtime -> Unit / { Console }\nlet main runtime =\n  let pair = Helper.wrap (Int.toString 42)\n  let (first, second) = pair\n  runtime.console.writeLine (first ++ second)\n";
+    let changed = HELPER.replace("(value, value)", "(value ++ \"!\", value)");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[
+            &[("Helper.fai", HELPER), ("Main.fai", MAIN)],
+            &[("Helper.fai", &changed), ("Main.fai", MAIN)],
+        ],
+        |db, files| {
+            let bundle =
+                fai_driver::build_run_bundle(db, db.source_file(files[1]).unwrap()).bundle.unwrap();
+            let before = serde_json::to_vec(&bundle).unwrap();
+            let rebuilt = fai_core::wire::from_wire(&bundle);
+            let report = analyze_program_locality(&rebuilt.defs);
+            assert_eq!(before, serde_json::to_vec(&bundle).unwrap());
+            report
+        },
+    );
 }
 
 #[test]
