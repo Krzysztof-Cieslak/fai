@@ -100,6 +100,72 @@ const REV: &str = "let rev acc xs =\n  match xs with\n  | [] -> acc\n  | x :: re
 const STUTTER: &str =
     "let stutter xs =\n  match xs with\n  | [] -> []\n  | x :: rest -> x :: x :: stutter rest";
 
+fn differently_sized_prefix(shared: bool) -> String {
+    let use_cell = if shared { "sum result + sum original" } else { "sum result" };
+    formatdoc! {r#"
+        module M
+        type Cell = | Cell Int Int Int
+        type Wrapped = | Wrapped (List Int) Cell
+        let rebuild again cell =
+          if again then rebuild false cell else
+            match cell with
+            | Cell a b c ->
+              let prefix = [a]
+              Wrapped prefix (Cell a b c)
+        let sum cell = match cell with | Cell a b c -> a + b + c
+        public main : Runtime -> Unit / {{ Console }}
+        let main runtime =
+          let original = Cell 1 2 3
+          let Wrapped prefix result = rebuild false original
+          runtime.console.writeLine (Int.toString (List.sum prefix + {use_cell}))
+    "#}
+}
+
+#[test]
+fn reuse_skips_a_differently_sized_prefix_constructor() {
+    let unique = allocs(&differently_sized_prefix(false), "7");
+    let shared = allocs(&differently_sized_prefix(true), "13");
+    assert_eq!(shared - unique, 1, "the unique three-field cell supplies its matching rebuild");
+}
+
+#[test]
+fn reuse_with_different_scalar_header_forms_keeps_the_size_fallback() {
+    outputs(
+        r#"module M
+type Floats = | Floats Float Float Float Float Float Float Float Float Float
+type Ints = | Ints Int Int Int Int Int Int Int Int Int
+let convert again value =
+  if again then convert false value else
+    match value with
+    | Floats a b c d e f g h i -> Ints (Float.toInt a) 2 3 4 5 6 7 8 (Float.toInt i)
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let Ints a b c d e f g h i = convert false (Floats 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0)
+  runtime.console.writeLine (Int.toString (a + b + c + d + e + f + g + h + i))
+"#,
+        "45",
+    );
+}
+
+#[test]
+fn local_reuse_class_edits_match_clean_compilation() {
+    let source = "module M\ntype Cell = | Cell Int Int Int\ntype Wrapped = | Wrapped (List Int) Cell\nlet rebuild cell = match cell with | Cell a b c -> Wrapped [a] (Cell a b c)\n";
+    let edited = source
+        .replace("Cell Int Int Int", "Cell Int Int Int Int")
+        .replace("Cell a b c", "Cell a b c d");
+    fai_tests::assert_incremental_with_std_matches_clean(
+        &[&[("M.fai", source)], &[("M.fai", &edited)]],
+        |db, files| {
+            (*fai_rc::rc(
+                db,
+                db.source_file(files[0]).unwrap(),
+                fai_syntax::Symbol::intern("rebuild"),
+            ))
+            .clone()
+        },
+    );
+}
+
 // ===========================================================================
 // Differential reuse: a unique spine is recycled, a shared one copied (+50).
 // ===========================================================================

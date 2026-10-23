@@ -2888,6 +2888,10 @@ Build/run it with `fai run Tasks.fai`; check the laws with `fai test Tasks.fai`.
   resource-free direct returns can pass a tag and payload components without
   temporary Result/tuple cells. First-class and resource-bearing results retain
   their ordinary value semantics; no source-level calling convention is needed.
+- **Use ordinary local tuples and records.** The compiler can remove a private
+  container used only through its fields or tag, including matching constructor
+  branches. Field ownership and resource-release order are preserved. These are
+  automatic optimizations, with no ownership syntax to write.
 - **"Mutation" is `{ r with field = ... }`** for records, `Array.set`/`push` for
   arrays — both return new values (updated in place when unique).
 - **Strings**: build with `++` (amortized efficient) or `String.join`; index by

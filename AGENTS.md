@@ -602,6 +602,9 @@ lookup stays on that fallback when the function otherwise needs no fresh cells.
 Reuse selection includes typed parameters and follows local aliases. A projected
 cell whose parent remains live is skipped, letting the actual consumed cell feed
 the reconstruction; merging unique lists therefore recycles their consumed nodes.
+Known local field counts also guide reuse selection. A bounded search can skip
+an incompatible construction for a nearby matching one, without extending the
+token across a new call. The runtime still checks the complete storage layout.
 Native list tag tests use the immediate bit directly, and list projections use
 the known uniform head/tail layout, including boxed Float heads.
 Allocation-free scalar-result scans over primitive-element lists, and searches
@@ -676,6 +679,14 @@ its body effect-free; fixed copy budgets bound growth, residual recursion keeps
 the ordinary call boundary, and other result shapes keep their existing path.
 Field initializers remain strict and ordered, including unused effects and traps;
 escaping values, unknown representations and resource-bearing fields stay boxed.
+A later ownership pass can remove a private, fixed-shape container while keeping
+explicit owners for every field. It preserves each projection's acquisition and
+the original reverse-order field release, including native resources. Same-shape
+constructor branches merge their components directly with one shared continuation.
+Escaping containers, differing tags, niche-field conversions and wider shapes
+retain their ordinary representation; function return ABI eligibility is unchanged.
+Resource-free projected values can also finish within their
+owner's consecutive cleanup chain, while native-resource finalization stays ordered.
 
 A runtime function value that is an immortal closure and is exactly saturated
 can use a guarded indirect call to its uniform entry, avoiding `apply_n` dispatch.

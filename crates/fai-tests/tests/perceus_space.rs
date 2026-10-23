@@ -35,6 +35,15 @@ let scan acc xs = match xs with | [] -> acc | x :: rest -> scan (acc + x) rest
 let scanLoop n xs acc = if n <= 0 then acc else scanLoop (n - 1) xs (acc + scan 0 xs)
 public listScans : Int -> Int
 let listScans n = scanLoop n (List.range 0 32) 0
+let bufferSize xs total = match xs with | [] -> Ok total | bytes :: rest -> if Bytes.length bytes > 100000 - total then Err "large" else bufferSize rest (total + Bytes.length bytes)
+let bufferScanLoop n xs total =
+  if n <= 0 then total else
+    match bufferSize xs 0 with
+    | Ok size -> bufferScanLoop (n - 1) xs (total + size)
+    | Err _ -> -1
+public bufferScans : Int -> Int
+let bufferScans n = bufferScanLoop n (repeatBuffer 32 (Bytes.fromString "ab") []) 0
+let repeatBuffer n value acc = if n <= 0 then acc else repeatBuffer (n - 1) value (value :: acc)
 type Slot = | Full Int
 let readLoop n i xs acc =
   if n <= 0 then acc else
@@ -223,6 +232,11 @@ fn repeated_prefix_reversals_keep_constant_storage() {
 #[test]
 fn repeated_scalar_list_scans_keep_constant_storage() {
     bounded_reuse("listScans", |n| n * 496);
+}
+
+#[test]
+fn repeated_checked_buffer_scans_keep_constant_storage() {
+    bounded_reuse("bufferScans", |n| n * 64);
 }
 
 #[test]
