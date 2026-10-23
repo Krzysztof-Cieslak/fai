@@ -407,6 +407,82 @@ fn missing_callee_cannot_establish_result_freshness() {
     assert_eq!(reasons(&defs), vec![Why::Call]);
 }
 
+#[test]
+fn recursive_result_shapes_stabilize_without_exhausting_the_work_bound() {
+    let body = e(
+        K::If {
+            cond: Box::new(e(K::Lit(Lit::Bool(true)), Ty::bool())),
+            then: Box::new(data(local(0))),
+            els: Box::new(data(call("tree", vec![local(0)]))),
+        },
+        ty(),
+    );
+    let defs = [def("tree", vec![id(0)], body)];
+    let report = analyze_program_locality(&defs);
+    assert!(report.converged, "{report:?}");
+    assert!(!report.summaries[0].limited);
+}
+
+#[test]
+fn abstracted_deep_fields_keep_aliases_to_exposed_siblings() {
+    let nested = data(data(data(data(local(0)))));
+    let outer = e(
+        K::MakeData { tag: 0, args: vec![nested, local(0)], reuse: None, scalars: 0, niche: None },
+        ty(),
+    );
+    let defs = [
+        def(
+            "caller",
+            vec![],
+            bind(
+                0,
+                call("make", vec![unit()]),
+                bind(1, field(local(0), 0), bind(2, field(local(0), 1), publish(local(1), dup(2)))),
+            ),
+        ),
+        def("make", vec![id(100)], bind(0, fresh(), outer)),
+    ];
+    assert_eq!(reasons(&defs), vec![Why::Published]);
+}
+
+#[test]
+fn forwarding_a_known_closure_preserves_its_entry_and_capture() {
+    let function_ty = Ty::arrow(Ty::Unit, ty());
+    let closure = e(
+        K::MakeClosure { func: FnId(1), captures: vec![id(0)], alloc: ClosureAlloc::Heap },
+        function_ty.clone(),
+    );
+    let forwarded = e(
+        K::App {
+            func: Box::new(e(
+                K::Global(name("identity")),
+                Ty::arrow(function_ty.clone(), function_ty.clone()),
+            )),
+            args: vec![e(K::Local(id(1)), function_ty.clone())],
+            reuse: Vec::new(),
+            alloc: ClosureAlloc::Heap,
+        },
+        function_ty.clone(),
+    );
+    let invoke = e(
+        K::App {
+            func: Box::new(e(K::Local(id(2)), function_ty)),
+            args: vec![unit()],
+            reuse: Vec::new(),
+            alloc: ClosureAlloc::Heap,
+        },
+        ty(),
+    );
+    let mut caller = def(
+        "caller",
+        vec![],
+        bind(0, fresh(), bind(1, closure, bind(2, forwarded, bind(3, invoke, dup(3))))),
+    );
+    caller.fns.push(CoreFn { captures: vec![id(100)], params: vec![id(101)], body: local(100) });
+    let defs = [caller, def("identity", vec![id(0)], local(0))];
+    assert_eq!(reasons(&defs), vec![Why::ProvenRoot]);
+}
+
 mod proptests {
     use super::*;
     use proptest::prelude::*;
