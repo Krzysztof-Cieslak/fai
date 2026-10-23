@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- Add read-only diagnostics for fresh-root locality and publication barriers in
+  ownership IR, without changing reference counting or native code generation.
 - Add a standalone published-JSON example with a portable dependency lock,
   executable serialization contract, and README walkthrough.
 
