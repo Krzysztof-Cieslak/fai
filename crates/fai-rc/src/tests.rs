@@ -256,6 +256,13 @@ fn a_record_builder_accepts_its_field_class() {
 }
 
 #[test]
+fn flattened_mutual_members_do_not_advertise_unemitted_reuse_entries() {
+    let src = "module M\ntype Cell = | Cell Int Int\nlet left n = if n <= 0 then Cell 11 31 else right (n - 1)\nlet right n = if n <= 0 then Cell 20 22 else left (n - 1)\n";
+    assert_eq!(mutual_member_groups(src), vec![vec!["left".to_owned(), "right".to_owned()]]);
+    assert!(reuse_sig(src, "left").is_empty());
+}
+
+#[test]
 fn a_non_constructing_function_accepts_nothing() {
     // `size`-style readers build nothing, so they accept no forwarded token.
     assert_eq!(std_reuse_sig("Dict", "size"), Vec::<u32>::new());

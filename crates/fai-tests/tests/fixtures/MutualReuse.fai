@@ -1,0 +1,18 @@
+module MutualReuse
+
+type Cell = | Cell Int Int
+
+let left n = if n <= 0 then Cell 11 31 else right (n - 1)
+let right n = if n <= 0 then Cell 20 22 else left (n - 1)
+
+let start again cell =
+  if again then
+    start false cell
+  else
+    match cell with
+    | Cell n m -> if n < 0 then Cell m m else left n
+
+public main : Runtime -> Unit / { Console }
+let main runtime =
+  let Cell a b = start true (Cell 4 7)
+  runtime.console.writeLine (Int.toString (a + b))

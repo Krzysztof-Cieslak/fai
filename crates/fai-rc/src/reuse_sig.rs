@@ -124,6 +124,12 @@ pub fn reuse_signature(db: &dyn Db, file: SourceFile, name: Symbol) -> ReuseSig 
     if evidence > 0 {
         return ReuseSig(Vec::new());
     }
+    // Mutual-tail groups replace their members with ordinary wrappers around a
+    // combined loop. Those wrappers have no token-taking entry, so callers must
+    // not forward tokens to the member's un-emitted standalone specialization.
+    if crate::mutual_groups(db, file).group_of(def).is_some() {
+        return ReuseSig::default();
+    }
     // Analyze the reference-counted entry body, where local resets are already
     // placed (a filled construction carries a reuse token; an unhomed one is a
     // `FreeReuse`), so the incoming-token capacity is exactly the sinks left over,
