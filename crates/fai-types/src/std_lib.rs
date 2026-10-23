@@ -166,6 +166,34 @@ pub fn builtin_scheme(name: Symbol) -> Option<Scheme> {
         "bytesConcatMany" => {
             Scheme::mono(Ty::arrow(Ty::list(Ty::Con(Con::Bytes)), Ty::Con(Con::Bytes)))
         }
+        "textPairsRenderList" => {
+            let string = Ty::Con(Con::String);
+            Scheme::mono(Ty::arrows(
+                [
+                    string.clone(),
+                    string.clone(),
+                    string.clone(),
+                    string.clone(),
+                    Ty::list(Ty::Tuple(vec![string.clone(), string])),
+                ],
+                Ty::Con(Con::Bytes),
+            ))
+        }
+        "textPairsRenderRows" => {
+            let string = Ty::Con(Con::String);
+            Scheme::mono(Ty::arrows(
+                [
+                    string.clone(),
+                    string.clone(),
+                    string.clone(),
+                    string.clone(),
+                    Ty::int(),
+                    Ty::bool(),
+                    Ty::list(Ty::Tuple(vec![Ty::int(), string.clone(), string])),
+                ],
+                Ty::Con(Con::Bytes),
+            ))
+        }
         "bytesToList" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::list(Ty::int()))),
         "bytesFromString" => Scheme::mono(Ty::arrow(Ty::Con(Con::String), Ty::Con(Con::Bytes))),
         "bytesToString" => Scheme::mono(Ty::arrow(Ty::Con(Con::Bytes), Ty::Con(Con::String))),

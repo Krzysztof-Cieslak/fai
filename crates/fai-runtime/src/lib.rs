@@ -5531,7 +5531,9 @@ pub use regex_engine::{
 pub use text_pairs::{
     fai_text_pairs_from_list, fai_text_pairs_from_ranges, fai_text_pairs_get,
     fai_text_pairs_get_all, fai_text_pairs_get_all_borrowed, fai_text_pairs_get_borrowed,
-    fai_text_pairs_is_empty, fai_text_pairs_is_empty_borrowed, fai_text_pairs_to_list,
+    fai_text_pairs_is_empty, fai_text_pairs_is_empty_borrowed, fai_text_pairs_render_list,
+    fai_text_pairs_render_list_borrowed, fai_text_pairs_render_rows,
+    fai_text_pairs_render_rows_borrowed, fai_text_pairs_to_list,
 };
 
 mod crypto;

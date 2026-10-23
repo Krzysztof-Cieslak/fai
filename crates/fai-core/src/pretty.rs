@@ -136,6 +136,8 @@ fn prim_name(op: Prim) -> &'static str {
         Prim::TextPairsGet => "textPairsGet",
         Prim::TextPairsGetAll => "textPairsGetAll",
         Prim::TextPairsIsEmpty => "textPairsIsEmpty",
+        Prim::TextPairsRenderList => "textPairsRenderList",
+        Prim::TextPairsRenderRows => "textPairsRenderRows",
         Prim::BytesSlice => "bytesSlice",
         Prim::BytesFromList => "bytesFromList",
         Prim::BytesToList => "bytesToList",

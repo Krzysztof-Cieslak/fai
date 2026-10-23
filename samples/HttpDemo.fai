@@ -23,6 +23,7 @@ module HttpDemo
 // Buffered sends render their computed byte length after the other header fields.
 // Request protocol metadata is collected with field validation in wire order.
 // Each response validates and classifies its own fields once during sending.
+// Selected fields encode into one byte buffer, retaining duplicate order and values.
 // Status-line reasons are validated before body evaluation; fixed text is generated.
 // A disconnected client returns a send error even with default Unix SIGPIPE handling.
 // Received headers support selective lookup and bulk `Headers.toList` enumeration;

@@ -240,6 +240,8 @@ pub fn op_unsafe_to_reorder(op: Prim, args: &[CExpr]) -> bool {
         | Prim::TextPairsGet
         | Prim::TextPairsGetAll
         | Prim::TextPairsIsEmpty
+        | Prim::TextPairsRenderList
+        | Prim::TextPairsRenderRows
         | Prim::BytesSlice
         | Prim::BytesFromList
         | Prim::BytesToList

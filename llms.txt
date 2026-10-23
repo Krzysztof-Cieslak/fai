@@ -2058,7 +2058,9 @@ Deferred: IANA time zones / `ZonedDateTime` with DST rules (this is offset-only)
    the complete head passes, preserving duplicate order and error precedence.
    Ordinary server responses likewise share a response-local header analysis
    between connection policy, framing and rendering; it never persists across
-   requests. Server:
+   requests. Their selected fields encode directly into one checked Bytes buffer,
+   preserving ordered duplicates and borrowed String views without constructing
+   intermediate field-line Strings or a second list of selected fields. Server:
   `serve`/`serveListener` (HTTP) and
   `serveTls`/`serveListenerTls` (HTTPS, given a PEM cert+key) — a task per
    connection, serving ordered requests until either peer sends `Connection: close`.
