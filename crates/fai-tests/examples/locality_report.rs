@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use camino::{Utf8Path, Utf8PathBuf};
 use fai_core::wire::from_wire;
 use fai_driver::{ProjectOptions, Session};
-use fai_rc::analyze_locality;
+use fai_rc::{analyze_locality, analyze_program_locality};
 use serde_json::json;
 
 fn run() -> Result<(), Box<dyn Error>> {
@@ -28,10 +28,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     let bytes = serde_json::to_vec(&bundle)?;
     let fingerprint = blake3::hash(&bytes).to_hex().to_string();
     let rebuilt = from_wire(&bundle);
+    let program = analyze_program_locality(&rebuilt.defs);
     let mut definitions = Vec::new();
-    for def in &rebuilt.defs {
+    for (index, def) in rebuilt.defs.iter().enumerate() {
         let before = def.clone();
-        let report = analyze_locality(def);
+        let report = &program.definitions[index];
+        let baseline = analyze_locality(def);
         assert_eq!(*def, before, "diagnostic analysis changed its input");
         let functions: Vec<_> = report.functions.iter().map(|function| {
             let sites: Vec<_> = function.sites.iter().map(|site| json!({
@@ -40,6 +42,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 "local": site.local.map(|local| local.index()),
                 "fields": site.fields,
                 "reason": format!("{:?}", site.reason),
+                "baselineReason": baseline.functions.iter().find(|f| f.function == function.function)
+                    .and_then(|f| f.sites.iter().find(|s| s.node == site.node)).map(|s| format!("{:?}", s.reason)),
             })).collect();
             json!({"function":function.function,"nodes":function.nodes,"limited":function.limited,"sites":sites})
         }).collect();
@@ -47,21 +51,27 @@ fn run() -> Result<(), Box<dyn Error>> {
             "module": rebuilt.module_labels.get(&def.def.file),
             "name": def.def.name.as_str(),
             "functions": functions,
+            "summaries": program.summaries.iter().filter(|s| s.definition == index).map(|s| json!({
+                "function": s.function, "captures": s.captures, "mayPublish": s.may_publish,
+                "result": format!("{:?}", s.result), "limited": s.limited,
+            })).collect::<Vec<_>>(),
         }));
     }
     assert_eq!(bytes, serde_json::to_vec(&bundle)?, "analysis changed the wire input");
     let output = json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "kind": "experimental-locality-diagnostic",
         "compiler": fai_driver::build_info(),
         "concurrent": bundle.concurrent,
         "bundleFingerprint": fingerprint,
         "inputUnchanged": true,
         "definitions": definitions,
+        "summaryRounds": program.rounds,
+        "summariesConverged": program.converged,
         "limitations": [
             "Root locality is not uniqueness or descendant locality.",
             "Explicit ownership IR sites are not counts of runtime mutations.",
-            "Unknown calls, primitives, projections and loop inputs remain conservative.",
+            "Unknown calls, primitives, representation-changing projections and loop inputs remain conservative.",
             "No native optimization consumes this diagnostic report."
         ],
     });
