@@ -18,6 +18,8 @@ fn reporting_preserves_cached_ir_and_native_objects() {
     let object = fai_driver::object_code(&db, file, name, true);
     let first = analyze_locality(&lowered);
     assert_eq!(first, analyze_locality(&lowered));
+    let program = analyze_program_locality(std::slice::from_ref(&lowered));
+    assert_eq!(program, analyze_program_locality(std::slice::from_ref(&lowered)));
     assert_eq!(*lowered, before);
     assert_eq!(object, fai_driver::object_code(&db, file, name, true));
 }

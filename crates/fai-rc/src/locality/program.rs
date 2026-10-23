@@ -18,6 +18,7 @@ use super::{
 const ROUNDS: usize = 12;
 const ROOTS: usize = 256;
 const PATH: usize = 8;
+const RESULT_DEPTH: usize = 3;
 
 /// The origin visible at a callable's result boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,6 +242,71 @@ impl Summary {
     }
 }
 
+/// Retain bounded result shapes, including every input dependency and aliases
+/// to any exposed root. Hidden fresh descendants cannot be named by the caller;
+/// an abstracted field still reaches any sibling/input that it might publish.
+fn compact_result(result: Value, roots: BTreeMap<usize, Root>) -> (Value, BTreeMap<usize, Root>) {
+    let values: Vec<_> = match &result {
+        Value::One(value) => vec![value],
+        Value::Many(values) => values.iter().collect(),
+        Value::Never => Vec::new(),
+    };
+    let mut keep = BTreeSet::new();
+    let mut pending = Vec::new();
+    for value in values {
+        for id in &value.reachable {
+            if roots.get(id).is_some_and(|root| root.input.is_some()) {
+                keep.insert(*id);
+            }
+        }
+        pending.extend(value.roots.iter().map(|id| (*id, 0)));
+    }
+    let mut depths = BTreeMap::new();
+    while let Some((id, depth)) = pending.pop() {
+        if depth >= RESULT_DEPTH || depths.get(&id).is_some_and(|old| *old <= depth) {
+            continue;
+        }
+        depths.insert(id, depth);
+        keep.insert(id);
+        if let Some(fields) = roots.get(&id).and_then(|root| root.fields.as_ref()) {
+            for value in fields {
+                pending.extend(value.roots.iter().map(|id| (*id, depth + 1)));
+            }
+        }
+    }
+    let ids: BTreeMap<_, _> = keep.iter().enumerate().map(|(next, old)| (*old, next)).collect();
+    let convert = |value: &Fact| {
+        let mut converted = value.clone();
+        if value.roots.iter().any(|id| !keep.contains(id)) {
+            converted.roots.clear();
+            converted.reason = Some(Why::SummaryDepth);
+            converted.callable = None;
+        } else {
+            converted.roots = value.roots.iter().map(|id| ids[id]).collect();
+        }
+        converted.reachable =
+            value.reachable.iter().filter_map(|id| ids.get(id).copied()).collect();
+        converted
+    };
+    let compact = keep
+        .iter()
+        .filter_map(|id| {
+            roots.get(id).map(|root| {
+                let mut root = root.clone();
+                root.fields =
+                    root.fields.as_ref().map(|fields| fields.iter().map(&convert).collect());
+                (ids[id], root)
+            })
+        })
+        .collect();
+    let result = match result {
+        Value::One(value) => Value::One(convert(&value)),
+        Value::Many(values) => Value::Many(values.iter().map(convert).collect()),
+        Value::Never => Value::Never,
+    };
+    (result, compact)
+}
+
 struct Program<'a> {
     defs: &'a [LoweredDef],
     ids: FxHashMap<DefId, usize>,
@@ -352,7 +418,8 @@ fn analyze(
         summary.limited = true;
         summary
     } else {
-        Summary { publish: engine.publish, result, roots: state.roots, limited: false }
+        let (result, roots) = compact_result(result, state.roots);
+        Summary { publish: engine.publish, result, roots, limited: false }
     };
     (
         summary,
@@ -513,7 +580,9 @@ impl Engine<'_, '_> {
         if fact.reason.is_some() {
             result.reason = fact.reason;
         }
-        result.callable = fact.callable;
+        // An input alias retains the actual caller's known closure identity.
+        // A concrete closure in the summary supplies its own lifted entry.
+        result.callable = fact.callable.or(result.callable);
         for id in &fact.reachable {
             result.reachable.extend(&mapped[id].reachable);
         }

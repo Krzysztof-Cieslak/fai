@@ -67,6 +67,8 @@ pub enum LocalityReason {
     Destination,
     /// A reset ends the old allocation lifetime; its token is not a live root.
     ResetLifetime,
+    /// A nested result shape was abstracted while retaining its possible aliases.
+    SummaryDepth,
     /// Bounded proof work was exhausted. All following facts are conservative.
     Limit,
 }

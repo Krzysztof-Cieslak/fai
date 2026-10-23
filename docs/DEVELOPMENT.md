@@ -40,6 +40,9 @@ identities for its fresh results, while aliases preserve the caller's identities
 Summaries start conservative and use only sound prior summaries; the report
 includes its propagation-round count and convergence status. Recursive inputs,
 unknown callbacks and representation-changing boundaries remain conservative.
+Result shapes retain at most three root levels. Deeper fields become unknown
+while retaining dependencies on inputs and aliases to exposed sibling roots;
+recursive result shapes therefore do not expand without bound.
 Captures and ordinary parameters remain unknown at function entry, independently
 of observed callers. The JSON includes both the original local-only reason and
 the whole-program reason at each site.
