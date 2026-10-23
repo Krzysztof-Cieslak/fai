@@ -2843,7 +2843,7 @@ impl<M: Module> Translator<'_, M> {
             ExprKind::MakeData { tag, args, reuse, scalars, niche } => {
                 self.make_data(*tag, args, *reuse, *scalars, *niche)
             }
-            // A `LetMany` binds a spread-returning call's result components, then
+            // A `LetMany` binds a call's or local expression's result components, then
             // continues. A `Spread` in a value position (rare — SROA normally
             // materializes at boxed sinks) reassembles its components into a cell.
             ExprKind::LetMany { locals, value, body } => {
@@ -7412,9 +7412,109 @@ impl<M: Module> Translator<'_, M> {
         (0..n).map(|i| self.float_field_value(base, FieldIndex::Const(i as u32))).collect()
     }
 
-    /// Binds a `LetMany`'s locals to the components a spread-returning call yields.
+    /// Evaluates a local multi-value expression without constructing a data cell.
+    /// Each branch transfers the same component representations and ownership.
+    fn local_components(&mut self, e: &CExpr, component_tys: &[Ty]) -> Vec<Value> {
+        match &e.kind {
+            ExprKind::Spread { components } => {
+                components.iter().map(|component| self.expr_component(component)).collect()
+            }
+            ExprKind::If { cond, then, els } => {
+                let left = self.builder.create_block();
+                let right = self.builder.create_block();
+                let merge = self.builder.create_block();
+                for ty in component_tys {
+                    let machine_ty =
+                        if *ty == Ty::Con(Con::Float) { types::F64 } else { types::I64 };
+                    self.builder.append_block_param(merge, machine_ty);
+                }
+                self.boolean_branch(cond, left, right);
+                let saved_bounds = self.bounds.clone();
+                let saved_tags = self.known_tags.clone();
+                self.builder.switch_to_block(left);
+                self.builder.seal_block(left);
+                self.bounds.refine(cond, true);
+                self.refine_tag(cond, true);
+                let values = self.local_components(then, component_tys);
+                let values: Vec<_> = values.into_iter().map(Into::into).collect();
+                self.builder.ins().jump(merge, &values);
+                self.builder.switch_to_block(right);
+                self.builder.seal_block(right);
+                self.bounds = saved_bounds.clone();
+                self.known_tags = saved_tags.clone();
+                self.bounds.refine(cond, false);
+                self.refine_tag(cond, false);
+                let values = self.local_components(els, component_tys);
+                let values: Vec<_> = values.into_iter().map(Into::into).collect();
+                self.builder.ins().jump(merge, &values);
+                self.builder.switch_to_block(merge);
+                self.builder.seal_block(merge);
+                self.bounds = saved_bounds;
+                self.known_tags = saved_tags;
+                let values = self.builder.block_params(merge).to_vec();
+                for (&value, ty) in values.iter().zip(component_tys) {
+                    if *ty == Ty::int() {
+                        self.mark_raw(value);
+                    }
+                }
+                values
+            }
+            ExprKind::Let { local, value, body } => {
+                let value_ir = self.expr(value);
+                self.define_var(*local, value_ir);
+                self.bce_transfer(*local, value);
+                self.local_components(body, component_tys)
+            }
+            ExprKind::LetMany { locals, value, body } => {
+                self.bind_letmany(locals, value);
+                self.local_components(body, component_tys)
+            }
+            ExprKind::Dup { local, body } => {
+                self.dup_local(*local);
+                self.local_components(body, component_tys)
+            }
+            ExprKind::Drop { local, body } => {
+                self.drop_local(*local);
+                self.local_components(body, component_tys)
+            }
+            ExprKind::Reset { value, token, body } => {
+                let value = self.reset_data(value);
+                self.define_var(*token, value);
+                self.local_components(body, component_tys)
+            }
+            ExprKind::FreeReuse { token, body } => {
+                let value = self.use_var(*token);
+                let free = self.runtime("fai_free_reuse", 1, false);
+                self.builder.ins().call(free, &[value]);
+                self.local_components(body, component_tys)
+            }
+            ExprKind::Error => {
+                let _ = self.expr(e);
+                component_tys
+                    .iter()
+                    .map(|ty| {
+                        if *ty == Ty::Con(Con::Float) {
+                            self.builder.ins().f64const(Ieee64::with_bits(0))
+                        } else if *ty == Ty::int() {
+                            let value = self.builder.ins().iconst(types::I64, 0);
+                            self.mark_raw(value)
+                        } else {
+                            self.builder.ins().iconst(types::I64, rt::FAI_UNIT)
+                        }
+                    })
+                    .collect()
+            }
+            _ => unreachable!("local multi-value expression has a non-component tail"),
+        }
+    }
+
+    /// Binds a `LetMany` to a spread call or a local branch-selected component group.
     fn bind_letmany(&mut self, locals: &[LocalId], value: &CExpr) {
-        let results = self.spread_call(value);
+        let results = if matches!(value.kind, ExprKind::App { .. } | ExprKind::Prim { .. }) {
+            self.spread_call(value)
+        } else {
+            self.local_components(value, &component_types(value, locals.len()))
+        };
         debug_assert_eq!(results.len(), locals.len());
         for (&l, v) in locals.iter().zip(results) {
             self.define_var(l, v);

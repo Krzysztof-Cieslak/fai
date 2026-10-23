@@ -7,6 +7,12 @@
   executable serialization contract, and README walkthrough.
 
 ### Changed
+- Local cell reuse skips incompatible known field counts and selects nearby
+  matching constructions while retaining death-point releases and runtime layout checks.
+- Private temporary data cells can be removed after ownership insertion while
+  preserving field acquisition, destruction order, and resource lifetimes.
+- Borrowing of resource-free projected fields now extends through consecutive
+  cleanup operations, avoiding redundant ownership while preserving resource release order.
 - Encode ordinary HTTP response heads directly from ordered text pairs into one
   checked byte buffer, avoiding intermediate field-line Strings while preserving
   validation, duplicate order, framing and immutable input values.

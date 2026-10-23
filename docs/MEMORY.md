@@ -4316,6 +4316,14 @@ Editor integration:
     constructor branches, freshening every copied binder. Generic/mismatched
     representation views, escaped cells and resource-bearing fields keep their
     ordinary allocation and ownership boundaries.
+    A later ownership-level pass can remove a private fixed-shape container even
+    when its fields own resources: field owners and projection acquisitions stay
+    explicit, and the original parent release becomes reverse-order field drops.
+    Same-tag, same-field-type constructor branches merge components through one
+    continuation. Generated field owners are not candidates for data-cell reset.
+    This local representation does not widen native Result return eligibility.
+    Local reuse selection uses known field counts in a bounded search, retaining
+    runtime storage-layout checks and avoiding new token retention across calls.
     Immediate destructuring of an optional tuple can expose one bounded layer
     of a small monomorphic same-file recursive helper. Inputs are resource-free
     and the body is effect-free. Separate expansion and continuation-copy budgets

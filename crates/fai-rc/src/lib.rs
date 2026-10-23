@@ -64,11 +64,13 @@ mod data_shapes;
 mod escape;
 mod forward;
 mod length;
+mod local_cells;
 mod mutual;
 mod parameter_loans;
 mod purity;
 mod reuse_candidates;
 mod reuse_sig;
+mod reuse_sizes;
 mod shared_boxes;
 mod sroa;
 mod trmc;
@@ -210,9 +212,11 @@ pub fn rc_lowered(db: &dyn Db, lowered: &LoweredDef, self_sig: &BorrowSig) -> Lo
         let mut cx = Rc { captures: &borrowed, next, call_borrows: &arg_borrows };
         let body = cx.owned(body, &Locals::default());
         next = cx.next;
+        let (body, field_owners) = local_cells::rewrite(db, body, &mut next);
         // Recycle a dead data cell into a same-size construction where one follows.
-        let data = data_typed_locals(&body);
-        let data = reuse_candidates::ReuseCandidates::new(&body, data);
+        let mut data = data_typed_locals(&body);
+        data.retain(|local| !field_owners.contains(local));
+        let data = reuse_candidates::ReuseCandidates::new(&body, data).with_sizes(db, &body);
         let mut body = if fai_db::allocation_control(db) == fai_db::AllocationControl::NoReuse {
             body
         } else {
@@ -1147,7 +1151,11 @@ fn reuse_pass(e: CExpr, data: &reuse_candidates::ReuseCandidates, next: &mut usi
     match kind {
         K::Drop { local, body } if data.can_reuse(local, &body) => {
             let body = reuse_pass(*body, data, next);
-            release(local, body, next)
+            if let Some(fields) = data.fields(local) {
+                reuse_sizes::release(local, body, fields, next)
+            } else {
+                release(local, body, next)
+            }
         }
         K::Drop { local, body } => drop_(local, reuse_pass(*body, data, next)),
         K::Dup { local, body } => dup_(local, reuse_pass(*body, data, next)),

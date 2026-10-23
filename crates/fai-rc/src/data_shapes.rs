@@ -237,6 +237,12 @@ fn resource_free(
     }
 }
 
+/// Whether a value has no observable resource finalization. Unknown and opaque
+/// types retain their exact release positions.
+pub(crate) fn is_resource_free(db: &dyn Db, ty: &Ty) -> bool {
+    resource_free(db, ty, &mut FxHashSet::default(), &mut 256)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

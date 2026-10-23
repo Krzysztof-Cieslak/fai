@@ -1399,25 +1399,24 @@ pub enum ExprKind {
         /// The continuation.
         body: Box<CExpr>,
     },
-    /// The exploded components of a **fixed-shape float aggregate** (FFA), as a
-    /// multi-value unit (scalar replacement of aggregates). Produced by the SROA
-    /// pass (see [`crate::sroa`]) in two positions: a function's tail when its
-    /// result ABI is [`Repr::Spread`] (lowered to a multi-result `return`), and a
-    /// call argument whose callee parameter is spread (the components flow into
-    /// consecutive registers). `components` are atoms (component locals, each typed
-    /// `Float`) in canonical field order; the node's [`CExpr::ty`] is the FFA type.
+    /// Exploded, owned components in canonical field order. Signature-derived
+    /// spread returns/arguments use these for their native multi-value ABI.
+    /// Local scalar replacement also uses them as a `LetMany` value, including
+    /// inside branches; that value's tuple type records each component type and
+    /// does not change the enclosing function's calling convention.
     Spread {
         /// The component values, in canonical field order.
         components: Vec<CExpr>,
     },
     /// Binds several slots at once from a multi-result `value`: the destructuring
-    /// of a [`Repr::Spread`]-result call or an opted-in native Result primitive.
+    /// of a [`Repr::Spread`]-result call, an opted-in native Result primitive,
+    /// or a local expression with explicit `Spread` tails.
     /// `locals` receive the components in their transport order, then `body` is
-    /// evaluated. Produced by the SROA pass.
+    /// evaluated. Each component has its own ordinary ownership lifetime.
     LetMany {
         /// The slots bound to the multi-result value's components, in order.
         locals: Vec<LocalId>,
-        /// The multi-result value (a spread-returning call).
+        /// The multi-result call or local component expression.
         value: Box<CExpr>,
         /// The continuation.
         body: Box<CExpr>,

@@ -72,7 +72,11 @@ pub(crate) fn borrow_fields(db: &dyn Db, body: &mut CExpr, shapes: &[(LocalId, D
             && (*index >= 64 || shapes[shape].1.scalars & (1u64 << index) == 0)
         {
             let owner = owners.get(&parent).copied().unwrap_or(parent);
-            let mut state = State { parent_alive: true, slot_live: true, strict: true };
+            let mut state = State {
+                parent_alive: true,
+                slot_live: true,
+                strict: !crate::data_shapes::is_resource_free(db, &value.ty),
+            };
             if inspect(db, body, *local, owner, &mut state, &mut 1024) {
                 let args = vec![
                     (**base).clone(),
@@ -92,8 +96,8 @@ pub(crate) fn borrow_fields(db: &dyn Db, body: &mut CExpr, shapes: &[(LocalId, D
 struct State {
     parent_alive: bool,
     slot_live: bool,
-    /// A field can contain resources: retain its exact release order relative to
-    /// siblings by requiring the owner to survive even its final drop.
+    /// A field that may contain resources retains its exact release order
+    /// relative to siblings, even within an otherwise consecutive drop chain.
     strict: bool,
 }
 
@@ -267,6 +271,103 @@ mod tests {
     use fai_resolve::DefId;
     use fai_syntax::Symbol;
     use fai_types::Ty;
+
+    fn discarded_after_parent(field_ty: Ty) -> CExpr {
+        let parent = LocalId::from_index(0);
+        let field = LocalId::from_index(1);
+        let value = CExpr::new(
+            K::DataField {
+                base: Box::new(CExpr::new(K::Local(parent), Ty::Tuple(vec![field_ty.clone()]))),
+                index: FieldIndex::Const(0),
+                scalar: false,
+                niche: None,
+            },
+            field_ty,
+        );
+        CExpr::new(
+            K::Let {
+                local: field,
+                value: Box::new(value),
+                body: Box::new(crate::drop_(
+                    parent,
+                    crate::drop_(field, CExpr::new(K::Lit(Lit::Unit), Ty::Unit)),
+                )),
+            },
+            Ty::Unit,
+        )
+    }
+
+    fn borrow_one_field(body: &mut CExpr) {
+        let db = fai_db::FaiDatabase::new();
+        borrow_fields(
+            &db,
+            body,
+            &[(
+                LocalId::from_index(0),
+                DataShape {
+                    max_tag: 0,
+                    max_fields: 1,
+                    scalars: 0,
+                    resource_free: false,
+                    boxed_tag: Some(0),
+                    immediate_tag: None,
+                    always_boxed: true,
+                },
+            )],
+        );
+    }
+
+    #[test]
+    fn a_resource_free_field_can_finish_in_its_owners_drop_chain() {
+        let mut body = discarded_after_parent(Ty::Con(Con::String));
+        borrow_one_field(&mut body);
+        let K::Let { value, body, .. } = body.kind else { panic!("expected projection") };
+        assert!(matches!(value.kind, K::Prim { op: Prim::DataPeek, .. }));
+        assert_eq!(
+            *body,
+            crate::drop_(LocalId::from_index(0), CExpr::new(K::Lit(Lit::Unit), Ty::Unit))
+        );
+    }
+
+    #[test]
+    fn a_function_field_keeps_its_original_finalization_position() {
+        let original = discarded_after_parent(Ty::arrow(Ty::Unit, Ty::Unit));
+        let mut body = original.clone();
+        borrow_one_field(&mut body);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn resource_free_fields_cannot_be_read_after_their_owner_dies() {
+        let mut original = discarded_after_parent(Ty::Con(Con::String));
+        let K::Let { body, .. } = &mut original.kind else { unreachable!() };
+        **body = crate::drop_(
+            LocalId::from_index(0),
+            CExpr::new(
+                K::Let {
+                    local: LocalId::from_index(2),
+                    value: Box::new(CExpr::new(
+                        K::Prim {
+                            op: Prim::StringLength,
+                            args: vec![CExpr::new(
+                                K::Local(LocalId::from_index(1)),
+                                Ty::Con(Con::String),
+                            )],
+                        },
+                        Ty::int(),
+                    )),
+                    body: Box::new(crate::drop_(
+                        LocalId::from_index(1),
+                        CExpr::new(K::Lit(Lit::Unit), Ty::Unit),
+                    )),
+                },
+                Ty::Unit,
+            ),
+        );
+        let mut body = original.clone();
+        borrow_one_field(&mut body);
+        assert_eq!(body, original);
+    }
 
     fn lowered(source: &str, name: &str) -> String {
         let mut db = fai_db::FaiDatabase::new();

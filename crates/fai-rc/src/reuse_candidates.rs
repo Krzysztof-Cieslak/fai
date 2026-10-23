@@ -12,6 +12,7 @@ pub(crate) struct ReuseCandidates {
     roots: FxHashMap<LocalId, LocalId>,
     aliased: FxHashSet<LocalId>,
     owners: FxHashMap<LocalId, LocalId>,
+    sizes: FxHashMap<LocalId, Option<usize>>,
 }
 
 impl ReuseCandidates {
@@ -21,9 +22,19 @@ impl ReuseCandidates {
             roots: FxHashMap::default(),
             aliased: FxHashSet::default(),
             owners: FxHashMap::default(),
+            sizes: FxHashMap::default(),
         };
         result.collect(body);
         result
+    }
+
+    pub(crate) fn with_sizes(mut self, db: &dyn fai_db::Db, body: &CExpr) -> Self {
+        self.sizes = crate::reuse_sizes::collect(db, body);
+        self
+    }
+
+    pub(crate) fn fields(&self, local: LocalId) -> Option<usize> {
+        self.sizes.get(&local).copied().flatten()
     }
 
     fn root(&self, local: LocalId) -> LocalId {
